@@ -1,0 +1,307 @@
+"""Git URL support for stropha search.
+
+Allows searching remote repositories via git URL clone-and-index.
+
+Usage:
+    stropha search "auth" https://github.com/x/y
+    stropha search "auth" --repo-url https://github.com/x/y --refresh
+
+The repository is cloned to ~/.cache/stropha/repos/<url-hash>/ and indexed
+on first access. Subsequent searches use the cached index unless --refresh
+is passed or the cache TTL (24h) has expired.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import os
+import shutil
+import subprocess
+import time
+from dataclasses import dataclass
+from pathlib import Path
+
+import structlog
+
+from stropha.errors import StrophaError
+
+logger = structlog.get_logger(__name__)
+
+# Default cache location and TTL
+CACHE_DIR = Path.home() / ".cache" / "stropha" / "repos"
+DEFAULT_TTL_SECONDS = 24 * 60 * 60  # 24 hours
+
+
+class GitUrlError(StrophaError):
+    """Error handling git URL operations."""
+
+
+@dataclass
+class CachedRepo:
+    """A cached repository from a git URL."""
+    
+    url: str
+    local_path: Path
+    index_path: Path
+    cloned_at: float  # Unix timestamp
+    last_indexed: float | None  # Unix timestamp
+    
+    @property
+    def is_expired(self) -> bool:
+        """Check if the cache has expired (TTL exceeded)."""
+        ttl = int(os.environ.get("STROPHA_GIT_URL_TTL", DEFAULT_TTL_SECONDS))
+        return (time.time() - self.cloned_at) > ttl
+    
+    @property
+    def needs_index(self) -> bool:
+        """Check if the repo needs indexing."""
+        return self.last_indexed is None or not self.index_path.exists()
+
+
+def url_to_cache_key(url: str) -> str:
+    """Generate a cache key from a git URL.
+    
+    Uses a truncated SHA256 hash of the normalized URL.
+    """
+    # Normalize URL: remove trailing .git, lowercase
+    normalized = url.rstrip("/").removesuffix(".git").lower()
+    return hashlib.sha256(normalized.encode()).hexdigest()[:16]
+
+
+def get_cache_dir() -> Path:
+    """Get the cache directory for git URL repos."""
+    cache_dir = Path(os.environ.get("STROPHA_GIT_URL_CACHE", CACHE_DIR))
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir
+
+
+def get_cached_repo(url: str) -> CachedRepo | None:
+    """Get a cached repository if it exists and is valid.
+    
+    Returns None if:
+    - The repo is not cached
+    - The cache has expired
+    """
+    cache_key = url_to_cache_key(url)
+    cache_dir = get_cache_dir()
+    repo_dir = cache_dir / cache_key
+    
+    if not repo_dir.exists():
+        return None
+    
+    # Read metadata
+    meta_file = repo_dir / ".stropha-meta"
+    if not meta_file.exists():
+        return None
+    
+    try:
+        import json
+        meta = json.loads(meta_file.read_text())
+        return CachedRepo(
+            url=meta["url"],
+            local_path=repo_dir / "repo",
+            index_path=repo_dir / "index.db",
+            cloned_at=meta["cloned_at"],
+            last_indexed=meta.get("last_indexed"),
+        )
+    except (json.JSONDecodeError, KeyError) as exc:
+        logger.warning("invalid_cache_meta", url=url, error=str(exc))
+        return None
+
+
+def clone_repo(url: str, *, refresh: bool = False) -> CachedRepo:
+    """Clone a git repository to the cache.
+    
+    Args:
+        url: Git URL to clone
+        refresh: If True, re-clone even if cached
+        
+    Returns:
+        CachedRepo with the cloned repository
+        
+    Raises:
+        GitUrlError: If cloning fails
+    """
+    cache_key = url_to_cache_key(url)
+    cache_dir = get_cache_dir()
+    repo_dir = cache_dir / cache_key
+    local_path = repo_dir / "repo"
+    index_path = repo_dir / "index.db"
+    meta_file = repo_dir / ".stropha-meta"
+    
+    # Check if we have a valid cache
+    existing = get_cached_repo(url)
+    if existing and not refresh and not existing.is_expired:
+        logger.info("using_cached_repo", url=url, path=str(existing.local_path))
+        return existing
+    
+    # Clear existing cache if refreshing or expired
+    if repo_dir.exists():
+        logger.info("clearing_expired_cache", url=url)
+        shutil.rmtree(repo_dir)
+    
+    # Create directory structure
+    repo_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Clone the repository
+    logger.info("cloning_repo", url=url, target=str(local_path))
+    try:
+        result = subprocess.run(
+            ["git", "clone", "--depth", "1", url, str(local_path)],
+            capture_output=True,
+            text=True,
+            timeout=300,  # 5 minute timeout
+        )
+        if result.returncode != 0:
+            raise GitUrlError(f"git clone failed: {result.stderr}")
+    except subprocess.TimeoutExpired as exc:
+        raise GitUrlError(f"git clone timed out after 5 minutes") from exc
+    except FileNotFoundError as exc:
+        raise GitUrlError("git is not installed or not in PATH") from exc
+    
+    # Write metadata
+    import json
+    meta = {
+        "url": url,
+        "cloned_at": time.time(),
+        "last_indexed": None,
+    }
+    meta_file.write_text(json.dumps(meta))
+    
+    return CachedRepo(
+        url=url,
+        local_path=local_path,
+        index_path=index_path,
+        cloned_at=meta["cloned_at"],
+        last_indexed=None,
+    )
+
+
+def index_cached_repo(cached: CachedRepo) -> None:
+    """Index a cached repository.
+    
+    Updates the cache metadata with the indexing timestamp.
+    """
+    from stropha.pipeline.builder import build_stages
+    from stropha.pipeline.config import load_pipeline_config
+    from stropha.pipeline.pipeline import Pipeline
+    
+    logger.info("indexing_cached_repo", url=cached.url, path=str(cached.local_path))
+    
+    # Set environment for indexing
+    os.environ["STROPHA_TARGET_REPO"] = str(cached.local_path)
+    os.environ["STROPHA_INDEX_PATH"] = str(cached.index_path)
+    
+    try:
+        resolved = load_pipeline_config()
+        built = build_stages(resolved)
+        pipeline = Pipeline(
+            built.walker,
+            built.chunker,
+            built.enricher,
+            built.embedder,
+            built.storage,
+        )
+        with built.storage:  # type: ignore[union-attr]
+            stats = pipeline.run(rebuild=False)
+        
+        logger.info(
+            "indexed_cached_repo",
+            url=cached.url,
+            files=stats.files_visited,
+            chunks=stats.chunks_embedded,
+        )
+    finally:
+        # Clean up environment
+        os.environ.pop("STROPHA_TARGET_REPO", None)
+        os.environ.pop("STROPHA_INDEX_PATH", None)
+    
+    # Update metadata
+    meta_file = cached.local_path.parent / ".stropha-meta"
+    import json
+    meta = json.loads(meta_file.read_text())
+    meta["last_indexed"] = time.time()
+    meta_file.write_text(json.dumps(meta))
+    
+    # Update the cached object
+    object.__setattr__(cached, "last_indexed", meta["last_indexed"])
+
+
+def search_git_url(
+    query: str,
+    url: str,
+    *,
+    top_k: int = 10,
+    refresh: bool = False,
+) -> list:
+    """Search a remote repository via git URL.
+    
+    Args:
+        query: Search query
+        url: Git URL to search
+        top_k: Number of results to return
+        refresh: If True, re-clone and re-index
+        
+    Returns:
+        List of SearchHit results
+    """
+    from stropha.pipeline.builder import build_stages
+    from stropha.pipeline.config import load_pipeline_config
+    
+    # Clone or get from cache
+    cached = clone_repo(url, refresh=refresh)
+    
+    # Index if needed
+    if cached.needs_index or refresh:
+        index_cached_repo(cached)
+        # Reload cached to get updated last_indexed
+        cached = get_cached_repo(url)
+        if cached is None:
+            raise GitUrlError("Failed to load cached repo after indexing")
+    
+    # Search
+    os.environ["STROPHA_TARGET_REPO"] = str(cached.local_path)
+    os.environ["STROPHA_INDEX_PATH"] = str(cached.index_path)
+    
+    try:
+        resolved = load_pipeline_config()
+        built = build_stages(resolved)
+        with built.storage:  # type: ignore[union-attr]
+            hits = built.retrieval.search(query, top_k=top_k)
+        return hits
+    finally:
+        os.environ.pop("STROPHA_TARGET_REPO", None)
+        os.environ.pop("STROPHA_INDEX_PATH", None)
+
+
+def is_git_url(s: str) -> bool:
+    """Check if a string looks like a git URL.
+    
+    Matches:
+    - https://github.com/...
+    - https://gitlab.com/...
+    - git@github.com:...
+    - git://...
+    """
+    if not isinstance(s, str):
+        return False
+    
+    s = s.strip()
+    
+    # HTTPS URLs
+    if s.startswith(("https://github.com/", "https://gitlab.com/", "https://bitbucket.org/")):
+        return True
+    
+    # Generic https git URLs
+    if s.startswith("https://") and (s.endswith(".git") or "/git/" in s):
+        return True
+    
+    # SSH URLs
+    if s.startswith("git@") and ":" in s:
+        return True
+    
+    # Git protocol
+    if s.startswith("git://"):
+        return True
+    
+    return False

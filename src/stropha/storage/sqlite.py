@@ -82,10 +82,37 @@ def _sanitize_fts_query(query: str) -> str:
     return " OR ".join(f'"{t}"' for t in tokens)
 
 
+def _extract_file_stem(rel_path: str) -> str:
+    """Extract the file stem (name without extension) from a path."""
+    # Get the filename
+    parts = rel_path.replace("\\", "/").split("/")
+    filename = parts[-1] if parts else ""
+    # Remove extension
+    if "." in filename:
+        stem = filename.rsplit(".", 1)[0]
+    else:
+        stem = filename
+    return stem
+
+
+def _extract_directory_tokens(rel_path: str, max_depth: int = 3) -> str:
+    """Extract directory component names from a path.
+    
+    Returns the last `max_depth` directory names, which are often meaningful
+    (e.g., 'services', 'models', 'utils', 'api').
+    """
+    parts = rel_path.replace("\\", "/").split("/")
+    # Get directory components (exclude filename)
+    dirs = parts[:-1] if len(parts) > 1 else []
+    # Take last N directories
+    relevant_dirs = dirs[-max_depth:] if len(dirs) > max_depth else dirs
+    return " ".join(relevant_dirs)
+
+
 def _fts_text(content: str, rel_path: str, symbol: str | None) -> str:
     """Pre-process chunk content before indexing in FTS5.
 
-    We assemble a single FTS document from four sources, separated by
+    We assemble a single FTS document from multiple sources, separated by
     newlines so FTS5 treats them as a single token stream:
 
     1. Original content — preserves exact identifier matches.
@@ -93,13 +120,33 @@ def _fts_text(content: str, rel_path: str, symbol: str | None) -> str:
        `Calculator` from `FsrsCalculator`.
     3. File path tokens — boosts results whose path mentions the query
        (e.g. `FsrsCalculator.java` is a strong signal for "fsrs calculator").
-    4. Symbol (qualified name) — gives chunks a small boost when the user
+    4. File stem (repeated) — extra weight for the filename, which is often
+       the primary identifier (e.g., `UserService` in `UserService.java`).
+    5. Directory tokens — parent directories often indicate module/domain.
+    6. Symbol (qualified name) — gives chunks a small boost when the user
        asks for them by name.
     """
     path_tokens = _split_identifiers(
         rel_path.replace("/", " ").replace("\\", " ").replace(".", " ")
     )
-    parts: list[str] = [content, _split_identifiers(content), path_tokens]
+    
+    # Extract and process file stem (repeat twice for stronger signal)
+    file_stem = _extract_file_stem(rel_path)
+    stem_tokens = _split_identifiers(file_stem)
+    
+    # Extract directory tokens
+    dir_tokens = _extract_directory_tokens(rel_path)
+    dir_tokens_split = _split_identifiers(dir_tokens)
+    
+    # Build FTS document with weighted components
+    parts: list[str] = [
+        content,                      # Original content
+        _split_identifiers(content),  # CamelCase-split content
+        path_tokens,                  # Full path tokens
+        stem_tokens,                  # File stem (1st occurrence)
+        stem_tokens,                  # File stem (2nd occurrence for boost)
+        dir_tokens_split,             # Directory tokens
+    ]
     if symbol:
         parts.append(_split_identifiers(symbol.replace(".", " ")))
     return "\n".join(parts)

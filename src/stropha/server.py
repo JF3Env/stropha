@@ -325,7 +325,8 @@ def _apply_filters(
         "'show examples of Z'. For an exact symbol name, prefer get_symbol. "
         "Supports optional filters: language, path_prefix, kind, exclude_tests. "
         "Set include_facets=True to get counts by language/kind/repo. "
-        "Set recursive=True to auto-merge sibling and adjacent chunks."
+        "Set recursive=True to auto-merge sibling and adjacent chunks. "
+        "Set repo_url to search a remote git repository (clones and indexes on first access)."
     ),
 )
 def search_code(
@@ -337,6 +338,8 @@ def search_code(
     exclude_tests: bool = False,
     include_facets: bool = False,
     recursive: bool = False,
+    repo_url: str | None = None,
+    refresh: bool = False,
     *,
     ctx: Context,
 ) -> SearchResponse:
@@ -352,8 +355,13 @@ def search_code(
         exclude_tests: If True, exclude test files from results.
         include_facets: If True, include facet counts (language, kind, repo distribution).
         recursive: If True, auto-merge sibling chunks (same parent) and adjacent chunks.
+        repo_url: Optional git URL to search (e.g., https://github.com/org/repo).
+                  The repo is cloned and indexed on first access, then cached.
+        refresh: If True with repo_url, re-clone and re-index the remote repository.
     """
     import os
+    
+    from .tools.git_url import is_git_url, search_git_url
     
     app = _ctx(ctx)
     top_k = max(1, min(top_k, 30))
@@ -368,7 +376,12 @@ def search_code(
     fetch_k = top_k * 3 if has_filters else top_k
 
     try:
-        hits = app.search_engine.search(query, top_k=fetch_k)
+        # Handle remote git URL search
+        if repo_url and is_git_url(repo_url):
+            log.info("mcp.search_code.remote", repo_url=repo_url, refresh=refresh)
+            hits = search_git_url(query, repo_url, top_k=fetch_k, refresh=refresh)
+        else:
+            hits = app.search_engine.search(query, top_k=fetch_k)
     except StrophaError as exc:
         log.warning("mcp.search_code.error", error=str(exc))
         return SearchResponse(results=[], total_candidates=0, query=query, facets=None)

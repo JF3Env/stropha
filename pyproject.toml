@@ -6,6 +6,21 @@ readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
 authors = [{ name = "Jonatas" }]
+keywords = ["rag", "retrieval", "mcp", "code-search", "llm", "embeddings"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Text Processing :: Indexing",
+]
+
+# Core dependencies — minimal set for CLI + MCP server
 dependencies = [
     "typer>=0.12",
     "rich>=13.7",
@@ -16,39 +31,78 @@ dependencies = [
     "structlog>=24.1",
     "python-dotenv>=1.0",
     "pathspec>=0.12",
-    # Embedding providers
-    "voyageai>=0.3",         # remote provider (recommended by spec)
-    "fastembed>=0.4",        # local fallback (ONNX, no torch)
-    # Phase 1
-    "tree-sitter>=0.23",
-    "tree-sitter-language-pack>=0.10",
     "mcp>=1.2",
-    # Pipeline & adapters (docs/architecture/stropha-pipeline-adapters.md ADR-002)
     "pyyaml>=6.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/JonatasFischer/stropha"
+Documentation = "https://github.com/JonatasFischer/stropha#readme"
+Repository = "https://github.com/JonatasFischer/stropha.git"
+Issues = "https://github.com/JonatasFischer/stropha/issues"
 
 [project.scripts]
 stropha = "stropha.cli:app"
 stropha-mcp = "stropha.server:main"
 
 [project.optional-dependencies]
+# MCP server with lightweight embeddings — recommended for quick start
+mcp = [
+    "model2vec>=0.3",    # Ultra-fast static embeddings (default for MCP)
+]
+
+# Full local experience — fastembed + tree-sitter chunking
+local = [
+    "fastembed>=0.4",              # ONNX-based transformer embeddings
+    "tree-sitter>=0.23",           # AST-aware chunking
+    "tree-sitter-language-pack>=0.10",
+]
+
+# Cloud embeddings (higher quality, requires API key)
+voyage = [
+    "voyageai>=0.3",
+]
+
+# All embedders — fastembed + voyage + model2vec
+embedders = [
+    "fastembed>=0.4",
+    "voyageai>=0.3",
+    "model2vec>=0.3",
+]
+
+# Full feature set (local + voyage + tree-sitter)
+full = [
+    "fastembed>=0.4",
+    "voyageai>=0.3",
+    "model2vec>=0.3",
+    "tree-sitter>=0.23",
+    "tree-sitter-language-pack>=0.10",
+]
+
+# Development dependencies
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "ruff>=0.4",
     "mypy>=1.10",
 ]
+
 # Apple Silicon native LLM inference for the `mlx` enricher adapter.
 # Skip on Linux / Intel macs / Windows — `mlx-lm` is Apple-only.
 mlx = [
     "mlx-lm>=0.18; platform_system == 'Darwin' and platform_machine == 'arm64'",
 ]
+
 # Apple Silicon GPU-accelerated embeddings via mlx-embedding-models.
 # ~3-5x faster than fastembed ONNX. Apple Silicon only.
-# Pin transformers<5.0 due to API changes (batch_encode_plus removed in v5).
 mlx-embed = [
     "mlx-embedding-models>=0.0.11; platform_system == 'Darwin' and platform_machine == 'arm64'",
     "transformers>=4.36,<5.0; platform_system == 'Darwin' and platform_machine == 'arm64'",
+]
+
+# Model2Vec static embeddings — ultra-fast lookup-based embeddings
+model2vec = [
+    "model2vec>=0.3",
 ]
 
 [build-system]

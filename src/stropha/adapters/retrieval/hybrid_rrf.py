@@ -41,7 +41,7 @@ from ...errors import ConfigError
 from ...models import SearchHit
 from ...pipeline.base import StageHealth
 from ...pipeline.registry import lookup_adapter, register_adapter
-from ...retrieval.rrf import DEFAULT_K, rrf_fuse
+from ...retrieval.rrf import DEFAULT_K, rrf_fuse, rrf_fuse_named
 from ...stages.embedder import EmbedderStage
 from ...stages.retrieval import RetrievalStage
 from ...stages.retrieval_stream import RetrievalStreamStage
@@ -69,6 +69,16 @@ class HybridRrfConfig(BaseModel):
         ge=1,
         le=1000,
         description="RRF smoothing constant (paper recommends 60).",
+    )
+    adaptive_weighting: bool = Field(
+        default=True,
+        description=(
+            "Enable adaptive query weighting. Detects symbol-like queries "
+            "(CamelCase, snake_case, qualified names) and adjusts stream weights "
+            "accordingly. Symbol queries boost lexical/symbol streams; natural "
+            "language queries boost dense semantic matching. "
+            "Set STROPHA_ADAPTIVE_WEIGHTING=0 to disable."
+        ),
     )
     hyde_enabled: bool = Field(
         default=False,
@@ -257,23 +267,33 @@ class HybridRrfRetrieval(RetrievalStage):
         
         query_vec = self._embedder.embed_query(dense_query) if needs_vec else None
 
-        ranked: list[list[SearchHit]] = []
-        for stream in self._streams.values():
+        # Collect results from each stream with names for weighted fusion
+        ranked_by_name: dict[str, list[SearchHit]] = {}
+        for name, stream in self._streams.items():
             # Use search_query for sparse/symbol streams (may be rewritten)
             # query_vec already uses dense_query (may be HyDE-rewritten)
             hits = stream.search(search_query, query_vec)
             if hits:
-                ranked.append(hits)
-        if not ranked:
+                ranked_by_name[name] = hits
+        if not ranked_by_name:
             return []
         
-        # RRF fusion
-        if len(ranked) == 1:
-            fused = ranked[0]
+        # RRF fusion with adaptive weighting
+        if len(ranked_by_name) == 1:
+            fused = list(ranked_by_name.values())[0]
         else:
             # Get more candidates if we have a reranker
             fusion_k = self._config.candidate_k if self._reranker else k
-            fused = rrf_fuse(*ranked, k=self._config.rrf_k, top_k=fusion_k)
+            
+            # Adaptive weighting based on query type
+            weights = self._get_stream_weights(query)
+            
+            fused = rrf_fuse_named(
+                ranked_by_name,
+                k=self._config.rrf_k,
+                top_k=fusion_k,
+                weights=weights,
+            )
         
         # Optional reranking
         if self._reranker and fused:
@@ -283,6 +303,35 @@ class HybridRrfRetrieval(RetrievalStage):
         
         # Recursive retrieval / auto-merging
         return self._maybe_recursive_merge(fused)
+    
+    def _get_stream_weights(self, query: str) -> dict[str, float] | None:
+        """Get adaptive stream weights based on query classification.
+        
+        Returns None if adaptive weighting is disabled, which means
+        equal weights for all streams.
+        """
+        import os
+        
+        adaptive_enabled = (
+            self._config.adaptive_weighting
+            and os.environ.get("STROPHA_ADAPTIVE_WEIGHTING", "1") != "0"
+        )
+        
+        if not adaptive_enabled:
+            return None
+        
+        from ...retrieval.query_classify import get_adaptive_weights
+        
+        weights = get_adaptive_weights(query)
+        
+        # Map stream names to weight values
+        # The stream names in hybrid-rrf are: dense, sparse, symbol, graph_vec
+        return {
+            "dense": weights.dense,
+            "sparse": weights.sparse,
+            "symbol": weights.symbol,
+            "graph_vec": weights.graph_vec,
+        }
 
     def _search_multi_query(self, query: str, k: int) -> list[SearchHit]:
         """Execute search with multiple paraphrases, fusing results via RRF.
