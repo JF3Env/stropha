@@ -230,28 +230,112 @@ def index(
         raise typer.Exit(code=1) from exc
 
 
+def _apply_cli_filters(
+    hits: list,
+    *,
+    language: list[str] | None = None,
+    path_prefix: str | None = None,
+    exclude_tests: bool = False,
+) -> list:
+    """Apply post-retrieval filters to search hits for CLI."""
+    result = hits
+    
+    if language:
+        lang_set = {lang.lower() for lang in language}
+        result = [h for h in result if h.language.lower() in lang_set]
+    
+    if path_prefix:
+        result = [h for h in result if h.rel_path.startswith(path_prefix)]
+    
+    if exclude_tests:
+        test_patterns = ("test_", "_test.", ".test.", "/tests/", "/test/", "Test.")
+        result = [
+            h for h in result
+            if not any(p in h.rel_path for p in test_patterns)
+        ]
+    
+    return result
+
+
 @app.command()
 def search(
     query: str = typer.Argument(..., help="Natural-language or symbol query."),
+    repo_url: str | None = typer.Argument(
+        None,
+        help="Optional git URL to search (e.g., https://github.com/org/repo).",
+    ),
     top_k: int = typer.Option(10, "--top-k", "-k", min=1, max=50),
     recursive: bool = typer.Option(
         False,
         "--recursive", "-r",
         help="Enable auto-merging of sibling and adjacent chunks.",
     ),
+    refresh: bool = typer.Option(
+        False,
+        "--refresh",
+        help="Re-clone and re-index remote repository (for git URLs).",
+    ),
+    language: list[str] | None = typer.Option(
+        None,
+        "--language", "-l",
+        help="Filter by language(s), e.g., -l python -l java.",
+    ),
+    path_prefix: str | None = typer.Option(
+        None,
+        "--path", "-p",
+        help="Filter by path prefix, e.g., --path src/services/",
+    ),
+    exclude_tests: bool = typer.Option(
+        False,
+        "--no-tests",
+        help="Exclude test files from results.",
+    ),
 ) -> None:
-    """Hybrid retrieval (dense + BM25 + symbol-token fused via RRF)."""
+    """Hybrid retrieval (dense + BM25 + symbol-token fused via RRF).
+    
+    Search local repos:
+        stropha search "how does auth work"
+        stropha search "auth" --language python --no-tests
+    
+    Search remote repos via git URL:
+        stropha search "auth" https://github.com/org/repo
+        stropha search "auth" https://github.com/org/repo --refresh
+    """
     import os
+    
+    from .tools.git_url import is_git_url, search_git_url
     
     # Set env var to enable recursive retrieval for this search
     if recursive:
         os.environ["STROPHA_RECURSIVE_RETRIEVAL"] = "1"
     
-    resolved = load_pipeline_config()
+    # Fetch more candidates when filtering
+    has_filters = any([language, path_prefix, exclude_tests])
+    fetch_k = top_k * 3 if has_filters else top_k
+    
     try:
-        built = build_stages(resolved)
-        with built.storage:  # type: ignore[union-attr]
-            hits = built.retrieval.search(query, top_k=top_k)
+        # Handle git URL search
+        if repo_url and is_git_url(repo_url):
+            console.print(f"[dim]Searching remote repo: {repo_url}[/dim]")
+            if refresh:
+                console.print("[dim]Refreshing cache...[/dim]")
+            hits = search_git_url(query, repo_url, top_k=fetch_k, refresh=refresh)
+        else:
+            # Local search
+            resolved = load_pipeline_config()
+            built = build_stages(resolved)
+            with built.storage:  # type: ignore[union-attr]
+                hits = built.retrieval.search(query, top_k=fetch_k)
+        
+        # Apply filters
+        if has_filters:
+            hits = _apply_cli_filters(
+                hits,
+                language=language,
+                path_prefix=path_prefix,
+                exclude_tests=exclude_tests,
+            )
+            hits = hits[:top_k]
     except StrophaError as exc:
         console.print(f"[red]Search failed:[/red] {exc}")
         raise typer.Exit(code=1) from exc
@@ -289,6 +373,159 @@ def search(
             h.snippet.replace("\n", " ⏎ ")[:140],
         )
     console.print(table)
+
+
+@app.command()
+def init(
+    target: Path = typer.Argument(
+        Path("."),
+        help="Target directory to initialize. Defaults to current directory.",
+    ),
+    mcp_client: str | None = typer.Option(
+        None,
+        "--mcp-client", "-m",
+        help=(
+            "MCP client to configure: 'claude-code', 'cursor', 'opencode', 'continue'. "
+            "Auto-detects if not specified."
+        ),
+    ),
+    stropha_dir: Path | None = typer.Option(
+        None,
+        "--stropha-dir",
+        help=(
+            "Path to stropha project directory (for uv run). "
+            "Defaults to the installed location."
+        ),
+    ),
+    run_index: bool = typer.Option(
+        True,
+        "--index/--no-index",
+        help="Run initial index after setup.",
+    ),
+    force: bool = typer.Option(
+        False,
+        "--force", "-f",
+        help="Overwrite existing MCP configuration.",
+    ),
+) -> None:
+    """Initialize a project for use with stropha.
+    
+    This command:
+    1. Creates .stropha/ directory with default .strophaignore
+    2. Detects MCP clients and configures them (optional)
+    3. Runs first index (optional)
+    4. Prints next steps
+    """
+    from .tools.init_project import (
+        MCP_CLIENTS,
+        configure_mcp_client,
+        create_stropha_dir,
+        detect_mcp_clients,
+        print_next_steps,
+    )
+    
+    target = target.resolve()
+    if not target.is_dir():
+        console.print(f"[red]Error:[/red] {target} is not a directory")
+        raise typer.Exit(code=1)
+    
+    console.print(f"[bold]Initializing stropha in {target}[/bold]\n")
+    
+    # Step 1: Create .stropha/ directory
+    console.print("[dim]Step 1:[/dim] Creating .stropha/ directory...")
+    created, messages = create_stropha_dir(target)
+    for msg in messages:
+        console.print(f"  {msg}")
+    
+    # Step 2: Configure MCP client
+    console.print("\n[dim]Step 2:[/dim] Configuring MCP client...")
+    
+    if mcp_client:
+        # Find specified client
+        client_map = {c.name.lower().replace(" ", "-"): c for c in MCP_CLIENTS}
+        client = client_map.get(mcp_client.lower())
+        if not client:
+            console.print(f"[yellow]Unknown MCP client: {mcp_client}[/yellow]")
+            console.print(f"  Available: {', '.join(client_map.keys())}")
+        else:
+            success, msg = configure_mcp_client(
+                client,
+                target,
+                stropha_dir,
+                server_name="stropha_rag",
+            )
+            if success:
+                console.print(f"  [green]{msg}[/green]")
+            else:
+                console.print(f"  [yellow]{msg}[/yellow]")
+    else:
+        # Auto-detect clients
+        detected = detect_mcp_clients()
+        if not detected:
+            console.print("  [dim]No MCP clients detected[/dim]")
+            console.print("  [dim]Configure manually after install[/dim]")
+        else:
+            for client in detected:
+                console.print(f"  Found {client.name}...")
+                if not force:
+                    # Check if already configured
+                    config_path = client.find_config()
+                    if config_path and config_path.exists():
+                        try:
+                            import json
+                            config = json.loads(config_path.read_text())
+                            servers = config.get(client.key, {})
+                            if "stropha_rag" in servers:
+                                console.print(f"    [dim]Already configured (use --force to overwrite)[/dim]")
+                                continue
+                        except Exception:
+                            pass
+                
+                success, msg = configure_mcp_client(
+                    client,
+                    target,
+                    stropha_dir,
+                    server_name="stropha_rag",
+                )
+                if success:
+                    console.print(f"    [green]{msg}[/green]")
+                else:
+                    console.print(f"    [yellow]{msg}[/yellow]")
+    
+    # Step 3: Run initial index
+    if run_index:
+        console.print("\n[dim]Step 3:[/dim] Running initial index...")
+        console.print("  [dim]This may take a moment for large repos...[/dim]")
+        
+        import os
+        os.environ["STROPHA_TARGET_REPO"] = str(target)
+        os.environ["STROPHA_INDEX_PATH"] = str(target / ".stropha" / "index.db")
+        
+        resolved = load_pipeline_config()
+        try:
+            built = build_stages(resolved)
+            pipeline = Pipeline(
+                built.walker, built.chunker, built.enricher, built.embedder, built.storage
+            )
+            with built.storage:  # type: ignore[union-attr]
+                stats_result = pipeline.run(rebuild=False)
+            console.print(
+                f"  [green]Indexed {stats_result.files_visited} files, "
+                f"{stats_result.chunks_embedded} chunks[/green]"
+            )
+        except StrophaError as exc:
+            console.print(f"  [red]Indexing failed:[/red] {exc}")
+            console.print("  [dim]You can retry later with: stropha index[/dim]")
+    else:
+        console.print("\n[dim]Step 3:[/dim] Skipping initial index (--no-index)")
+    
+    # Step 4: Print next steps
+    console.print("\n[bold]Next steps:[/bold]")
+    steps = print_next_steps(target, indexed=run_index)
+    for i, step in enumerate(steps, 1):
+        console.print(f"  {i}. {step}")
+    
+    console.print("\n[green]Done![/green]")
 
 
 @app.command()

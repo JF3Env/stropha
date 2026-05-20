@@ -1,4 +1,4 @@
-"""Unit tests for ``stropha.eval.harness`` — golden loader, Recall@K, MRR.
+"""Unit tests for ``stropha.eval.harness`` — golden loader, Recall@K, MRR, NDCG.
 
 We mock the SearchEngine to avoid touching real embedders/storage. The
 harness must work with anything that exposes ``search(query, top_k) ->
@@ -12,7 +12,8 @@ from pathlib import Path
 
 import pytest
 
-from stropha.eval import EvalCase, load_golden, run_eval
+from stropha.eval import EvalCase, EvalResult, load_golden, run_eval
+from stropha.eval.harness import _dcg, _ndcg
 
 # --------------------------------------------------------------------------- mock
 
@@ -177,3 +178,171 @@ def test_shipped_golden_file_parses() -> None:
     # Every case has at least one expected_paths or expected_symbols entry
     for c in cases:
         assert c.expected_paths or c.expected_symbols, f"case {c.id} has no expectations"
+
+
+# --------------------------------------------------------------------------- NDCG tests
+
+
+class TestDCG:
+    """Tests for DCG computation."""
+
+    def test_dcg_perfect(self):
+        # Perfect ranking: highest relevance first
+        relevances = [3.0, 2.0, 1.0, 0.0]
+        dcg = _dcg(relevances)
+        # (2^3-1)/log2(2) + (2^2-1)/log2(3) + (2^1-1)/log2(4) = 7/1 + 3/1.58 + 1/2 = 7 + 1.89 + 0.5 = 9.39
+        assert dcg > 9.0
+
+    def test_dcg_zeros(self):
+        relevances = [0.0, 0.0, 0.0]
+        assert _dcg(relevances) == 0.0
+
+    def test_dcg_with_cutoff(self):
+        relevances = [3.0, 2.0, 1.0, 0.0]
+        dcg_k2 = _dcg(relevances, k=2)
+        dcg_full = _dcg(relevances)
+        assert dcg_k2 < dcg_full  # Less gain with fewer positions
+
+
+class TestNDCG:
+    """Tests for NDCG computation."""
+
+    def test_ndcg_perfect_ranking(self):
+        # Perfect ranking: relevances already sorted descending
+        relevances = [3.0, 2.0, 1.0, 0.0]
+        ndcg = _ndcg(relevances)
+        assert ndcg == pytest.approx(1.0)  # Perfect score
+
+    def test_ndcg_worst_ranking(self):
+        # Worst ranking: relevances in ascending order
+        relevances = [0.0, 1.0, 2.0, 3.0]
+        ndcg = _ndcg(relevances)
+        assert ndcg < 1.0  # Not perfect
+
+    def test_ndcg_all_zeros(self):
+        relevances = [0.0, 0.0, 0.0]
+        assert _ndcg(relevances) == 0.0
+
+    def test_ndcg_single_relevant(self):
+        relevances = [1.0, 0.0, 0.0]
+        ndcg = _ndcg(relevances)
+        assert ndcg == pytest.approx(1.0)  # Only one relevant item, at top
+
+    def test_ndcg_with_cutoff(self):
+        relevances = [0.0, 0.0, 3.0, 0.0]  # Relevant item at rank 3
+        ndcg_k2 = _ndcg(relevances, k=2)
+        ndcg_k4 = _ndcg(relevances, k=4)
+        assert ndcg_k2 == 0.0  # No relevant in top 2
+        assert ndcg_k4 > 0.0  # Relevant item found
+
+
+class TestEvalCaseRelevance:
+    """Tests for graded relevance in EvalCase."""
+
+    def test_from_dict_with_relevance_dict(self):
+        d = {
+            "id": "test",
+            "query": "foo",
+            "expected_paths": ["a.py"],
+            "relevance": {"a.py": 3, "b.py": 1},
+        }
+        case = EvalCase.from_dict(d)
+        assert case.relevance_map == {"a.py": 3.0, "b.py": 1.0}
+
+    def test_from_dict_with_relevance_list(self):
+        d = {
+            "id": "test",
+            "query": "foo",
+            "expected_paths": ["a.py", "b.py"],
+            "relevance": [3, 1],
+        }
+        case = EvalCase.from_dict(d)
+        assert case.relevance_map["a.py"] == 3.0
+        assert case.relevance_map["b.py"] == 1.0
+
+    def test_get_relevance_with_map(self):
+        case = EvalCase(
+            id="test",
+            query="foo",
+            expected_paths=("a.py",),
+            relevance_map={"a.py": 3.0},
+        )
+        assert case.get_relevance("a.py", None) == 3.0
+        assert case.get_relevance("b.py", None) == 1.0  # Default
+
+    def test_get_relevance_binary(self):
+        case = EvalCase(
+            id="test",
+            query="foo",
+            expected_paths=("a.py",),
+        )
+        # No relevance_map, so binary (1.0)
+        assert case.get_relevance("a.py", None) == 1.0
+
+
+class TestEvalResultNDCG:
+    """Tests for NDCG in EvalResult."""
+
+    def test_result_ndcg_property(self):
+        case = EvalCase(id="t", query="q", expected_paths=("a.py",))
+        result = EvalResult(
+            case=case,
+            rank_of_first_hit=1,
+            top_k=5,
+            relevances=(1.0, 0.0, 0.0, 0.0, 0.0),
+        )
+        assert result.ndcg == pytest.approx(1.0)
+
+    def test_result_precision_property(self):
+        case = EvalCase(id="t", query="q", expected_paths=("a.py", "b.py"))
+        result = EvalResult(
+            case=case,
+            rank_of_first_hit=1,
+            top_k=5,
+            relevant_count=2,
+        )
+        assert result.precision == pytest.approx(0.4)  # 2/5
+
+
+class TestEvalReportNDCG:
+    """Tests for NDCG and Precision in EvalReport."""
+
+    def test_report_ndcg_at_k(self):
+        cases = [
+            EvalCase(id="c1", query="q1", expected_paths=("a.py",)),
+            EvalCase(id="c2", query="q2", expected_paths=("b.py",)),
+        ]
+        engine = _FakeEngine({
+            "q1": [_FakeHit("a.py", None)],  # hit at rank 1
+            "q2": [_FakeHit("x.py", None), _FakeHit("b.py", None)],  # hit at rank 2
+        })
+        report = run_eval(cases, engine, top_k=5)  # type: ignore[arg-type]
+        
+        # First case: perfect NDCG (relevant at rank 1)
+        # Second case: lower NDCG (relevant at rank 2)
+        assert report.ndcg_at_k > 0.5
+
+    def test_report_precision_at_k(self):
+        cases = [
+            EvalCase(id="c1", query="q1", expected_paths=("a.py", "b.py")),
+        ]
+        engine = _FakeEngine({
+            "q1": [_FakeHit("a.py", None), _FakeHit("b.py", None), _FakeHit("c.py", None)],
+        })
+        report = run_eval(cases, engine, top_k=5)  # type: ignore[arg-type]
+        
+        # 2 relevant out of 5 = 0.4
+        assert report.precision_at_k == pytest.approx(0.4)
+
+    def test_summary_includes_new_metrics(self):
+        cases = [
+            EvalCase(id="c1", query="q1", expected_paths=("a.py",)),
+        ]
+        engine = _FakeEngine({
+            "q1": [_FakeHit("a.py", None)],
+        })
+        report = run_eval(cases, engine, top_k=10)  # type: ignore[arg-type]
+        
+        summary = report.summary()
+        assert "ndcg@10" in summary
+        assert "precision@10" in summary

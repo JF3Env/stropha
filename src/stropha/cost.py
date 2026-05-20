@@ -77,19 +77,49 @@ class HookCost:
 
 
 @dataclass
+class SavingsCost:
+    """Token savings from RAG search vs. naive grep+read."""
+    
+    total_searches: int = 0
+    total_returned_tokens: int = 0
+    total_baseline_tokens: int = 0
+    total_tokens_saved: int = 0
+    total_results_returned: int = 0
+    
+    @property
+    def avg_savings_pct(self) -> float:
+        """Average savings percentage across all searches."""
+        if self.total_baseline_tokens <= 0:
+            return 0.0
+        return (self.total_tokens_saved / self.total_baseline_tokens) * 100
+    
+    @property
+    def avg_results_per_search(self) -> float:
+        """Average number of results per search."""
+        if self.total_searches <= 0:
+            return 0.0
+        return self.total_results_returned / self.total_searches
+
+
+@dataclass
 class CostReport:
     repos: dict[str, RepoCost] = field(default_factory=dict)
     adapters: dict[str, AdapterCost] = field(default_factory=dict)
     graph: GraphCost = field(default_factory=GraphCost)
     hook: HookCost = field(default_factory=HookCost)
+    savings: SavingsCost = field(default_factory=SavingsCost)
     sources_scanned: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
+        savings_dict = vars(self.savings).copy()
+        savings_dict["avg_savings_pct"] = round(self.savings.avg_savings_pct, 1)
+        savings_dict["avg_results_per_search"] = round(self.savings.avg_results_per_search, 1)
         return {
             "repos": {k: vars(v) for k, v in sorted(self.repos.items())},
             "adapters": {k: vars(v) for k, v in sorted(self.adapters.items())},
             "graph": vars(self.graph),
             "hook": vars(self.hook),
+            "savings": savings_dict,
             "sources_scanned": self.sources_scanned,
         }
 
@@ -178,6 +208,13 @@ def aggregate(paths: Iterable[Path]) -> CostReport:
         elif event == "graph_vec_loader.done":
             report.graph.embed_runs += 1
             report.graph.embedded_nodes += int(d.get("embedded") or 0)
+        elif event == "search.served":
+            s = report.savings
+            s.total_searches += 1
+            s.total_returned_tokens += int(d.get("returned_tokens") or 0)
+            s.total_baseline_tokens += int(d.get("baseline_tokens") or 0)
+            s.total_tokens_saved += int(d.get("tokens_saved") or 0)
+            s.total_results_returned += int(d.get("results_count") or 0)
     return report
 
 
@@ -260,6 +297,19 @@ def render_table(report: CostReport):
         ht.add_row("Refresh failed", str(report.hook.refresh_failed))
         ht.add_row("graphify update invocations", str(report.hook.graphify_updates))
         renders.append(ht)
+
+    if report.savings.total_searches > 0:
+        st = Table(title="Token savings (RAG vs. naive grep+read)", show_lines=False)
+        st.add_column("Metric", style="cyan")
+        st.add_column("Value", justify="right")
+        st.add_row("Total searches", str(report.savings.total_searches))
+        st.add_row("Total results returned", str(report.savings.total_results_returned))
+        st.add_row("Avg results/search", f"{report.savings.avg_results_per_search:.1f}")
+        st.add_row("Tokens returned (total)", f"{report.savings.total_returned_tokens:,}")
+        st.add_row("Baseline tokens (estimated)", f"{report.savings.total_baseline_tokens:,}")
+        st.add_row("Tokens saved", f"{report.savings.total_tokens_saved:,}")
+        st.add_row("Avg savings %", f"{report.savings.avg_savings_pct:.1f}%")
+        renders.append(st)
 
     if not renders:
         return None

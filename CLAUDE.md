@@ -69,11 +69,11 @@ Graph-gated tools return `{"graph_loaded": false, "message": …}` when the mirr
 | walker | `git-ls-files`, `filesystem`, `nested-git` | `<name>:max=<bytes>[:depth=<n>]` |
 | chunker | `tree-sitter-dispatch` (+ 5 language sub-adapters: `ast-generic`, `file-level`, `heading-split`, `sfc-split`, `regex-feature-scenario`) | `tree-sitter-dispatch:<hash>` |
 | enricher | `noop`, `hierarchical`, `graph-aware`, `ollama`, `mlx`, `contextual` | `<name>:<flag-letters>` (drift on flag flip) |
-| embedder | `local` (fastembed), `voyage`, `bge-m3` | `<name>:<model>:<dim>` |
+| embedder | `local` (fastembed), `voyage`, `bge-m3`, `model2vec` | `<name>:<model>:<dim>` |
 | storage | `sqlite-vec` | `sqlite-vec:dim=<n>` |
 | retrieval | `hybrid-rrf` (4 streams fused + optional reranker) | `hybrid-rrf:k=60:streams=<hash>:reranker=<id>` |
 | retrieval-stream | `vec-cosine`, `fts5-bm25`, `like-tokens`, `graph-vec` | `<name>:k=<n>[:min=<sim>]` |
-| reranker | `noop` (default), `cross-encoder` (BAAI/bge-reranker-base) | `reranker:<name>:<model>` |
+| reranker | `noop` (default), `cross-encoder` (BAAI/bge-reranker-base), `code-aware` | `reranker:<name>:<model>` |
 
 The chunker's language sub-adapters are themselves an adapter stage (`language-chunker`) — `stropha adapters list --stage language-chunker` shows them. The `hybrid-rrf` retrieval adapter digests its stream composition into its `adapter_id`, so disabling/swapping any sub-stream forces a fresh id (drift hooks pick it up).
 
@@ -82,7 +82,8 @@ The chunker's language sub-adapters are themselves an adapter stage (`language-c
 | Command | Purpose |
 |---|---|
 | `stropha index [--repo … / --manifest …] [--rebuild] [--full / --incremental] [--since <sha>] [--enricher … --embedder …]` | Run the indexing pipeline (incremental by default when checkpoint exists) |
-| `stropha search "<query>" [--top-k N]` | Hybrid retrieval, prints top-K |
+| `stropha search "<query>" [<repo_url>] [--top-k N] [--refresh]` | Hybrid retrieval, prints top-K. Accepts git URL for remote repos. |
+| `stropha init [<target>] [--mcp-client]` | Initialize project with .stropha/, MCP config, and first index |
 | `stropha stats` | Index metadata: chunks, models, repos, graphify mirror status |
 | `stropha pipeline {show,validate}` | Inspect / probe the resolved adapter composition |
 | `stropha adapters list [--stage …]` | Enumerate registered adapters |
@@ -130,10 +131,13 @@ The chunker's language sub-adapters are themselves an adapter stage (`language-c
 | `STROPHA_MCP_WATCH` | `1` | Enable auto-reindex file watcher in MCP server (debounced) |
 | `STROPHA_MCP_WATCH_INTERVAL` | `1.0` | Polling interval in seconds for MCP watch |
 | `STROPHA_MCP_WATCH_DEBOUNCE` | `2.0` | Debounce window in seconds (waits for quiet period before reindex) |
+| `STROPHA_ADAPTIVE_WEIGHTING` | `1` | Enable adaptive query weighting in hybrid-rrf (symbol queries boost lexical, natural queries boost dense) |
+| `STROPHA_GIT_URL_CACHE` | `~/.cache/stropha/repos` | Cache directory for git URL clones |
+| `STROPHA_GIT_URL_TTL` | `86400` | Cache TTL for git URL repos in seconds (default 24h) |
 
 Cross-repo hooks (v=3, v=4) bake `PROJECT_DIR_DEFAULT` / `INDEX_PATH_DEFAULT` / `LOG_DEFAULT` directly into the generated script — see `stropha hook install --help`. Env vars still override. Hook v=4 uses `--incremental` for git-diff aware ingestion.
 
-### 2.6 Test inventory (646 unit tests, ~12s)
+### 2.6 Test inventory (806 unit tests, ~16s)
 
 Per file: `test_anchors` 26 · `test_chunker` 8 · `test_contextual_enricher` 19 · `test_cost` 11 · `test_enricher_adapters` 6 · `test_eval_harness` 12 · `test_fts_augment` 8 · `test_git_diff_walker` 17 · `test_git_meta` 13 · `test_glossary` 23 · `test_graph_aware_enricher` 13 · `test_graph_tools` 30 · `test_graph_vec` 16 · `test_graphify_loader` 24 · `test_hook_install` 24 · `test_hyde_and_recursive` 16 · `test_manifest` 12 · `test_mcp_server` 1 · `test_mlx_enricher` 15 · `test_multi_query` 17 · `test_ollama_enricher` 14 · `test_phase2_adapters` 14 · `test_phase3_chunker` 11 · `test_phase4_retrieval_streams` 12 · `test_pipeline_drift` 6 · `test_pipeline_framework` 18 · `test_pipeline_incremental` 26 · `test_pipeline_multirepo` 8 · `test_query_cache` 21 · `test_query_decomposition` 29 · `test_query_router` 41 · `test_rrf` 4 · `test_storage` 16 · `test_walker` 3 · `test_walker_variants` 13 · `test_watch_and_bge_m3` 12.
 

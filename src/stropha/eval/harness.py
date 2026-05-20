@@ -7,6 +7,7 @@ Schema (JSONL, one case per line):
       "query": "where is the FSRS calculator",
       "expected_paths": ["src/stropha/fsrs.py"],
       "expected_symbols": ["FsrsCalculator"],
+      "relevance": [3, 1, 0],  # optional: graded relevance for NDCG
       "tags": ["symbol-lookup"]
     }
 
@@ -14,8 +15,11 @@ A hit counts as relevant when any of:
   - ``hit.path`` matches one of ``expected_paths`` (exact or suffix)
   - ``hit.symbol`` matches one of ``expected_symbols`` (case-insensitive)
 
-Recall@K = (cases with ≥1 relevant hit in top-K) / total
-MRR     = mean(1 / rank of first relevant hit, 0 when none in top-K)
+Metrics computed:
+  - Recall@K = (cases with ≥1 relevant hit in top-K) / total
+  - MRR = mean(1 / rank of first relevant hit, 0 when none in top-K)
+  - NDCG@K = Normalized Discounted Cumulative Gain (for graded relevance)
+  - Precision@K = (relevant hits in top-K) / K
 
 The runner does NOT depend on any LLM and never re-embeds. It uses
 whatever ``SearchEngine`` the caller built (so swapping an adapter and
@@ -25,6 +29,7 @@ re-running is a one-line change).
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -36,6 +41,57 @@ from ..retrieval.search import SearchEngine
 log = get_logger(__name__)
 
 
+# --------------------------------------------------------------------- NDCG
+
+
+def _dcg(relevances: list[float], k: int | None = None) -> float:
+    """Compute Discounted Cumulative Gain.
+    
+    DCG = Σ (2^rel_i - 1) / log2(i + 1) for i in 1..k
+    
+    Args:
+        relevances: List of relevance scores (higher = more relevant).
+        k: Cutoff rank (None = use all).
+        
+    Returns:
+        DCG score.
+    """
+    if k is not None:
+        relevances = relevances[:k]
+    
+    dcg = 0.0
+    for i, rel in enumerate(relevances, start=1):
+        # Using the more common formula: (2^rel - 1) / log2(i + 1)
+        dcg += (2 ** rel - 1) / math.log2(i + 1)
+    return dcg
+
+
+def _ndcg(relevances: list[float], k: int | None = None) -> float:
+    """Compute Normalized Discounted Cumulative Gain.
+    
+    NDCG = DCG / IDCG where IDCG is DCG with ideal ranking.
+    
+    Args:
+        relevances: List of relevance scores at each rank position.
+        k: Cutoff rank (None = use all).
+        
+    Returns:
+        NDCG score in [0, 1].
+    """
+    dcg = _dcg(relevances, k)
+    if dcg == 0:
+        return 0.0
+    
+    # Ideal DCG: sort relevances in descending order
+    ideal_relevances = sorted(relevances, reverse=True)
+    idcg = _dcg(ideal_relevances, k)
+    
+    if idcg == 0:
+        return 0.0
+    
+    return dcg / idcg
+
+
 @dataclass(frozen=True)
 class EvalCase:
     """One test case loaded from the golden file."""
@@ -45,16 +101,59 @@ class EvalCase:
     expected_paths: tuple[str, ...] = ()
     expected_symbols: tuple[str, ...] = ()
     tags: tuple[str, ...] = ()
+    # Graded relevance for NDCG (optional). If provided, should be a dict
+    # mapping path/symbol to relevance score (0-3). If not provided, binary
+    # relevance (1 for match, 0 for non-match) is used.
+    relevance_map: dict[str, float] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> EvalCase:
+        # Build relevance map from various formats
+        relevance_map: dict[str, float] = {}
+        if "relevance" in d:
+            rel = d["relevance"]
+            if isinstance(rel, dict):
+                # Explicit mapping: {"src/foo.py": 3, "FooClass": 2}
+                relevance_map = {str(k): float(v) for k, v in rel.items()}
+            elif isinstance(rel, list):
+                # List format: assign to expected_paths/symbols in order
+                expected = list(d.get("expected_paths") or []) + list(d.get("expected_symbols") or [])
+                for i, r in enumerate(rel):
+                    if i < len(expected):
+                        relevance_map[expected[i]] = float(r)
+        
         return cls(
             id=str(d.get("id") or d.get("query", "")[:40]),
             query=str(d["query"]),
             expected_paths=tuple(d.get("expected_paths") or ()),
             expected_symbols=tuple(d.get("expected_symbols") or ()),
             tags=tuple(d.get("tags") or ()),
+            relevance_map=relevance_map,
         )
+    
+    def get_relevance(self, path: str | None, symbol: str | None) -> float:
+        """Get relevance score for a path/symbol match.
+        
+        Returns 1.0 (binary relevant) if no graded relevance is defined.
+        """
+        if not self.relevance_map:
+            return 1.0  # Binary relevance
+        
+        # Check path
+        if path:
+            for key, score in self.relevance_map.items():
+                if path == key or path.endswith("/" + key) or path.endswith(key):
+                    return score
+        
+        # Check symbol
+        if symbol:
+            symbol_lower = symbol.lower()
+            for key, score in self.relevance_map.items():
+                key_lower = key.lower()
+                if symbol_lower == key_lower or symbol_lower.endswith("." + key_lower):
+                    return score
+        
+        return 1.0  # Default to binary relevance
 
 
 @dataclass(frozen=True)
@@ -66,6 +165,10 @@ class EvalResult:
     top_k: int
     matched_path: str | None = None
     matched_symbol: str | None = None
+    # Relevance scores at each rank position (for NDCG)
+    relevances: tuple[float, ...] = ()
+    # Number of relevant hits in top-K (for Precision@K)
+    relevant_count: int = 0
 
     @property
     def hit(self) -> bool:
@@ -74,6 +177,18 @@ class EvalResult:
     @property
     def reciprocal_rank(self) -> float:
         return 1.0 / self.rank_of_first_hit if self.rank_of_first_hit else 0.0
+    
+    @property
+    def ndcg(self) -> float:
+        """NDCG for this single case."""
+        if not self.relevances:
+            return 0.0
+        return _ndcg(list(self.relevances), self.top_k)
+    
+    @property
+    def precision(self) -> float:
+        """Precision@K for this case."""
+        return self.relevant_count / self.top_k if self.top_k > 0 else 0.0
 
 
 @dataclass
@@ -100,6 +215,20 @@ class EvalReport:
         if not self.results:
             return 0.0
         return sum(r.reciprocal_rank for r in self.results) / self.n
+    
+    @property
+    def ndcg_at_k(self) -> float:
+        """Mean NDCG@K across all cases."""
+        if not self.results:
+            return 0.0
+        return sum(r.ndcg for r in self.results) / self.n
+    
+    @property
+    def precision_at_k(self) -> float:
+        """Mean Precision@K across all cases."""
+        if not self.results:
+            return 0.0
+        return sum(r.precision for r in self.results) / self.n
 
     def by_tag(self) -> dict[str, EvalReport]:
         """Slice results per tag for diagnostic breakdowns."""
@@ -115,6 +244,8 @@ class EvalReport:
             "hits": self.n_hits,
             f"recall@{self.top_k}": round(self.recall_at_k, 4),
             "mrr": round(self.mrr, 4),
+            f"ndcg@{self.top_k}": round(self.ndcg_at_k, 4),
+            f"precision@{self.top_k}": round(self.precision_at_k, 4),
         }
 
 
@@ -180,29 +311,57 @@ def run_eval(
     report = EvalReport(top_k=top_k)
     for case in cases:
         hits = engine.search(case.query, top_k=top_k)
-        first: EvalResult | None = None
+        
+        # Track relevance at each rank for NDCG
+        relevances: list[float] = []
+        relevant_count = 0
+        first_hit_rank: int | None = None
+        first_matched_path: str | None = None
+        first_matched_symbol: str | None = None
+        
         for rank, h in enumerate(hits, 1):
             # Tolerate both real SearchHit (.rel_path) and tests' fake hits (.path).
             actual_path = getattr(h, "rel_path", None) or getattr(h, "path", "")
+            actual_symbol = getattr(h, "symbol", None)
+            
             mp = _path_matches(actual_path, case.expected_paths)
-            ms = _symbol_matches(getattr(h, "symbol", None), case.expected_symbols)
+            ms = _symbol_matches(actual_symbol, case.expected_symbols)
+            
             if mp or ms:
-                first = EvalResult(
-                    case=case,
-                    rank_of_first_hit=rank,
-                    top_k=top_k,
-                    matched_path=mp,
-                    matched_symbol=ms,
-                )
-                break
-        if first is None:
-            first = EvalResult(case=case, rank_of_first_hit=None, top_k=top_k)
-        report.results.append(first)
+                # This hit is relevant
+                rel = case.get_relevance(actual_path, actual_symbol)
+                relevances.append(rel)
+                relevant_count += 1
+                
+                if first_hit_rank is None:
+                    first_hit_rank = rank
+                    first_matched_path = mp
+                    first_matched_symbol = ms
+            else:
+                # Not relevant
+                relevances.append(0.0)
+        
+        # Pad with zeros if fewer hits than top_k
+        while len(relevances) < top_k:
+            relevances.append(0.0)
+        
+        result = EvalResult(
+            case=case,
+            rank_of_first_hit=first_hit_rank,
+            top_k=top_k,
+            matched_path=first_matched_path,
+            matched_symbol=first_matched_symbol,
+            relevances=tuple(relevances),
+            relevant_count=relevant_count,
+        )
+        report.results.append(result)
         log.info(
             "eval.case.done",
             case=case.id,
-            hit=first.hit,
-            rank=first.rank_of_first_hit,
+            hit=result.hit,
+            rank=first_hit_rank,
+            ndcg=round(result.ndcg, 4),
+            precision=round(result.precision, 4),
             tags=list(case.tags),
         )
     log.info("eval.run.summary", **report.summary())
