@@ -797,9 +797,13 @@ def trace_feature(
 @mcp.tool(
     name="get_config",
     description=(
-        "Show the active stropha configuration: index path, target repo, "
-        "embedding model, and environment sources. Use this to debug which "
-        "database the MCP server is using and where the config values came from."
+        "Show the active stropha configuration. Returns every supported env var "
+        "(value + default + source: env/dotenv/default) grouped by feature area "
+        "(core, embedder, inference, query, cache, retrieval, mcp, git, hook), "
+        "plus the full pydantic settings dump, runtime paths, active embedder "
+        "model + dim, and index stats. Secrets are redacted as '(set)'. Use this "
+        "to debug which database the MCP server is using, which knobs are active, "
+        "and where each value came from."
     ),
 )
 def get_config_tool(*, ctx: Context) -> dict:
