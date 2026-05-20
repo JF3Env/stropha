@@ -78,6 +78,11 @@ class RepoRef(BaseModel):
     Returned alongside every ``SearchHit`` so an MCP client can run
     ``git clone <url>`` to retrieve the source. See
     ``ingest/git_meta.py:RepoIdentity`` for the producer.
+
+    Every file reference includes both the git origin URL (for remote
+    access) and the local filesystem path (for direct access when the
+    repo is available locally). File paths (``rel_path``) are always
+    relative to the git repository root, not absolute filesystem paths.
     """
 
     normalized_key: str = Field(
@@ -90,6 +95,13 @@ class RepoRef(BaseModel):
     url: str | None = Field(
         default=None,
         description="HTTPS URL suitable for `git clone`. None for local-only.",
+    )
+    local_path: str | None = Field(
+        default=None,
+        description=(
+            "Absolute filesystem path to the repository root on the indexer host. "
+            "Combined with rel_path gives the full file path for local access."
+        ),
     )
     default_branch: str | None = Field(
         default=None,
@@ -122,10 +134,20 @@ class SearchHit(BaseModel):
 
 
 class RepoStats(BaseModel):
-    """Per-repo counters reported by Storage.stats() and `list_repos`."""
+    """Per-repo counters reported by Storage.stats() and `list_repos`.
+
+    Includes both the git origin URL and the local filesystem path so
+    callers can access the repository via either method.
+    """
 
     normalized_key: str
     url: str | None
+    local_path: str | None = Field(
+        default=None,
+        description=(
+            "Absolute filesystem path to the repository root on the indexer host."
+        ),
+    )
     default_branch: str | None
     head_commit: str | None
     files: int

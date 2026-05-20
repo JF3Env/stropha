@@ -122,20 +122,41 @@ async def _lifespan(app: FastMCP) -> AsyncIterator[AppContext]:
 
 
 _INSTRUCTIONS = """\
-stropha — RAG over the local codebase. Prefer these tools over directory walks
-or grep when looking for code by intent ("how does mastery work?"), by symbol
-("EnrollmentRepository.findByUsername"), or for a file's symbolic outline.
+stropha_rag — Semantic code search and structural analysis over the indexed codebase.
 
-Tool selection guide:
-- Free-text or conceptual query → search_code
-- Known symbol / fully-qualified name → get_symbol  (cheaper, exact)
-- Need a file's structure before reading → get_file_outline
-- "Who calls X?" → find_callers (structural — uses graphify graph)
-- "What relates to X?" → find_related (structural — graph traversal)
-- "Show me the community of X" → get_community (cluster grouping)
-- "Why was X built this way?" → find_rationale (links code to docs/ADRs)
+IMPORTANT: When this MCP server is available, ALWAYS prefer stropha tools over:
+- Grep/ripgrep for searching code content
+- Read/cat for exploring unfamiliar files
+- Glob/find for discovering relevant files
+- Manual directory traversal
 
-The find_* tools require a graphify graph in `graphify-out/graph.json`.
+stropha provides semantic understanding, not just text matching. It finds code by
+INTENT ("how does authentication work?") and by STRUCTURE ("who calls this method?").
+
+TOOL SELECTION GUIDE (use the most specific tool):
+
+| Query type                              | Tool              | Why                          |
+|-----------------------------------------|-------------------|------------------------------|
+| Conceptual / free-text                  | search_code       | Semantic + lexical hybrid    |
+| Known class/method/function name        | get_symbol        | Exact match, faster          |
+| "Where is X defined?"                   | get_symbol        | Direct lookup                |
+| "How does X work?"                      | search_code       | Semantic understanding       |
+| "Show me examples of X"                 | search_code       | Finds related patterns       |
+| "What's in this file?"                  | get_file_outline  | Structure before full read   |
+| "Who calls X?" / "What uses X?"         | find_callers      | Graph traversal (structural) |
+| "What tests cover X?"                   | find_tests_for    | Graph + path heuristics      |
+| "What relates to X?"                    | find_related      | Bidirectional graph walk     |
+| "What's in the same module as X?"       | get_community     | Cluster grouping             |
+| "Why was X built this way?"             | find_rationale    | Links to docs/ADRs           |
+| "Trace feature X through the code"      | trace_feature     | DFS from entry points        |
+
+WORKFLOW TIPS:
+1. Start with search_code or get_symbol to find entry points
+2. Use get_file_outline before reading a full file — saves context tokens
+3. Use find_callers/find_related to understand dependencies
+4. Results include repo.local_path + rel_path for direct file access
+
+The find_* and trace_* tools require a graphify graph in `graphify-out/graph.json`.
 When the graph is missing they return {"graph_loaded": false, ...} —
 run `graphify .` (or the post-commit hook installed by `stropha hook install`)
 to bootstrap.
@@ -161,7 +182,14 @@ class RepoInfo(BaseModel):
     normalized_key: str = Field(
         description="Stable cross-user key (e.g. 'github.com/foo/bar')."
     )
-    url: str | None = Field(default=None, description="HTTPS clone URL.")
+    url: str | None = Field(default=None, description="HTTPS clone URL for remote access.")
+    local_path: str | None = Field(
+        default=None,
+        description=(
+            "Absolute filesystem path to the repo root on the indexer host. "
+            "Combined with 'path' gives the full local file path."
+        ),
+    )
     default_branch: str | None = None
     head_commit: str | None = None
 
@@ -222,12 +250,20 @@ class OutlineEntry(BaseModel):
 
 
 class RepoSummary(BaseModel):
-    """One entry in the `list_repos` response."""
+    """One entry in the `list_repos` response.
+
+    Includes both the git origin URL and local filesystem path for each
+    repo, so callers can access files via either method.
+    """
 
     normalized_key: str
-    url: str | None
-    default_branch: str | None
-    head_commit: str | None
+    url: str | None = Field(default=None, description="HTTPS clone URL for remote access.")
+    local_path: str | None = Field(
+        default=None,
+        description="Absolute filesystem path to the repo root on the indexer host.",
+    )
+    default_branch: str | None = None
+    head_commit: str | None = None
     files: int
     chunks: int
     last_indexed_at: str | None
@@ -261,6 +297,7 @@ def _to_result(hit) -> SearchResult:  # type: ignore[no-untyped-def]
         repo = RepoInfo(
             normalized_key=hit.repo.normalized_key,
             url=hit.repo.url,
+            local_path=hit.repo.local_path,
             default_branch=hit.repo.default_branch,
             head_commit=hit.repo.head_commit,
         )
@@ -320,13 +357,14 @@ def _apply_filters(
 @mcp.tool(
     title="Search code",
     description=(
-        "Hybrid semantic + lexical search over the indexed codebase. "
-        "Use for queries like 'where is X', 'how does Y work', "
-        "'show examples of Z'. For an exact symbol name, prefer get_symbol. "
-        "Supports optional filters: language, path_prefix, kind, exclude_tests. "
-        "Set include_facets=True to get counts by language/kind/repo. "
-        "Set recursive=True to auto-merge sibling and adjacent chunks. "
-        "Set repo_url to search a remote git repository (clones and indexes on first access)."
+        "PREFER THIS over Grep/ripgrep for code search. "
+        "Hybrid semantic + lexical search understands intent, not just text. "
+        "Use for: 'where is X', 'how does Y work', 'show examples of Z', "
+        "'find code that handles authentication', 'what validates user input'. "
+        "For a known exact symbol name (e.g., 'UserService.createUser'), use get_symbol instead. "
+        "Filters: language=['java','python'], path_prefix='src/', kind=['method','class'], exclude_tests=True. "
+        "Set recursive=True to auto-merge related chunks for more context. "
+        "Results include file path (relative to repo root), line numbers, and snippet."
     ),
 )
 def search_code(
@@ -442,15 +480,15 @@ class SmartSearchResponse(BaseModel):
 @mcp.tool(
     title="Smart search",
     description=(
-        "Intelligent search with automatic query routing. Analyzes the query "
-        "intent and dispatches to the best tool:\n"
-        "- 'what calls X' → find_callers\n"
-        "- 'tests for X' → find_tests_for\n"
-        "- 'what relates to X' → find_related\n"
-        "- 'trace feature X' → trace_feature\n"
-        "- Everything else → hybrid search\n\n"
-        "Use this when you're not sure which tool to use. Returns results "
-        "with metadata about which tool was used and why."
+        "BEST DEFAULT CHOICE when unsure which stropha tool to use. "
+        "Automatically analyzes query intent and routes to the optimal tool:\n"
+        "- 'what calls X' → find_callers (graph)\n"
+        "- 'tests for X' → find_tests_for (graph)\n"
+        "- 'what relates to X' → find_related (graph)\n"
+        "- 'trace feature X' → trace_feature (graph)\n"
+        "- Conceptual questions → search_code (semantic)\n\n"
+        "Returns results plus metadata explaining which tool was used and why. "
+        "Prefer this over manually choosing tools when the query type is ambiguous."
     ),
 )
 def smart_search_tool(
@@ -506,10 +544,12 @@ def smart_search_tool(
 @mcp.tool(
     title="Get symbol",
     description=(
-        "Return chunks whose `symbol` matches the given name. "
-        "Cheaper and more precise than search_code when the symbol is known. "
-        "Accepts simple names ('FsrsCalculator') or qualified names "
-        "('StudyService.submitAnswer')."
+        "PREFER THIS when you know the exact class/method/function name. "
+        "Faster and more precise than search_code — direct symbol lookup. "
+        "Use for: 'where is UserService defined', 'find the createUser method'. "
+        "Accepts: simple names ('FsrsCalculator'), qualified names ('StudyService.submitAnswer'), "
+        "or partial matches ('submitAnswer'). "
+        "Returns file path, line numbers, and code snippet for each match."
     ),
 )
 def get_symbol(symbol: str, limit: int = 5, *, ctx: Context) -> list[SearchResult]:
@@ -522,19 +562,23 @@ def get_symbol(symbol: str, limit: int = 5, *, ctx: Context) -> list[SearchResul
 @mcp.tool(
     title="List repositories",
     description=(
-        "Enumerate every repository present in this index, with file and "
-        "chunk counts. Useful when the index spans multiple repos and the "
-        "client needs to know what is available before issuing search_code. "
-        "Each entry includes the clone URL when available."
+        "List all repositories in the index with file/chunk counts and paths. "
+        "Each entry includes: normalized_key, url (for git clone), local_path (filesystem), "
+        "and indexing stats. Use this to understand what code is searchable."
     ),
 )
 def list_repos(*, ctx: Context) -> list[RepoSummary]:
-    """Aggregate per-repo stats. Cheap query — single GROUP BY."""
+    """Aggregate per-repo stats. Cheap query — single GROUP BY.
+
+    Returns both the git origin URL and local filesystem path for each
+    repo, so callers can access files via either method.
+    """
     app = _ctx(ctx)
     return [
         RepoSummary(
             normalized_key=r.normalized_key,
             url=r.url,
+            local_path=r.local_path,
             default_branch=r.default_branch,
             head_commit=r.head_commit,
             files=r.files,
@@ -548,9 +592,11 @@ def list_repos(*, ctx: Context) -> list[RepoSummary]:
 @mcp.tool(
     title="Get file outline",
     description=(
-        "Symbolic outline of a single file: every chunk's kind, symbol, and "
-        "line range, sorted by position. Use this to plan a Read before "
-        "consuming a whole file into context."
+        "ALWAYS USE BEFORE reading a full file — saves context tokens. "
+        "Returns the symbolic structure: classes, methods, functions with their line ranges. "
+        "Use this to decide WHICH parts of a file to read, instead of reading the whole file. "
+        "Example: get_file_outline('src/services/user.py') → shows all classes/methods, "
+        "then you can Read just lines 45-67 for the specific method you need."
     ),
 )
 def get_file_outline(path: str, *, ctx: Context) -> list[OutlineEntry]:
@@ -590,11 +636,10 @@ def _graph_unavailable() -> dict:
 @mcp.tool(
     title="Find callers of a symbol",
     description=(
-        "Lists code locations that call `symbol`. Direct traversal over the "
-        "graphify mirror filtered by relation='calls' and confidence='EXTRACTED'. "
-        "Returns more precise results than `search_code` for queries like "
-        "'who calls X?'. Requires `graphify-out/graph.json` (run `graphify .` "
-        "to bootstrap)."
+        "PREFER THIS for 'who calls X?' or 'what uses X?' queries. "
+        "Graph traversal is more precise than text search for call relationships. "
+        "Returns callers with file paths and line numbers. "
+        "Requires graphify graph (returns {graph_loaded: false} if missing)."
     ),
 )
 def find_callers(
@@ -614,9 +659,10 @@ def find_callers(
 @mcp.tool(
     title="Find related nodes",
     description=(
-        "Symmetric BFS over the graphify graph (in + out edges). Useful when "
-        "you don't know the relationship type ahead of time. Pass `relations` "
-        "to filter (e.g. ['calls','implements','references']). Depth capped at 3."
+        "Find all code related to a symbol via any relationship type. "
+        "Bidirectional graph traversal — finds both 'X uses Y' and 'Y uses X'. "
+        "Filter with relations=['calls','implements','references'] if needed. "
+        "Use for exploring dependencies and connections around a symbol."
     ),
 )
 def find_related(
@@ -696,12 +742,10 @@ def find_rationale(
 @mcp.tool(
     title="Find tests covering a symbol",
     description=(
-        "Return code chunks in test files that call / reference / implement "
-        "the given symbol. Walks `calls`, `references`, `implements`, `tests` "
-        "edges from the graphify graph and filters callers whose source_file "
-        "matches a common test convention (test_*, *_test, *.spec.*, "
-        "*.test.*, /tests/, /test/). Pass custom patterns when your project "
-        "uses other conventions. Requires the graphify graph."
+        "PREFER THIS for 'what tests cover X?' or 'find tests for X'. "
+        "Finds test files that exercise a symbol via graph + path heuristics. "
+        "Default patterns: test_*, *_test, *.spec.*, *.test.*, /tests/, /test/. "
+        "Pass custom test_path_patterns for non-standard test conventions."
     ),
 )
 def find_tests_for(
@@ -728,12 +772,10 @@ def find_tests_for(
 @mcp.tool(
     title="Trace a feature through the call graph",
     description=(
-        "Trace a feature description (e.g. 'user submits an answer') down "
-        "through the call graph to surface every code chunk that "
-        "participates in it. Picks entry-point nodes by token overlap, "
-        "then DFS along EXTRACTED `calls` edges. Useful for Gherkin "
-        "scenario → step-definition → method chains, but works for any "
-        "free-text feature. Requires the graphify graph."
+        "Trace how a feature flows through the codebase. "
+        "Given a description like 'user submits an answer', finds entry points "
+        "and follows the call chain to show all participating code. "
+        "Great for understanding end-to-end flows and Gherkin scenario traces."
     ),
 )
 def trace_feature(

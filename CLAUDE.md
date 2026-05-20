@@ -81,10 +81,11 @@ The chunker's language sub-adapters are themselves an adapter stage (`language-c
 
 | Command | Purpose |
 |---|---|
-| `stropha index [--repo … / --manifest …] [--rebuild] [--full / --incremental] [--since <sha>] [--enricher … --embedder …]` | Run the indexing pipeline (incremental by default when checkpoint exists) |
+| `stropha index [--repo … / --manifest …] [--rebuild] [--vacuum] [--full / --incremental] [--since <sha>] [--enricher … --embedder …]` | Run the indexing pipeline (incremental by default when checkpoint exists). Add `--vacuum` to reclaim disk space after `--rebuild`. |
 | `stropha search "<query>" [<repo_url>] [--top-k N] [--refresh]` | Hybrid retrieval, prints top-K. Accepts git URL for remote repos. |
 | `stropha init [<target>] [--mcp-client]` | Initialize project with .stropha/, MCP config, and first index |
 | `stropha stats` | Index metadata: chunks, models, repos, graphify mirror status |
+| `stropha vacuum` | Reclaim unused disk space (runs SQLite VACUUM + WAL checkpoint). Use after `index --rebuild` to actually shrink the .db file. |
 | `stropha pipeline {show,validate}` | Inspect / probe the resolved adapter composition |
 | `stropha adapters list [--stage …]` | Enumerate registered adapters |
 | `stropha eval [--top-k --tag --json --golden]` | Run golden dataset, report Recall@K + MRR (exits non-zero when <0.85) |
@@ -533,6 +534,26 @@ Grouped by concern. Mirrors the actual filesystem layout under `src/stropha/`. T
 | `errors.py` | `StrophaError` hierarchy — every operational path raises a subclass. |
 | `logging.py` | `structlog` config. JSON logs in non-TTY contexts. |
 | `models.py` | Pydantic data: `Chunk`, `SourceFile`, `SearchHit`, `RepoRef`, `RepoStats`. |
+
+#### File and Repository Identification
+
+Every file in the index is identified by its **git repository** (not just the filesystem folder). The repository identity includes:
+
+- **`normalized_key`**: Stable cross-user key (e.g., `github.com/user/repo`). For local-only repos: `local:<path>`. For non-git dirs: `path:<path>`.
+- **`url`**: HTTPS clone URL for remote access (e.g., `https://github.com/user/repo.git`). `None` for local-only repos.
+- **`local_path`**: Absolute filesystem path to the repo root on the indexer host (e.g., `C:\sources\myproject`).
+- **`default_branch`**: Default branch name (e.g., `main`).
+- **`head_commit`**: HEAD SHA at index time.
+
+File paths (`rel_path` in `Chunk`, `SearchHit`, etc.) are **always relative to the git root**, not absolute filesystem paths. To get the full local path:
+```
+full_path = repo.local_path + "/" + hit.rel_path
+```
+
+This design ensures:
+1. Files are uniquely identified across multiple indexed repos
+2. Clients can access files via git clone (using `url`) or direct filesystem access (using `local_path`)
+3. The same logical repo accessed via different URLs (SSH vs HTTPS) collapses to one identity
 
 ### Pipeline / adapter framework (`pipeline/`, `stages/`, `adapters/`)
 

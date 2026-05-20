@@ -378,3 +378,82 @@ def test_compute_facets_empty_list(tmp_path: Path) -> None:
     facets = s.compute_facets([])
 
     assert facets == {"language": {}, "kind": {}, "repo": {}}
+
+
+def test_vacuum_reclaims_space_after_clear(tmp_path: Path) -> None:
+    """VACUUM shrinks the file after clear() marks pages as free.
+
+    SQLite's DELETE FROM does not shrink the file — it marks pages as
+    free for reuse. VACUUM rewrites the file to reclaim that space.
+
+    We insert enough chunks with large content to force the SQLite file
+    to grow across multiple pages; only then can VACUUM demonstrably
+    shrink the file.
+
+    Note: Storage uses WAL journal mode so data initially lives in the
+    .db-wal file. We use ``wal_checkpoint(TRUNCATE)`` to flush before
+    measuring file sizes, mirroring what VACUUM does internally.
+    """
+    db = tmp_path / "test.db"
+    # Use a larger embedding dim so each chunk consumes more bytes.
+    s = Storage(db, embedding_dim=384)
+
+    # Insert many large chunks to force multi-page file growth.
+    large_content = "class Foo { " + ("x" * 10_000) + " }"  # ~10 KB each
+    embedding = [0.1] * 384
+    for i in range(50):
+        chunk = _make_chunk(
+            f"sha256:{i:04d}",
+            f"file_{i}.java",
+            large_content,
+        )
+        s.upsert_chunk(chunk, embedding, "m", 384)
+    s.commit()
+    # Force WAL flush so the main .db file reflects committed data.
+    s._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    size_after_insert = db.stat().st_size
+    # Sanity check: the DB should have grown beyond a single page.
+    assert size_after_insert > 100_000, (
+        f"Test setup failed: DB only {size_after_insert} bytes after inserts"
+    )
+
+    # Free pages count BEFORE clear (should be near zero).
+    free_before_clear = s._conn.execute("PRAGMA freelist_count").fetchone()[0]
+
+    # Clear all data — file size should not change (pages just freed).
+    s.clear()
+    s._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    size_after_clear = db.stat().st_size
+    free_after_clear = s._conn.execute("PRAGMA freelist_count").fetchone()[0]
+
+    # Allow tiny variation (WAL journal cleanup) but file should not have
+    # significantly shrunk.
+    assert size_after_clear >= size_after_insert * 0.95, (
+        "clear() should not significantly shrink the file (pages are reused)"
+    )
+    assert free_after_clear > free_before_clear, (
+        "clear() should produce free pages"
+    )
+
+    # VACUUM should actually reduce the file size now.
+    size_before, size_after = s.vacuum()
+    assert size_after < size_before, (
+        f"VACUUM should reduce file size: before={size_before}, after={size_after}"
+    )
+    # Sanity check: actual file size matches reported size_after.
+    assert db.stat().st_size == size_after
+    # Free pages should be zero after VACUUM.
+    free_after_vacuum = s._conn.execute("PRAGMA freelist_count").fetchone()[0]
+    assert free_after_vacuum == 0
+
+
+def test_vacuum_on_empty_database(tmp_path: Path) -> None:
+    """VACUUM on an empty / fresh DB should succeed without error."""
+    db = tmp_path / "test.db"
+    s = Storage(db, embedding_dim=4)
+
+    size_before, size_after = s.vacuum()
+    assert size_before >= 0
+    assert size_after >= 0
+    # An empty DB may shrink slightly or stay the same — both are fine.
+    assert size_after <= size_before

@@ -160,6 +160,10 @@ def _repo_from_row(row: Any) -> RepoRef | None:
     """Build a ``RepoRef`` from a row that LEFT JOINed ``repos``.
 
     Returns ``None`` for chunks without a repo (legacy data pre-schema-v2).
+
+    Includes both the git origin URL and local filesystem path so callers
+    can access the repository via either method. File paths (rel_path) are
+    always relative to the git root.
     """
     key = row["repo_normalized_key"] if "repo_normalized_key" in row.keys() else None
     if not key:
@@ -167,6 +171,9 @@ def _repo_from_row(row: Any) -> RepoRef | None:
     return RepoRef(
         normalized_key=key,
         url=row["repo_url"] if "repo_url" in row.keys() else None,
+        local_path=(
+            row["repo_local_path"] if "repo_local_path" in row.keys() else None
+        ),
         default_branch=(
             row["repo_default_branch"] if "repo_default_branch" in row.keys() else None
         ),
@@ -178,11 +185,14 @@ def _repo_from_row(row: Any) -> RepoRef | None:
 
 # Common SELECT clause emitting both chunk and repo columns. Reused by all
 # search_* paths. Aliases are stable so _repo_from_row can rely on them.
+# Includes both git origin URL (repo_url) and local path (repo_local_path)
+# so callers can access files via either method.
 _REPO_JOIN_COLUMNS = """
     c.chunk_id, c.rel_path, c.language, c.kind, c.symbol,
     c.start_line, c.end_line, c.content,
     r.normalized_key  AS repo_normalized_key,
     r.remote_url      AS repo_url,
+    r.root_path       AS repo_local_path,
     r.default_branch  AS repo_default_branch,
     r.head_commit     AS repo_head_commit
 """
@@ -583,12 +593,17 @@ class Storage:
         return int(cur.rowcount or 0)
 
     def list_repos(self) -> list[RepoStats]:
-        """Per-repo aggregate counters."""
+        """Per-repo aggregate counters.
+
+        Returns both the git origin URL and local filesystem path for each
+        repo, so callers can access files via either method.
+        """
         rows = self._conn.execute(
             """
             SELECT
                 r.normalized_key,
                 r.remote_url      AS url,
+                r.root_path       AS local_path,
                 r.default_branch,
                 r.head_commit,
                 r.last_indexed_at,
@@ -604,6 +619,7 @@ class Storage:
             RepoStats(
                 normalized_key=row["normalized_key"],
                 url=row["url"],
+                local_path=row["local_path"],
                 default_branch=row["default_branch"],
                 head_commit=row["head_commit"],
                 files=int(row["files"]),
@@ -1142,6 +1158,9 @@ class Storage:
 
         Also clears the ``files`` table so incremental indexing sees all files
         as dirty after a rebuild.
+
+        Note: ``DELETE FROM`` marks pages as free for reuse but does not shrink
+        the SQLite file on disk. Call :meth:`vacuum` to reclaim disk space.
         """
         cur = self._conn.cursor()
         cur.executescript(
@@ -1154,6 +1173,53 @@ class Storage:
             """
         )
         self._conn.commit()
+
+    def vacuum(self) -> tuple[int, int]:
+        """Reclaim unused disk space by rebuilding the database file.
+
+        SQLite ``DELETE FROM`` only marks pages as free for reuse — the file
+        size on disk stays the same. ``VACUUM`` rewrites the entire database
+        file, dropping unused pages and reclaiming disk space.
+
+        VACUUM cannot run inside a transaction. We commit any pending work
+        first, then issue VACUUM. The operation can be slow on large
+        databases (it rewrites the whole file), so use sparingly.
+
+        WAL mode caveat: in WAL journal mode (our default), VACUUM moves
+        the freed pages to the WAL file. The main ``.db`` file only shrinks
+        after a ``wal_checkpoint(TRUNCATE)``, which we issue here so the
+        on-disk size visible to the user matches the reported size_after.
+
+        Returns:
+            Tuple of (size_before_bytes, size_after_bytes).
+        """
+        from pathlib import Path
+
+        # Resolve the actual file path. ``:memory:`` databases cannot be
+        # vacuumed in a meaningful way (no file to shrink).
+        db_path_row = self._conn.execute(
+            "PRAGMA database_list"
+        ).fetchone()
+        db_file = db_path_row["file"] if db_path_row else ""
+        if not db_file:
+            # In-memory database — VACUUM still works but file size is 0.
+            self._conn.execute("VACUUM")
+            return (0, 0)
+
+        # Force the WAL to flush BEFORE measuring so size_before reflects
+        # the actual disk footprint the user sees.
+        self._conn.commit()
+        self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        size_before = Path(db_file).stat().st_size
+
+        # VACUUM cannot run inside a transaction.
+        self._conn.execute("VACUUM")
+        self._conn.commit()
+        # Truncate the WAL so the reclaimed pages actually leave disk.
+        self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+
+        size_after = Path(db_file).stat().st_size
+        return (size_before, size_after)
 
     # ----- reads -----
 

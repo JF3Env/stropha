@@ -172,8 +172,8 @@ class GraphVecStream:
             ).fetchone()
         if chunk is None:
             chunk = cur.execute(
-                """SELECT c.*, r.normalized_key, r.remote_url, r.default_branch,
-                          r.head_commit
+                """SELECT c.*, r.normalized_key, r.remote_url, r.root_path,
+                          r.default_branch, r.head_commit
                    FROM chunks c LEFT JOIN repos r ON c.repo_id = r.id
                    WHERE c.rel_path = ? ORDER BY c.start_line ASC LIMIT 1""",
                 (rel_path,),
@@ -187,6 +187,7 @@ class GraphVecStream:
             repo = RepoRef(
                 normalized_key=chunk["normalized_key"],
                 url=chunk["remote_url"],
+                local_path=chunk["root_path"] if "root_path" in chunk.keys() else None,
                 default_branch=chunk["default_branch"],
                 head_commit=chunk["head_commit"],
             )

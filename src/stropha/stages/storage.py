@@ -57,6 +57,9 @@ class StorageStage(Protocol):
 
     def clear(self) -> None: ...
 
+    def vacuum(self) -> tuple[int, int]: ...
+    """Reclaim unused disk space. Returns (size_before, size_after) in bytes."""
+
     def close(self) -> None: ...
 
     # ----- Writes ---------------------------------------------------------

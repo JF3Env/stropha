@@ -137,8 +137,8 @@ def _maybe_merge_parent(
     if not has_sibling:
         return hit
     parent = cur.execute(
-        """SELECT c.*, r.normalized_key, r.remote_url, r.default_branch,
-                  r.head_commit
+        """SELECT c.*, r.normalized_key, r.remote_url, r.root_path,
+                  r.default_branch, r.head_commit
            FROM chunks c LEFT JOIN repos r ON c.repo_id = r.id
            WHERE c.chunk_id = ? LIMIT 1""",
         (parent_id,),
@@ -187,6 +187,7 @@ def _row_to_hit(row, *, score: float, rank: int) -> SearchHit:
         repo = RepoRef(
             normalized_key=row["normalized_key"],
             url=row["remote_url"],
+            local_path=row["root_path"] if "root_path" in row.keys() else None,
             default_branch=row["default_branch"],
             head_commit=row["head_commit"],
         )

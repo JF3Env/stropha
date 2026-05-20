@@ -81,6 +81,15 @@ def index(
     rebuild: bool = typer.Option(
         False, "--rebuild", help="Clear the index before reindexing."
     ),
+    vacuum: bool = typer.Option(
+        False, "--vacuum",
+        help=(
+            "Reclaim unused disk space after indexing. SQLite ``DELETE FROM`` "
+            "(used by --rebuild) marks pages as free but does not shrink the "
+            "file. VACUUM rewrites the file to actually reduce disk usage. "
+            "Slower on large databases."
+        ),
+    ),
     full: bool = typer.Option(
         False, "--full",
         help=(
@@ -187,6 +196,16 @@ def index(
                 repos=targets,
             )
             stats = pipeline.run(rebuild=rebuild, mode=mode, since_sha=since)
+            if vacuum:
+                console.print("[bold]Vacuuming database...[/bold]")
+                size_before, size_after = storage.vacuum()  # type: ignore[union-attr]
+                reclaimed = size_before - size_after
+                console.print(
+                    f"[green]VACUUM done.[/green] "
+                    f"{size_before / 1024 / 1024:.1f} MB -> "
+                    f"{size_after / 1024 / 1024:.1f} MB "
+                    f"(reclaimed {reclaimed / 1024 / 1024:.1f} MB)"
+                )
         # Surface file-level cache hits prominently — they are the
         # biggest perf win of Phase A incremental.
         skipped_part = (
@@ -587,6 +606,34 @@ def stats() -> None:
                 head,
             )
         console.print(repos_table)
+
+
+@app.command()
+def vacuum() -> None:
+    """Reclaim unused disk space in the index file.
+
+    SQLite's ``DELETE FROM`` (used by ``index --rebuild``) marks pages as
+    free for reuse but does not shrink the file on disk. Run this command
+    to rewrite the database file and reclaim disk space.
+
+    Can be slow on large databases — VACUUM rewrites the entire file.
+    """
+    resolved = load_pipeline_config()
+    try:
+        built = build_stages(resolved)
+        with built.storage as storage:  # type: ignore[union-attr]
+            console.print("[bold]Vacuuming database...[/bold]")
+            size_before, size_after = storage.vacuum()  # type: ignore[union-attr]
+            reclaimed = size_before - size_after
+            console.print(
+                f"[green]VACUUM done.[/green] "
+                f"{size_before / 1024 / 1024:.1f} MB -> "
+                f"{size_after / 1024 / 1024:.1f} MB "
+                f"(reclaimed {reclaimed / 1024 / 1024:.1f} MB)"
+            )
+    except StrophaError as exc:
+        console.print(f"[red]Vacuum failed:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
 
 
 # ---------------------------------------------------------------------------
