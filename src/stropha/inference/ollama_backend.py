@@ -2,22 +2,24 @@
 
 Uses Ollama's REST API for inference. Requires the Ollama daemon
 to be running (`ollama serve`).
+
+Configuration (stropha.yaml):
+    inference:
+      ollama_model: qwen2.5-coder:1.5b
+      ollama_host: http://localhost:11434
 """
 
 from __future__ import annotations
 
 import json
-import os
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 
+from ..config_features import get_config
 from ..logging import get_logger
 from .backend import InferenceBackend
 
 log = get_logger(__name__)
-
-# Default model for code tasks
-DEFAULT_MODEL = "qwen2.5-coder:1.5b"
 
 
 class OllamaBackend(InferenceBackend):
@@ -36,13 +38,9 @@ class OllamaBackend(InferenceBackend):
             base_url: Ollama API base URL.
             timeout: Request timeout in seconds.
         """
-        self._default_model = model or os.environ.get(
-            "STROPHA_OLLAMA_MODEL", DEFAULT_MODEL
-        )
-        self._base_url = (
-            base_url
-            or os.environ.get("OLLAMA_HOST", "http://localhost:11434")
-        ).rstrip("/")
+        config = get_config().inference
+        self._default_model = model or config.ollama_model
+        self._base_url = (base_url or config.ollama_host).rstrip("/")
         self._timeout = timeout
 
     @property

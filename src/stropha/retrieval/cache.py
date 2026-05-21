@@ -16,6 +16,12 @@ This is a pure in-memory cache. It does NOT persist across process restarts.
 For MCP servers that run as long-lived processes, this provides significant
 latency savings for repeated queries.
 
+Configuration (stropha.yaml):
+    retrieval_features:
+      cache_enabled: true
+      cache_size: 500
+      cache_ttl: 3600  # seconds
+
 Usage:
     from stropha.retrieval.cache import SemanticCache
 
@@ -31,22 +37,17 @@ Usage:
     
     # Store in cache
     cache.set(query_vec, result, top_k=10, filters={"language": ["python"]})
-
-Environment variables:
-    STROPHA_QUERY_CACHE_ENABLED: Enable/disable cache (default: 0)
-    STROPHA_QUERY_CACHE_SIZE: Max cache entries (default: 500)
-    STROPHA_QUERY_CACHE_TTL: TTL in seconds (default: 3600)
 """
 
 from __future__ import annotations
 
 import hashlib
-import os
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any
 
+from ..config_features import get_config
 from ..logging import get_logger
 from ..models import SearchHit
 
@@ -54,21 +55,18 @@ log = get_logger(__name__)
 
 
 def _enabled() -> bool:
-    return os.environ.get("STROPHA_QUERY_CACHE_ENABLED", "0") == "1"
+    """Check if query cache is enabled via stropha.yaml."""
+    return get_config().retrieval_features.cache_enabled
 
 
 def _max_size() -> int:
-    try:
-        return int(os.environ.get("STROPHA_QUERY_CACHE_SIZE", "500"))
-    except ValueError:
-        return 500
+    """Get cache size from stropha.yaml."""
+    return get_config().retrieval_features.cache_size
 
 
 def _ttl_seconds() -> float:
-    try:
-        return float(os.environ.get("STROPHA_QUERY_CACHE_TTL", "3600"))
-    except ValueError:
-        return 3600.0
+    """Get cache TTL from stropha.yaml."""
+    return get_config().retrieval_features.cache_ttl
 
 
 @dataclass

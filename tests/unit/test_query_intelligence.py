@@ -14,106 +14,158 @@ from stropha.retrieval.query_rewrite import maybe_rewrite_query, _enabled as rew
 class TestHyDE:
     """Tests for HyDE (Hypothetical Document Embeddings)."""
 
-    def test_hyde_disabled_by_default(self) -> None:
-        """HyDE should be disabled when env var is not set."""
-        with patch.dict(os.environ, {"STROPHA_HYDE_ENABLED": "0"}, clear=False):
-            assert not hyde_enabled()
-            result = maybe_hyde_rewrite("test query")
-            assert result is None
+    def test_hyde_disabled_by_default(self, isolated_test_env) -> None:
+        """HyDE should be disabled by default."""
+        assert not hyde_enabled()
+        result = maybe_hyde_rewrite("test query")
+        assert result is None
 
-    def test_hyde_returns_none_for_empty_query(self) -> None:
-        """HyDE should return None for empty queries."""
-        with patch.dict(os.environ, {"STROPHA_HYDE_ENABLED": "1"}, clear=False):
-            assert maybe_hyde_rewrite("") is None
-            assert maybe_hyde_rewrite("   ") is None
+    def test_hyde_returns_none_for_empty_query(self, isolated_test_env) -> None:
+        """HyDE should return None for empty queries even when enabled."""
+        from stropha.config_features import reset_config
+        yaml_path = isolated_test_env / "stropha.yaml"
+        yaml_path.write_text("""
+retrieval_features:
+  hyde_enabled: true
+""")
+        reset_config()
+        assert maybe_hyde_rewrite("") is None
+        assert maybe_hyde_rewrite("   ") is None
 
     @patch("stropha.inference.generate")
-    def test_hyde_calls_inference_backend(self, mock_gen: MagicMock) -> None:
+    def test_hyde_calls_inference_backend(self, mock_gen: MagicMock, isolated_test_env) -> None:
         """HyDE should call inference backend when enabled."""
+        from stropha.config_features import reset_config
+        yaml_path = isolated_test_env / "stropha.yaml"
+        yaml_path.write_text("""
+retrieval_features:
+  hyde_enabled: true
+""")
+        reset_config()
         mock_gen.return_value = "def calculate_sum(a, b): return a + b"
 
-        with patch.dict(os.environ, {"STROPHA_HYDE_ENABLED": "1"}, clear=False):
-            result = maybe_hyde_rewrite("how to add two numbers")
-            assert result is not None
-            assert "calculate_sum" in result or "return" in result
+        result = maybe_hyde_rewrite("how to add two numbers")
+        assert result is not None
+        assert "calculate_sum" in result or "return" in result
 
     @patch("stropha.inference.generate")
-    def test_hyde_handles_inference_failure(self, mock_gen: MagicMock) -> None:
+    def test_hyde_handles_inference_failure(self, mock_gen: MagicMock, isolated_test_env) -> None:
         """HyDE should return None when inference fails."""
+        from stropha.config_features import reset_config
+        yaml_path = isolated_test_env / "stropha.yaml"
+        yaml_path.write_text("""
+retrieval_features:
+  hyde_enabled: true
+""")
+        reset_config()
         mock_gen.return_value = None  # Simulate failure
 
-        with patch.dict(os.environ, {"STROPHA_HYDE_ENABLED": "1"}, clear=False):
-            result = maybe_hyde_rewrite("test query")
-            assert result is None
+        result = maybe_hyde_rewrite("test query")
+        assert result is None
 
     @patch("stropha.inference.generate")
-    def test_hyde_handles_empty_response(self, mock_gen: MagicMock) -> None:
+    def test_hyde_handles_empty_response(self, mock_gen: MagicMock, isolated_test_env) -> None:
         """HyDE should return None when inference returns empty."""
+        from stropha.config_features import reset_config
+        yaml_path = isolated_test_env / "stropha.yaml"
+        yaml_path.write_text("""
+retrieval_features:
+  hyde_enabled: true
+""")
+        reset_config()
         mock_gen.return_value = ""
 
-        with patch.dict(os.environ, {"STROPHA_HYDE_ENABLED": "1"}, clear=False):
-            result = maybe_hyde_rewrite("test query")
-            assert result is None
+        result = maybe_hyde_rewrite("test query")
+        assert result is None
 
 
 class TestQueryRewrite:
     """Tests for Query Rewriting."""
 
-    def test_rewrite_disabled_by_default(self) -> None:
-        """Query rewriting should be disabled when env var is not set."""
-        with patch.dict(os.environ, {"STROPHA_QUERY_REWRITE_ENABLED": "0"}, clear=False):
-            assert not rewrite_enabled()
-            result = maybe_rewrite_query("test query")
-            assert result is None
+    def test_rewrite_disabled_by_default(self, isolated_test_env) -> None:
+        """Query rewriting should be disabled by default."""
+        assert not rewrite_enabled()
+        result = maybe_rewrite_query("test query")
+        assert result is None
 
-    def test_rewrite_returns_none_for_empty_query(self) -> None:
-        """Query rewriting should return None for empty queries."""
-        with patch.dict(os.environ, {"STROPHA_QUERY_REWRITE_ENABLED": "1"}, clear=False):
-            assert maybe_rewrite_query("") is None
-            assert maybe_rewrite_query("   ") is None
+    def test_rewrite_returns_none_for_empty_query(self, isolated_test_env) -> None:
+        """Query rewriting should return None for empty queries even when enabled."""
+        from stropha.config_features import reset_config
+        yaml_path = isolated_test_env / "stropha.yaml"
+        yaml_path.write_text("""
+retrieval_features:
+  query_rewrite_enabled: true
+""")
+        reset_config()
+        assert maybe_rewrite_query("") is None
+        assert maybe_rewrite_query("   ") is None
 
     @patch("stropha.inference.generate")
-    def test_rewrite_calls_inference_backend(self, mock_gen: MagicMock) -> None:
+    def test_rewrite_calls_inference_backend(self, mock_gen: MagicMock, isolated_test_env) -> None:
         """Query rewriting should call inference backend when enabled."""
+        from stropha.config_features import reset_config
+        yaml_path = isolated_test_env / "stropha.yaml"
+        yaml_path.write_text("""
+retrieval_features:
+  query_rewrite_enabled: true
+""")
+        reset_config()
         mock_gen.return_value = "FSRS calculator test FsrsCalculatorTest"
 
-        with patch.dict(os.environ, {"STROPHA_QUERY_REWRITE_ENABLED": "1"}, clear=False):
-            result = maybe_rewrite_query("onde tem teste pra fsrs")
-            assert result is not None
-            # Should contain original query + rewritten terms
-            assert "fsrs" in result.lower()
+        result = maybe_rewrite_query("onde tem teste pra fsrs")
+        assert result is not None
+        # Should contain original query + rewritten terms
+        assert "fsrs" in result.lower()
 
     @patch("stropha.inference.generate")
-    def test_rewrite_combines_original_and_expanded(self, mock_gen: MagicMock) -> None:
+    def test_rewrite_combines_original_and_expanded(self, mock_gen: MagicMock, isolated_test_env) -> None:
         """Query rewriting should combine original query with expanded terms."""
+        from stropha.config_features import reset_config
+        yaml_path = isolated_test_env / "stropha.yaml"
+        yaml_path.write_text("""
+retrieval_features:
+  query_rewrite_enabled: true
+""")
+        reset_config()
         mock_gen.return_value = "authentication login security"
 
-        with patch.dict(os.environ, {"STROPHA_QUERY_REWRITE_ENABLED": "1"}, clear=False):
-            result = maybe_rewrite_query("how does auth work")
-            assert result is not None
-            # Should contain both original and expanded
-            assert "how does auth work" in result
-            assert "authentication" in result
+        result = maybe_rewrite_query("how does auth work")
+        assert result is not None
+        # Should contain both original and expanded
+        assert "how does auth work" in result
+        assert "authentication" in result
 
     @patch("stropha.inference.generate")
-    def test_rewrite_handles_inference_failure(self, mock_gen: MagicMock) -> None:
+    def test_rewrite_handles_inference_failure(self, mock_gen: MagicMock, isolated_test_env) -> None:
         """Query rewriting should return None when inference fails."""
+        from stropha.config_features import reset_config
+        yaml_path = isolated_test_env / "stropha.yaml"
+        yaml_path.write_text("""
+retrieval_features:
+  query_rewrite_enabled: true
+""")
+        reset_config()
         mock_gen.return_value = None  # Simulate failure
 
-        with patch.dict(os.environ, {"STROPHA_QUERY_REWRITE_ENABLED": "1"}, clear=False):
-            result = maybe_rewrite_query("test query")
-            assert result is None
+        result = maybe_rewrite_query("test query")
+        assert result is None
 
     @patch("stropha.inference.generate")
-    def test_rewrite_truncates_long_output(self, mock_gen: MagicMock) -> None:
+    def test_rewrite_truncates_long_output(self, mock_gen: MagicMock, isolated_test_env) -> None:
         """Query rewriting should truncate very long outputs."""
+        from stropha.config_features import reset_config
+        yaml_path = isolated_test_env / "stropha.yaml"
+        yaml_path.write_text("""
+retrieval_features:
+  query_rewrite_enabled: true
+""")
+        reset_config()
         long_response = "term " * 200  # 1000 chars
         mock_gen.return_value = long_response
 
-        with patch.dict(os.environ, {"STROPHA_QUERY_REWRITE_ENABLED": "1"}, clear=False):
-            result = maybe_rewrite_query("short query")
-            assert result is not None
-            assert len(result) <= 500
+        result = maybe_rewrite_query("short query")
+        assert result is not None
+        assert len(result) <= 500
 
 
 class TestHybridRrfWithQueryIntelligence:
@@ -242,22 +294,29 @@ class TestHybridRrfSearchIntegration:
         assert "hypothetical_code" in recording_embedder.query_texts[0]
 
     @patch("stropha.inference.generate")
-    def test_search_uses_hyde_when_env_enabled(
-        self, mock_gen: MagicMock, recording_storage, recording_embedder
+    def test_search_uses_hyde_when_yaml_enabled(
+        self, mock_gen: MagicMock, recording_storage, recording_embedder, isolated_test_env
     ) -> None:
-        """When STROPHA_HYDE_ENABLED=1, search should use HyDE even without config flag."""
+        """When hyde_enabled in YAML, search should use HyDE."""
         from stropha.adapters.retrieval.hybrid_rrf import HybridRrfConfig, HybridRrfRetrieval
+        from stropha.config_features import reset_config
+        
+        yaml_path = isolated_test_env / "stropha.yaml"
+        yaml_path.write_text("""
+retrieval_features:
+  hyde_enabled: true
+""")
+        reset_config()
         
         mock_gen.return_value = "class AuthService: pass"
 
-        with patch.dict(os.environ, {"STROPHA_HYDE_ENABLED": "1"}, clear=False):
-            config = HybridRrfConfig()  # hyde_enabled defaults to False
-            retrieval = HybridRrfRetrieval(config, storage=recording_storage, embedder=recording_embedder)
-            
-            retrieval.search("authentication flow")
-            
-            assert len(recording_embedder.query_texts) == 1
-            assert "AuthService" in recording_embedder.query_texts[0]
+        config = HybridRrfConfig()  # Will pick up from YAML
+        retrieval = HybridRrfRetrieval(config, storage=recording_storage, embedder=recording_embedder)
+        
+        retrieval.search("authentication flow")
+        
+        assert len(recording_embedder.query_texts) == 1
+        assert "AuthService" in recording_embedder.query_texts[0]
 
     @patch("stropha.inference.generate")
     def test_search_uses_query_rewrite_when_config_enabled(
@@ -281,24 +340,31 @@ class TestHybridRrfSearchIntegration:
         assert "FSRS" in bm25_query or "FsrsCalculator" in bm25_query
 
     @patch("stropha.inference.generate")
-    def test_search_uses_query_rewrite_when_env_enabled(
-        self, mock_gen: MagicMock, recording_storage, recording_embedder
+    def test_search_uses_query_rewrite_when_yaml_enabled(
+        self, mock_gen: MagicMock, recording_storage, recording_embedder, isolated_test_env
     ) -> None:
-        """When STROPHA_QUERY_REWRITE_ENABLED=1, search should use rewriting."""
+        """When query_rewrite_enabled in YAML, search should use rewriting."""
         from stropha.adapters.retrieval.hybrid_rrf import HybridRrfConfig, HybridRrfRetrieval
+        from stropha.config_features import reset_config
+        
+        yaml_path = isolated_test_env / "stropha.yaml"
+        yaml_path.write_text("""
+retrieval_features:
+  query_rewrite_enabled: true
+""")
+        reset_config()
         
         mock_gen.return_value = "mastery streak transition"
 
-        with patch.dict(os.environ, {"STROPHA_QUERY_REWRITE_ENABLED": "1"}, clear=False):
-            config = HybridRrfConfig()  # query_rewrite_enabled defaults to False
-            retrieval = HybridRrfRetrieval(config, storage=recording_storage, embedder=recording_embedder)
-            
-            retrieval.search("como funciona mastery")
-            
-            assert len(recording_storage.bm25_calls) == 1
-            bm25_query = recording_storage.bm25_calls[0][0]
-            assert "mastery" in bm25_query.lower()
-            assert "streak" in bm25_query or "transition" in bm25_query
+        config = HybridRrfConfig()  # Will pick up from YAML
+        retrieval = HybridRrfRetrieval(config, storage=recording_storage, embedder=recording_embedder)
+        
+        retrieval.search("como funciona mastery")
+        
+        assert len(recording_storage.bm25_calls) == 1
+        bm25_query = recording_storage.bm25_calls[0][0]
+        assert "mastery" in bm25_query.lower()
+        assert "streak" in bm25_query or "transition" in bm25_query
 
     def test_search_uses_both_hyde_and_query_rewrite(
         self, recording_storage, recording_embedder

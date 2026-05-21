@@ -213,12 +213,12 @@ class HybridRrfRetrieval(RetrievalStage):
             return []
         k = top_k or self._config.top_k
         
-        import os
+        from ...config_features import get_config
         
         # Check if multi-query expansion is enabled
         multi_query_enabled = (
             self._config.multi_query_enabled
-            or os.environ.get("STROPHA_MULTI_QUERY_ENABLED", "0") == "1"
+            or get_config().retrieval_features.multi_query_enabled
         )
         
         if multi_query_enabled:
@@ -230,14 +230,14 @@ class HybridRrfRetrieval(RetrievalStage):
         self, query: str, k: int, *, search_query: str | None = None
     ) -> list[SearchHit]:
         """Execute search with a single query (the standard path)."""
-        import os
+        from ...config_features import get_config
         
         # Query rewriting: expand natural language to code terms (affects ALL streams)
         if search_query is None:
             search_query = query
             rewrite_enabled = (
                 self._config.query_rewrite_enabled
-                or os.environ.get("STROPHA_QUERY_REWRITE_ENABLED", "0") == "1"
+                or get_config().retrieval_features.query_rewrite_enabled
             )
             if rewrite_enabled:
                 from ...retrieval.query_rewrite import maybe_rewrite_query
@@ -252,12 +252,13 @@ class HybridRrfRetrieval(RetrievalStage):
         )
         
         # HyDE: generate hypothetical document for dense embedding only
-        # Enabled via config.hyde_enabled OR env var STROPHA_HYDE_ENABLED=1
+        # Enabled via config.hyde_enabled OR retrieval_features.hyde_enabled in YAML
         dense_query = search_query
         if needs_vec:
+            from ...config_features import get_config
             hyde_enabled = (
                 self._config.hyde_enabled
-                or os.environ.get("STROPHA_HYDE_ENABLED", "0") == "1"
+                or get_config().retrieval_features.hyde_enabled
             )
             if hyde_enabled:
                 from ...retrieval.hyde import maybe_hyde_rewrite

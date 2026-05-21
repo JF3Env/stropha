@@ -2,20 +2,21 @@
 
 Uses mlx-lm for in-process inference with Metal acceleration.
 No daemon required, more efficient than Ollama on M-series chips.
+
+Configuration (stropha.yaml):
+    inference:
+      mlx_model: mlx-community/Qwen2.5-Coder-1.5B-Instruct-4bit
 """
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
+from ..config_features import get_config
 from ..logging import get_logger
 from .backend import InferenceBackend
 
 log = get_logger(__name__)
-
-# Default model optimized for code tasks
-DEFAULT_MODEL = "mlx-community/Qwen2.5-Coder-1.5B-Instruct-4bit"
 
 
 class MlxBackend(InferenceBackend):
@@ -26,11 +27,9 @@ class MlxBackend(InferenceBackend):
 
         Args:
             model: HuggingFace model ID in MLX format. Defaults to
-                   Qwen2.5-Coder-1.5B-Instruct-4bit.
+                   config value from stropha.yaml.
         """
-        self._default_model = model or os.environ.get(
-            "STROPHA_MLX_MODEL", DEFAULT_MODEL
-        )
+        self._default_model = model or get_config().inference.mlx_model
         self._loaded_model: str | None = None
         self._model: Any = None
         self._tokenizer: Any = None

@@ -186,16 +186,55 @@ class MlxEmbedder(EmbedderStage):
     def batch_size(self) -> int:
         return self._config.batch_size
 
+    def _truncate_to_tokens(self, texts: list[str], max_tokens: int = 508) -> list[str]:
+        """Truncate texts to fit within MLX embedding model's token limit.
+
+        The mlx-embedding-models library has a max sequence length of 512 tokens.
+        We use 508 to leave room for special tokens ([CLS], [SEP]) and any
+        tokenizer quirks. The tokenizer's truncate=True with max_length should
+        ensure the result fits.
+        """
+        if self._model_obj is None:
+            self._load_model()
+
+        # Tokenize with truncation enabled
+        tokenizer = self._model_obj.tokenizer
+        encoded = tokenizer(
+            texts,
+            truncation=True,
+            max_length=max_tokens,
+            padding=False,
+            return_offsets_mapping=False,
+        )
+
+        # Decode back to text - this gives us properly truncated strings
+        truncated = []
+        for i, input_ids in enumerate(encoded["input_ids"]):
+            # Skip special tokens when decoding
+            decoded = tokenizer.decode(input_ids, skip_special_tokens=True)
+            truncated.append(decoded)
+
+        return truncated
+
     def embed_documents(self, texts: Sequence[str]) -> list[list[float]]:
         """Embed multiple documents using MLX GPU acceleration."""
         if self._model_obj is None:
             self._load_model()
 
         try:
+            # Truncate texts to fit within model's token limit
+            truncated = self._truncate_to_tokens(list(texts))
             # mlx_embedding_models returns numpy arrays
-            embeddings = self._model_obj.encode(list(texts))
+            embeddings = self._model_obj.encode(truncated)
             return [list(emb) for emb in embeddings]
         except Exception as exc:
+            # Log diagnostic info for debugging
+            log.error(
+                "mlx_embed.failed",
+                batch_size=len(texts),
+                text_lengths=[len(t) for t in texts],
+                error=str(exc),
+            )
             raise EmbeddingError(f"MLX embed failed: {exc}") from exc
 
     def embed_query(self, text: str) -> list[float]:
@@ -204,7 +243,8 @@ class MlxEmbedder(EmbedderStage):
             self._load_model()
 
         try:
-            embeddings = self._model_obj.encode([text])
+            truncated = self._truncate_to_tokens([text])[0]
+            embeddings = self._model_obj.encode([truncated])
             return list(embeddings[0])
         except Exception as exc:
             raise EmbeddingError(f"MLX query embed failed: {exc}") from exc

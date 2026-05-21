@@ -5,14 +5,21 @@ The inference system supports two backends:
 2. Ollama - cross-platform, easier model management
 
 Auto-detection prefers MLX when available, falling back to Ollama.
+
+Configuration (stropha.yaml):
+    inference:
+      backend: null  # "mlx", "ollama", or null for auto-detect
+      mlx_model: mlx-community/Qwen2.5-Coder-1.5B-Instruct-4bit
+      ollama_model: qwen2.5-coder:1.5b
+      ollama_host: http://localhost:11434  # also reads OLLAMA_HOST env
 """
 
 from __future__ import annotations
 
-import os
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
+from ..config_features import get_config
 from ..logging import get_logger
 
 if TYPE_CHECKING:
@@ -88,7 +95,7 @@ def is_ollama_available() -> bool:
     from urllib import error as urllib_error
     from urllib import request as urllib_request
 
-    ollama_url = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+    ollama_url = get_config().inference.ollama_host
 
     try:
         req = urllib_request.Request(
@@ -107,7 +114,7 @@ def get_backend(prefer: str | None = None) -> InferenceBackend:
 
     Args:
         prefer: Preferred backend ('mlx' or 'ollama'). If not available,
-                falls back to the other. If None, auto-detects.
+                falls back to the other. If None, auto-detects from config.
 
     Returns:
         An InferenceBackend instance.
@@ -116,10 +123,11 @@ def get_backend(prefer: str | None = None) -> InferenceBackend:
     """
     global _BACKEND
 
-    # Check for preference override via env var
-    env_prefer = os.environ.get("STROPHA_INFERENCE_BACKEND")
-    if env_prefer:
-        prefer = env_prefer.lower()
+    # Check for preference from config
+    if prefer is None:
+        config_prefer = get_config().inference.backend
+        if config_prefer:
+            prefer = config_prefer.lower()
 
     if _BACKEND is not None:
         # Return cached if preference matches or no preference

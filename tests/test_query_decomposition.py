@@ -113,18 +113,32 @@ class TestDecomposeQuery:
 
 
 class TestIsDecompositionEnabled:
-    """Test environment-based enable check."""
+    """Test YAML config-based enable check."""
 
-    def test_disabled_by_default(self, monkeypatch):
-        monkeypatch.delenv("STROPHA_QUERY_DECOMPOSITION_ENABLED", raising=False)
+    def test_disabled_by_default(self, isolated_test_env):
+        """Default config has decomposition disabled."""
         assert is_decomposition_enabled() is False
 
-    def test_enabled_when_set(self, monkeypatch):
-        monkeypatch.setenv("STROPHA_QUERY_DECOMPOSITION_ENABLED", "1")
+    def test_enabled_when_set(self, isolated_test_env):
+        """Config file enables decomposition."""
+        from stropha.config_features import reset_config
+        yaml_path = isolated_test_env / "stropha.yaml"
+        yaml_path.write_text("""
+retrieval_features:
+  query_decomposition_enabled: true
+""")
+        reset_config()  # Force reload
         assert is_decomposition_enabled() is True
 
-    def test_disabled_when_zero(self, monkeypatch):
-        monkeypatch.setenv("STROPHA_QUERY_DECOMPOSITION_ENABLED", "0")
+    def test_disabled_when_false(self, isolated_test_env):
+        """Config file explicitly disables decomposition."""
+        from stropha.config_features import reset_config
+        yaml_path = isolated_test_env / "stropha.yaml"
+        yaml_path.write_text("""
+retrieval_features:
+  query_decomposition_enabled: false
+""")
+        reset_config()  # Force reload
         assert is_decomposition_enabled() is False
 
 

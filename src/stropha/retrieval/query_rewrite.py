@@ -16,7 +16,11 @@ Falls back to original query when:
 - No inference backend available
 - The generation times out
 - The generated text is empty
-- STROPHA_QUERY_REWRITE_ENABLED is unset / "0"
+- query_rewrite_enabled: false in stropha.yaml
+
+Configuration (stropha.yaml):
+    retrieval_features:
+      query_rewrite_enabled: true
 
 Usage:
     from stropha.retrieval.query_rewrite import maybe_rewrite_query
@@ -26,8 +30,7 @@ Usage:
 
 from __future__ import annotations
 
-import os
-
+from ..config_features import get_config
 from ..logging import get_logger
 
 log = get_logger(__name__)
@@ -42,11 +45,13 @@ _DEFAULT_PROMPT = (
 
 
 def _enabled() -> bool:
-    return os.environ.get("STROPHA_QUERY_REWRITE_ENABLED", "0") == "1"
+    """Check if query rewriting is enabled via stropha.yaml."""
+    return get_config().retrieval_features.query_rewrite_enabled
 
 
 def _prompt_template() -> str:
-    return os.environ.get("STROPHA_QUERY_REWRITE_PROMPT", _DEFAULT_PROMPT)
+    """Get prompt template (currently hardcoded)."""
+    return _DEFAULT_PROMPT
 
 
 def maybe_rewrite_query(query: str, *, force_enabled: bool = False) -> str | None:

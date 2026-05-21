@@ -9,9 +9,14 @@ Per RFC §6.1 (``docs/architecture/stropha-graphify-integration.md``):
 - **Idempotent**: ``load()`` called N times produces the same database state.
 - **Transactional**: a failure mid-load leaves the previous version intact
   (everything wrapped in a single SQLite transaction).
-- **Confidence-filtered**: edges below ``STROPHA_GRAPH_CONFIDENCE`` are
+- **Confidence-filtered**: edges below the configured confidence level are
   dropped at load time. Default ``EXTRACTED`` only — the high-precision
   subset derived deterministically from the AST.
+
+Configuration (stropha.yaml):
+    graph:
+      confidence: EXTRACTED  # EXTRACTED, INFERRED, or comma-separated
+      fts_augment: true
 
 The loader does NOT call graphify itself. The graph is produced out-of-band
 (``graphify .`` for the LLM-augmented bootstrap, or ``graphify update . --no-cluster``
@@ -35,6 +40,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from ..config_features import get_config
 from ..logging import get_logger
 from ..storage.sqlite import Storage
 
@@ -47,19 +53,21 @@ DEFAULT_CONFIDENCE = ("EXTRACTED",)
 _VALID_CONFIDENCE = {"EXTRACTED", "INFERRED", "AMBIGUOUS"}
 
 
-def _resolve_confidence_filter(env_value: str | None) -> tuple[str, ...]:
-    """Parse ``STROPHA_GRAPH_CONFIDENCE`` env var into a tuple of tiers.
+def _resolve_confidence_filter(config_value: str | None = None) -> tuple[str, ...]:
+    """Parse confidence filter from stropha.yaml into a tuple of tiers.
 
     Empty / unset / invalid values fall back to :data:`DEFAULT_CONFIDENCE`.
     """
-    if not env_value:
+    # Use provided value or get from config
+    value = config_value or get_config().graph.confidence
+    if not value:
         return DEFAULT_CONFIDENCE
-    parts = tuple(p.strip().upper() for p in env_value.split(",") if p.strip())
+    parts = tuple(p.strip().upper() for p in value.split(",") if p.strip())
     valid = tuple(p for p in parts if p in _VALID_CONFIDENCE)
     if not valid:
         log.warning(
             "graphify_loader.confidence_invalid",
-            value=env_value,
+            value=value,
             falling_back_to=list(DEFAULT_CONFIDENCE),
         )
         return DEFAULT_CONFIDENCE
@@ -136,9 +144,7 @@ class GraphifyLoader:
         self._repo_root = repo_root
         # Allow override (tests, --refresh-graph flag, custom out dir).
         self._graph_path = graph_path or self._resolve_graph_path(repo_root)
-        self._confidence = confidence_filter or _resolve_confidence_filter(
-            os.environ.get("STROPHA_GRAPH_CONFIDENCE")
-        )
+        self._confidence = confidence_filter or _resolve_confidence_filter()
 
     @property
     def repo_id(self) -> int | None:

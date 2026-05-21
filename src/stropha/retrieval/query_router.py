@@ -8,17 +8,21 @@ Routes queries like:
 - Everything else → search_code (hybrid retrieval)
 
 Uses pattern matching first (zero cost), then optional LLM classification
-for ambiguous queries when STROPHA_QUERY_ROUTER_LLM=1.
+for ambiguous queries when query_router_llm: true in stropha.yaml.
+
+Configuration (stropha.yaml):
+    retrieval_features:
+      query_router_llm: false  # pattern-based by default
 """
 
 from __future__ import annotations
 
-import os
 import re
 from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING
 
+from ..config_features import get_config
 from ..logging import get_logger
 
 if TYPE_CHECKING:
@@ -198,7 +202,7 @@ def route_query(
         RoutedQuery with intent, extracted symbol, and confidence.
     """
     if use_llm is None:
-        use_llm = os.environ.get("STROPHA_QUERY_ROUTER_LLM", "0") == "1"
+        use_llm = get_config().retrieval_features.query_router_llm
     
     query = query.strip()
     if not query:

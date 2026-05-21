@@ -25,9 +25,8 @@ from stropha.retrieval.multi_query import (
 # --------------------------------------------------------------------------- Basic
 
 
-def test_multi_query_disabled_by_default(monkeypatch) -> None:
-    """Multi-query is disabled when env var is not set."""
-    monkeypatch.delenv("STROPHA_MULTI_QUERY_ENABLED", raising=False)
+def test_multi_query_disabled_by_default(isolated_test_env) -> None:
+    """Multi-query is disabled by default."""
     clear_cache()
     
     result = generate_paraphrases("how does authentication work")
@@ -35,9 +34,15 @@ def test_multi_query_disabled_by_default(monkeypatch) -> None:
     assert result == ["how does authentication work"]
 
 
-def test_multi_query_returns_paraphrases_when_enabled(monkeypatch) -> None:
-    """Multi-query generates paraphrases when enabled."""
-    monkeypatch.setenv("STROPHA_MULTI_QUERY_ENABLED", "1")
+def test_multi_query_returns_paraphrases_when_enabled(isolated_test_env) -> None:
+    """Multi-query generates paraphrases when enabled via YAML."""
+    from stropha.config_features import reset_config
+    yaml_path = isolated_test_env / "stropha.yaml"
+    yaml_path.write_text("""
+retrieval_features:
+  multi_query_enabled: true
+""")
+    reset_config()
     clear_cache()
     
     with patch("stropha.inference.generate") as mock_gen:
@@ -201,13 +206,19 @@ def test_expander_respects_num_paraphrases(monkeypatch) -> None:
     assert len(result) <= 3
 
 
-# --------------------------------------------------------------------------- Env Vars
+# --------------------------------------------------------------------------- YAML Config
 
 
-def test_env_var_count(monkeypatch) -> None:
-    """STROPHA_MULTI_QUERY_COUNT env var is respected."""
-    monkeypatch.setenv("STROPHA_MULTI_QUERY_ENABLED", "1")
-    monkeypatch.setenv("STROPHA_MULTI_QUERY_COUNT", "5")
+def test_yaml_config_count(isolated_test_env) -> None:
+    """multi_query_count in YAML is respected."""
+    from stropha.config_features import reset_config
+    yaml_path = isolated_test_env / "stropha.yaml"
+    yaml_path.write_text("""
+retrieval_features:
+  multi_query_enabled: true
+  multi_query_count: 5
+""")
+    reset_config()
     clear_cache()
     
     with patch("stropha.inference.generate") as mock_gen:
@@ -224,9 +235,15 @@ def test_env_var_count(monkeypatch) -> None:
 # --------------------------------------------------------------------------- Filtering
 
 
-def test_paraphrases_deduplicated(monkeypatch) -> None:
+def test_paraphrases_deduplicated(isolated_test_env) -> None:
     """Duplicate paraphrases are removed."""
-    monkeypatch.setenv("STROPHA_MULTI_QUERY_ENABLED", "1")
+    from stropha.config_features import reset_config
+    yaml_path = isolated_test_env / "stropha.yaml"
+    yaml_path.write_text("""
+retrieval_features:
+  multi_query_enabled: true
+""")
+    reset_config()
     clear_cache()
     
     with patch("stropha.inference.generate") as mock_gen:
@@ -242,9 +259,15 @@ def test_paraphrases_deduplicated(monkeypatch) -> None:
     assert result.count("same query text") == 1
 
 
-def test_original_query_always_first(monkeypatch) -> None:
+def test_original_query_always_first(isolated_test_env) -> None:
     """Original query is always first in results."""
-    monkeypatch.setenv("STROPHA_MULTI_QUERY_ENABLED", "1")
+    from stropha.config_features import reset_config
+    yaml_path = isolated_test_env / "stropha.yaml"
+    yaml_path.write_text("""
+retrieval_features:
+  multi_query_enabled: true
+""")
+    reset_config()
     clear_cache()
     
     original = "my original query"
@@ -256,9 +279,15 @@ def test_original_query_always_first(monkeypatch) -> None:
     assert result[0] == original
 
 
-def test_numbered_lists_filtered(monkeypatch) -> None:
+def test_numbered_lists_filtered(isolated_test_env) -> None:
     """Numbered list markers are filtered out."""
-    monkeypatch.setenv("STROPHA_MULTI_QUERY_ENABLED", "1")
+    from stropha.config_features import reset_config
+    yaml_path = isolated_test_env / "stropha.yaml"
+    yaml_path.write_text("""
+retrieval_features:
+  multi_query_enabled: true
+""")
+    reset_config()
     clear_cache()
     
     with patch("stropha.inference.generate") as mock_gen:
@@ -277,9 +306,15 @@ def test_numbered_lists_filtered(monkeypatch) -> None:
     assert not any(p.startswith("*") for p in result)
 
 
-def test_short_paraphrases_filtered(monkeypatch) -> None:
+def test_short_paraphrases_filtered(isolated_test_env) -> None:
     """Very short paraphrases are filtered."""
-    monkeypatch.setenv("STROPHA_MULTI_QUERY_ENABLED", "1")
+    from stropha.config_features import reset_config
+    yaml_path = isolated_test_env / "stropha.yaml"
+    yaml_path.write_text("""
+retrieval_features:
+  multi_query_enabled: true
+""")
+    reset_config()
     clear_cache()
     
     with patch("stropha.inference.generate") as mock_gen:

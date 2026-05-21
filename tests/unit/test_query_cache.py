@@ -52,9 +52,7 @@ def _make_vec(dim: int = 128, seed: float = 0.1) -> list[float]:
 
 
 def test_cache_disabled_by_default(monkeypatch) -> None:
-    """Cache is disabled when env var is not set."""
-    monkeypatch.delenv("STROPHA_QUERY_CACHE_ENABLED", raising=False)
-    
+    """Cache is disabled by default."""
     cache = SemanticCache()
     vec = _make_vec()
     
@@ -79,9 +77,15 @@ def test_cache_enabled_via_config() -> None:
     assert cache.is_enabled
 
 
-def test_cache_enabled_via_env(monkeypatch) -> None:
-    """Cache can be enabled via env var."""
-    monkeypatch.setenv("STROPHA_QUERY_CACHE_ENABLED", "1")
+def test_cache_enabled_via_yaml(isolated_test_env) -> None:
+    """Cache can be enabled via YAML config."""
+    from stropha.config_features import reset_config
+    yaml_path = isolated_test_env / "stropha.yaml"
+    yaml_path.write_text("""
+retrieval_features:
+  cache_enabled: true
+""")
+    reset_config()
     
     cache = SemanticCache()
     vec = _make_vec()

@@ -83,10 +83,17 @@ class TestMlxBackend:
         backend = MlxBackend(model="custom-model")
         assert backend._default_model == "custom-model"
 
-    def test_env_var_model_override(self):
-        with patch.dict(os.environ, {"STROPHA_MLX_MODEL": "env-model"}):
-            backend = MlxBackend()
-            assert backend._default_model == "env-model"
+    def test_yaml_model_override(self, isolated_test_env):
+        """YAML config can override MLX model."""
+        from stropha.config_features import reset_config
+        yaml_path = isolated_test_env / "stropha.yaml"
+        yaml_path.write_text("""
+inference:
+  mlx_model: yaml-model
+""")
+        reset_config()
+        backend = MlxBackend()
+        assert backend._default_model == "yaml-model"
 
 
 # --------------------------------------------------------------------------- #
@@ -101,7 +108,8 @@ class TestOllamaBackend:
         backend = OllamaBackend()
         assert backend.name == "ollama"
 
-    def test_default_model(self):
+    def test_default_model(self, isolated_test_env):
+        """Default model comes from config defaults."""
         backend = OllamaBackend()
         assert backend._default_model == "qwen2.5-coder:1.5b"
 
@@ -113,8 +121,11 @@ class TestOllamaBackend:
         backend = OllamaBackend(base_url="http://custom:1234")
         assert backend._base_url == "http://custom:1234"
 
-    def test_env_var_host_override(self):
+    def test_env_var_host_override(self, isolated_test_env):
+        """OLLAMA_HOST env var still works for ecosystem compatibility."""
+        from stropha.config_features import reset_config
         with patch.dict(os.environ, {"OLLAMA_HOST": "http://env-host:5678"}):
+            reset_config()  # Reload config to pick up env var
             backend = OllamaBackend()
             assert backend._base_url == "http://env-host:5678"
 
@@ -163,11 +174,18 @@ class TestGetBackend:
         backend = get_backend(prefer="ollama")
         assert isinstance(backend, OllamaBackend)
 
-    def test_env_var_override(self):
-        with patch.dict(os.environ, {"STROPHA_INFERENCE_BACKEND": "ollama"}):
-            reset_backend()
-            backend = get_backend()
-            assert isinstance(backend, OllamaBackend)
+    def test_yaml_config_backend_override(self, isolated_test_env):
+        """YAML config can select backend."""
+        from stropha.config_features import reset_config
+        yaml_path = isolated_test_env / "stropha.yaml"
+        yaml_path.write_text("""
+inference:
+  backend: ollama
+""")
+        reset_config()
+        reset_backend()
+        backend = get_backend()
+        assert isinstance(backend, OllamaBackend)
 
 
 # --------------------------------------------------------------------------- #

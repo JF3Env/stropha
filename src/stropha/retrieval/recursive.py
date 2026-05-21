@@ -13,17 +13,19 @@ and expands them in two ways:
    snippets into a single hit covering the union of their line ranges.
    Recovers context that exact-chunk-boundary retrieval misses.
 
-Local-only, no LLM, no embeddings. Pure SQL + dataclass juggling. Toggle
-via ``STROPHA_RECURSIVE_RETRIEVAL=1`` (default off — kept conservative
-because merging changes the shape of `SearchHit` lists, which downstream
-consumers may not expect).
+Local-only, no LLM, no embeddings. Pure SQL + dataclass juggling.
+
+Configuration (stropha.yaml):
+    retrieval_features:
+      recursive_enabled: true
+      recursive_adjacency: 5  # line gap considered adjacent
 """
 
 from __future__ import annotations
 
-import os
 from collections.abc import Sequence
 
+from ..config_features import get_config
 from ..logging import get_logger
 from ..models import SearchHit
 from ..storage import Storage
@@ -34,14 +36,13 @@ DEFAULT_ADJACENCY_LINES = 5
 
 
 def _enabled() -> bool:
-    return os.environ.get("STROPHA_RECURSIVE_RETRIEVAL", "0") == "1"
+    """Check if recursive retrieval is enabled via stropha.yaml."""
+    return get_config().retrieval_features.recursive_enabled
 
 
 def _adjacency_lines() -> int:
-    try:
-        return int(os.environ.get("STROPHA_RECURSIVE_ADJACENCY", str(DEFAULT_ADJACENCY_LINES)))
-    except ValueError:
-        return DEFAULT_ADJACENCY_LINES
+    """Get the adjacency line gap from stropha.yaml."""
+    return get_config().retrieval_features.recursive_adjacency
 
 
 def merge_hits(

@@ -94,7 +94,49 @@ The chunker's language sub-adapters are themselves an adapter stage (`language-c
 | `stropha hook {install,uninstall,status}` | Manage the post-commit hook (cross-repo via `--project-dir / --index-path / --log-path`) |
 | `stropha glossary {add,remove,list,import,export,stats}` | Manage domain glossary (term definitions for better conceptual search) |
 
-### 2.5 Environment variables (active toggles)
+### 2.5 Configuration (YAML-first)
+
+**BREAKING CHANGE (v7.0):** Query-time features are now configured via `stropha.yaml`, not environment variables. The following ENV vars are **removed**:
+- `STROPHA_HYDE_ENABLED`, `STROPHA_HYDE_CODE_TUNED`, `STROPHA_HYDE_MODEL`
+- `STROPHA_QUERY_ROUTER_LLM`, `STROPHA_QUERY_DECOMPOSITION_ENABLED`, `STROPHA_QUERY_DECOMPOSITION_LLM`
+- `STROPHA_QUERY_REWRITE_ENABLED`, `STROPHA_MULTI_QUERY_ENABLED`, `STROPHA_MULTI_QUERY_COUNT`
+- `STROPHA_RECURSIVE_RETRIEVAL`, `STROPHA_RECURSIVE_ADJACENCY`
+- `STROPHA_QUERY_CACHE_ENABLED`, `STROPHA_QUERY_CACHE_SIZE`, `STROPHA_QUERY_CACHE_TTL`
+- `STROPHA_MLX_MODEL`, `STROPHA_OLLAMA_MODEL`, `STROPHA_GRAPH_CONFIDENCE`, `STROPHA_GRAPH_FTS_AUGMENT`
+
+#### stropha.yaml sections
+
+```yaml
+# Query-time retrieval features (all disabled by default)
+retrieval_features:
+  hyde_enabled: false           # Hypothetical document embeddings
+  hyde_code_tuned: true         # Use code-specific HyDE prompts
+  query_decomposition_enabled: false
+  query_decomposition_llm: false
+  query_router_llm: false
+  query_rewrite_enabled: false
+  multi_query_enabled: false
+  multi_query_count: 3
+  recursive_enabled: false      # Parent + adjacent-line auto-merge
+  recursive_adjacency: 5
+  cache_enabled: false          # Semantic query cache
+  cache_size: 500
+  cache_ttl: 3600
+
+# LLM inference backend
+inference:
+  backend: null                 # "mlx", "ollama", or null for auto-detect
+  mlx_model: mlx-community/Qwen2.5-Coder-1.5B-Instruct-4bit
+  ollama_model: qwen2.5-coder:1.5b
+  ollama_host: http://localhost:11434  # Also reads OLLAMA_HOST env
+
+# Graph integration
+graph:
+  confidence: EXTRACTED         # EXTRACTED, INFERRED, or comma-separated
+  fts_augment: true
+```
+
+#### Environment variables (still supported)
 
 | Var | Default | Effect |
 |---|---|---|
@@ -102,25 +144,9 @@ The chunker's language sub-adapters are themselves an adapter stage (`language-c
 | `STROPHA_INDEX_PATH` | `.stropha/index.db` | SQLite index path |
 | `STROPHA_LOG_LEVEL` | `INFO` | structlog level |
 | `VOYAGE_API_KEY` | unset | Enables the `voyage` embedder |
-| `OLLAMA_HOST` | `http://localhost:11434` | Ollama daemon used by `ollama` enricher + HyDE |
-| `STROPHA_HYDE_ENABLED` | `0` | Route the dense-stream query through Ollama (hypothetical doc rewrite) |
-| `STROPHA_HYDE_MODEL` | `qwen2.5-coder:1.5b` | Ollama model used by HyDE |
-| `STROPHA_QUERY_ROUTER_LLM` | `0` | Use LLM for ambiguous query routing (slower but more accurate) |
-| `STROPHA_QUERY_DECOMPOSITION_ENABLED` | `0` | Split compound queries into sub-queries, search each, RRF fuse |
-| `STROPHA_QUERY_DECOMPOSITION_LLM` | `0` | Use LLM for complex query decomposition |
-| `STROPHA_QUERY_REWRITE_ENABLED` | `0` | LLM rewrites query to expand natural language into code terms |
-| `STROPHA_MULTI_QUERY_ENABLED` | `0` | Generate N paraphrases of query, search each, RRF fuse results |
-| `STROPHA_MULTI_QUERY_COUNT` | `3` | Number of paraphrases to generate (1-5) |
-| `STROPHA_MULTI_QUERY_MODEL` | `qwen2.5-coder:1.5b` | Ollama model used for paraphrase generation |
-| `STROPHA_QUERY_CACHE_ENABLED` | `0` | Enable semantic query cache (LRU, in-memory) |
-| `STROPHA_QUERY_CACHE_SIZE` | `500` | Max cache entries |
-| `STROPHA_QUERY_CACHE_TTL` | `3600` | Cache entry TTL in seconds (default 1 hour) |
-| `STROPHA_RECURSIVE_RETRIEVAL` | `0` | Enable parent + adjacent-line auto-merge in `search` results |
-| `STROPHA_RECURSIVE_ADJACENCY` | `5` | Line gap considered "adjacent" |
-| `STROPHA_GRAPH_FTS_AUGMENT` | `1` | Retroactive FTS5 augmentation with community / node labels |
-| `STROPHA_GRAPH_CONFIDENCE` | `EXTRACTED` | Comma-separated set of graph edge confidences to load |
-| `STROPHA_GRAPHIFY_OUT` | `<repo>/graphify-out` | Override path to the graphify output |
-| `STROPHA_HOOK_SKIP=1` | unset | Bypass the post-commit hook (useful in rebases) |
+| `OLLAMA_HOST` | `http://localhost:11434` | Ollama daemon (kept for ecosystem compat) |
+| `STROPHA_GRAPHIFY_OUT` | `<repo>/graphify-out` | Override path to graphify output |
+| `STROPHA_HOOK_SKIP=1` | unset | Bypass the post-commit hook |
 | `STROPHA_HOOK_TIMEOUT` | `600` | Hook bg-process wall-clock (seconds) |
 | `STROPHA_HOOK_LOG` | `~/.cache/stropha-hook.log` | Hook log path |
 | `STROPHA_HOOK_UV` | discovered | Override `uv` binary path |
@@ -151,7 +177,7 @@ Per file: `test_anchors` 26 · `test_chunker` 8 · `test_contextual_enricher` 19
 5. **Hook ≤ 100 ms before fork** — the post-commit hook MUST exit the foreground in under 100 ms so `git commit` returns instantly. All real work runs in a detached `nohup` + `flock`-guarded background. The hook itself never blocks the commit, never makes a network call before forking.
 6. **Local-only by default** — no new mandatory cloud dependency. Voyage / Anthropic / OpenAI integrations stay optional (`[mlx]` / `VOYAGE_API_KEY` style). The default install on a fresh box does indexing + search + hook + graph traversal with zero network calls (after fastembed downloads weights once).
 7. **`fts_chunks` is contentless-with-external-content** — every row inserted via explicit `INSERT INTO fts_chunks(rowid, content, rel_path) VALUES (?, ?, ?)`. The `_fts_text()` helper builds the document (content + identifier split + path tokens + symbol). `Storage.augment_fts_with_graph()` follows the same pattern: DELETE + INSERT, never UPDATE.
-8. **Search-time toggles do not require re-index** — HyDE (`STROPHA_HYDE_ENABLED`) and recursive merge (`STROPHA_RECURSIVE_RETRIEVAL`) live in the query path only. Flipping them on/off costs zero — no re-embed, no drift detection trigger.
+8. **Search-time toggles do not require re-index** — HyDE (`retrieval_features.hyde_enabled`) and recursive merge (`retrieval_features.recursive_enabled`) live in the query path only. Flipping them on/off costs zero — no re-embed, no drift detection trigger.
 
 ## Authoritative spec
 
@@ -439,7 +465,7 @@ Current benchmark (mimoria golden set, 43 queries): symbol-lookup 80%, conceptua
 | Query routing to graph tools | 2d | +40% multi-hop | **done** |
 | Query decomposition + sub-query fusion | 1d | +25% natural-language | **done** |
 
-Query routing classifies intent ("what calls X" → `find_callers`, "tests for X" → `find_tests_for`) and dispatches to the appropriate tool. Implemented as `smart_search` MCP tool with pattern-based classification + optional LLM fallback (`STROPHA_QUERY_ROUTER_LLM=1`). Query decomposition splits complex queries into atomic sub-queries, retrieves each, and fuses via RRF. Enable with `STROPHA_QUERY_DECOMPOSITION_ENABLED=1` or use LLM for ambiguous cases with `STROPHA_QUERY_DECOMPOSITION_LLM=1`.
+Query routing classifies intent ("what calls X" → `find_callers`, "tests for X" → `find_tests_for`) and dispatches to the appropriate tool. Implemented as `smart_search` MCP tool with pattern-based classification + optional LLM fallback (`retrieval_features.query_router_llm: true`). Query decomposition splits complex queries into atomic sub-queries, retrieves each, and fuses via RRF. Enable with `retrieval_features.query_decomposition_enabled: true` or use LLM for ambiguous cases with `retrieval_features.query_decomposition_llm: true`.
 
 **Priority 2 — Contextual Retrieval (Anthropic method, ~3 days):**
 
@@ -457,6 +483,13 @@ Prepend LLM-generated context to each chunk before embedding. The context descri
 | Larger model support (deepseek-coder-v2, codestral) | 0.5d | +10% conceptual | pending |
 
 Code-tuned HyDE prompts automatically select the best prompt template based on query type (function, class, how, where, test, error). Enable with `STROPHA_HYDE_ENABLED=1` (code-tuned prompts are on by default). Disable code-tuned prompts with `STROPHA_HYDE_CODE_TUNED=0`.
+
+**NOTE (v7.0 breaking change):** These ENV vars are deprecated. Use `stropha.yaml` instead:
+```yaml
+retrieval_features:
+  hyde_enabled: true
+  hyde_code_tuned: true
+```
 
 **Priority 4 — Late Chunking (~1 week):**
 

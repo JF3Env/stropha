@@ -22,10 +22,15 @@ Falls back to single-query search when:
 - No inference backend available
 - Generation times out
 - Generated paraphrases are empty
-- STROPHA_MULTI_QUERY_ENABLED is unset / "0"
+- multi_query_enabled: false in stropha.yaml
 
 Caching: Paraphrases are cached in-memory by query to avoid repeated
 LLM calls for the same query.
+
+Configuration (stropha.yaml):
+    retrieval_features:
+      multi_query_enabled: true
+      multi_query_count: 3  # number of paraphrases
 
 Usage:
     from stropha.retrieval.multi_query import MultiQueryExpander
@@ -38,8 +43,8 @@ Usage:
 from __future__ import annotations
 
 import hashlib
-import os
 
+from ..config_features import get_config
 from ..logging import get_logger
 
 log = get_logger(__name__)
@@ -58,18 +63,18 @@ _CACHE_MAX_SIZE = 1000
 
 
 def _enabled() -> bool:
-    return os.environ.get("STROPHA_MULTI_QUERY_ENABLED", "0") == "1"
+    """Check if multi-query expansion is enabled via stropha.yaml."""
+    return get_config().retrieval_features.multi_query_enabled
 
 
 def _prompt_template() -> str:
-    return os.environ.get("STROPHA_MULTI_QUERY_PROMPT", _DEFAULT_PROMPT)
+    """Get prompt template (currently hardcoded)."""
+    return _DEFAULT_PROMPT
 
 
 def _num_paraphrases() -> int:
-    try:
-        return int(os.environ.get("STROPHA_MULTI_QUERY_COUNT", "3"))
-    except ValueError:
-        return 3
+    """Get number of paraphrases from stropha.yaml."""
+    return get_config().retrieval_features.multi_query_count
 
 
 def _cache_key(query: str) -> str:

@@ -14,7 +14,12 @@ Falls back to the raw query when:
 - No inference backend available
 - The generation times out
 - The generated text is empty
-- ``STROPHA_HYDE_ENABLED`` is unset / "0"
+- hyde_enabled is false in stropha.yaml
+
+Configuration (stropha.yaml):
+    retrieval_features:
+      hyde_enabled: true
+      hyde_code_tuned: true
 
 Drift-safety note: HyDE changes only the *query path*. It does not
 mutate stored chunks or their embeddings, so toggling it on and off is
@@ -30,9 +35,9 @@ Usage:
 
 from __future__ import annotations
 
-import os
 import re
 
+from ..config_features import get_config
 from ..logging import get_logger
 
 log = get_logger(__name__)
@@ -130,21 +135,17 @@ def _select_prompt(query: str) -> str:
 
 
 def _enabled() -> bool:
-    return os.environ.get("STROPHA_HYDE_ENABLED", "0") == "1"
+    """Check if HyDE is enabled via stropha.yaml."""
+    return get_config().retrieval_features.hyde_enabled
 
 
 def _use_code_tuned() -> bool:
     """Check if code-tuned prompts should be used (default: yes)."""
-    return os.environ.get("STROPHA_HYDE_CODE_TUNED", "1") == "1"
+    return get_config().retrieval_features.hyde_code_tuned
 
 
 def _prompt_template(query: str) -> str:
     """Get the appropriate prompt template for the query."""
-    # Check for custom prompt override
-    custom = os.environ.get("STROPHA_HYDE_PROMPT")
-    if custom:
-        return custom
-    
     # Use code-tuned prompts by default
     if _use_code_tuned():
         return _select_prompt(query)

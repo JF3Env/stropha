@@ -182,7 +182,18 @@ def test_explicit_confidence_filter_overrides_default(tmp_path: Path, storage: S
     assert res.edges_loaded == 2
 
 
-def test_env_var_drives_confidence_filter(monkeypatch, tmp_path: Path, storage: Storage) -> None:
+def test_yaml_config_drives_confidence_filter(isolated_test_env, tmp_path: Path, storage: Storage) -> None:
+    """YAML config can specify multiple confidence levels."""
+    from stropha.config_features import reset_config
+    
+    # Write config to the isolated env
+    yaml_path = isolated_test_env / "stropha.yaml"
+    yaml_path.write_text("""
+graph:
+  confidence: "EXTRACTED,INFERRED"
+""")
+    reset_config()
+    
     graph_path = tmp_path / "graphify-out" / "graph.json"
     _write_graph(
         graph_path,
@@ -192,7 +203,6 @@ def test_env_var_drives_confidence_filter(monkeypatch, tmp_path: Path, storage: 
             {"source": "a", "target": "b", "relation": "y", "confidence": "INFERRED"},
         ],
     )
-    monkeypatch.setenv("STROPHA_GRAPH_CONFIDENCE", "EXTRACTED,INFERRED")
     loader = GraphifyLoader(storage, tmp_path)
     res = loader.load()
     assert res is not None

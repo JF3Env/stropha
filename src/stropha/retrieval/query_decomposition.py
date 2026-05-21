@@ -17,7 +17,12 @@ Detection heuristics:
 
 Backend selection (automatic):
 - Pattern-based decomposition for clear conjunctions (zero cost)
-- LLM decomposition for ambiguous queries (STROPHA_QUERY_DECOMPOSITION_LLM=1)
+- LLM decomposition for ambiguous queries (query_decomposition_llm: true)
+
+Configuration (stropha.yaml):
+    retrieval_features:
+      query_decomposition_enabled: true
+      query_decomposition_llm: false  # use LLM for ambiguous cases
 
 Usage:
     from stropha.retrieval.query_decomposition import decompose_query
@@ -28,10 +33,10 @@ Usage:
 
 from __future__ import annotations
 
-import os
 import re
 from dataclasses import dataclass
 
+from ..config_features import get_config
 from ..logging import get_logger
 
 log = get_logger(__name__)
@@ -179,7 +184,7 @@ def decompose_query(
         if no decomposition was needed/possible).
     """
     if use_llm is None:
-        use_llm = os.environ.get("STROPHA_QUERY_DECOMPOSITION_LLM", "0") == "1"
+        use_llm = get_config().retrieval_features.query_decomposition_llm
     
     query = query.strip()
     if not query:
@@ -235,5 +240,5 @@ def decompose_query(
 
 
 def is_decomposition_enabled() -> bool:
-    """Check if query decomposition is enabled via env var."""
-    return os.environ.get("STROPHA_QUERY_DECOMPOSITION_ENABLED", "0") == "1"
+    """Check if query decomposition is enabled via stropha.yaml."""
+    return get_config().retrieval_features.query_decomposition_enabled
