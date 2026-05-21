@@ -1,123 +1,121 @@
-# stropha vs. the "meta-harness" — concept comparison + improvement map
+# stropha as a harness — and the Meta-Harness that optimizes it
 
-**Status:** Conceptual analysis · 2026-05-21 (rev. 2 — re-anchored definition)
-**Scope:** stropha @ HEAD (the *concept*, not a line-by-line audit) vs. the concept of a **meta-harness**.
-**Goal:** position stropha against the meta-harness idea, show how much of it stropha *already* owns, and enumerate **115 realistic, state-of-the-art improvement options** that close the gap — without breaking the §3 invariants (drift detection, forward-only migrations, local-only default, non-blocking hook).
+**Status:** Conceptual analysis · 2026-05-21 (rev. 3 — realigned to the published Meta-Harness vocabulary)
+**Scope:** stropha @ HEAD (the *concept*, not a line-by-line audit), positioned against the **harness / Meta-Harness** distinction from the literature.
+**Goal:** locate stropha precisely in that vocabulary, show what it would take to make it a full *harness* and then a *Meta-Harness target*, and enumerate **118 realistic, state-of-the-art improvement options** — without breaking the §3 invariants (drift detection, forward-only migrations, local-only default, non-blocking hook).
 
-**Working definition (from the project owner):**
-> **A meta-harness is the ability to improve context — so an agent receives better *information* and better *guidance*.**
+**Primary source (read via its arXiv HTML, 2026-05-21):**
+> Lee, Nair, Zhang, Lee, Khattab, Finn. *Meta-Harness: End-to-End Optimization of Model Harnesses.* arXiv:2603.28052 (2026). Stanford / KRAFTON / MIT.
 
-**Sources verified for this document:**
+**Other sources verified:**
 - `CLAUDE.md` §2 (snapshot), §3 (invariants), §6 (history)
 - `src/stropha/server.py` (`grep @mcp.tool` → 9 tool decorators), `src/stropha/adapters/**` (registry tree)
-- `src/stropha/retrieval/*` (smart_search, query_router, query_decomposition, recursive, hyde, cache, savings)
+- `src/stropha/retrieval/*`, `src/stropha/eval/harness.py`, `src/stropha/cost.py`
 - `ROADMAP.md`, `docs/comparisons/stropha-vs-semble.md`, `docs/architecture/stropha-system.md`
 
-> This is an *analysis*, not a spec. Nothing here is shipped. The §3 invariants and the local-only directive bound every option below; cloud-only items are flagged.
+> This is an *analysis*, not a spec. Nothing here is shipped. The §3 invariants and the local-only directive bound every option below; cloud-dependent items are flagged.
 
 ---
 
-## 1. Definitions — a retriever vs. a context-improvement engine
+## 1. The vocabulary — harness, context engineering, Meta-Harness
 
-### 1.1 What stropha is (the concept)
+Earlier revisions of this document used "meta-harness" loosely. The term now has a precise published definition, and this revision adopts it.
 
-stropha is a **local-first retrieval substrate for codebases**, exposed to LLM clients over MCP. Its concept is: *take an arbitrary repo, build a structural + semantic model of it, and answer "where is X / who calls X / what explains X" cheaply, so the agent does not burn its context window on directory walks.*
+### 1.1 The three terms (Lee et al., 2026)
 
-It is a **context *retrieval* engine**. It is invoked with a query; it returns the relevant material; it is done. It does not shape that material, does not advise the agent on it, and does not remember it.
+- **Harness** — *"a stateful program that wraps a language model and determines what context the model sees at each step."* The harness is not the model; it is the code around it that decides what to store, retrieve, and present. The paper's framing: *"the performance of LLM systems depends not only on model weights, but also on their harness… yet harnesses are still designed largely by hand."*
+- **Context engineering** — the practice of refining the code around an LLM to improve system performance. It is what good harness design *is*.
+- **Meta-Harness** — *"an outer-loop system that searches over harness code for LLM applications."* It automates context engineering: an agentic *proposer* (the paper uses Claude Code) reads a filesystem of every prior candidate's **code, scores, and full execution traces**, proposes new harnesses, evaluates them, and stores the results. The paper's key empirical claim: full-history access beats compressed-feedback optimizers decisively (ablation: ~50% with full access vs. ~34.6% scores-only), and the discovered harnesses beat hand-engineered baselines.
 
-### 1.2 What a "meta-harness" is
+### 1.2 Where stropha sits
 
-> **A meta-harness is the ability to improve context — so an agent receives better *information* and better *guidance*.**
+> **stropha today is not a harness in Lee et al.'s sense — it is a harness *component*: the context-sourcing organ.**
 
-> **Terminology note.** "Meta-harness" is *not* standardized industry jargon. The established terms are **agent harness** / **scaffold** (the deterministic code around the model — popularized in eval work, e.g. METR and SWE-bench, where "the harness matters as much as the model") and, for the concept defined above, **context engineering** — the term the market actually converged on (~2025) for deliberately curating what enters an agent's context window. "Meta-harness" is used in this document as the project's *working term*; read it as *context engineering elevated to a dedicated system*. Where the industry does attach "meta-" to a harness, it usually signals **self-improvement** (a harness that tunes itself — cf. self-improving / "Gödel-machine"-style agents), which this document treats as Floor 3 (§7).
+A harness is *stateful* and decides *all* the context the model sees *at each step*. stropha is stateless per MCP call, it is *invoked* rather than wrapping the model, and it sources *material* without shaping it, sequencing it, or budgeting it. It is the part of a harness that answers "where is X?" — a critical part, and the expensive one, but one organ.
 
-The "meta" here is not about orchestrating harnesses or owning the agent loop. It is about one job, done deliberately: **context improvement**. A plain harness *assembles* context — it globs a few files, dumps a search result, appends history. A meta-harness *improves* it: it treats the context window as a product to be optimized, along two axes.
+This gives a clean two-stage climb:
 
-- **Better information** — the facts in the window are not merely relevant, they are *shaped*: distilled, compressed, deduplicated, fused across sources, fit to a token budget, stripped of noise, annotated with provenance. The objective is *maximum useful signal per token*.
-- **Better guidance** — the window does not only contain facts, it carries *direction*: what to do next, what to avoid, what is risky, which constraints apply, what has already been tried, which claim is verified and which is a guess.
-
-A harness answers *"what context exists?"*. A meta-harness answers *"what is the **most useful possible** context for this agent, this task, right now — and what should I tell the agent **about** it?"*.
+1. **stropha → a full harness.** Add statefulness, information shaping, and guidance so stropha *determines* an agent's context rather than merely supplying candidates for it. (§A–§I below.)
+2. **stropha → a Meta-Harness target.** Make that harness *automatically optimizable*: emit code + scores + traces into an artifact store, treat `eval` as a real fitness function, and run an agentic proposer over the adapter search space. (§J–§L below.)
 
 ### 1.3 The thesis
 
-> **stropha is a context *retrieval* engine. A meta-harness is a context *improvement* engine. stropha already nails the expensive prerequisite — finding the right material — but it returns that material nearly raw, and it informs without guiding.**
+> **stropha is the context-sourcing component of a harness. It already nails the costly prerequisite — finding the right material — and, unusually, it is *already structured as a search space*. The climb is to make it a full harness, then to let a Meta-Harness search that space.**
 
-Under this definition the gap is not *altitude* (orchestration). It is **transformation and direction**:
-
-1. stropha **returns**; it does not **shape** — chunks come back near-raw: no token budget, no compression, no distillation, no cross-source fusion, no dedup. `search_code` gives you K results, not "the best context that fits in N tokens".
-2. stropha **informs**; it does not **guide** — it reports what exists; it never tells the agent what to do, what to avoid, what is risky, what to look at next, or which spec constrains the change.
-3. stropha is **reactive**; a meta-harness is **anticipatory** — it answers the query asked, instead of pre-empting the next information need or the task's likely failure mode.
-4. stropha is **amnesiac** — it cannot improve context using prior turns, prior mistakes, or guidance already given.
-5. stropha **cannot tell whether it helped** — there is no feedback loop, so "better context" is never actually defined or measured.
-
-Finding the right material is the costly part, and stropha has it. The 115 options in §5 are about the cheaper-but-neglected rest: shaping that material into better *information*, and wrapping it in *guidance*.
+The interesting observation is the second clause. The paper notes that automation wins *"once a search space becomes accessible through improved coding agents."* For most LLM apps, harness code is an undifferentiated blob. stropha's harness component is **already a declarative search space**: a 6-stage adapter framework with registered, swappable adapters; YAML-composed pipelines; `adapter_id` digests that make every point in the space addressable and cache-coherent; drift detection that makes changes safe to apply incrementally; an `eval` golden set; a `cost` meter. stropha is not just a harness component — it is an *unusually Meta-Harness-ready* one. It is missing the artifact store and the proposer loop, not the search space.
 
 ---
 
-## 2. Side-by-side: stropha (today) vs. a meta-harness
+## 2. Side-by-side: component → harness → Meta-Harness
 
-Compared on the dimensions that the definition makes load-bearing — *information quality* and *guidance*.
+| Dimension | stropha today — harness *component* | A full harness (Lee et al.) | A Meta-Harness (Lee et al.) |
+|---|---|---|---|
+| Job | Source relevant material on demand | Determine every piece of context the model sees, each step | Search over harness code to optimize it end-to-end |
+| State | Stateless per MCP call (`query_cache` = exact-match) | Stateful across a session | Stateful across *runs* — a full-history artifact store |
+| Output | K raw chunks / graph nodes | A shaped, budgeted, guided working set | Better *harnesses* (code + config) |
+| Information shaping | None — chunks returned near-raw | Distilled, compressed, deduplicated, fused, budget-fit | n/a — it tunes the shaper |
+| Guidance | None — reports what exists | What to do / avoid / verify / look at next | n/a — it tunes the guide |
+| Designed by | Hand (adapters, `stropha.yaml`) | Hand — "designed largely by hand" (the paper's problem) | An agentic proposer (the paper uses Claude Code) |
+| Feedback used | `eval` golden set = manual tripwire | Consumes feedback to adapt within a session | Consumes code + scores + execution traces of all prior candidates |
+| Optimization target | Recall@K / MRR (proxy metrics) | Task success within a session | Held-out task success, across models |
+| Search space | A 6-stage adapter framework — *already declarative* | The harness's own code | The harness's code + config (stropha's adapter space) |
+| Reached via | — (this is stropha today) | §A–§I of this document | §J–§L of this document |
 
-| Dimension | stropha @ HEAD | A meta-harness |
+**Read of the table:** the columns are a ladder, and stropha already stands on the first rung holding the materials for the third — its adapter framework is the search space a Meta-Harness needs, decades ahead of the typical "blob of harness code" the paper has to cope with.
+
+---
+
+## 3. Where stropha already fits the picture
+
+### 3.1 stropha as a harness — organs present and missing
+
+| Organ of a harness | stropha's analogue | Status |
 |---|---|---|
-| Core job | Retrieve relevant material | Improve context — better information + guidance |
-| Unit returned | K chunks / hits / graph nodes | A budget-fit, shaped, annotated **working set** |
-| Information shaping | None — chunks returned near-raw | Distilled, compressed, deduplicated, fused, noise-stripped |
-| Token-budget awareness | None — `top_k`, not "fits in N tokens" | Packs to the budget; trades rank-N detail for rank-1 depth |
-| Guidance to the agent | None — reports what exists | Says what to do, avoid, verify, look at next |
-| Anticipation | Reactive — answers the query asked | Pre-empts the next need and the likely failure mode |
-| Provenance / trust signals | Minimal (path/line) | Every span tagged: source, why selected, verified vs. guessed |
-| Use of the past | Stateless per call (`query_cache` = exact-match only) | Memory: improves context from prior turns + prior mistakes |
-| Definition of "better" | Implicit — `eval` is a manual tripwire | Explicit + measured — a closed observe→tune loop |
-| World model | graphify mirror (`calls`/`import`/`rationale`, communities) | Same raw material — but mined for *guidance*, not just navigation |
-| Verification | None — never checks the agent's claims | Flags hallucinated symbols, verifies claims, scopes blast radius |
-| Freshness | Incremental index on commit (hook v=4) | Same — freshness is a precondition of correct *information* |
-| Extensibility | Strong: 6-stage adapter framework + drift detection | Same — the substrate is genuinely shared |
+| Context sourcing | 4-stream hybrid retrieval + RRF + graph tools — the hard, costly organ | **Production** |
+| World model | graphify mirror: `graph_nodes`/`graph_edges`/`graph_meta`, communities, god nodes, `rationale_for`, multi-repo (v7) | **Production** |
+| Freshness | `adapter_id` drift detection + `files` dirty cache + git-diff walker + commit hook | **Production** |
+| Statefulness | — (`query_cache` is exact-match, not session state) | **Missing** |
+| Information shaping | — (`recursive` merge is the closest; off by default) | **Missing** |
+| Guidance | — (`smart_search` routes one query; never advises the agent) | **Missing** |
 
-**Read of the table:** stropha is *strong* exactly where a meta-harness needs a foundation — sourcing, world model, freshness, extensibility — and *absent* on every row that is about *improving* the context once sourced: shaping, budget, guidance, anticipation, memory, a measured definition of "better".
+Three production organs, three missing — and the three present (sourcing, world model, freshness) are the ones that take years to get right.
 
----
+### 3.2 stropha as a Meta-Harness *target* — preconditions
 
-## 3. Where stropha is *already* a meta-harness foundation
+This is stropha's non-obvious strength. A Meta-Harness needs five things to optimize a harness; stropha already supplies three.
 
-A context-improvement engine needs seven organs. Stropha owns three outright, holds one in partial form, and lacks three. Crucially, the three it owns are the *expensive* ones.
-
-| Organ | stropha's existing analogue | Maturity |
+| Precondition the Meta-Harness needs | stropha's analogue | Status |
 |---|---|---|
-| **Information sourcing** (find the right material) | 4-stream hybrid retrieval + RRF + graph tools — the hard, costly organ | **Production** |
-| **World model** (raw material for guidance) | graphify mirror: `graph_nodes`/`graph_edges`/`graph_meta`, communities, god nodes, `rationale_for`, multi-repo (v7) | **Production** |
-| **Freshness sensing** (stale context = wrong information) | `adapter_id` drift detection + `files` dirty cache + git-diff walker + commit hook | **Production** |
-| **A definition of "better"** | `eval/harness.py` (Recall@K, MRR, golden set) + `cost.py` + `savings.py` | **Partial** — the *instrument* exists; the *closed loop* does not |
-| **Information shaping** (budget, compression, distillation, fusion) | — (`recursive` merges adjacent chunks; that is the closest, and it is off by default) | **Missing** |
-| **Guidance generation** (what to do / avoid / verify next) | — (`smart_search` routes *one* query; it never advises the agent) | **Missing** |
-| **Memory** (improve context from the past) | — (`query_cache` is exact-match, not memory) | **Missing** |
+| An accessible search space | 6-stage adapter framework, registered adapters, YAML compositions | **Strong** — declarative, enumerable |
+| Addressable, cache-coherent changes | `adapter_id` digest + drift detection (§3 invariant #1) | **Strong** — every config point is identified |
+| A fitness function | `eval/harness.py` — Recall@K, MRR, golden set | **Partial** — exists, but is a proxy metric |
+| A full-history artifact store (code + scores + traces) | — (structlog + `cost.py` log fragments; nothing unified) | **Missing** |
+| An agentic proposer | — (but the post-commit hook + a Claude Code agent is half the wiring) | **Missing** |
 
-So: three production organs, one partial, three missing. The honest read is that stropha is *further* from a meta-harness than a loose reading would suggest — shaping, guidance, and memory are genuinely absent. The *encouraging* read is that the three it owns (sourcing, world model, freshness) are the ones that take years to get right; the three it lacks are mostly additive and cheaper. stropha has the foundation; it has not yet built the two floors above it.
+The paper's headline finding is that *full-history* access (raw code + scores + traces) beats compressed feedback. stropha's gap is precisely there: it has the search space and the addressing, but no artifact store and no proposer. §J–§L close exactly that.
 
 ---
 
-## 4. The gap, split by the two axes of the definition
+## 4. The two gaps
 
-**Better information — stropha returns, it does not shape.** Every hit comes back as raw chunk text. There is no token budget, so a planning loop that calls `search_code` repeatedly pays full freight each time. There is no compression — boilerplate (imports, getters, license headers) is returned at the same cost as the one matching line. There is no cross-source fusion — a `find_callers` result and a `search_code` result arrive as two disconnected payloads the agent must reconcile itself. There is no dedup — re-retrieving across turns re-spends the same tokens. The information is *relevant*; it is not *optimized*.
+**The harness gap — stropha sources, it does not determine context.** Every hit returns as raw chunk text. There is no token budget (`search_code` gives K results, not "the best context that fits in N tokens" — note the paper's discovered harnesses win partly by using *4× fewer tokens*). No compression: boilerplate costs the same as the matching line. No cross-source fusion: `find_callers` and `search_code` arrive as disjoint payloads. No statefulness: every call is amnesiac. And no guidance — stropha reports that `FsrsCalculator.next_interval` exists; it never says the symbol has 14 callers, that ADR-008 constrains it, that three tests cover it, or that the agent's claim it "calls `decay()`" is false per the graph. All of that is latent in stropha's own graph and is simply never surfaced.
 
-**Better guidance — stropha informs, it does not direct.** stropha will tell the agent that `FsrsCalculator.next_interval` exists and where. It will not tell the agent: this symbol has 14 callers so the change is high-blast-radius; these three tests cover it; ADR-008 constrains its behavior; the agent's claim that it "calls `decay()`" is false per the graph; the symbol the agent just named does not exist at all; last session a similar edit also required a migration. All of that is *latent in stropha's own graph and history* — it is simply never surfaced as direction.
+**The Meta-Harness gap — stropha is hand-tuned, never searched.** Its adapter composition, RRF `k=60`, stream weights, chunk sizes, and enricher choice are all set by hand — exactly the "designed largely by hand" condition the paper identifies as the opportunity. stropha has the search space and the fitness function but no loop closing over them: no artifact store of what was tried, no proposer reading that history, no held-out generalization check.
 
-The 115 options below are organized so each one is clearly an **information** improvement, a **guidance** improvement, or an **enabler** that makes the other two possible (memory, feedback, delivery, measurement).
+The 118 options below are tagged by which gap they close: **[Harness]** options make stropha a full harness; **[Meta-Harness]** options build the outer optimization loop.
 
 ---
 
-## 5. 115 improvement options
+## 5. 118 improvement options
 
-Continuously numbered 1–115. **Effort:** S (<1d) · M (1–4d) · L (>1w). **Impact** is on agent task success, not micro-benchmarks. Each group is tagged by which axis of the definition it serves — **[INFO]** better information · **[GUIDE]** better guidance · **[ENABLE]** enabler that makes INFO/GUIDE improvable. Every option respects §3 (forward-only migrations, drift detection, local-only default, non-blocking hook); cloud-dependent items are flagged `[cloud]` and stay optional.
+Continuously numbered 1–118. **Effort:** S (<1d) · M (1–4d) · L (>1w). **Impact** is on agent task success, not micro-benchmarks. Each group is tagged **[Harness]** (makes stropha a better context-determining harness) or **[Meta-Harness]** (builds the automated optimization loop). Every option respects §3 (forward-only migrations, drift detection, local-only default, non-blocking hook); cloud-dependent items are flagged `[cloud]` and stay optional.
 
-### A. Context shaping — turn "return chunks" into "return a working set" · **[INFO]**
-
-The heart of "better information": the same facts, shaped for maximum signal per token.
+### A. Context shaping — turn "return chunks" into "determine a working set" · **[Harness — information]**
 
 | # | Option | What it does (grounded in stropha) | Effort | Impact |
 |---|---|---|---|---|
-| 1 | Token-budget result packing | Add `context_budget: int` to `search_code`; pack hits until the budget is hit instead of a fixed `top_k`. Knapsack over (score, token-cost). | S | High |
-| 2 | `assemble_context` MCP tool | New 13th tool: given a task description, return a ready-to-paste bundle — entry-point files, called symbols, covering tests, ADR rationale — under a budget. The headline verb of context improvement. | L | High |
+| 1 | Token-budget result packing | Add `context_budget: int` to `search_code`; pack hits until the budget is hit instead of a fixed `top_k`. Knapsack over (score, token-cost). The paper's harnesses win partly on token efficiency. | S | High |
+| 2 | `assemble_context` MCP tool | New 13th tool: given a task, return a ready-to-paste bundle — entry-point files, called symbols, covering tests, ADR rationale — under a budget. The verb of a context-determining harness. | L | High |
 | 3 | Extractive chunk compression | Before returning, drop boilerplate (imports, getters, headers) and keep signature + the lines that matched. Halves returned tokens at equal recall. | M | High |
 | 4 | Diff-scoped context | For "review this PR" tasks, return only changed lines + their semantic neighborhood (callers/tests), via the existing `git-diff` walker. | M | High |
 | 5 | Hierarchical result cards | Each hit carries a 1-line / 1-paragraph / full view; the client expands on demand instead of paying full cost up front. | M | Med |
@@ -129,28 +127,28 @@ The heart of "better information": the same facts, shaped for maximum signal per
 | 11 | Context pinning | Let the harness pin chunks so re-retrieval keeps them stable across turns — avoids context churn. | M | Med |
 | 12 | Cross-source fusion | Merge `search_code` + `find_callers` + `find_rationale` results into one coherent, deduplicated working set instead of three disjoint payloads. | M | High |
 
-### B. Session memory & statefulness — improve context using the past · **[ENABLE]**
+### B. Statefulness & session memory — the property that *makes* it a harness · **[Harness — statefulness]**
 
 | # | Option | What it does | Effort | Impact |
 |---|---|---|---|---|
-| 13 | Schema v8: `sessions` table | Forward-only migration adding session identity keyed by MCP client/session id. Foundation for everything stateful. | M | High |
+| 13 | Schema v8: `sessions` table | Forward-only migration adding session identity keyed by MCP client/session id. A harness is *stateful by definition*; this is the keystone. | M | High |
 | 14 | Persistent project memory | Store distilled facts/decisions per repo ("the FSRS scheduler is authoritative; don't touch X"), retrievable by future sessions. | M | High |
 | 15 | `remember` / `recall` MCP tools | Explicit agent-driven write/read of memory — the agent curates its own long-term notes. | M | High |
-| 16 | Conversation-aware retrieval | Accept the last N turns as latent query context to bias retrieval toward the current thread (anticipation). | M | High |
+| 16 | Conversation-aware retrieval | Accept the last N turns as latent query context to bias retrieval toward the current thread. | M | High |
 | 17 | Episodic task memory | "Last time you touched FSRS code you also had to update the migration." Mined from session + git history. | L | High |
-| 18 | Memory consolidation (sleep-time) | Background job compacts episodic entries into semantic memory — runs in the existing hook's detached background. | L | Med |
-| 19 | Working-set warm start | On session open for a branch, pre-load the likely-relevant set from prior sessions on that branch. | M | Med |
+| 18 | Memory consolidation | Background job compacts episodic entries into semantic memory — runs in the existing hook's detached background. | L | Med |
+| 19 | Environment-bootstrap warm start | On session open, gather a repo snapshot (languages, build tools, test runner, entry points) before the first agent turn — the paper's TerminalBench-2 trick that eliminates 2–4 exploratory turns. | M | High |
 | 20 | Memory provenance + TTL | Every memory carries a source commit; drift detection (§3.1) marks it stale automatically. | S | Med |
 | 21 | Writable scratchpad resource | An MCP resource the agent uses as durable per-repo notes between turns. | M | Med |
 | 22 | Cross-session semantic cache | Promote `query_cache` from exact-match to a shared, semantic, session-spanning cache. | M | Med |
 
-### C. Guidance, planning & next-step steering — direct, don't just inform · **[GUIDE]**
+### C. Guidance & next-step steering — direct, don't just inform · **[Harness — guidance]**
 
 | # | Option | What it does | Effort | Impact |
 |---|---|---|---|---|
 | 23 | `plan_investigation` tool | Decompose a task into an ordered retrieval plan over the graph: entry points → dependencies → tests → rationale. Hands the agent a route, not just facts. | L | High |
 | 24 | Server-side retrieval DAG | Multi-step retrieval where step N's results seed step N+1 — an agentic retrieval loop run inside stropha, returning only the distilled result. | L | High |
-| 25 | `router` as a first-class stage | Promote query routing to a pluggable adapter stage so routing policy is swappable and benchmarkable like every other stage. | M | Med |
+| 25 | `router` as a first-class stage | Promote query routing to a pluggable adapter stage so routing policy is swappable and benchmarkable — and a point in the Meta-Harness search space. | M | Med |
 | 26 | Confidence-gated escalation | Cheap static lookup first; escalate to LLM-routed / graph traversal only when classifier confidence is low. Cost-shaped. | M | High |
 | 27 | Sub-query budget allocator | When `query_decomposition` fans out, allocate the token budget across sub-queries by estimated importance. | M | Med |
 | 28 | Parallel fan-out with early-exit | Stop spending on slow streams once the RRF top-K is provably stable. | M | Med |
@@ -160,30 +158,30 @@ The heart of "better information": the same facts, shaped for maximum signal per
 | 32 | Cost-budgeted multi-hop | Cap graph traversal by a *cost budget* (fan-out × depth × token estimate), not a fixed depth. | M | Med |
 | 33 | Speculative retrieval prefetch | Predict the agent's next 2–3 queries from the task and pre-compute during idle time. | L | Med |
 
-### D. The feedback loop — define and measure "better context" · **[ENABLE]**
+### D. Feedback signals — instrument the harness so it can be optimized · **[Meta-Harness — signal]**
 
 | # | Option | What it does | Effort | Impact |
 |---|---|---|---|---|
-| 34 | Usage feedback logging | Log which returned chunks the agent actually cited/edited (correlate with the subsequent `git diff`). The label source for everything below. | M | High |
-| 35 | Learned RRF weights | Fit per-repo stream weights from the feedback log instead of the fixed k=60 / equal weighting. | M | High |
+| 34 | Usage feedback logging | Log which returned chunks the agent actually cited/edited (correlate with the subsequent `git diff`). The label source for the whole loop. | M | High |
+| 35 | Learned RRF weights | Fit per-repo stream weights from the feedback log instead of the fixed `k=60` / equal weighting — a first, narrow meta-optimization. | M | High |
 | 36 | Auto-eval on every commit | Run the golden set in the hook's detached background; track Recall@K over time; alert on regression. Stays non-blocking (§3.5). | M | High |
 | 37 | Golden-set auto-expansion | Mine new golden queries from real sessions: (query, the chunk that got edited) is a free labeled pair. | M | High |
-| 38 | Shadow A/B of adapter configs | Run two pipeline compositions on shadow traffic; compare on the feedback metric; the `adapter_id` digest already isolates them. | L | Med |
-| 39 | Counterfactual stream logging | Log what each *disabled* stream *would* have returned, to estimate each stream's marginal value. | M | Med |
-| 40 | Regression bisection | When Recall@K drops, bisect over commits/config changes (drift detection makes the changes addressable). | M | Med |
-| 41 | Per-tool success metrics | Track find_callers / trace_feature hit-rate; surface dead tools the harness should stop offering. | S | Med |
-| 42 | `report_bad_result` tool | An MCP tool the agent calls on a miss; entries become hard negatives for reranker training. | S | Med |
-| 43 | Self-tuning chunk granularity | Measure retrieval success per chunk size and adapt per language — close the loop on chunking, the dominant quality lever. | L | Med |
-| 44 | Local reranker distillation | Periodically distill the `code-aware` reranker from accumulated feedback via lightweight local fine-tune (LoRA). Local-only. | L | Med |
+| 38 | Counterfactual stream logging | Log what each *disabled* stream *would* have returned, to estimate each stream's marginal value. | M | Med |
+| 39 | Regression bisection | When Recall@K drops, bisect over commits/config changes (drift detection makes the changes addressable). | M | Med |
+| 40 | Per-tool success metrics | Track find_callers / trace_feature hit-rate; surface dead tools the harness should stop offering. | S | Med |
+| 41 | `report_bad_result` tool | An MCP tool the agent calls on a miss; entries become hard negatives for reranker training. | S | Med |
+| 42 | Self-tuning chunk granularity | Measure retrieval success per chunk size and adapt per language — close the loop on chunking, the dominant quality lever. | L | Med |
+| 43 | Local reranker distillation | Periodically distill the `code-aware` reranker from accumulated feedback via lightweight local fine-tune (LoRA). Local-only. | L | Med |
+| 44 | Token-efficiency signal | Log returned-tokens-per-solved-task; the paper optimizes explicitly for token frugality, so it must be a first-class signal. | S | Med |
 
-### E. World-model depth — richer facts and guidance material · **[INFO + GUIDE]**
+### E. World-model depth — richer facts and guidance material · **[Harness — information + guidance]**
 
 | # | Option | What it does | Effort | Impact |
 |---|---|---|---|---|
 | 45 | Data-flow / def-use edges | Beyond `calls`: track variable def-use so "what reads this field" resolves. | L | High |
 | 46 | Type-hierarchy edges | `implements` / `extends` / `overrides` edges for OO navigation. | M | High |
 | 47 | Cross-repo dependency edges | Link a monorepo's packages by their import graph (schema v7 already has `repo_id` on edges). | M | Med |
-| 48 | Co-change / logical-coupling edges | Mine git history: "these files change together". A live coupling signal grep cannot see — and a guidance signal ("you'll probably need to touch X too"). | M | High |
+| 48 | Co-change / logical-coupling edges | Mine git history: "these files change together" — a coupling signal grep cannot see, and a guidance signal ("you'll likely need X too"). | M | High |
 | 49 | Ownership edges | Map symbols → authors/teams via git blame for "who knows about X". | M | Med |
 | 50 | Real test-coverage edges | Ingest lcov / coverage.py output so `find_tests_for` uses actual coverage, not path heuristics. | M | High |
 | 51 | Runtime edges from traces | Optionally ingest an OTEL/local trace to add "actually-called-at-runtime" edges. | L | Med |
@@ -195,14 +193,14 @@ The heart of "better information": the same facts, shaped for maximum signal per
 | 57 | God-node alert tool | Expose graphify's god nodes as a first-class refactoring/risk signal. | S | Low |
 | 58 | Spec ↔ code consistency edges | Link ADR sections to the symbols they constrain; flag when code drifts from `docs/architecture/`. | M | Med |
 
-### F. Retrieval quality — relevance is the floor of good information · **[INFO]**
+### F. Retrieval quality — relevance is the floor of good context · **[Harness — information]**
 
 | # | Option | What it does | Effort | Impact |
 |---|---|---|---|---|
 | 59 | Model2Vec static-embedding stream | A near-free dense lane (static table lookup, ~1 ms) for the planning-loop fast path. The `model2vec` adapter file already exists — wire a retrieval stream around it. | M | High |
 | 60 | Late chunking (Jina) | Embed the whole document, then pool token embeddings per chunk boundary — chunk embeddings stay sibling-aware. Needs a long-context embedder. | L | High |
 | 61 | ColBERT late-interaction stream | Per-token embeddings + MaxSim at query time, behind the `retrieval-stream` adapter stage. | L | High |
-| 62 | SPLADE learned-sparse stream | Learned term expansion; complements BM25. Already a deferred ROADMAP item — revive behind the stream adapter. | L | Med |
+| 62 | SPLADE learned-sparse stream | Learned term expansion; complements BM25. A deferred ROADMAP item — revive behind the stream adapter. | L | Med |
 | 63 | Contextual BM25 | Pair the existing `contextual` enricher with contextual sparse indexing — Anthropic's *full* contextual-retrieval method. | M | High |
 | 64 | Binary / int8 vector quantization | Quantize stored embeddings (4–32× smaller index); rerank survivors at full precision. Fixes the float32-only footprint noted in stropha-vs-semble §2.1. | M | High |
 | 65 | Two-stage retrieve | Coarse quantized ANN → exact rerank. Cuts both latency and the 195 MB-per-50k-chunks footprint. | M | High |
@@ -215,7 +213,7 @@ The heart of "better information": the same facts, shaped for maximum signal per
 | 72 | Propositional indexing | Index atomic factual propositions extracted from docs/comments, not just raw chunks. | L | Med |
 | 73 | Repo-local embedder fine-tune | Contrastive fine-tune of the local embedder on the repo's own confusable identifier pairs. Local-only, optional. | L | Med |
 
-### G. Liveness — fresh context is the only correct information · **[INFO]**
+### G. Liveness — fresh context is the only correct context · **[Harness — information]**
 
 | # | Option | What it does | Effort | Impact |
 |---|---|---|---|---|
@@ -228,7 +226,7 @@ The heart of "better information": the same facts, shaped for maximum signal per
 | 80 | Index health self-check tool | An MCP tool returning coverage %, drift %, last-index lag — the agent learns to trust or distrust the index. | S | Med |
 | 81 | Worktree-aware indexing | Isolate index state per git worktree so parallel agent sessions don't collide. | M | Med |
 
-### H. Verification & grounding — the sharpest form of guidance · **[GUIDE]**
+### H. Verification & grounding — the sharpest form of guidance · **[Harness — guidance]**
 
 | # | Option | What it does | Effort | Impact |
 |---|---|---|---|---|
@@ -241,7 +239,7 @@ The heart of "better information": the same facts, shaped for maximum signal per
 | 88 | Spec-consistency check | On a change, surface the ADR/spec section it must stay consistent with (extends `find_rationale` + #58). | M | Med |
 | 89 | Contract-test surfacing | For an API symbol, surface its contract tests so the agent edits behavior-aware. | M | Med |
 
-### I. Protocol surface — deliver the improved context well · **[ENABLE]**
+### I. Protocol surface — deliver the determined context well · **[Harness — delivery]**
 
 | # | Option | What it does | Effort | Impact |
 |---|---|---|---|---|
@@ -249,77 +247,84 @@ The heart of "better information": the same facts, shaped for maximum signal per
 | 91 | MCP `prompts` for task recipes | Ship bug-fix / review / add-feature prompts as MCP prompts, pre-wired to the right tool sequence (#31). | M | Med |
 | 92 | MCP `sampling` for enrichment | Let stropha request a completion from the *client's* model for HyDE/enrichment — no separate LLM, zero extra cost. | M | High |
 | 93 | Streaming tool results | Stream hits as they fuse so the agent reads before reranking finishes — cuts perceived latency. | M | Med |
-| 94 | Harness-agnostic context API | A stable JSON contract so Cursor / Zed / Continue all get the identical improved-context service. | M | High |
+| 94 | Harness-agnostic context API | A stable JSON contract so Cursor / Zed / Continue all get the identical context service. | M | High |
 | 95 | A2A endpoint | Expose retrieval over emerging agent-to-agent protocols, not only MCP. | L | Low |
 | 96 | Multi-tenant index server | One stropha process serving many repos/agents with per-repo isolation. | L | Med |
 | 97 | Shared context bus | Multiple agent sessions on one repo share a retrieval cache + memory. | L | Med |
 
-### J. Observability, cost & governance — accountable context improvement · **[ENABLE]**
+### J. Observability & the artifact substrate — what the Meta-Harness proposer reads · **[Meta-Harness — substrate]**
+
+The paper's central finding: a proposer with **full-history access** (code + scores + execution traces) decisively beats one fed compressed feedback. This group builds that substrate.
 
 | # | Option | What it does | Effort | Impact |
 |---|---|---|---|---|
-| 98 | OpenTelemetry retrieval DAG tracing | Per-stage spans across the pipeline. Deferred in ROADMAP — now justified by the multi-step retrieval in §C. | M | Med |
-| 99 | Per-session cost & savings ledger | Extend `savings.py` into a real per-agent-run dashboard: tokens saved, compute spent, value delivered. | M | Med |
+| 98 | OpenTelemetry retrieval DAG tracing | Per-stage spans across the pipeline — the raw execution traces a Meta-Harness proposer inspects. Deferred in ROADMAP; now load-bearing. | M | High |
+| 99 | Per-session cost & savings ledger | Extend `savings.py` into a per-agent-run dashboard: tokens saved, compute spent, value delivered. | M | Med |
 | 100 | `explain_ranking` tool | Given a query + chunk, return why it ranked where it did (per-stream contributions, RRF math). | M | Med |
 | 101 | Per-session budget enforcement | Hard token/compute caps with graceful degradation (drop reranker, drop dense lane) instead of silent overrun. | M | Med |
-| 102 | Secret-egress guard | Scan returned chunks for secrets before they leave the process — `.strophaignore` excludes files, this guards *content*. | S | High |
-| 103 | Retrieval audit log | Record everything the agent saw, for reproducibility and post-incident review. | S | Med |
-| 104 | Deterministic replay | Snapshot index state + query so a session can be replayed exactly. | L | Med |
+| 102 | Secret-egress guard | Scan returned chunks for secrets before they leave the process — `.strophaignore` excludes files; this guards *content*. | S | High |
+| 103 | Retrieval audit log | Record everything the agent saw, every call — the trace history the proposer mines. | S | High |
+| 104 | Deterministic replay | Snapshot index state + query so a candidate harness can be re-evaluated exactly — required for fair Meta-Harness scoring. | L | High |
 | 105 | Path-scoped access policy | Pluggable policy adapter: which paths a given agent identity may retrieve. | M | Med |
 
-### K. Evaluation maturity — measure what "better context" means · **[ENABLE]**
+### K. Evaluation — the Meta-Harness fitness function · **[Meta-Harness — fitness]**
 
 | # | Option | What it does | Effort | Impact |
 |---|---|---|---|---|
 | 106 | NDCG / MAP / Precision@K | Add ranked-quality metrics to `eval/harness.py` — Recall@K + MRR alone hide ranking quality. ROADMAP item. | S | Med |
-| 107 | Per-query latency + P95 | Track latency in the eval harness — the §1.3 spec target (p95 ≤ 500 ms) is currently unmeasured in CI. | S | Med |
+| 107 | Per-query latency + P95 | Track latency in the eval harness — the spec target (p95 ≤ 500 ms) is currently unmeasured in CI. | S | Med |
 | 108 | Public benchmark harness | Run on SWE-bench-retrieval / CodeSearchNet; publish NDCG@10 — stropha currently has no public benchmark. | L | High |
 | 109 | Synthetic golden generation | LLM-generate query/answer pairs from the graph for cold-start eval on a fresh repo. | M | Med |
-| 110 | End-to-end retrieval-conditioned eval | Measure whether better context actually raises *agent task success* (SWE-bench-style), not just recall. | L | High |
-| 111 | Context-efficiency metric | Score "right answer per token returned" — the meta-harness's true objective function. | M | High |
+| 110 | End-to-end retrieval-conditioned eval | Measure whether a harness config actually raises *agent task success* (SWE-bench-style) — the only fitness signal a Meta-Harness should trust. | L | High |
+| 111 | Context-efficiency metric | Score "right answer per token returned" — combined with #44, the paper's true objective (accuracy *and* token frugality). | M | High |
 
-### L. Frontier — the most ambitious, still realistic · **[INFO + GUIDE + ENABLE]**
+### L. The Meta-Harness — the outer optimization loop itself · **[Meta-Harness — the loop]**
+
+This is the destination: stropha's harness, optimized end-to-end by an agentic outer loop, exactly as Lee et al. describe.
 
 | # | Option | What it does | Effort | Impact |
 |---|---|---|---|---|
-| 112 | RL-learned retrieval policy | Treat the router (#25) as an RL agent optimizing end-task success from the feedback log (#34). Local training. | L | High |
-| 113 | Sleep-time compute | Between sessions, the index reasons in background: builds community summaries, mines memories, refines negatives — uses the existing detached hook process. | L | High |
-| 114 | Self-describing tools | stropha generates its own MCP tool descriptions from usage stats so the harness picks the right tool — the harness improving its own guidance. | M | Med |
-| 115 | World-model checkpointing | Version the graph so an agent can ask "what did this code look like 50 commits ago" — time-travel over the world model. | L | Med |
+| 112 | Adapter-composition artifact store | Persist every harness candidate to the filesystem: the resolved `stropha.yaml`, its `adapter_id` digests, eval scores, and full execution traces. The paper's "full-history access" design — and stropha's main missing Meta-Harness organ. | M | High |
+| 113 | Agentic proposer loop | A Claude Code / local-agent loop that reads the artifact store (#112) via grep/cat, proposes new adapter compositions — and eventually new adapter *code* — evaluates them with `eval` (#110), and appends results. **This is the Meta-Harness over stropha.** Wireable into the existing post-commit hook background. | L | High |
+| 114 | Search-set / held-out eval split | Split the golden set: the proposer optimizes on the search set; generalization is measured on a held-out set — the paper's protocol against overfitting the harness. | S | High |
+| 115 | Bandit / RL search over the adapter space | Once the artifact store has history, replace pure agentic proposal with a bandit/RL policy over the (declarative, addressable) adapter space — cheaper, faster convergence. Local training. | L | High |
+| 116 | Sleep-time compute | Between sessions, the index reasons in background: builds community summaries, mines memories, refines hard negatives, runs proposer iterations — uses the existing detached hook process. | L | High |
+| 117 | Self-describing tools | stropha generates its own MCP tool descriptions from usage stats — the harness tuning its own interface, a micro-Meta-Harness. | M | Med |
+| 118 | World-model checkpointing | Version the graph so a candidate harness can be evaluated against a fixed repo snapshot — reproducibility for the Meta-Harness, and time-travel ("what did this look like 50 commits ago") for the agent. | L | Med |
 
 ---
 
-## 6. If you only do ten
+## 6. If you only do twelve
 
-The highest-leverage moves toward the definition — five that improve **information**, five that add **guidance**.
+Six to make stropha a **harness**, six to make it **Meta-Harness-ready**.
 
-**Better information:**
-1. **#1 token-budget packing** — the smallest change that shifts the concept from "K chunks" to "shaped working set".
-2. **#3 extractive compression** — doubles useful signal per token at equal recall.
-3. **#2 `assemble_context`** — the headline verb of context improvement; what an agent actually wants.
-4. **#12 cross-source fusion** — one coherent working set instead of three disjoint payloads the agent must reconcile.
-5. **#54/#55 GraphRAG community summaries + global mode** — converts the graph from navigation into *understanding*.
+**To become a full harness (Floor 1):**
+1. **#13 `sessions` table** — statefulness is the definition of a harness; the keystone.
+2. **#1 token-budget packing** — the smallest change that shifts "K chunks" to "a determined working set".
+3. **#2 `assemble_context`** — the headline verb of a context-determining harness.
+4. **#3 + #12 compression + cross-source fusion** — doubles useful signal per token; one working set, not three payloads.
+5. **#29 `suggest_next_tool`** — the cheapest way to start *guiding* the agent, not just informing it.
+6. **#82/#83 verify_claim + hallucinated-symbol guard** — the sharpest guidance: telling the agent when it is wrong.
 
-**Better guidance:**
-6. **#29 `suggest_next_tool`** — the cheapest way to start steering the agent's loop, not just feeding it.
-7. **#84 post-edit blast-radius report** — turns the graph into "here is what your change just put at risk".
-8. **#82/#83 verify_claim + hallucinated-symbol guard** — the sharpest guidance: telling the agent when it is wrong.
-9. **#88 spec-consistency check** — surfaces the ADR/constraint a change must respect.
-10. **#23 `plan_investigation`** — hands the agent a route through the task, not just facts about it.
-
-**Enablers that make the above improvable:** #13 `sessions` table, #34 usage feedback logging, #36 auto-eval on commit. Without these, "better" is never defined or remembered — schedule them alongside the ten.
+**To become Meta-Harness-ready (Floors 2–3):**
+7. **#34 usage feedback logging** — the label source; nothing downstream works without it.
+8. **#103 + #98 audit log + OTEL traces** — the execution-trace history the proposer reads (the paper: full history beats compressed feedback).
+9. **#112 artifact store** — stropha's single biggest missing Meta-Harness organ.
+10. **#110 end-to-end task-success eval** — the only fitness signal worth optimizing.
+11. **#114 search-set / held-out split** — so discovered configs generalize instead of overfit.
+12. **#113 agentic proposer loop** — the Meta-Harness itself; everything above exists to make this safe and cheap.
 
 ---
 
-## 7. The evolution path — three floors above the foundation
+## 7. The path — four floors
 
-stropha does not become a meta-harness in one jump. It builds upward from the foundation it already has:
+- **Floor 0 — Harness component (today).** Sources context, stateless, invoked. The expensive foundation — sourcing, world model, freshness — is *done*.
+- **Floor 1 — Harness.** Stateful; shapes and guides; *determines* what context the agent sees. (§A, §B, §C, §E, §F, §G, §H, §I)
+- **Floor 2 — Meta-Harness-ready.** Emits code + scores + execution traces into an artifact store; `eval` is a real, task-conditioned fitness function. (§D, §J, §K)
+- **Floor 3 — Meta-Harness.** The outer loop runs: an agentic proposer searches stropha's declarative adapter space, end-to-end optimized against held-out task success. (§L)
 
-- **Floor 0 — Retriever (today).** Finds the right material, returns it raw. The expensive foundation: sourcing, world model, freshness. *Done.*
-- **Floor 1 — Information shaper.** Owns the *quality* of the context: budget packing, compression, distillation, cross-source fusion, dedup, provenance. (§A, §F, §G) — *the cheapest, highest-ROI floor.*
-- **Floor 2 — Guide.** Adds *direction* to the context: next-step suggestions, plans, blast-radius, verification, spec constraints, anticipation. (§C, §H, parts of §E) — *the floor that makes it a context-**improvement** engine, not just a context-**shaping** one.*
-- **Floor 3 — Self-improving meta-harness.** Memory + a closed feedback loop, so "better information" and "better guidance" are *learned and measured*, not hand-tuned. (§B, §D, §K, §L) — *the destination implied by the word "meta".*
+Each floor is independently shippable and independently valuable — stropha is a far better RAG backend at Floor 1 even if Floor 3 never runs. None of the floors breaks a §3 invariant: statefulness needs a forward-only v8 migration, the proposer loop runs in the already-detached hook process, and every LLM-powered option uses the local Ollama/MLX backends or MCP sampling (#92), keeping the local-only default intact.
 
-Each floor is independently shippable and independently valuable — stropha is a better RAG backend at Floor 1 even if it never reaches Floor 3. None of the floors requires breaking a §3 invariant: memory needs a forward-only v8 migration, the feedback loop runs in the already-detached hook process, and every LLM-powered option uses the existing local Ollama/MLX backends or MCP sampling (#92), keeping the local-only default intact.
+**Bottom line.** In the vocabulary of Lee et al. (2026), stropha today is the *context-sourcing component of a harness* — it has solved the hard prerequisite of finding the right material. Floors 1–2 turn it into a full *harness*: stateful, shaping, guiding, instrumented. Floor 3 is the *Meta-Harness* — and stropha is an unusually ready target for one, because its adapter framework already is the declarative, addressable search space that, the paper argues, is the precondition for automated context engineering to beat hand-tuning. The graph, the drift detector, the `adapter_id` digests, and the `eval` golden set are not just harness organs — they are the scaffolding a Meta-Harness optimizes over. stropha does not have to *become* something foreign to host one; it has to finish being itself.
 
-**Bottom line:** under the definition "a meta-harness improves context for better information and guidance", stropha today is a context *retriever* — it has solved the hard, expensive prerequisite of finding the right material, but it returns that material raw and it informs without directing. The graph, the drift detector, and the eval instrument are exactly the organs a context-improvement engine is built from. Add information shaping, add guidance, add a memory-backed feedback loop, and the same codebase *is* a meta-harness.
+> *Footnote.* The paper's proposer is Claude Code (Opus 4.6). This document was written by Claude Code (Opus 4.7) reading stropha's own code, graph, and `eval` harness, and proposing 118 changes to it — which is, by Lee et al.'s definition, iteration zero of a Meta-Harness over stropha, run by hand.
