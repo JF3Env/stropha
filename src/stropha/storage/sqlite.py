@@ -1688,3 +1688,41 @@ class Storage:
 
     def __exit__(self, *args: Any) -> None:
         self.close()
+
+    def backup_to(self, dest_path: str | Path) -> None:
+        """WIN-178: WAL-safe DB copy via ``sqlite3.Connection.backup``.
+
+        The original RFC suggested ``cp`` for snapshotting the index
+        before a candidate evaluation run. That's unsafe when the
+        source DB has an active WAL (which stropha always does —
+        ``PRAGMA journal_mode=WAL`` is set on open). ``cp`` copies the
+        main file without the WAL segment so the resulting database is
+        either truncated or inconsistent.
+
+        ``sqlite3.Connection.backup`` is the official online-backup API:
+        it takes pages under the WAL writer lock, copies them to the
+        destination connection, then commits a clean snapshot — no
+        coordination with the writer required, no torn state.
+
+        Args:
+            dest_path: where to write the snapshot. Parent directory
+                created if missing. Overwrites any existing file at the
+                path (single atomic backup, not an incremental).
+        """
+        dest = Path(dest_path)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        # If a stale file exists at ``dest`` (e.g. a corrupted prior
+        # backup, or a placeholder the operator dropped there),
+        # ``sqlite3.connect`` would later choke with 'file is not a
+        # database' when ``backup()`` runs. Drop it first so the new
+        # connection materialises a clean empty DB the backup can fill.
+        if dest.exists():
+            dest.unlink()
+        # Open a fresh destination connection — backup() expects a
+        # Connection target, not a path. Close it once the copy is done
+        # so the file handle is released before we return.
+        target = sqlite3.connect(str(dest))
+        try:
+            self._conn.backup(target)
+        finally:
+            target.close()
