@@ -46,7 +46,12 @@ log = get_logger(__name__)
 #      re-embeds the files that actually changed in this commit. Pipeline
 #      auto-falls-back to full when no `last_indexed_sha` checkpoint exists
 #      (first run after install), so existing v=3 installs upgrade cleanly.
-HOOK_VERSION = 4
+# v=5: outcome backfill (WIN-164). After the index refresh, the hook calls
+#      `stropha meta outcome backfill --since <prev_sha>` so the Meta-Harness
+#      labeler turns the new trace stream into a T1-T7 outcome JSON. Runs
+#      inside the same detached `nohup` block as the index refresh — git
+#      commit stays <100ms in the foreground per CLAUDE.md §3.5.
+HOOK_VERSION = 5
 
 START_MARKER = "# stropha-hook-start"
 END_MARKER = "# stropha-hook-end"
@@ -310,6 +315,16 @@ def _render_hook_block(
             CMD="$INDEX_ENV $UV run --directory $PROJECT_DIR stropha index --repo $TOPLEVEL --incremental"
         fi
 
+        # v=5: outcome backfill (WIN-164). The previous commit SHA is the
+        # baseline for the diff the labeler computes against. Skipped when
+        # there is no parent (initial commit) — git rev-parse HEAD~1 fails
+        # cleanly and we just don't append the backfill step.
+        PREV_SHA=$(git rev-parse HEAD~1 2>/dev/null || true)
+        BACKFILL_CMD=""
+        if [ -n "$PREV_SHA" ]; then
+            BACKFILL_CMD="$INDEX_ENV $UV run --directory $PROJECT_DIR stropha meta outcome backfill --since $PREV_SHA --repo $TOPLEVEL"
+        fi
+
         nohup sh -c "
             exec 9>'$LOCK'
             if ! flock -n 9 2>/dev/null; then
@@ -332,6 +347,13 @@ def _render_hook_block(
             $CMD >> '$LOG' 2>&1 \\
                 && echo '[stropha-hook] refresh done (commit ${{SHORT_SHA}})' >> '$LOG' \\
                 || echo '[stropha-hook] failed (commit ${{SHORT_SHA}})' >> '$LOG'
+
+            if [ -n '$BACKFILL_CMD' ]; then
+                echo '[stropha-hook] outcome backfill (commit ${{SHORT_SHA}})' >> '$LOG'
+                $BACKFILL_CMD >> '$LOG' 2>&1 \\
+                    && echo '[stropha-hook] backfill done (commit ${{SHORT_SHA}})' >> '$LOG' \\
+                    || echo '[stropha-hook] backfill failed (commit ${{SHORT_SHA}})' >> '$LOG'
+            fi
         " >> "$LOG" 2>&1 < /dev/null &
         disown 2>/dev/null || true
         {END_MARKER}

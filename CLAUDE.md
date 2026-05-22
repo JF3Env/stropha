@@ -57,6 +57,7 @@ All migrations are forward-only and idempotent (`_add_column_if_missing` + `CREA
 | `get_community` | Members of a precomputed graphify cluster | yes |
 | `find_rationale` | Docs / ADRs explaining `symbol` via `rationale_for` edges | yes |
 | `trace_feature` | DFS along `calls` edges from token-overlap entry points (Gherkin → step → method) | yes |
+| `report_bad_result` | Flag a previous retrieval as bad (Strong-negative T6 signal for the Meta-Harness labeler, WIN-163) | no |
 
 Graph-gated tools return `{"graph_loaded": false, "message": …}` when the mirror is empty — never silent empty list.
 
@@ -171,9 +172,9 @@ graph:
 
 Cross-repo hooks (v=3, v=4) bake `PROJECT_DIR_DEFAULT` / `INDEX_PATH_DEFAULT` / `LOG_DEFAULT` directly into the generated script — see `stropha hook install --help`. Env vars still override. Hook v=4 uses `--incremental` for git-diff aware ingestion.
 
-### 2.6 Test inventory (806 unit tests, ~16s)
+### 2.6 Test inventory (1142 unit tests, ~17s)
 
-Per file: `test_anchors` 26 · `test_chunker` 8 · `test_contextual_enricher` 19 · `test_cost` 11 · `test_enricher_adapters` 6 · `test_eval_harness` 12 · `test_fts_augment` 8 · `test_git_diff_walker` 17 · `test_git_meta` 13 · `test_glossary` 23 · `test_graph_aware_enricher` 13 · `test_graph_tools` 30 · `test_graph_vec` 16 · `test_graphify_loader` 24 · `test_hook_install` 24 · `test_hyde_and_recursive` 16 · `test_manifest` 12 · `test_mcp_server` 1 · `test_mlx_enricher` 15 · `test_multi_query` 17 · `test_ollama_enricher` 14 · `test_phase2_adapters` 14 · `test_phase3_chunker` 11 · `test_phase4_retrieval_streams` 12 · `test_pipeline_drift` 6 · `test_pipeline_framework` 18 · `test_pipeline_incremental` 26 · `test_pipeline_multirepo` 8 · `test_query_cache` 21 · `test_query_decomposition` 29 · `test_query_router` 41 · `test_rrf` 4 · `test_storage` 16 · `test_walker` 3 · `test_walker_variants` 13 · `test_watch_and_bge_m3` 12.
+Per file: highlights — `test_anthropic_backend` 38 (was 34, +4 retry-after / 429 tests) · `test_contextual_enricher` 30 (was 19, +11 batch / status tests) · `test_pipeline_parallel_enrich` 16 (was 8, +8 batch / status tests) · `test_savings` 22 (was 17, +5 WIN-158 wiring) · `test_trace_recorder` 32 (NEW, WIN-159) · `test_traced_decorator` 35 (NEW, WIN-160) · `test_search_streams` 5 (NEW, WIN-160 stream attribution) · `test_artifact_store` 55 (NEW, WIN-161) · `test_outcome_labeling` 56 (NEW, WIN-162) · `test_feedback` 26 (NEW, WIN-163). Other files unchanged from the 806-test baseline.
 
 ## 3. Key invariants (do NOT break)
 

@@ -1564,5 +1564,104 @@ def glossary_stats_cmd() -> None:
     console.print(table)
 
 
+# ============================================================================ #
+#                          META / OUTCOME SUB-APP                              #
+# ============================================================================ #
+
+meta_app = typer.Typer(
+    name="meta",
+    help="Meta-Harness apparatus (trace store, outcome labeling, backfill).",
+    no_args_is_help=True,
+)
+outcome_app = typer.Typer(
+    name="outcome",
+    help="Outcome labeling against the trace stream.",
+    no_args_is_help=True,
+)
+app.add_typer(meta_app, name="meta")
+meta_app.add_typer(outcome_app, name="outcome")
+
+
+@outcome_app.command("backfill")
+def outcome_backfill_cmd(
+    since: str = typer.Option(
+        ...,
+        "--since",
+        help="Previous commit SHA; the diff is computed `since..HEAD`.",
+    ),
+    meta_dir: Path = typer.Option(
+        None,
+        "--meta-dir",
+        help=(
+            "Override the meta directory. Defaults to "
+            "<index_path_parent>/meta/ next to the active index."
+        ),
+    ),
+    repo_dir: Path = typer.Option(
+        None,
+        "--repo",
+        help="Working tree to run git in. Defaults to STROPHA_TARGET_REPO or cwd.",
+    ),
+    json_out: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit the BackfillSummary as JSON to stdout.",
+    ),
+) -> None:
+    """Label every trace since ``--since`` and persist the outcome summary.
+
+    Reads:
+    - The trace stream at ``<meta_dir>/traces/*.jsonl`` (produced by WIN-159).
+    - The git diff ``since..HEAD`` (paths + heuristic symbol extraction).
+    - The bad-result feedback at ``<meta_dir>/bad_results.jsonl`` (WIN-163).
+
+    Writes:
+    - ``<meta_dir>/outcomes/<head_sha>.json`` — the outcome summary the
+      Phase 1 evaluator consumes (WIN-167).
+
+    The post-commit hook v=5 runs this in its detached background process
+    so ``git commit`` is never blocked.
+    """
+    from .meta.backfill import BackfillError, run_backfill
+
+    cfg = _load_config()
+    if repo_dir is None:
+        repo_dir = cfg.target_repo or Path.cwd()
+    repo_dir = repo_dir.expanduser().resolve()
+
+    if meta_dir is None:
+        index_path = Path(cfg.resolve_index_path()).expanduser().resolve()
+        meta_dir = index_path.parent / "meta"
+    meta_dir = meta_dir.expanduser().resolve()
+
+    try:
+        summary = run_backfill(
+            since_sha=since,
+            meta_dir=meta_dir,
+            repo_dir=repo_dir,
+        )
+    except BackfillError as exc:
+        console.print(f"[red]Backfill failed:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    if json_out:
+        import json as _json
+        console.print_json(_json.dumps(summary.to_dict()))
+        return
+
+    table = Table(title="Outcome backfill", show_lines=False)
+    table.add_column("Metric", style="cyan")
+    table.add_column("Value")
+    table.add_row("since_sha", summary.since_sha[:12])
+    table.add_row("head_sha", summary.head_sha[:12])
+    table.add_row("diff_paths", str(len(summary.diff_paths)))
+    table.add_row("diff_symbols", str(len(summary.diff_symbols)))
+    table.add_row("traces_scanned", str(summary.traces_scanned))
+    table.add_row("hits_labeled", str(summary.hits_labeled))
+    table.add_row("overall_score", f"{summary.overall_score:+.4f}")
+    table.add_row("output", str(summary.output_path or "—"))
+    console.print(table)
+
+
 if __name__ == "__main__":
     app()
