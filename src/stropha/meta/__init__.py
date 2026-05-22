@@ -48,6 +48,15 @@ from .prune import (
     disk_usage,
     prune,
 )
+from .search_space import (
+    DEFAULT_MANIFEST,
+    Constraint,
+    Dimension,
+    SearchSpace,
+    SearchSpaceError,
+    discover_gaps,
+    load_search_space,
+)
 from .snapshot import (
     Snapshot,
     SnapshotError,
@@ -60,6 +69,7 @@ from .store import ArtifactStore, ArtifactStoreError, CandidateRecord
 from .trace import TraceRecord, TraceRecorder
 
 __all__ = [
+    "DEFAULT_MANIFEST",
     "DEFAULT_TRACE_MAX_AGE_DAYS",
     "DIMENSION_SIGNS",
     "TIER_SCORE",
@@ -69,6 +79,8 @@ __all__ = [
     "BadResultStore",
     "CacheEntry",
     "CandidateRecord",
+    "Constraint",
+    "Dimension",
     "EvaluatorError",
     "FeedbackError",
     "IndexCache",
@@ -76,6 +88,8 @@ __all__ = [
     "LabelingContext",
     "PrunePlan",
     "ScoreCard",
+    "SearchSpace",
+    "SearchSpaceError",
     "Snapshot",
     "SnapshotError",
     "Tier",
@@ -85,12 +99,14 @@ __all__ = [
     "aggregate_score",
     "build_scorecard",
     "create_snapshot",
+    "discover_gaps",
     "disk_usage",
     "evaluate_candidate",
     "evaluate_from_golden",
     "label_hit",
     "label_hits",
     "list_snapshots",
+    "load_search_space",
     "outcome_score_decomposition",
     "prune",
     "prune_snapshots",

@@ -1,0 +1,158 @@
+# Search-space manifest for the Meta-Harness proposer (WIN-182).
+#
+# Declarative spec of the dimensions the proposer is allowed to vary.
+# The registry knows which adapters EXIST; it does NOT know:
+#   1. Which keys are indexing-time vs query-time (matters for the
+#      WIN-177 index cache — query-only flips reuse the cache).
+#   2. Which str fields have a finite set of valid choices.
+#   3. Numeric ranges and step sizes that are sane to sample.
+#
+# This file fills those gaps. Sections:
+#
+#   stages:        adapter choices per pipeline stage (WIN-176 indexing
+#                  vs WIN-177 query split surfaces here).
+#   features:      retrieval-feature toggles + ranges from stropha.yaml
+#                  `retrieval_features` block.
+#   constraints:   pairs that MUST or MUST-NOT co-occur (WIN-185).
+#
+# The loader (WIN-183, meta/search_space.py) consumes this directly.
+
+stages:
+
+  walker:
+    indexing: true
+    choices: [git-ls-files, filesystem, nested-git, git-diff]
+
+  chunker:
+    indexing: true
+    choices: [tree-sitter-dispatch]
+    # All language sub-adapters live under tree-sitter-dispatch; the
+    # proposer can flip language strategies via the `languages.*`
+    # sub-adapter knob (left for the agentic proposer in Phase 5).
+
+  enricher:
+    indexing: true
+    choices: [noop, hierarchical, graph-aware, ollama, mlx, contextual]
+
+  embedder:
+    indexing: true
+    choices: [local, voyage, bge-m3, model2vec, mlx]
+
+  storage:
+    indexing: false  # storage swap (e.g. lancedb) doesn't re-index
+    choices: [sqlite-vec]
+
+  retrieval:
+    indexing: false  # changing fusion does NOT re-embed
+    choices: [hybrid-rrf]
+
+  reranker:
+    indexing: false
+    choices: [noop, cross-encoder, code-aware]
+
+
+features:
+
+  hyde:
+    indexing: false
+    type: bool
+    default: false
+
+  hyde_code_tuned:
+    indexing: false
+    type: bool
+    default: true
+
+  query_decomposition:
+    indexing: false
+    type: bool
+    default: false
+
+  query_rewrite:
+    indexing: false
+    type: bool
+    default: false
+
+  multi_query:
+    indexing: false
+    type: bool
+    default: false
+
+  multi_query_count:
+    indexing: false
+    type: int
+    range: [1, 5]
+    default: 3
+
+  recursive:
+    indexing: false
+    type: bool
+    default: false
+
+  recursive_adjacency:
+    indexing: false
+    type: int
+    range: [1, 20]
+    default: 5
+
+  cache_enabled:
+    indexing: false
+    type: bool
+    default: false
+
+  cache_size:
+    indexing: false
+    type: int
+    range: [100, 10000]
+    step: 100
+    default: 500
+
+  cache_ttl_s:
+    indexing: false
+    type: int
+    range: [60, 86400]
+    step: 60
+    default: 3600
+
+  adaptive_weighting:
+    indexing: false
+    type: bool
+    default: true
+
+  graph_fts_augment:
+    indexing: true  # re-builds the FTS5 contentless table
+    type: bool
+    default: true
+
+
+constraints:
+
+  # Voyage embedder requires a cloud API key; the proposer must not
+  # combine it with the local-only invariant (CLAUDE.md §3.6).
+  - kind: requires_env
+    when:
+      embedder: voyage
+    require_env: VOYAGE_API_KEY
+
+  # ollama enricher requires the local daemon. Same shape as above —
+  # the loader degrades to a soft warning when OLLAMA_HOST is not
+  # reachable rather than hard-failing the sample.
+  - kind: requires_env
+    when:
+      enricher: ollama
+    require_env: OLLAMA_HOST
+
+  # multi_query_count is meaningful only when multi_query=true.
+  # The sampler should set count to its default when multi_query=false.
+  - kind: gated_by
+    when:
+      multi_query: false
+    set:
+      multi_query_count: 3
+
+  # recursive_adjacency follows the same gating pattern.
+  - kind: gated_by
+    when:
+      recursive: false
+    set:
+      recursive_adjacency: 5
