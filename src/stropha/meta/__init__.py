@@ -13,6 +13,13 @@ This package is built up phase-by-phase per the RFC:
 
 from __future__ import annotations
 
+from .store import ArtifactStore, ArtifactStoreError, CandidateRecord
 from .trace import TraceRecord, TraceRecorder
 
-__all__ = ["TraceRecord", "TraceRecorder"]
+__all__ = [
+    "ArtifactStore",
+    "ArtifactStoreError",
+    "CandidateRecord",
+    "TraceRecord",
+    "TraceRecorder",
+]
