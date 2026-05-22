@@ -13,6 +13,12 @@ This package is built up phase-by-phase per the RFC:
 
 from __future__ import annotations
 
+from .feedback import (
+    BadResult,
+    BadResultStore,
+    FeedbackError,
+    resolve_bad_chunks,
+)
 from .outcome import (
     TIER_SCORE,
     LabelingContext,
@@ -30,7 +36,10 @@ __all__ = [
     "TIER_SCORE",
     "ArtifactStore",
     "ArtifactStoreError",
+    "BadResult",
+    "BadResultStore",
     "CandidateRecord",
+    "FeedbackError",
     "LabelingContext",
     "Tier",
     "TierLabel",
@@ -39,5 +48,6 @@ __all__ = [
     "aggregate_score",
     "label_hit",
     "label_hits",
+    "resolve_bad_chunks",
     "tier_summary",
 ]

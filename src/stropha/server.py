@@ -95,6 +95,7 @@ class AppContext:
     built: object  # BuiltStages; typed as object to avoid the heavy import here
     session_id: str = ""
     trace_recorder: object = None  # TraceRecorder | None; typed loose to avoid import cycles
+    bad_result_store: object = None  # BadResultStore | None — produces the T6 signal for the labeler
 
 
 @asynccontextmanager
@@ -147,6 +148,16 @@ async def _lifespan(app: FastMCP) -> AsyncIterator[AppContext]:
         log.warning("mcp.trace_recorder.disabled", error=str(exc))
         trace_recorder = None
 
+    # WIN-163: bad-result feedback store. Lives next to traces under the
+    # same parent meta/ directory so the labeler can find it without
+    # extra plumbing.
+    from .meta.feedback import BadResultStore as _BadResultStore
+    try:
+        bad_result_store: object = _BadResultStore(base_dir=traces_dir.parent)
+    except OSError as exc:
+        log.warning("mcp.bad_result_store.disabled", error=str(exc))
+        bad_result_store = None
+
     # Start background file watcher if enabled (default: on).
     # This keeps the index fresh as the user edits files, so MCP queries
     # always see recent changes without requiring a separate `stropha watch`.
@@ -169,6 +180,7 @@ async def _lifespan(app: FastMCP) -> AsyncIterator[AppContext]:
             built=built,
             session_id=session_id,
             trace_recorder=trace_recorder,
+            bad_result_store=bad_result_store,
         )
     finally:
         if watcher is not None:
@@ -888,6 +900,64 @@ def trace_feature(
     return graph_trace_feature(
         app.storage, feature, max_paths=max_paths, max_depth=max_depth,
     )
+
+
+@mcp.tool(
+    title="Report bad result",
+    description=(
+        "Flag a previous retrieval as bad — Strong-negative T6 signal for "
+        "the Meta-Harness outcome labeler (WIN-162). Use this when a result "
+        "from search_code / smart_search / get_symbol / find_* was clearly "
+        "wrong: irrelevant, the wrong symbol, stale, a duplicate, too verbose, "
+        "or other. The trace_id comes from the trace stream WIN-160 attaches "
+        "to every tool call (also visible in the meta traces directory)."
+    ),
+)
+@traced("report_bad_result")
+def report_bad_result(
+    trace_id: str,
+    reason: str,
+    *,
+    ctx: Context,
+    detail: str | None = None,
+) -> dict:
+    """Persist a bad-result report for the Meta-Harness labeler.
+
+    Args:
+        trace_id: the trace_id of the offending tool call (from the trace stream).
+        reason: one of "irrelevant", "wrong_symbol", "stale", "duplicate",
+            "too_verbose", or "other".
+        detail: optional free-text explanation.
+
+    Returns ``{"ok": True, "trace_id": ..., "reason": ...}`` on success
+    and ``{"ok": False, "error": ...}`` when the report could not be
+    persisted (e.g. unknown reason, store disabled).
+    """
+    from .meta.feedback import FeedbackError
+
+    app = _ctx(ctx)
+    store = app.bad_result_store
+    if store is None:
+        return {
+            "ok": False,
+            "error": "bad_result_store unavailable on this server "
+            "(check mcp.bad_result_store.disabled in logs)",
+        }
+    try:
+        record = store.report(  # type: ignore[attr-defined]
+            trace_id=trace_id,
+            reason=reason,
+            detail=detail,
+            session_id=app.session_id or None,
+        )
+    except FeedbackError as exc:
+        return {"ok": False, "error": str(exc)}
+    return {
+        "ok": True,
+        "trace_id": record.trace_id,
+        "reason": record.reason,
+        "ts": record.ts,
+    }
 
 
 def _pipeline_snapshot(app: AppContext) -> dict:
