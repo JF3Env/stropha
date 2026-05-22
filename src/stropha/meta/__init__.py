@@ -47,6 +47,14 @@ from .prune import (
     disk_usage,
     prune,
 )
+from .snapshot import (
+    Snapshot,
+    SnapshotError,
+    create_snapshot,
+    list_snapshots,
+    prune_snapshots,
+    resolve_sha,
+)
 from .store import ArtifactStore, ArtifactStoreError, CandidateRecord
 from .trace import TraceRecord, TraceRecorder
 
@@ -64,20 +72,26 @@ __all__ = [
     "LabelingContext",
     "PrunePlan",
     "ScoreCard",
+    "Snapshot",
+    "SnapshotError",
     "Tier",
     "TierLabel",
     "TraceRecord",
     "TraceRecorder",
     "aggregate_score",
     "build_scorecard",
+    "create_snapshot",
     "disk_usage",
     "evaluate_candidate",
     "evaluate_from_golden",
     "label_hit",
     "label_hits",
+    "list_snapshots",
     "outcome_score_decomposition",
     "prune",
+    "prune_snapshots",
     "resolve_bad_chunks",
+    "resolve_sha",
     "scorecard_pareto_frontier",
     "tier_summary",
 ]
