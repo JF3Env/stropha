@@ -115,6 +115,17 @@ def load_pipeline_config(
         _merge(cfg, legacy_overlay)
         sources.append("env(legacy)")
 
+    # 7. Materialize the storage path NOW so it shows up in logs / `pipeline
+    # show` output. Without this the path stays implicit (resolved by the
+    # adapter's `default_factory` at build time) and silently diverges from
+    # what `Config.resolve_index_path()` reports. Belt-and-suspenders fix for
+    # the bug where the CLI wrote to ~/.stropha and the MCP read from ./.stropha.
+    storage_cfg = cfg.setdefault("storage", {}).setdefault("config", {})
+    if not storage_cfg.get("path"):
+        from ..config.models import _default_index_path
+        storage_cfg["path"] = str(_default_index_path())
+        sources.append("default(_default_index_path)")
+
     log.debug("pipeline.config.load", sources=sources, resolved=cfg)
     return cfg
 

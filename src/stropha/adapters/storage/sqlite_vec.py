@@ -7,8 +7,15 @@ read/write API surface is inherited unchanged. Adds:
 - ``Stage`` introspection properties (``stage_name``, ``adapter_id``, …)
 - ``health()`` probe — confirms the SQLite file is openable
 
-The file path expansion mirrors ``stropha.config.Config.resolve_index_path``:
-``~`` and ``$VARS`` are expanded.
+Default path resolution mirrors :func:`stropha.config.models._default_index_path`
+so that ``build_stages()`` and ``Config.resolve_index_path()`` ALWAYS agree
+on which SQLite file to open. Without this, the CLI's storage adapter
+would open ``~/.stropha/index.db`` while the MCP server's ``get_config``
+tool would report ``./.stropha/index.db`` — silently splitting the index
+into two files. See ``CLAUDE.md`` §3 for the invariant.
+
+The path string is expanded (``~`` and ``$VARS``) at adapter
+instantiation time.
 """
 
 from __future__ import annotations
@@ -18,6 +25,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from ...config.models import _default_index_path
 from ...pipeline.base import StageHealth
 from ...pipeline.registry import register_adapter
 from ...storage.sqlite import Storage
@@ -25,8 +33,12 @@ from ...storage.sqlite import Storage
 
 class SqliteVecStorageConfig(BaseModel):
     path: str = Field(
-        default="~/.stropha/index.db",
-        description="Path to the SQLite DB. ~ and $VARS are expanded.",
+        default_factory=lambda: str(_default_index_path()),
+        description=(
+            "Path to the SQLite DB. Defaults to ``./.stropha/index.db`` when "
+            "the cwd has a ``.stropha/`` directory, else ``~/.stropha/index.db``. "
+            "``~`` and ``$VARS`` are expanded at adapter instantiation."
+        ),
     )
 
 

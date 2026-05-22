@@ -242,3 +242,48 @@ def test_builder_unknown_storage_adapter_raises(tmp_path: Path) -> None:
     resolved["storage"]["adapter"] = "no-such-storage"
     with pytest.raises(ConfigError):
         build_stages(resolved, open_storage=True)
+
+
+def test_storage_default_path_matches_config_resolve(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: pipeline storage default MUST match Config.resolve_index_path().
+
+    Before the fix, ``SqliteVecStorageConfig.path`` defaulted to a static
+    ``"~/.stropha/index.db"`` while ``Config.resolve_index_path()`` returned
+    a cwd-aware path via ``_default_index_path()``. The CLI silently wrote
+    to ``~/.stropha`` while the MCP's ``get_config`` reported
+    ``./.stropha`` — splitting the index across two files. This test pins
+    the convergence.
+    """
+    from stropha.config.models import _default_index_path
+
+    # cwd that has a `.stropha/` dir → local resolution wins.
+    (tmp_path / ".stropha").mkdir()
+    monkeypatch.chdir(tmp_path)
+
+    # 1. The model's helper picks the local path.
+    helper_path = _default_index_path()
+    assert helper_path == tmp_path / ".stropha" / "index.db"
+
+    # 2. The storage adapter's default factory MUST produce the same path.
+    adapter_default = SqliteVecStorageConfig().path
+    assert adapter_default == str(helper_path)
+
+    # 3. load_pipeline_config (with no env / yaml override) must materialize
+    # the same path into storage.config.path so it's visible in `pipeline show`.
+    resolved = load_pipeline_config(project_root=tmp_path, environ={})
+    assert resolved["storage"]["config"]["path"] == str(helper_path)
+
+
+def test_storage_default_path_falls_back_to_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When cwd has no .stropha/ dir, the default falls back to ~/.stropha/index.db."""
+    from stropha.config.models import _default_index_path
+
+    # cwd without `.stropha/` → home fallback.
+    monkeypatch.chdir(tmp_path)
+    helper_path = _default_index_path()
+    assert helper_path == Path.home() / ".stropha" / "index.db"
+    assert SqliteVecStorageConfig().path == str(helper_path)
