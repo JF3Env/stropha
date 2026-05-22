@@ -1,13 +1,18 @@
-# Graph Report - C:\sources\stropha  (2026-05-20)
+# Graph Report - rag  (2026-05-22)
 
 ## Corpus Check
-- 160 files · ~158,006 words
+- 180 files · ~184,450 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 4404 nodes · 9656 edges · 918 communities detected
-- Extraction: 47% EXTRACTED · 53% INFERRED · 0% AMBIGUOUS · INFERRED: 5110 edges (avg confidence: 0.61)
+- 7519 nodes · 16187 edges · 845 communities (277 shown, 568 thin omitted)
+- Extraction: 57% EXTRACTED · 43% INFERRED · 0% AMBIGUOUS · INFERRED: 6935 edges (avg confidence: 0.63)
 - Token cost: 0 input · 0 output
+
+## Graph Freshness
+- Built from commit: `ca4ee645`
+- Run `git rev-parse HEAD` and compare to check if the graph is stale.
+- Run `graphify update .` after code changes (no API cost).
 
 ## Community Hubs (Navigation)
 - [[_COMMUNITY_Community 0|Community 0]]
@@ -46,10 +51,6 @@
 - [[_COMMUNITY_Community 33|Community 33]]
 - [[_COMMUNITY_Community 34|Community 34]]
 - [[_COMMUNITY_Community 35|Community 35]]
-- [[_COMMUNITY_Community 36|Community 36]]
-- [[_COMMUNITY_Community 37|Community 37]]
-- [[_COMMUNITY_Community 38|Community 38]]
-- [[_COMMUNITY_Community 39|Community 39]]
 - [[_COMMUNITY_Community 40|Community 40]]
 - [[_COMMUNITY_Community 41|Community 41]]
 - [[_COMMUNITY_Community 42|Community 42]]
@@ -60,8 +61,6 @@
 - [[_COMMUNITY_Community 47|Community 47]]
 - [[_COMMUNITY_Community 48|Community 48]]
 - [[_COMMUNITY_Community 49|Community 49]]
-- [[_COMMUNITY_Community 50|Community 50]]
-- [[_COMMUNITY_Community 51|Community 51]]
 - [[_COMMUNITY_Community 52|Community 52]]
 - [[_COMMUNITY_Community 53|Community 53]]
 - [[_COMMUNITY_Community 54|Community 54]]
@@ -412,7 +411,6 @@
 - [[_COMMUNITY_Community 399|Community 399]]
 - [[_COMMUNITY_Community 400|Community 400]]
 - [[_COMMUNITY_Community 401|Community 401]]
-- [[_COMMUNITY_Community 402|Community 402]]
 - [[_COMMUNITY_Community 403|Community 403]]
 - [[_COMMUNITY_Community 404|Community 404]]
 - [[_COMMUNITY_Community 405|Community 405]]
@@ -442,15 +440,9 @@
 - [[_COMMUNITY_Community 429|Community 429]]
 - [[_COMMUNITY_Community 430|Community 430]]
 - [[_COMMUNITY_Community 431|Community 431]]
-- [[_COMMUNITY_Community 432|Community 432]]
 - [[_COMMUNITY_Community 433|Community 433]]
-- [[_COMMUNITY_Community 434|Community 434]]
-- [[_COMMUNITY_Community 435|Community 435]]
-- [[_COMMUNITY_Community 436|Community 436]]
 - [[_COMMUNITY_Community 437|Community 437]]
 - [[_COMMUNITY_Community 438|Community 438]]
-- [[_COMMUNITY_Community 439|Community 439]]
-- [[_COMMUNITY_Community 440|Community 440]]
 - [[_COMMUNITY_Community 441|Community 441]]
 - [[_COMMUNITY_Community 442|Community 442]]
 - [[_COMMUNITY_Community 443|Community 443]]
@@ -495,90 +487,21 @@
 - [[_COMMUNITY_Community 482|Community 482]]
 - [[_COMMUNITY_Community 483|Community 483]]
 - [[_COMMUNITY_Community 484|Community 484]]
-- [[_COMMUNITY_Community 485|Community 485]]
-- [[_COMMUNITY_Community 486|Community 486]]
-- [[_COMMUNITY_Community 487|Community 487]]
-- [[_COMMUNITY_Community 488|Community 488]]
-- [[_COMMUNITY_Community 489|Community 489]]
-- [[_COMMUNITY_Community 490|Community 490]]
-- [[_COMMUNITY_Community 491|Community 491]]
-- [[_COMMUNITY_Community 492|Community 492]]
-- [[_COMMUNITY_Community 493|Community 493]]
-- [[_COMMUNITY_Community 494|Community 494]]
 - [[_COMMUNITY_Community 495|Community 495]]
-- [[_COMMUNITY_Community 496|Community 496]]
 - [[_COMMUNITY_Community 497|Community 497]]
 - [[_COMMUNITY_Community 498|Community 498]]
 - [[_COMMUNITY_Community 499|Community 499]]
-- [[_COMMUNITY_Community 500|Community 500]]
-- [[_COMMUNITY_Community 501|Community 501]]
-- [[_COMMUNITY_Community 502|Community 502]]
-- [[_COMMUNITY_Community 503|Community 503]]
-- [[_COMMUNITY_Community 504|Community 504]]
-- [[_COMMUNITY_Community 505|Community 505]]
-- [[_COMMUNITY_Community 506|Community 506]]
-- [[_COMMUNITY_Community 507|Community 507]]
-- [[_COMMUNITY_Community 508|Community 508]]
-- [[_COMMUNITY_Community 509|Community 509]]
-- [[_COMMUNITY_Community 510|Community 510]]
-- [[_COMMUNITY_Community 511|Community 511]]
 - [[_COMMUNITY_Community 512|Community 512]]
-- [[_COMMUNITY_Community 513|Community 513]]
-- [[_COMMUNITY_Community 514|Community 514]]
-- [[_COMMUNITY_Community 515|Community 515]]
 - [[_COMMUNITY_Community 516|Community 516]]
-- [[_COMMUNITY_Community 517|Community 517]]
-- [[_COMMUNITY_Community 518|Community 518]]
-- [[_COMMUNITY_Community 519|Community 519]]
 - [[_COMMUNITY_Community 520|Community 520]]
-- [[_COMMUNITY_Community 521|Community 521]]
-- [[_COMMUNITY_Community 522|Community 522]]
-- [[_COMMUNITY_Community 523|Community 523]]
-- [[_COMMUNITY_Community 524|Community 524]]
-- [[_COMMUNITY_Community 525|Community 525]]
-- [[_COMMUNITY_Community 526|Community 526]]
-- [[_COMMUNITY_Community 527|Community 527]]
-- [[_COMMUNITY_Community 528|Community 528]]
-- [[_COMMUNITY_Community 529|Community 529]]
-- [[_COMMUNITY_Community 530|Community 530]]
-- [[_COMMUNITY_Community 531|Community 531]]
-- [[_COMMUNITY_Community 532|Community 532]]
-- [[_COMMUNITY_Community 533|Community 533]]
-- [[_COMMUNITY_Community 534|Community 534]]
-- [[_COMMUNITY_Community 535|Community 535]]
-- [[_COMMUNITY_Community 536|Community 536]]
-- [[_COMMUNITY_Community 537|Community 537]]
-- [[_COMMUNITY_Community 538|Community 538]]
-- [[_COMMUNITY_Community 539|Community 539]]
-- [[_COMMUNITY_Community 540|Community 540]]
-- [[_COMMUNITY_Community 541|Community 541]]
-- [[_COMMUNITY_Community 542|Community 542]]
 - [[_COMMUNITY_Community 543|Community 543]]
 - [[_COMMUNITY_Community 544|Community 544]]
-- [[_COMMUNITY_Community 545|Community 545]]
 - [[_COMMUNITY_Community 546|Community 546]]
 - [[_COMMUNITY_Community 547|Community 547]]
 - [[_COMMUNITY_Community 548|Community 548]]
 - [[_COMMUNITY_Community 549|Community 549]]
-- [[_COMMUNITY_Community 550|Community 550]]
-- [[_COMMUNITY_Community 551|Community 551]]
-- [[_COMMUNITY_Community 552|Community 552]]
-- [[_COMMUNITY_Community 553|Community 553]]
-- [[_COMMUNITY_Community 554|Community 554]]
-- [[_COMMUNITY_Community 555|Community 555]]
-- [[_COMMUNITY_Community 556|Community 556]]
-- [[_COMMUNITY_Community 557|Community 557]]
-- [[_COMMUNITY_Community 558|Community 558]]
-- [[_COMMUNITY_Community 559|Community 559]]
-- [[_COMMUNITY_Community 560|Community 560]]
-- [[_COMMUNITY_Community 561|Community 561]]
-- [[_COMMUNITY_Community 562|Community 562]]
-- [[_COMMUNITY_Community 563|Community 563]]
-- [[_COMMUNITY_Community 564|Community 564]]
 - [[_COMMUNITY_Community 565|Community 565]]
-- [[_COMMUNITY_Community 566|Community 566]]
 - [[_COMMUNITY_Community 567|Community 567]]
-- [[_COMMUNITY_Community 568|Community 568]]
 - [[_COMMUNITY_Community 569|Community 569]]
 - [[_COMMUNITY_Community 570|Community 570]]
 - [[_COMMUNITY_Community 571|Community 571]]
@@ -590,7 +513,6 @@
 - [[_COMMUNITY_Community 577|Community 577]]
 - [[_COMMUNITY_Community 578|Community 578]]
 - [[_COMMUNITY_Community 579|Community 579]]
-- [[_COMMUNITY_Community 580|Community 580]]
 - [[_COMMUNITY_Community 581|Community 581]]
 - [[_COMMUNITY_Community 582|Community 582]]
 - [[_COMMUNITY_Community 583|Community 583]]
@@ -713,7 +635,6 @@
 - [[_COMMUNITY_Community 700|Community 700]]
 - [[_COMMUNITY_Community 701|Community 701]]
 - [[_COMMUNITY_Community 702|Community 702]]
-- [[_COMMUNITY_Community 703|Community 703]]
 - [[_COMMUNITY_Community 704|Community 704]]
 - [[_COMMUNITY_Community 705|Community 705]]
 - [[_COMMUNITY_Community 706|Community 706]]
@@ -733,7 +654,6 @@
 - [[_COMMUNITY_Community 720|Community 720]]
 - [[_COMMUNITY_Community 721|Community 721]]
 - [[_COMMUNITY_Community 722|Community 722]]
-- [[_COMMUNITY_Community 723|Community 723]]
 - [[_COMMUNITY_Community 724|Community 724]]
 - [[_COMMUNITY_Community 725|Community 725]]
 - [[_COMMUNITY_Community 726|Community 726]]
@@ -847,7 +767,6 @@
 - [[_COMMUNITY_Community 834|Community 834]]
 - [[_COMMUNITY_Community 835|Community 835]]
 - [[_COMMUNITY_Community 836|Community 836]]
-- [[_COMMUNITY_Community 837|Community 837]]
 - [[_COMMUNITY_Community 838|Community 838]]
 - [[_COMMUNITY_Community 839|Community 839]]
 - [[_COMMUNITY_Community 840|Community 840]]
@@ -933,25 +852,25 @@
 1. `Chunk` - 317 edges
 2. `SearchHit` - 303 edges
 3. `StageHealth` - 269 edges
-4. `Pipeline` - 109 edges
-5. `SourceFile` - 105 edges
-6. `StageContext` - 101 edges
-7. `StrophaError` - 97 edges
-8. `Embedder` - 93 edges
-9. `RepoIdentity` - 92 edges
-10. `Storage` - 89 edges
+4. `StageHealth` - 113 edges
+5. `Pipeline` - 109 edges
+6. `SourceFile` - 105 edges
+7. `StageContext` - 101 edges
+8. `StrophaError` - 97 edges
+9. `Embedder` - 93 edges
+10. `RepoIdentity` - 92 edges
 
 ## Surprising Connections (you probably didn't know these)
-- `RepoStats` --semantically_similar_to--> `RepoStats`  [INFERRED] [semantically similar]
-  C:\sources\stropha\src\stropha\pipeline\pipeline.py → C:\sources\stropha\src\stropha\models.py
-- `search_code()` --semantically_similar_to--> `search()`  [INFERRED] [semantically similar]
-  C:\sources\stropha\src\stropha\server.py → C:\sources\stropha\src\stropha\cli.py
-- `Repo manifest loader — declarative multi-repo lists (Phase 4).  Lets users rep` --uses--> `StrophaError`  [INFERRED]
-  C:\sources\stropha\src\stropha\ingest\manifest.py → C:\sources\stropha\src\stropha\errors.py
-- `Parse a repo manifest. Returns the **enabled** entries in declaration order.` --uses--> `StrophaError`  [INFERRED]
-  C:\sources\stropha\src\stropha\ingest\manifest.py → C:\sources\stropha\src\stropha\errors.py
-- `Resolve the full pipeline config dict.      Args:         project_root: dir t` --uses--> `ConfigError`  [INFERRED]
-  C:\sources\stropha\src\stropha\pipeline\config.py → C:\sources\stropha\src\stropha\errors.py
+- `test_walker_discovers_files_in_git_repo()` --calls--> `GitLsFilesWalker`  [INFERRED]
+  tests/unit/test_phase2_adapters.py → src/stropha/adapters/walker/git_ls_files.py
+- `test_chunk_id_is_deterministic_under_namespace()` --calls--> `make_chunk_id()`  [INFERRED]
+  tests/unit/test_pipeline_multirepo.py → src/stropha/ingest/chunkers/base.py
+- `test_stage_context_defaults()` --calls--> `StageContext`  [INFERRED]
+  tests/unit/test_pipeline_framework.py → src/stropha/pipeline/base.py
+- `test_stage_health_ready()` --calls--> `StageHealth`  [INFERRED]
+  tests/unit/test_pipeline_framework.py → src/stropha/pipeline/base.py
+- `test_walker_skips_binaries_and_oversize()` --calls--> `Walker`  [INFERRED]
+  tests/unit/test_walker.py → src/stropha/ingest/walker.py
 
 ## Hyperedges (group relationships)
 - **Phase 4 retrieval sub-pipeline: 3 streams fused via RRF** — stropha_retrieval_hybrid_rrf, stropha_stream_vec_cosine, stropha_stream_fts5_bm25, stropha_stream_like_tokens, stropha_rrf_fuse [EXTRACTED 1.00]
@@ -967,67 +886,67 @@
 - **Hybrid RRF retrieval streams (dense + sparse + symbol)** — hybrid_rrf_retrieval, vec_cosine_stream, fts5_bm25_stream, like_tokens_stream [EXTRACTED 0.95]
 - **Full stropha pipeline stage adapters (walk → chunk → enrich → embed → store → retrieve)** — git_ls_files_walker, tree_sitter_dispatch_chunker, hierarchical_enricher, noop_enricher, local_embedder, voyage_embedder, sqlite_vec_storage, hybrid_rrf_retrieval [INFERRED 0.90]
 
-## Communities
+## Communities (845 total, 568 thin omitted)
 
 ### Community 0 - "Community 0"
-Cohesion: 0.02
-Nodes (259): AstGenericChunker, AstGenericConfig, AstGenericLanguageChunker, _kind_str(), _qualified_name(), Generic AST chunker built on tree-sitter-language-pack's `process()`.  Strateg, Emit a single file-level chunk (or split if oversized)., Split an oversized span on line boundaries. (+251 more)
+Cohesion: 0.06
+Nodes (44): LanguageChunkerStage, ChunkerStage protocol — split files into indexable chunks.  The default adapte, Public entry point. Replaces Phase 0's FileChunker., Per-language chunker (sub-adapter of the dispatcher).      The minimal contrac, Chunk every file. When ``repo_key`` is provided, every emitted         chunk's, Re-derive chunk_id with repo discriminator (no-op when repo_key is None)., ChunkerError, Failure while splitting a file into chunks. (+36 more)
 
 ### Community 1 - "Community 1"
-Cohesion: 0.02
-Nodes (224): Embedder, Synchronous embedder. Async wrappers (when justified) live in subclasses., Embed a single user query. Providers may use a different input_type., BaseSettings, build_stages(), _apply_cli_filters(), eval(), glossary_add_cmd() (+216 more)
+Cohesion: 0.07
+Nodes (57): EnricherStage, index_cached_repo(), Index a cached repository.          Updates the cache metadata with the indexi, Check if the cache has expired (TTL exceeded)., Check if the repo needs indexing., HierarchicalEnricher, NoopEnricher, Pipeline (+49 more)
 
 ### Community 2 - "Community 2"
-Cohesion: 0.02
-Nodes (123): _build_simple(), _coerce(), _env_to_dict(), _legacy_env_to_dict(), _merge(), Pipeline configuration loader.  Cascading precedence (per ``docs/architecture/, Translate ``STROPHA_<STAGE>__<KEY>__...`` into nested dict overlay.      ``STR, Map deprecated env vars onto the new shape. Logs a warning.      Caller MUST r (+115 more)
+Cohesion: 0.04
+Nodes (67): Fts5Bm25Config, Fts5Bm25Stream, Sparse retrieval stream — SQLite FTS5 BM25., HybridRrfConfig, HybridRrfRetrieval, _enabled(), maybe_rewrite_query(), _prompt_template() (+59 more)
 
 ### Community 3 - "Community 3"
-Cohesion: 0.03
-Nodes (128): Get cache statistics., Failure in the SQLite/vec layer (schema, IO, corruption)., StorageError, Git repository identity extraction.  For every file we index we want to rememb, Stable identification of a git repository (or a fallback)., RepoIdentity, Graph node embedding retrieval stream — Trilha A L3.  Maps a query vector agai, Plain Python cosine. Returns 0.0 on zero vectors. (+120 more)
+Cohesion: 0.08
+Nodes (68): Failure in the SQLite/vec layer (schema, IO, corruption)., StorageError, Stable identification of a git repository (or a fallback)., RepoIdentity, Per-repo counters reported by Storage.stats() and `list_repos`.      Includes, Stable identifier of the git repository a chunk belongs to.      Returned alon, RepoRef, RepoStats (+60 more)
 
 ### Community 4 - "Community 4"
 Cohesion: 0.02
-Nodes (46): Lightweight readiness probe, ≤2 s, non-blocking.          Called by ``stropha, One responsibility in the pipeline. Exactly one adapter active per run.      A, Stage, Cross-encoder reranker using fastembed's TextCrossEncoder.  Uses ONNX-based cr, EmbedderStage protocol — text → vector.  Same surface the pre-pipeline ``strop, AdapterError, PipelineError, Structured exceptions. Per CLAUDE.md, never raise bare Exception. (+38 more)
+Nodes (40): Pipeline configuration loader.  Cascading precedence (per ``docs/architecture/, Cross-encoder reranker using fastembed's TextCrossEncoder.  Uses ONNX-based cr, EmbedderStage protocol — text → vector.  Same surface the pre-pipeline ``strop, EnricherStage protocol — transform a chunk before embedding.  Phase 1 introduc, AdapterError, PipelineError, Structured exceptions. Per CLAUDE.md, never raise bare Exception., Failure during query execution. (+32 more)
 
 ### Community 5 - "Community 5"
-Cohesion: 0.03
-Nodes (153): CacheEntry, clear_global_cache(), _enabled(), _filters_hash(), get_global_cache(), _max_size(), _quantize_vector(), Semantic Query Cache — LRU cache for search results.  Idea: Cache search resul (+145 more)
+Cohesion: 0.06
+Nodes (76): CacheEntry, clear_global_cache(), _enabled(), _filters_hash(), get_global_cache(), _max_size(), _quantize_vector(), Semantic Query Cache — LRU cache for search results.  Idea: Cache search resul (+68 more)
 
 ### Community 6 - "Community 6"
-Cohesion: 0.03
-Nodes (110): _default_index_path(), Default index path: .stropha/index.db relative to cwd, or ~/.stropha/index.db., main(), _cosine(), GraphVecConfig, GraphVecStream, GraphVecLoader, _pack_vec() (+102 more)
+Cohesion: 0.09
+Nodes (54): _default_index_path(), Default index path: .stropha/index.db relative to cwd, or ~/.stropha/index.db., main(), VecLoadResult, GraphifyLoader, Parse ``STROPHA_GRAPH_CONFIDENCE`` env var into a tuple of tiers.      Empty /, _resolve_confidence_filter(), _resolve_graph_path() (+46 more)
 
 ### Community 7 - "Community 7"
-Cohesion: 0.01
-Nodes (142): 0. TL;DR, 10.1 Unit (rápido, deterministic, sem rede), 10.2 Integração, 10.3 E2E (com Mimoria real, marker `@pytest.mark.e2e`), 10.4 Golden dataset, 10.5 Smoke do hook, 10. Estratégia de testes, 11.1 Logging estruturado (`structlog`) (+134 more)
+Cohesion: 0.12
+Nodes (17): 4.1 Schema SQLite (extensão do `storage/sqlite.py:Storage.migrate`), 4.2 Loader (`ingest/graphify_loader.py`), 4.3 Política de confiança (default), 4.4 Detecção de staleness, 4.5 Augmentation FTS5 (L2 — default), 4.6 Indexação semântica (L3 — opt-in), 4.7 Níveis de indexação — taxonomia explícita, 4.8 Join com `chunks` (+9 more)
 
 ### Community 8 - "Community 8"
-Cohesion: 0.01
-Nodes (132): 10.1 Golden dataset, 10.2 Métricas, 10.3 Frameworks, 10.4 LLM-as-judge, 10.5 A/B testing online, 10.6 Regression testing em CI, 10. Avaliação, 11.1 Tracing (+124 more)
+Cohesion: 0.1
+Nodes (19): 6.1 Hybrid search (dense + sparse), 6.2 Reranking (cross-encoder), 6.3.1 Query rewriting, 6.3.2 HyDE (Hypothetical Document Embeddings), 6.3.3 Multi-query expansion, 6.3.4 Step-back prompting, 6.3.5 Query routing, 6.3 Query understanding (+11 more)
 
 ### Community 9 - "Community 9"
 Cohesion: 0.05
-Nodes (97): StageContext, ContextualEnricher, ContextualEnricherConfig, Return the text to embed.          MUST be deterministic for a given ``(chunk,, EnricherStage, GraphAwareEnricher, GraphAwareEnricherConfig, _location_to_line() (+89 more)
+Nodes (100): StageContext, ContextualEnricher, ContextualEnricherConfig, Return the text to embed.          MUST be deterministic for a given ``(chunk,, GraphAwareEnricher, GraphAwareEnricherConfig, _location_to_line(), HierarchicalEnricherConfig (+92 more)
 
 ### Community 10 - "Community 10"
-Cohesion: 0.04
-Nodes (54): BgeM3Config, BgeM3Embedder, bge-m3 embedder adapter — pre-configured local fastembed backend.  ``BAAI/bge-, bge-m3 is multilingual + multi-function; defaults tuned for code RAG., Same fastembed backend as ``LocalEmbedder``, pinned to ``BAAI/bge-m3``., EmbedderStage, EmbeddingError, Failure while computing embeddings (network, auth, model). (+46 more)
+Cohesion: 0.07
+Nodes (36): EmbeddingError, Failure while computing embeddings (network, auth, model)., LocalEmbedder, ONNX-based embedder, runs on CPU., MlxEmbedder, MlxEmbedderConfig, Load the MLX embedding model., Embed multiple documents using MLX GPU acceleration. (+28 more)
 
 ### Community 11 - "Community 11"
-Cohesion: 0.02
-Nodes (112): 0. TL;DR, 10.1 Phase 1 — Framework + Embedder + Enricher (~2 dias), 10.2 Phase 2 — Walker + Storage + Retrieval (~2 dias), 10.3 Phase 3 — Chunker como sub-pipeline (~1 dia), 10.4 Phase 4 — Retrieval como sub-pipeline (~0.5 dia), 10.5 Phase 5 — Adapters novos (~0.5 dia cada, sob demanda), 10. Plano de execução em fases, 11. Decisões registradas (ADRs) (+104 more)
+Cohesion: 0.15
+Nodes (12): 0. TL;DR, 12. Decisões em aberto, 13.1 Garantias, 13.2 Não-garantias, 13. Compatibilidade backward, 16. Riscos, 17. Referências, 18. Glossário (+4 more)
 
 ### Community 12 - "Community 12"
-Cohesion: 0.03
-Nodes (59): _dcg(), EvalCase, EvalReport, EvalResult, from_dict(), load_golden(), _ndcg(), _path_matches() (+51 more)
+Cohesion: 0.24
+Nodes (18): EvalCase, run_eval(), _FakeEngine, _FakeHit, Unit tests for ``stropha.eval.harness`` — golden loader, Recall@K, MRR, NDCG., ``expected_symbols=['login']`` matches ``AuthService.login``., Returns canned hits per query string. Works as a SearchEngine stub., Tests for NDCG and Precision in EvalReport. (+10 more)
 
 ### Community 13 - "Community 13"
 Cohesion: 0.05
 Nodes (52): ABC, generate(), get_backend(), InferenceBackend, is_mlx_available(), is_ollama_available(), Base inference backend and auto-detection logic.  The inference system support, Get the best available inference backend.      Args:         prefer: Preferre (+44 more)
 
 ### Community 14 - "Community 14"
-Cohesion: 0.06
-Nodes (58): AnchorDetector, AnchorMatch, AnchorPattern, get_anchor_categories(), get_anchor_pattern_names(), Architectural anchor detection.  Identifies code elements that serve as archit, Result of anchor detection for a chunk., Detects architectural anchors in code chunks. (+50 more)
+Cohesion: 0.07
+Nodes (54): AnchorDetector, AnchorMatch, AnchorPattern, get_anchor_categories(), get_anchor_pattern_names(), Architectural anchor detection.  Identifies code elements that serve as archit, Result of anchor detection for a chunk., Detects architectural anchors in code chunks. (+46 more)
 
 ### Community 15 - "Community 15"
 Cohesion: 0.05
@@ -1035,23 +954,23 @@ Nodes (60): cost(), AdapterCost, aggregate(), CostReport, default_log_paths(), G
 
 ### Community 16 - "Community 16"
 Cohesion: 0.06
-Nodes (70): glossary_import_cmd(), Import glossary terms from a YAML file., find_glossary_yaml(), GlossaryLoader, GlossaryStats, GlossaryTerm, Domain glossary ingestion and management.  A glossary is a collection of domai, Load glossary terms from a YAML file.                  Args:             yaml (+62 more)
+Nodes (55): find_glossary_yaml(), GlossaryStats, GlossaryTerm, Domain glossary ingestion and management.  A glossary is a collection of domai, Index glossary terms as chunks.                  Args:             terms: Lis, Add a single term to the glossary.                  Args:             term: T, Remove a term from the glossary.                  Args:             term: The, List all glossary terms.                  Returns:             List of term d (+47 more)
 
 ### Community 17 - "Community 17"
 Cohesion: 0.06
-Nodes (36): CodeAwareReranker, CodeAwareRerankerConfig, _query_contains_test_keywords(), Code-aware reranker — applies code-specific heuristics for better ranking.  Th, Split an identifier into stemmed tokens.          Examples:         getUserBy, Check if query explicitly asks for tests., Applies code-aware heuristics to improve search ranking.          This reranke, Re-score hits using code-aware heuristics.                  Args: (+28 more)
+Nodes (41): Get cache statistics., CodeAwareReranker, CodeAwareRerankerConfig, _query_contains_test_keywords(), Code-aware reranker — applies code-specific heuristics for better ranking.  Th, Split an identifier into stemmed tokens.          Examples:         getUserBy, Check if query explicitly asks for tests., Applies code-aware heuristics to improve search ranking.          This reranke (+33 more)
 
 ### Community 18 - "Community 18"
-Cohesion: 0.04
-Nodes (72): _enabled(), get_prompt_type(), maybe_hyde_rewrite(), _prompt_template(), HyDE — Hypothetical Document Embeddings (Phase 3 §6.3).  Idea (Gao et al., 202, Select the best code-tuned prompt based on query patterns., Check if code-tuned prompts should be used (default: yes)., Get the appropriate prompt template for the query. (+64 more)
+Cohesion: 0.16
+Nodes (16): maybe_hyde_rewrite(), Return a hypothetical document for ``query`` or ``None`` on fail/skip.      Us, Unit tests for HyDE query rewrite and recursive retrieval.  Both are query-pat, Code-tuned prompts can be disabled., HyDE should strip markdown code fences from LLM output., test_hyde_caps_long_output(), test_hyde_code_tuned_disabled(), test_hyde_disabled_by_default() (+8 more)
 
 ### Community 19 - "Community 19"
-Cohesion: 0.03
-Nodes (72): Adapters Verificados, ALTA PRIORIDADE (atualizar documentacao), Analise Comparativa Realizada, Arquivos Criados, Arquivos de Documentacao Identificados, Arquivos Modificados, BAIXA PRIORIDADE (informativo), Chunker (1 dispatcher + 5 language sub-adapters) (+64 more)
+Cohesion: 0.17
+Nodes (11): Dados Verificados (fonte de verdade - codigo), Decisoes Tomadas, Log de Revisao de Codigo e Documentacao - Stropha/RAG, Objetivo, Observacao sobre o Grafo, Proxima sessao sugerida:, Proximos Passos, Proximos Passos (atualizados) (+3 more)
 
 ### Community 20 - "Community 20"
-Cohesion: 0.07
-Nodes (30): classify_query(), get_adaptive_weights(), _is_symbol_token(), QueryClassification, QueryType, Query classification for adaptive retrieval.  Classifies queries as symbol-lik, Tokenize query into meaningful tokens., Classify a query as symbol-like, natural-language, or mixed.          Args: (+22 more)
+Cohesion: 0.05
+Nodes (40): classify_query(), get_adaptive_weights(), _is_symbol_token(), QueryClassification, QueryType, Query classification for adaptive retrieval.  Classifies queries as symbol-lik, Tokenize query into meaningful tokens., Classify a query as symbol-like, natural-language, or mixed.          Args: (+32 more)
 
 ### Community 21 - "Community 21"
 Cohesion: 0.07
@@ -1059,19 +978,19 @@ Nodes (59): _fetch_node_rows(), find_callers(), find_rationale(), find_related()
 
 ### Community 22 - "Community 22"
 Cohesion: 0.07
-Nodes (31): CachedRepo, clone_repo(), get_cache_dir(), get_cached_repo(), GitUrlError, is_expired(), is_git_url(), needs_index() (+23 more)
+Nodes (32): CachedRepo, clone_repo(), get_cache_dir(), get_cached_repo(), GitUrlError, is_expired(), is_git_url(), needs_index() (+24 more)
 
 ### Community 23 - "Community 23"
-Cohesion: 0.07
-Nodes (47): Enum, get_logger(), Structured logging via structlog. Single configuration entry point., Return a structlog logger. Use module __name__ as `name`., is_graph_intent(), _llm_classify(), _pattern_match(), QueryIntent (+39 more)
+Cohesion: 0.09
+Nodes (38): Enum, is_graph_intent(), _llm_classify(), _pattern_match(), QueryIntent, Query routing — classify intent and dispatch to appropriate tool.  Routes quer, Try pattern-based classification (fast, no LLM)., Use LLM for ambiguous query classification. (+30 more)
 
 ### Community 24 - "Community 24"
-Cohesion: 0.03
-Nodes (56): 1.1 Reranker Local (Cross-Encoder ONNX), 1.2 Filtros Expostos no MCP, 1.3 Faceted Search Response, 2.1 HyDE (Hypothetical Document Embeddings), 2.2 Query Rewriting, 2.3 Multi-Query Expansion, 3.1 Auto-Merging Retrieval, 3.2 Recursive Retrieval (completar) (+48 more)
+Cohesion: 0.22
+Nodes (9): 2.1 HyDE (Hypothetical Document Embeddings), 2.2 Query Rewriting, 2.3 Multi-Query Expansion, code:block5 (Query: "como salvar enrollment"), code:yaml (retrieval:), code:block7 ("onde tem teste pra fsrs" → "FSRS calculator test unit test ), code:python (class QueryRewriter:), code:block9 (Query: "autenticação de usuário") (+1 more)
 
 ### Community 25 - "Community 25"
-Cohesion: 0.04
-Nodes (56): Adapter system, Adding a new adapter, Architecture (one screen), Available MCP tools, Claude Code / Claude Desktop, CLI reference, code:bash (# 1. Install (Python 3.12+, uv recommended)), code:text (stropha index             # walk → chunk → enrich → embed → ) (+48 more)
+Cohesion: 0.15
+Nodes (13): CLI reference, code:bash (# 1. Install (Python 3.12+, uv recommended)), code:text (stropha index             # walk → chunk → enrich → embed → ), code:bash (# Bootstrap the symbol graph (one-time, costs LLM tokens onc), Connect Claude Code (MCP), Key features, License, Quick start (+5 more)
 
 ### Community 26 - "Community 26"
 Cohesion: 0.07
@@ -1079,7 +998,7 @@ Nodes (52): _atomic_write(), _detect_uv_path(), _hook_path(), HookStatus, instal
 
 ### Community 27 - "Community 27"
 Cohesion: 0.1
-Nodes (36): _default_rename_threshold(), GitDiffWalker, GitDiffWalkerConfig, Git-diff aware walker — Phase B incremental ingestion.  Walks only the files t, Return all file deltas between ``since_sha`` and ``until_sha``.          Uses, Parse ``git diff --name-status -z`` output.          Format (NUL-separated):, Filter to file types stropha can chunk.          Submodule updates show as dir, `STROPHA_RENAME_THRESHOLD` overrides; default 80%.      Lower = more aggressiv (+28 more)
+Nodes (39): Failure while discovering source files., WalkerError, _default_rename_threshold(), GitDiffWalker, GitDiffWalkerConfig, Git-diff aware walker — Phase B incremental ingestion.  Walks only the files t, Not supported — use :meth:`discover_deltas` with a since SHA., Return all file deltas between ``since_sha`` and ``until_sha``.          Uses (+31 more)
 
 ### Community 28 - "Community 28"
 Cohesion: 0.08
@@ -1090,8 +1009,8 @@ Cohesion: 0.09
 Nodes (25): configure_mcp_client(), create_stropha_dir(), detect_mcp_clients(), generate_mcp_entry(), MCPClient, print_next_steps(), Project initialization for stropha.  The `stropha init` command sets up a new, Create .stropha/ directory with default config.          Returns:         Tup (+17 more)
 
 ### Community 30 - "Community 30"
-Cohesion: 0.06
-Nodes (35): 2.1 SQLite schema versions, 2.2 MCP tools (10) — server name `stropha_rag`, 2.2 MCP tools (11) — server name `stropha_rag`, 2.3 Adapters registered (auto-loaded from `stropha.adapters`), 2.4 CLI commands, 2.5 Environment variables (active toggles), 2.6 Test inventory (334 unit tests, ~5s), 2.6 Test inventory (383 unit tests, ~8s) (+27 more)
+Cohesion: 0.04
+Nodes (46): 2.1 SQLite schema versions, 2.2 MCP tools (10) — server name `stropha_rag`, 2.2 MCP tools (11) — server name `stropha_rag`, 2.2 MCP tools (12) — server name `stropha_rag`, 2.3 Adapters registered (auto-loaded from `stropha.adapters`), 2.4 CLI commands, 2.5 Configuration (YAML-first), 2.5 Environment variables (active toggles) (+38 more)
 
 ### Community 31 - "Community 31"
 Cohesion: 0.15
@@ -1101,5334 +1020,949 @@ Nodes (19): Adapter-drift detection (ADR-004), Per-repo chunk_id namespacing, Co
 Cohesion: 0.22
 Nodes (19): load_manifest(), ManifestEntry, Repo manifest loader — declarative multi-repo lists (Phase 4).  Lets users rep, Parse a repo manifest. Returns the **enabled** entries in declaration order., Unit tests for ``stropha.ingest.manifest.load_manifest``.  Coverage matrix: -, Tilde paths are expanded., test_bare_string_entries(), test_disabled_entries_are_skipped() (+11 more)
 
-### Community 33 - "Community 33"
-Cohesion: 1.0
-Nodes (1): graphify
-
-### Community 34 - "Community 34"
-Cohesion: 1.0
-Nodes (1): Average savings percentage across all searches.
-
-### Community 35 - "Community 35"
-Cohesion: 1.0
-Nodes (1): Average number of results per search.
-
-### Community 36 - "Community 36"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 37 - "Community 37"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 38 - "Community 38"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 39 - "Community 39"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 40 - "Community 40"
-Cohesion: 1.0
-Nodes (1): Identifier persisted alongside vectors (e.g. 'voyage-code-3').
-
-### Community 41 - "Community 41"
-Cohesion: 1.0
-Nodes (1): Vector dimensionality. Used to size the sqlite-vec virtual table.
-
-### Community 42 - "Community 42"
-Cohesion: 1.0
-Nodes (1): Max items per call. The pipeline batches according to this.
-
-### Community 43 - "Community 43"
-Cohesion: 1.0
-Nodes (1): ``'walker'`` | ``'chunker'`` | ``'enricher'`` | ``'embedder'`` | ``'storage'`` |
-
-### Community 44 - "Community 44"
-Cohesion: 1.0
-Nodes (1): Short identifier, unique per stage (``'noop'``, ``'hierarchical'``, …).
-
-### Community 45 - "Community 45"
-Cohesion: 1.0
-Nodes (1): Stable, fully-qualified id including model/config used for cache keys.
-
-### Community 46 - "Community 46"
-Cohesion: 1.0
-Nodes (1): Pydantic model describing this adapter's config section.
-
-### Community 47 - "Community 47"
-Cohesion: 1.0
-Nodes (1): Check if multi-query is enabled via config or env var.
-
-### Community 48 - "Community 48"
-Cohesion: 1.0
-Nodes (1): True if query is predominantly symbol-like (>= 80% symbol tokens).
-
-### Community 49 - "Community 49"
-Cohesion: 1.0
-Nodes (1): True if query is predominantly natural language (<= 20% symbol tokens).
-
-### Community 50 - "Community 50"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 51 - "Community 51"
-Cohesion: 1.0
-Nodes (0): 
-
 ### Community 52 - "Community 52"
-Cohesion: 1.0
-Nodes (1): Tests for the chunker dispatcher and per-language chunkers.
+Cohesion: 0.13
+Nodes (22): FallbackChunker, One chunk per file; line-based split when file exceeds MAX_CHARS_PER_CHUNK., GherkinChunker, Gherkin chunker (custom — tree-sitter-language-pack does not ship a grammar).  P, MarkdownChunker, Section-per-chunk. Parent chain encoded via parent_chunk_id., VueChunker, _build_registry() (+14 more)
 
 ### Community 53 - "Community 53"
-Cohesion: 1.0
-Nodes (1): Unit tests for ``Storage.augment_fts_with_graph()`` — L2 retroactive FTS5 augmen
+Cohesion: 0.2
+Nodes (16): Unit tests for ``Storage.augment_fts_with_graph()`` — L2 retroactive FTS5 augmen, When a chunk overlaps multiple nodes, the one closest to its start     wins (mir, End-to-end through the pipeline: after a real index run with a     graph present, When STROPHA_GRAPH_FTS_AUGMENT=0 the pipeline should NOT augment.      Tests the, No graph loaded → method reports missing_graph and changes nothing., A chunk overlapping a graph node gets `community:` + `node:` terms., _seed_chunk(), _seed_graph() (+8 more)
 
 ### Community 54 - "Community 54"
-Cohesion: 1.0
-Nodes (1): No graph loaded → method reports missing_graph and changes nothing.
+Cohesion: 0.03
+Nodes (68): find_glossary_yaml(), GlossaryLoader, GlossaryStats, GlossaryTerm, Domain glossary ingestion and management.  A glossary is a collection of domain-, Load glossary terms from a YAML file.                  Args:             yaml_pa, Index glossary terms as chunks.                  Args:             terms: List o, Add a single term to the glossary.                  Args:             term: The (+60 more)
 
 ### Community 55 - "Community 55"
-Cohesion: 1.0
-Nodes (1): A chunk overlapping a graph node gets `community:` + `node:` terms.
+Cohesion: 0.05
+Nodes (34): BuiltStages, Builder: resolved config dict → instantiated adapter objects.  Importing this, Build a stage that needs no cross-stage dependency injection., Set of constructed adapters returned by :func:`build_stages`.      All 6 stage, Instantiate every adapter named in ``resolved_config``.      ``open_storage=Fa, _coerce(), _env_to_dict(), Translate ``STROPHA_<STAGE>__<KEY>__...`` into nested dict overlay.      ``STR (+26 more)
 
 ### Community 56 - "Community 56"
-Cohesion: 1.0
-Nodes (1): When a chunk overlaps multiple nodes, the one closest to its start     wins (mir
+Cohesion: 0.05
+Nodes (63): CacheEntry, clear_global_cache(), _filters_hash(), get_global_cache(), _quantize_vector(), LRU cache for search results, keyed by quantized query embedding., Generate a cache key from query vector and parameters., Get cached result if available and not expired.                  Args: (+55 more)
 
 ### Community 57 - "Community 57"
-Cohesion: 1.0
-Nodes (1): End-to-end through the pipeline: after a real index run with a     graph present
+Cohesion: 0.11
+Nodes (58): Embedder, Synchronous embedder. Async wrappers (when justified) live in subclasses., Embed a single user query. Providers may use a different input_type., Base class for all errors raised by stropha., StrophaError, build_embedder(), Return Voyage when key is set, else local fastembed., graph_loaded() (+50 more)
 
 ### Community 58 - "Community 58"
-Cohesion: 1.0
-Nodes (1): When STROPHA_GRAPH_FTS_AUGMENT=0 the pipeline should NOT augment.      Tests the
+Cohesion: 0.06
+Nodes (57): _cache_key(), clear_cache(), _enabled(), generate_paraphrases(), _get_cached(), is_enabled(), MultiQueryExpander, _num_paraphrases() (+49 more)
 
 ### Community 59 - "Community 59"
-Cohesion: 1.0
-Nodes (1): Smoke test: launch the MCP server as a subprocess and exchange JSON-RPC.  This t
+Cohesion: 0.47
+Nodes (5): Smoke test: launch the MCP server as a subprocess and exchange JSON-RPC.  This t, Spawn the server, initialize, list tools, call search_code., _recv(), _send(), test_mcp_handshake_and_tool_call()
 
 ### Community 60 - "Community 60"
-Cohesion: 1.0
-Nodes (1): Spawn the server, initialize, list tools, call search_code.
+Cohesion: 0.06
+Nodes (31): AstGenericChunker, AstGenericConfig, AstGenericLanguageChunker, _kind_str(), _qualified_name(), Generic AST chunker built on tree-sitter-language-pack's `process()`.  Strateg, Emit a single file-level chunk (or split if oversized)., Split an oversized span on line boundaries. (+23 more)
 
 ### Community 61 - "Community 61"
-Cohesion: 1.0
-Nodes (1): Unit tests for ``stropha.adapters.enricher.graph_aware.GraphAwareEnricher``.  L2
+Cohesion: 0.11
+Nodes (24): GraphAwareEnricher, GraphAwareEnricherConfig, _location_to_line(), Graph-aware enricher — L2 augmentation per RFC §0.  Prepends the matching graphi, Find the graph node whose source_file matches and whose line falls         insid, Prepend graphify community + node label, falling back to raw content., _make_chunk(), Unit tests for ``stropha.adapters.enricher.graph_aware.GraphAwareEnricher``.  L2 (+16 more)
 
 ### Community 62 - "Community 62"
-Cohesion: 1.0
-Nodes (1): When multiple nodes share a file, prefer the one whose line is closest.
+Cohesion: 0.07
+Nodes (35): _cosine(), GraphVecConfig, GraphVecStream, GraphVecLoader, _pack_vec(), Embed graph node labels into ``graph_nodes.embedding`` for the ``graph-vec`` re, Embed graph node labels using the active embedder.      Idempotent: nodes whos, True iff at least one node lacks an embedding for the active model. (+27 more)
 
 ### Community 63 - "Community 63"
-Cohesion: 1.0
-Nodes (1): End-to-end: build_stages wires storage into the graph-aware enricher.
+Cohesion: 0.07
+Nodes (54): _cache_key(), clear_cache(), _enabled(), generate_paraphrases(), _get_cached(), is_enabled(), MultiQueryExpander, _num_paraphrases() (+46 more)
 
 ### Community 64 - "Community 64"
-Cohesion: 1.0
-Nodes (1): Unit tests for ``stropha.adapters.enricher.mlx.MlxEnricher``.  We never import t
+Cohesion: 0.15
+Nodes (25): MlxEnricher, MlxEnricherConfig, In-process MLX inference. ``mlx-lm`` import is lazy + soft., _install_fake_mlx(), _make_chunk(), Unit tests for ``stropha.adapters.enricher.mlx.MlxEnricher``.  We never import t, ``load()`` raising any exception → graceful fallback., The expensive `load()` must be cached after the first successful call. (+17 more)
 
 ### Community 65 - "Community 65"
-Cohesion: 1.0
-Nodes (1): Inject a stub ``mlx_lm`` module into ``sys.modules``.
+Cohesion: 0.07
+Nodes (54): _build_simple(), build_stages(), Get cached result if available and not expired.                  Args:, adapters_list(), _apply_cli_filters(), eval(), glossary_add_cmd(), glossary_export_cmd() (+46 more)
 
 ### Community 66 - "Community 66"
-Cohesion: 1.0
-Nodes (1): Force ``mlx_lm`` to be missing for tests that need ImportError.
+Cohesion: 0.06
+Nodes (43): is_graph_intent(), _llm_classify(), _pattern_match(), QueryIntent, Query routing — classify intent and dispatch to appropriate tool.  Routes querie, Try pattern-based classification (fast, no LLM)., Use LLM for ambiguous query classification., Route a query to the appropriate intent.          Args:         query: The user' (+35 more)
 
 ### Community 67 - "Community 67"
-Cohesion: 1.0
-Nodes (1): ``load()`` raising any exception → graceful fallback.
+Cohesion: 0.09
+Nodes (44): LanguageChunker, Cross-cutting context every stage may consult.      Stages NEVER mutate the co, ChunkerStage, Split an iterable of ``SourceFile`` into ``Chunk`` records., Yield every chunk produced by every file., Filesystem walker — works for non-git directories.  Use when the target is a p, Pure filesystem traversal — does NOT require a git repo., GitLsFilesWalker (+36 more)
 
 ### Community 68 - "Community 68"
-Cohesion: 1.0
-Nodes (1): The expensive `load()` must be cached after the first successful call.
+Cohesion: 0.09
+Nodes (38): Chunker, Split ONE file's content into chunks., FallbackChunker, One chunk per file; line-based split when file exceeds MAX_CHARS_PER_CHUNK., IndexPipeline, _make_file(), Tests for the chunker dispatcher and per-language chunkers., test_chunker_deterministic_ids() (+30 more)
 
 ### Community 69 - "Community 69"
-Cohesion: 1.0
-Nodes (1): Tests for `stropha watch` snapshot diffing and bge-m3 adapter registration.  `wa
+Cohesion: 0.08
+Nodes (32): Watch a working tree and re-index on file changes.      Press Ctrl-C to stop., watch(), _format_changes(), Soft index — watch a working tree and re-index on file changes.  Per spec §8 / P, Watch ``repo`` and re-index changed files after the debounce window.      Args:, Run a fresh ``Pipeline`` pass against ``repo``., The actual watch loop, runs in a background thread., File-mtime snapshot for change detection. (+24 more)
 
 ### Community 70 - "Community 70"
-Cohesion: 1.0
-Nodes (1): End-to-end: snapshot picks up real files via the Walker.
+Cohesion: 0.04
+Nodes (47): 1. Install stropha, 2. Index your codebase, 3. Configure your MCP client, Advanced Configuration, Architecture Understanding, Automatic Index Updates, Available Tools, Claude Desktop (+39 more)
 
 ### Community 71 - "Community 71"
-Cohesion: 1.0
-Nodes (1): WatchController can be started and stopped cleanly.
+Cohesion: 0.15
+Nodes (32): test_storage_adapter_persists_chunk(), test_chunk_is_fresh_detects_content_change(), test_chunk_is_fresh_detects_model_change(), test_chunk_is_fresh_treats_legacy_null_as_noop(), test_delete_chunks_by_repo_paths_is_scoped(), test_rename_preserves_chunk_is_fresh(), _identity(), _make_chunk() (+24 more)
 
 ### Community 72 - "Community 72"
-Cohesion: 1.0
-Nodes (1): Starting twice doesn't spawn two threads.
+Cohesion: 0.07
+Nodes (31): decompose_query(), DecompositionResult, _is_compound_query(), is_decomposition_enabled(), _llm_decompose(), _pattern_decompose(), Query Decomposition — split complex queries into atomic sub-queries.  For natura, Use LLM to decompose complex query into sub-queries. (+23 more)
 
 ### Community 73 - "Community 73"
-Cohesion: 1.0
-Nodes (1): Stopping without starting doesn't raise.
+Cohesion: 0.04
+Nodes (45): 0. TL;DR, 1. How to read this document, 2. Phase-by-phase evaluation, 3. Invariant compatibility audit (`CLAUDE.md §3`), 4.10 Test count drift, 4.11 Hook template has no plugin slots, 4.12 Disk growth / pruning rule needs a concrete threshold, 4.13 The original labeling rule confused "edited" with "used" — the highest-leverage flaw in the plan (+37 more)
 
 ### Community 74 - "Community 74"
-Cohesion: 1.0
-Nodes (1): We don't load the real model in tests — just check the class     declares the co
+Cohesion: 0.1
+Nodes (43): BaseSettings, Typer CLI — composition root.  Subcommands: - ``index``    : walk → chunk → e, Install or refresh the post-commit hook for the target repo., Remove the stropha block from the post-commit hook., Report whether the post-commit hook is installed., Add a single term to the glossary., Remove a term from the glossary., List all glossary terms. (+35 more)
 
 ### Community 75 - "Community 75"
-Cohesion: 1.0
-Nodes (1): Tests for the git identity helper.
+Cohesion: 0.06
+Nodes (62): detect(), _detect_default_branch(), normalize_url(), Normalize a git remote URL.      Returns a tuple ``(normalized_key, sanitized_ht, Run a git subcommand. Returns stdout trimmed, or ``None`` on failure.      Never, Try three sources, in order of fidelity., Stable identification of a git repository (or a fallback)., Detect the git identity of ``path``.      Never raises: returns a fallback ``Rep (+54 more)
 
 ### Community 76 - "Community 76"
-Cohesion: 1.0
-Nodes (1): Tests for Phase A — file-level dirty cache (schema v6).  Covers: - `Storage.file
+Cohesion: 0.06
+Nodes (36): Embedder, NoopEnricher, Returns ``chunk.content`` unchanged., test_noop_enricher_id_is_stable(), test_build_stages_yields_working_enricher(), _git_init_with_file(), Tests for Phase A — file-level dirty cache (schema v6).  Covers: - `Storage.file, Drift contract (ADR-004): switching enricher must invalidate fresh     files eve (+28 more)
 
 ### Community 77 - "Community 77"
-Cohesion: 1.0
-Nodes (1): 4-dim deterministic embedder. Used in tests to avoid loading     fastembed weigh
+Cohesion: 0.05
+Nodes (18): Smoke tests for the Phase 0 walker (filesystem fallback path)., test_detect_language_known(), test_detect_language_unknown(), test_walker_skips_binaries_and_oversize(), detect_language(), _filesystem_walk(), _git_ls_files(), _is_binary() (+10 more)
 
 ### Community 78 - "Community 78"
-Cohesion: 1.0
-Nodes (1): Drift contract (ADR-004): switching enricher must invalidate fresh     files eve
+Cohesion: 0.07
+Nodes (27): init(), Initialize a project for use with stropha.          This command:     1. Creates, configure_mcp_client(), create_stropha_dir(), detect_mcp_clients(), generate_mcp_entry(), MCPClient, print_next_steps() (+19 more)
 
 ### Community 79 - "Community 79"
-Cohesion: 1.0
-Nodes (1): Callers that pass enricher_id=None / embedder_model=None opt out of     that sid
+Cohesion: 0.1
+Nodes (21): CodeAwareReranker, CodeAwareRerankerConfig, Applies code-aware heuristics to improve search ranking.          This reranker, Configuration for code-aware reranking heuristics., _make_hit(), Unit tests for the code-aware reranker., Tests for CodeAwareRerankerConfig., Tests for adapter registration. (+13 more)
 
 ### Community 80 - "Community 80"
-Cohesion: 1.0
-Nodes (1): Two repos with identically-named files; deletion in one must NOT     touch the o
+Cohesion: 0.08
+Nodes (34): Result of a lightweight readiness probe.      ``status='warning'`` is non-fata, StageHealth, Contextual Prefix Enricher — LLM-generated semantic description prepended to ch, LLM-generated contextual descriptions prepended to chunks.      Implements Ant, Check inference backend availability., Generate contextual description and prepend to content.          Returns the o, Generate contextual description using the inference backend.          Uses MLX, Identifier persisted alongside vectors (e.g. ``'voyage-code-3'``). (+26 more)
 
 ### Community 81 - "Community 81"
-Cohesion: 1.0
-Nodes (1): The user-visible Phase A win: second run of `stropha index` on an     unchanged
+Cohesion: 0.08
+Nodes (22): GitLsFilesWalkerConfig, Storage adapter for sqlite-vec.  Subclasses the existing ``stropha.storage.sql, Storage stage backed by SQLite + sqlite-vec + FTS5., SqliteVecStorage, SqliteVecStorageConfig, _DummyStorage, Tests for Phase 2 adapters (walker, storage, retrieval) + builder wiring., Storage stub: returns empty hit lists for all read methods. (+14 more)
 
 ### Community 82 - "Community 82"
-Cohesion: 1.0
-Nodes (1): No `last_indexed_sha` stored yet → `--incremental` must NOT error;     it walks
+Cohesion: 0.08
+Nodes (16): DeepSeekBackend, Generate text via DeepSeek chat completions.          Args:             prompt:, Check DeepSeek backend health.          Verifies the API key is present and the, DeepSeek HTTPS-based inference backend (OpenAI-compatible)., _http_response(), HTTP 4xx is permanent (bad key, bad request, rate limit) — no retry., Network timeouts are transient — retry with backoff., After max_retries exhausted, returns None. (+8 more)
 
 ### Community 83 - "Community 83"
-Cohesion: 1.0
-Nodes (1): Add a file in a 2nd commit; incremental mode embeds just that one.
+Cohesion: 0.07
+Nodes (22): Check inference backend availability., get_backend(), InferenceBackend, Get the best available inference backend.      Args:         prefer: Preferred b, Abstract base class for local LLM inference backends., Check backend health.          Returns:             (is_healthy, message) tuple., MlxBackend, Check MLX backend health. (+14 more)
 
 ### Community 84 - "Community 84"
-Cohesion: 1.0
-Nodes (1): Pure rename → rename_chunks preserves the original chunks (zero     re-embed wor
+Cohesion: 0.1
+Nodes (31): BgeM3Config, BgeM3Embedder, bge-m3 embedder adapter — pre-configured local fastembed backend.  ``BAAI/bge-, bge-m3 is multilingual + multi-function; defaults tuned for code RAG., Same fastembed backend as ``LocalEmbedder``, pinned to ``BAAI/bge-m3``., LocalEmbedderConfig, Tests for `stropha watch` snapshot diffing and bge-m3 adapter registration.  `, Starting twice doesn't spawn two threads. (+23 more)
 
 ### Community 85 - "Community 85"
-Cohesion: 1.0
-Nodes (1): After `rename_chunks`, the chunk row's chunk_id reflects the new     rel_path (c
+Cohesion: 0.06
+Nodes (19): Embed every node whose stored embedding model is not current., LoadResult, Graphify graph loader — populates ``graph_nodes`` / ``graph_edges`` / ``graph_me, Mirror ``graphify-out/graph.json`` into the SQLite ``graph_*`` tables.      Th, Default location: ``<repo_root>/graphify-out/graph.json``.          Honours ``, True iff the graph file is present on disk., True iff the graph should be reloaded.          Compares file mtime with ``gra, Prefix node_id with repo_id for multi-repo isolation. (+11 more)
 
 ### Community 86 - "Community 86"
-Cohesion: 1.0
-Nodes (1): FTS5 path tokens come from the chunk's rel_path. After rename,     BM25 queries
+Cohesion: 0.12
+Nodes (20): CrossEncoderReranker, CrossEncoderRerankerConfig, Rerank hits using cross-encoder scores.                  Args:             qu, Config for cross-encoder reranker., Cross-encoder reranker using fastembed ONNX models.          Reranks candidate, Lazy-load the cross-encoder model on first use., NoopReranker, Pass-through reranker. Returns hits unchanged, truncated to top_k. (+12 more)
 
 ### Community 87 - "Community 87"
-Cohesion: 1.0
-Nodes (1): After rename, the new chunk_id matches what `make_chunk_id` would     produce fo
+Cohesion: 0.06
+Nodes (32): 1. Sumário executivo, 2.1 Latência e footprint do embedder, 2.2 Reranking sem sinais code-aware, 2.3 Friction de install e onboarding, 2.4 Falta de benchmark público comparável, 2.5 Tracking de economia de tokens, 2.6 Indexação ad-hoc de URLs git, 2.7 Quantidade de configuração exposta (+24 more)
 
 ### Community 88 - "Community 88"
-Cohesion: 1.0
-Nodes (1): Renaming a path with no chunks under it is a no-op.
+Cohesion: 0.16
+Nodes (24): FilesystemWalker, FilesystemWalkerConfig, NestedGitWalker, NestedGitWalkerConfig, _git_init(), Unit tests for the new walker adapters: filesystem + nested-git.  Both reuse t, Umbrella root that is itself a git repo with a nested submodule., When a file would be discovered both via the root walker and a     nested one, (+16 more)
 
 ### Community 89 - "Community 89"
-Cohesion: 1.0
-Nodes (1): Even after a checkpoint exists, mode='full' walks everything.
+Cohesion: 0.07
+Nodes (28): 0. TL;DR, 10. Open questions, 11.1 The paper, 11.2 Findings that drive this plan, 11.3 Internal references (where to start coding), 11.4 Prior art, 11. References & background — the Meta-Harness paper, 1. Goal & scope (+20 more)
 
 ### Community 90 - "Community 90"
-Cohesion: 1.0
-Nodes (1): A file present at run 1 but deleted before run 2 has its chunks +     file_meta
+Cohesion: 0.08
+Nodes (15): generate(), is_mlx_available(), is_ollama_available(), Base inference backend and auto-detection logic.  The inference system supports, Generate text using the best available backend.      Convenience function that a, Check if MLX is available (Apple Silicon only)., Check if Ollama daemon is reachable., DeepSeek inference backend — cloud LLM via OpenAI-compatible API.  Calls DeepSee (+7 more)
 
 ### Community 91 - "Community 91"
-Cohesion: 1.0
-Nodes (1): Unit tests for ``stropha.ingest.manifest.load_manifest``.  Coverage matrix: - va
+Cohesion: 0.05
+Nodes (50): load_manifest(), ManifestEntry, ManifestError, Repo manifest loader — declarative multi-repo lists (Phase 4).  Lets users repla, Failure parsing or validating a repo manifest., Parse a repo manifest. Returns the **enabled** entries in declaration order., StrophaError, CachedRepo (+42 more)
 
 ### Community 92 - "Community 92"
-Cohesion: 1.0
-Nodes (1): Tilde paths are expanded.
+Cohesion: 0.09
+Nodes (16): get_config(), Return the singleton :class:`Config` instance, loading on first call., Initialize the DeepSeek backend.          Args:             model: Default model, Initialize the MLX backend.          Args:             model: HuggingFace model, Initialize the Ollama backend.          Args:             model: Default Ollama, _enabled(), _max_size(), Semantic Query Cache — LRU cache for search results.  Idea: Cache search results (+8 more)
 
 ### Community 93 - "Community 93"
-Cohesion: 1.0
-Nodes (1): Tests for Phase 2 adapters (walker, storage, retrieval) + builder wiring.
+Cohesion: 0.08
+Nodes (21): Storage, Storage stage backed by SQLite + sqlite-vec + FTS5., SqliteVecStorage, SqliteVecStorageConfig, _DummyStorage, Tests for Phase 2 adapters (walker, storage, retrieval) + builder wiring., Storage stub: returns empty hit lists for all read methods., STROPHA_INDEX_PATH must route into pipeline.storage.config.path. (+13 more)
 
 ### Community 94 - "Community 94"
-Cohesion: 1.0
-Nodes (1): Init a tiny git repo with a Python and a Markdown file.
+Cohesion: 0.11
+Nodes (12): Split an identifier into stemmed tokens.          Examples:         getUserById, Re-score hits using code-aware heuristics.                  Args:             qu, Boost chunks that define symbols matching the query., Boost chunks with good identifier stem matches., Penalize test/legacy/compat files., Reorder to group same-file results together and boost multi-hit files., _tokenize_identifier(), Store search results in cache.                  Args:             query_vec: The (+4 more)
 
 ### Community 95 - "Community 95"
-Cohesion: 1.0
-Nodes (1): Storage stub: returns empty hit lists for all read methods.
+Cohesion: 0.1
+Nodes (13): OllamaBackend, Check Ollama backend health., Ollama HTTP-based inference backend., Generate text using Ollama.          Args:             prompt: The input prompt., Tests for the unified inference backend., Tests for the Ollama backend., Default model comes from config defaults., OLLAMA_HOST env var still works for ecosystem compatibility. (+5 more)
 
 ### Community 96 - "Community 96"
-Cohesion: 1.0
-Nodes (1): STROPHA_INDEX_PATH must route into pipeline.storage.config.path.
+Cohesion: 0.08
+Nodes (7): GraphConfig, InferenceConfig, McpConfig, Configuration dataclasses for the unified stropha config.  This is the single so, Graph integration configuration (YAML: ``graph``)., MCP server configuration (YAML: ``mcp``)., LLM inference backend configuration (YAML: ``inference``).      The ``deepseek_*
 
 ### Community 97 - "Community 97"
-Cohesion: 1.0
-Nodes (1): Tests for Phase 4 retrieval sub-pipeline (streams as adapters).
+Cohesion: 0.05
+Nodes (49): HybridRrfConfig, HybridRrfRetrieval, RRF over N retrieval streams, with optional cross-encoder reranking., Build optional reranker from config., RetrievalStage, Fts5Bm25Config, Fts5Bm25Stream, VecCosineConfig (+41 more)
 
 ### Community 98 - "Community 98"
-Cohesion: 1.0
-Nodes (1): Records calls + returns deterministic synthetic hits.
+Cohesion: 0.13
+Nodes (20): _make_chunk(), _make_pipeline_shell(), Tests for parallel enrichment in Pipeline._enrich_chunks.  The parallel path is, Even though workers complete out of order, results MUST come back in input order, Verify the workers actually run on distinct OS threads., concurrency=1 means no thread pool — single-thread execution., 1 pending chunk → don't pay the thread pool spin-up cost., If the enricher raises (not just returns None), the parallel map     surfaces th (+12 more)
 
 ### Community 99 - "Community 99"
-Cohesion: 1.0
-Nodes (1): Performance: no dense stream → don't pay embed_query cost.
+Cohesion: 0.09
+Nodes (6): chunks_embedded(), chunks_seen(), chunks_skipped_fresh(), files_visited(), adapter_id(), _with_repo_key()
 
 ### Community 100 - "Community 100"
-Cohesion: 1.0
-Nodes (1): Tests for reranker adapters.
+Cohesion: 0.07
+Nodes (25): lookup_adapter(), Return the adapter class registered for ``(stage, name)``.      Raises ``ConfigE, CrossEncoderReranker, CrossEncoderRerankerConfig, Rerank hits using cross-encoder scores.                  Args:             query, Config for cross-encoder reranker., Cross-encoder reranker using fastembed ONNX models.          Reranks candidates, Lazy-load the cross-encoder model on first use. (+17 more)
 
 ### Community 101 - "Community 101"
-Cohesion: 1.0
-Nodes (1): Create a minimal SearchHit for testing.
+Cohesion: 0.18
+Nodes (9): _apply_filters(), FacetCounts, _make_hit(), Tests for search filters in MCP server., Tests for FacetCounts model in search responses., Create a minimal SearchHit for testing., Tests for _apply_filters helper function., TestApplyFilters (+1 more)
 
 ### Community 102 - "Community 102"
-Cohesion: 1.0
-Nodes (1): Tests for the noop reranker (pass-through).
+Cohesion: 0.11
+Nodes (23): _effective_value(), get_config_info(), Tell where an env var's value came from.      - ``env``: set in the process env, The value the runtime will actually observe for ``var``.      Returns ``"(set)"`, Return a debug snapshot of the resolved configuration.      Used by the MCP ``ge, _source_of(), _isolate_env(), Tests for the centralized config introspection used by the MCP ``get_config`` to (+15 more)
 
 ### Community 103 - "Community 103"
-Cohesion: 1.0
-Nodes (1): Tests for the cross-encoder reranker.
-
-### Community 104 - "Community 104"
-Cohesion: 1.0
-Nodes (1): Integration test: actually loads model and reranks.                  Marked as s
+Cohesion: 0.1
+Nodes (6): Lightweight readiness probe, ≤2 s, non-blocking.          Called by ``stropha, One responsibility in the pipeline. Exactly one adapter active per run.      A, Stage, MCP tools. Empty in Phase 0; populated in Phase 1 (spec §9.2)., Reciprocal Rank Fusion (Cormack et al., 2009 — spec §6.1).  Formula: score(d), Hybrid retrieval (spec §6.1): dense (vec) + sparse (FTS5) fused via RRF.  Phas
 
 ### Community 105 - "Community 105"
-Cohesion: 1.0
-Nodes (1): Tests for hybrid-rrf with reranker integration.
+Cohesion: 0.17
+Nodes (4): classify_query(), Classify a query as symbol-like, natural-language, or mixed.          Args:, Tests for classify_query function., TestClassifyQuery
 
 ### Community 106 - "Community 106"
-Cohesion: 1.0
-Nodes (1): Tests for SQLite + sqlite-vec + FTS5 layer.
+Cohesion: 0.22
+Nodes (16): Unit tests for ``Storage.augment_fts_with_graph()`` — L2 retroactive FTS5 augme, When a chunk overlaps multiple nodes, the one closest to its start     wins (mi, End-to-end through the pipeline: after a real index run with a     graph presen, When STROPHA_GRAPH_FTS_AUGMENT=0 the pipeline should NOT augment.      Tests t, No graph loaded → method reports missing_graph and changes nothing., A chunk overlapping a graph node gets `community:` + `node:` terms., _seed_chunk(), _seed_graph() (+8 more)
 
 ### Community 107 - "Community 107"
-Cohesion: 1.0
-Nodes (1): Return a unit vector aligned to one axis.
+Cohesion: 0.18
+Nodes (19): _bool(), _bool_env(), _deep_merge(), _float(), load_config(), _load_yaml(), _parse_graph(), _parse_inference() (+11 more)
 
 ### Community 108 - "Community 108"
-Cohesion: 1.0
-Nodes (1): Auto-backfill assigns orphan chunks when target_repo paths match.
+Cohesion: 0.12
+Nodes (15): EvalReport, EvalResult, Outcome of running one :class:`EvalCase`., NDCG for this single case., Precision@K for this case., Aggregate metrics across an evaluation run., Mean NDCG@K across all cases., Mean Precision@K across all cases. (+7 more)
 
 ### Community 109 - "Community 109"
-Cohesion: 1.0
-Nodes (1): Auto-backfill is a no-op when the target_repo changed since indexing.
+Cohesion: 0.14
+Nodes (5): Back-compat shim — re-exports the adapter implementation.  The canonical class, Config schema for the Voyage adapter., Wraps the official ``voyageai`` SDK., VoyageEmbedder, VoyageEmbedderConfig
 
 ### Community 110 - "Community 110"
-Cohesion: 1.0
-Nodes (1): Tests for search filters in MCP server.
+Cohesion: 0.22
+Nodes (7): _apply_filters(), Apply post-retrieval filters to search hits.          Note: This is post-filteri, _make_hit(), Tests for search filters in MCP server., Create a minimal SearchHit for testing., Tests for _apply_filters helper function., TestApplyFilters
 
 ### Community 111 - "Community 111"
-Cohesion: 1.0
-Nodes (1): Create a minimal SearchHit for testing.
+Cohesion: 0.11
+Nodes (17): is_deepseek_available(), Cheap availability probe for DeepSeek.      Only checks that ``DEEPSEEK_API_KEY`, Reset the cached backend. Useful for testing., reset_backend(), isolated_test_env(), Pytest fixtures and configuration for stropha tests.  This module sets up common, Isolate tests from the project's stropha.yaml.          This changes cwd to a te, Reset cached inference backend before each test. (+9 more)
 
 ### Community 112 - "Community 112"
-Cohesion: 1.0
-Nodes (1): Tests for _apply_filters helper function.
+Cohesion: 0.12
+Nodes (9): _default_target_repo(), get_config_info(), Get configuration details for debugging.          Returns a dict with:     -, Reset the singleton (for tests). Forces reload on next get_config()., Default target = current working directory., Expand ~ and env vars in the configured index path., reset_config(), Builds the right Embedder based on Config. (+1 more)
 
 ### Community 113 - "Community 113"
-Cohesion: 1.0
-Nodes (1): Unit tests for ``GraphVecLoader`` (Trilha A L3) + ``GraphVecStream``.  Uses a de
+Cohesion: 0.05
+Nodes (39): GraphVecLoader, _pack_vec(), Embed graph node labels into ``graph_nodes.embedding`` for the ``graph-vec`` ret, Embed every node whose stored embedding model is not current., Embed graph node labels using the active embedder.      Idempotent: nodes whose, True iff at least one node lacks an embedding for the active model., VecLoadResult, _cosine() (+31 more)
 
 ### Community 114 - "Community 114"
-Cohesion: 1.0
-Nodes (1): Hash-based 4-dim embedder. Same input -> same output. No network.
+Cohesion: 0.12
+Nodes (15): 0. TL;DR, 14. Failure modes & graceful degradation, 18. Riscos, 19. Referências, 1.1 Capacidades hoje (Phase 1 — implementado), 1.2 Lacuna que justifica este trabalho, 1.3 Por que graphify, 1.4 Posicionamento na roadmap original (+7 more)
 
 ### Community 115 - "Community 115"
-Cohesion: 1.0
-Nodes (1): Insert a chunk row so the GraphVec stream can hydrate hits from it.
+Cohesion: 0.17
+Nodes (13): _absorb(), _adjacency_lines(), _enabled(), _maybe_merge_parent(), merge_hits(), Recursive retrieval / auto-merging (Phase 3 §6.4).  Post-processing pass that, If any sibling in ``all_hits`` shares ``hit``'s parent_chunk_id, promote     th, Return a merged hit covering host ∪ other. (+5 more)
 
 ### Community 116 - "Community 116"
-Cohesion: 1.0
-Nodes (1): Manually plant an embedding orthogonal to the query vector so the     cosine is
+Cohesion: 0.17
+Nodes (8): _dcg(), _ndcg(), Compute Discounted Cumulative Gain.          DCG = Σ (2^rel_i - 1) / log2(i +, Compute Normalized Discounted Cumulative Gain.          NDCG = DCG / IDCG wher, Tests for DCG computation., Tests for NDCG computation., TestDCG, TestNDCG
 
 ### Community 117 - "Community 117"
-Cohesion: 1.0
-Nodes (1): Unit tests for ``stropha.adapters.enricher.ollama.OllamaEnricher``.  The enriche
+Cohesion: 0.14
+Nodes (25): OllamaEnricher, OllamaEnricherConfig, Probe ``GET {base_url}/api/tags`` to confirm the daemon and model., POST ``/api/generate``. Returns None on any failure (graceful)., One-line LLM summary prepended to the chunk for richer embeddings.      Pure std, _fake_response(), _make_chunk(), Unit tests for ``stropha.adapters.enricher.ollama.OllamaEnricher``.  The enriche (+17 more)
 
 ### Community 118 - "Community 118"
-Cohesion: 1.0
-Nodes (1): Return a context-manager-compatible bytes stream for urlopen mock.
+Cohesion: 0.14
+Nodes (11): from_dict(), load_golden(), Get relevance score for a path/symbol match.                  Returns 1.0 (bin, Parse a JSONL file into :class:`EvalCase` instances.      Empty / comment line, The default golden set must always parse cleanly., Tests for graded relevance in EvalCase., test_load_golden_invalid_json_raises_with_lineno(), test_load_golden_missing_query_raises() (+3 more)
 
 ### Community 119 - "Community 119"
-Cohesion: 1.0
-Nodes (1): `stropha adapters list --stage enricher` must surface it.
+Cohesion: 0.12
+Nodes (16): get_prompt_type(), Return the prompt type that would be used for this query (for debugging)., How queries should use the how prompt., Where/find queries should use the where prompt., Test-related queries should use the test prompt., Bug/error queries should use the error prompt., Generic queries should use the default prompt., Function-related queries should use the function prompt. (+8 more)
 
 ### Community 120 - "Community 120"
-Cohesion: 1.0
-Nodes (1): Network failure MUST NOT block indexing.
+Cohesion: 0.13
+Nodes (15): 3.1 Source walker e exclusões, 3.2 Parsing AST com Tree-sitter, 3.3.1 Chunking semântico hierárquico (recomendado), 3.3.2 Janelas de contexto, 3.3.3 Late chunking (Jina, 2024), 3.3.4 Anti-padrões a evitar, 3.3 Estratégia de chunking, 3.4 Extração de metadados (+7 more)
 
 ### Community 121 - "Community 121"
-Cohesion: 1.0
-Nodes (1): Multi-repo indexing & chunk_id namespacing (Phase 4).
+Cohesion: 0.09
+Nodes (20): IndexPipeline, Walks one or more repos, chunks each file, embeds, persists., _init_repo(), Multi-repo indexing & chunk_id namespacing (Phase 4)., Build two real git repos that share the same README content + name., Constructing with neither `repo` nor `repos` is a programmer error., Hashing pseudo-embedder — deterministic and dependency-free., Two repos with identical (path, range, content) get distinct ids. (+12 more)
 
 ### Community 122 - "Community 122"
-Cohesion: 1.0
-Nodes (1): Hashing pseudo-embedder — deterministic and dependency-free.
+Cohesion: 0.15
+Nodes (3): test_enrichment_cache_overwrite_on_repeat_put(), test_enrichment_cache_roundtrip(), _vec()
 
 ### Community 123 - "Community 123"
-Cohesion: 1.0
-Nodes (1): Two repos with identical (path, range, content) get distinct ids.
+Cohesion: 0.16
+Nodes (15): _EnvVar, _int(), _parse_embedder(), _parse_git(), _parse_hook(), _parse_walker(), A single configurable env var (introspection metadata)., EmbedderConfig (+7 more)
 
 ### Community 124 - "Community 124"
-Cohesion: 1.0
-Nodes (1): Default (no repo_key) matches the v0.1 derivation.
+Cohesion: 0.14
+Nodes (8): LoadResult, True iff the graph file is present on disk., True iff the graph should be reloaded.          Compares file mtime with ``graph, Prefix node_id with repo_id for multi-repo isolation., Replace ``graph_nodes`` / ``graph_edges`` from the graph file.          Returns, Return a summary suitable for ``Storage.stats()['graph']``.          ``None`` wh, Get a meta value, using per-repo key suffix when repo_id is set., Outcome of a :meth:`GraphifyLoader.load` invocation.      Phase C diff-load repo
 
 ### Community 125 - "Community 125"
-Cohesion: 1.0
-Nodes (1): Identical files in two repos yield distinct chunk_ids when repo_key differs.
+Cohesion: 0.14
+Nodes (4): _path_matches(), Golden-dataset evaluation runner.  Schema (JSONL, one case per line):      {, ``actual`` matches when it equals or ends with one of ``expected``., _symbol_matches()
 
 ### Community 126 - "Community 126"
-Cohesion: 1.0
-Nodes (1): Build two real git repos that share the same README content + name.
+Cohesion: 0.23
+Nodes (8): calculate_savings(), Calculate and log token savings for a search.          Convenience function that, Calculate token savings from search results.          Args:         query: The s, track_search_savings(), _make_hit(), Tests for calculate_savings function., Helper to create SearchHit objects for tests., TestCalculateSavings
 
 ### Community 127 - "Community 127"
-Cohesion: 1.0
-Nodes (1): Constructing with neither `repo` nor `repos` is a programmer error.
+Cohesion: 0.22
+Nodes (8): log_savings(), Log savings to structlog for aggregation by `stropha cost`.          The log ent, Token savings from a single search query., SearchSavings, Tests for log_savings function., Tests for SearchSavings dataclass., TestLogSavings, TestSearchSavings
 
 ### Community 128 - "Community 128"
-Cohesion: 1.0
-Nodes (1): Tests for the pipeline framework (base + registry + config + builder).
+Cohesion: 0.04
+Nodes (77): build_stages(), Instantiate every adapter named in ``resolved_config``.      ``open_storage=Fals, load_pipeline_config(), Resolve the full pipeline config dict.      Args:         project_root: dir to l, Class decorator. Registers ``cls`` under ``(stage, name)``.      The adapter cla, register_adapter(), _apply_cli_filters(), eval() (+69 more)
 
 ### Community 129 - "Community 129"
-Cohesion: 1.0
-Nodes (1): Regression: STROPHA_VOYAGE_EMBED_MODEL must NOT contaminate a local adapter.
+Cohesion: 0.14
+Nodes (14): Register a fake repo in the storage, returning its ID., With repo_id, node IDs are prefixed with '{repo_id}:'., Edge source and target IDs are also prefixed with repo_id., Two repos can have the same node_id in the graph without collision., Each repo has its own staleness check (per-repo mtime meta key)., Reloading one repo's graph does not affect another repo's nodes., stats() with repo_id returns counts for that repo only., _register_repo() (+6 more)
 
 ### Community 130 - "Community 130"
-Cohesion: 1.0
-Nodes (1): Unit tests for the new walker adapters: filesystem + nested-git.  Both reuse the
+Cohesion: 0.09
+Nodes (26): _git_init(), Unit tests for the new walker adapters: filesystem + nested-git.  Both reuse the, Umbrella root that is itself a git repo with a nested submodule., When a file would be discovered both via the root walker and a     nested one, o, Nested git repo deeper than max_depth should be ignored., A monorepo umbrella with two sibling git repos inside., test_filesystem_walker_adapter_id_includes_size(), test_filesystem_walker_finds_text_files() (+18 more)
 
 ### Community 131 - "Community 131"
-Cohesion: 1.0
-Nodes (1): A monorepo umbrella with two sibling git repos inside.
+Cohesion: 0.15
+Nodes (13): 5.1 `find_callers`, 5.2 `find_related`, 5.3 `get_community`, 5.4 `find_rationale` (opcional), 5.5 Decoração das responses, 5.6 Disponibilidade condicional, 5. Design — Parte B: Novos tools MCP, code:jsonc ({) (+5 more)
 
 ### Community 132 - "Community 132"
-Cohesion: 1.0
-Nodes (1): Umbrella root that is itself a git repo with a nested submodule.
+Cohesion: 0.15
+Nodes (12): 15. Stack proposto (recomendação concreta), 17. Riscos e mitigações, 18. Anti-padrões observados em outras implementações, 1.1 Objetivos, 1.2 Não-objetivos (escopo explicitamente fora), 1.3 Critérios de sucesso, 1. Objetivos e não-objetivos, 20. Glossário rápido (+4 more)
 
 ### Community 133 - "Community 133"
-Cohesion: 1.0
-Nodes (1): When a file would be discovered both via the root walker and a     nested one, o
+Cohesion: 0.18
+Nodes (13): _adjacent_or_overlap(), _hit(), Two hits 3 lines apart on the same file should collapse into one., Two hits >adjacency apart stay distinct., When two children of the same parent are retrieved, the parent     chunk is use, test_adjacent_hits_in_same_file_merge(), test_adjacent_or_overlap_with_close_gap(), test_adjacent_or_overlap_with_large_gap() (+5 more)
 
 ### Community 134 - "Community 134"
-Cohesion: 1.0
-Nodes (1): Nested git repo deeper than max_depth should be ignored.
+Cohesion: 0.18
+Nodes (5): _query_contains_test_keywords(), Code-aware reranker — applies code-specific heuristics for better ranking.  This, Check if query explicitly asks for tests., Tests for test keyword detection., TestQueryContainsTestKeywords
 
 ### Community 135 - "Community 135"
-Cohesion: 1.0
-Nodes (1): Tests for adapter-drift detection (ADR-004) and enrichment cache.  Drift = store
+Cohesion: 0.09
+Nodes (9): Tests for adapter-drift detection (ADR-004) and enrichment cache.  Drift = store, Upgrading from v0.1.0 (NULL enricher_id) MUST NOT trigger re-embed for noop., Deterministic embedder. Vector = hash of text mod a small int., Init a tiny git repo with one Python file., repo_with_one_file(), _StubEmbedder, test_chunk_is_fresh_treats_legacy_null_as_noop(), test_pipeline_switching_enricher_triggers_re_embed() (+1 more)
 
 ### Community 136 - "Community 136"
-Cohesion: 1.0
-Nodes (1): Deterministic embedder. Vector = hash of text mod a small int.
+Cohesion: 0.18
+Nodes (7): Get adaptive stream weights based on query classification.                  Retu, get_adaptive_weights(), Get adaptive stream weights based on query classification.          Args:, Tests for get_adaptive_weights function., Verify symbol weights favor lexical/symbol streams., Verify natural weights favor dense semantic matching., TestGetAdaptiveWeights
 
 ### Community 137 - "Community 137"
-Cohesion: 1.0
-Nodes (1): Init a tiny git repo with one Python file.
+Cohesion: 0.18
+Nodes (7): estimate_content_tokens(), estimate_file_tokens(), Tokens-saved tracking for RAG value measurement.  Tracks how many tokens were sa, Estimate token count from file size.          Rough estimate: ~4 bytes per token, Estimate token count from content string.          Simple approximation: split o, Tests for token estimation functions., TestEstimateFunctions
 
 ### Community 138 - "Community 138"
-Cohesion: 1.0
-Nodes (1): Upgrading from v0.1.0 (NULL enricher_id) MUST NOT trigger re-embed for noop.
+Cohesion: 0.17
+Nodes (12): 9.1 Model Context Protocol — visão geral, 9.2 Design dos tools, 9.3 Formato de resposta, 9.4 Implementação, 9.5 Configuração no Claude Code, 9.6 Segurança do MCP, 9. MCP Server, Catálogo proposto (+4 more)
 
 ### Community 139 - "Community 139"
-Cohesion: 1.0
-Nodes (1): Unit tests for ``stropha.tools.hook_install``.  Per RFC §6.2 / §9 (Fase 1.5c): -
+Cohesion: 0.07
+Nodes (52): _atomic_write(), _detect_uv_path(), _hook_path(), HookStatus, install(), _log_path(), Post-commit hook installer (RFC §6 / §7.1).  Manages the stropha post-commit hoo, Honour ``core.hooksPath`` so husky / lefthook coexist (RFC §6.3).      Validates (+44 more)
 
 ### Community 140 - "Community 140"
-Cohesion: 1.0
-Nodes (1): Initialise a bare git repo skeleton (just .git/) suitable for hook tests.
+Cohesion: 0.18
+Nodes (4): FileLevelConfig, FileLevelLanguageChunker, File-level fallback sub-adapter — one chunk per file.  Used as the dispatcher', test_file_level_sub_adapter()
 
 ### Community 141 - "Community 141"
-Cohesion: 1.0
-Nodes (1): No core.hooksPath configured → default `.git/hooks` (RFC §6.3).
+Cohesion: 0.18
+Nodes (11): 11. Decisões registradas (ADRs), ADR-001 — Single-active adapter, sem chain, ADR-002 — YAML como config primária, ADR-003 — Auto-import + decorator registration, ADR-004 — Auto-detect adapter drift (sem `--rebuild` manual), ADR-005 — Backward-compat total via translation layer, ADR-006 — Pipeline (não chain) com sub-pipelines first-class, ADR-007 — Validação no startup, health check no demand (+3 more)
 
 ### Community 142 - "Community 142"
-Cohesion: 1.0
-Nodes (1): When git config core.hooksPath set inside repo, follow it.
+Cohesion: 0.18
+Nodes (11): Checklist de Implementação, Sprint 1, Sprint 2, Sprint 3, Sprint 3 - Retrieval Avançado, Sprint 4, Sprint 4 - Contextual Enrichment (Highest ROI), Sprint 5 (+3 more)
 
 ### Community 143 - "Community 143"
-Cohesion: 1.0
-Nodes (1): A core.hooksPath outside repo and HOME is rejected → falls back.
+Cohesion: 0.24
+Nodes (7): Merge named ranked lists with optional per-stream weights.          This variant, rrf_fuse_named(), _make_hit(), Unit tests for query classification and adaptive weighting., Helper to create SearchHit objects for tests., Tests for weighted RRF fusion., TestWeightedRRF
 
 ### Community 144 - "Community 144"
-Cohesion: 1.0
-Nodes (1): Back-compat regression guard: install() with no new flags must emit     empty ba
+Cohesion: 0.25
+Nodes (8): CostReport, Token savings from RAG search vs. naive grep+read., SavingsCost, Unit tests for token savings tracking., Tests for track_search_savings convenience function., Tests for savings in CostReport., TestCostReportSavings, TestTrackSearchSavings
 
 ### Community 145 - "Community 145"
-Cohesion: 1.0
-Nodes (1): Upgrade path: a manually-written older-version block must be     cleanly rewritt
+Cohesion: 0.2
+Nodes (10): 17. Decisões registradas (ADRs), ADR-001 — Fonte de verdade do grafo, ADR-002 — Política de confidence default, ADR-003 — Hook type: post-commit (não pre-commit), ADR-004 — Hook composition: combined block, ADR-005 — Bootstrap policy: stderr warning, sem auto-extract, ADR-006 — Install delivery: subcommand do CLI, ADR-007 — Single target per install (v1) (+2 more)
 
 ### Community 146 - "Community 146"
-Cohesion: 1.0
-Nodes (1): Phase B contract: the generated hook v=4 invokes     ``stropha index --increment
+Cohesion: 0.2
+Nodes (10): 21.1 MCP tools shipped, 21.2 SQLite schema migration delivered, 21.3 Loader / pipeline integration, 21.4 Hook installer (CLI + cross-repo v=3), 21.5 L2 + L3 delivery (vs RFC §4.5 / §4.6 / §1.5e / §1.5f), 21.6 ADR-007a — Hook v=3 cross-repo (decisão de bake vs env), 21.7 What's NOT in this delivery, 21.8 Incremental indexing (Phase A/B/C) — 2026-05-15 (+2 more)
 
 ### Community 147 - "Community 147"
-Cohesion: 1.0
-Nodes (1): Smoke tests for the Phase 0 walker (filesystem fallback path).
+Cohesion: 0.12
+Nodes (15): detect_language(), _filesystem_walk(), _git_ls_files(), _is_binary(), Fallback walker for non-git directories., Yield every file that survives all filters., Yield SourceFile only for the explicit subset of paths given., Apply all filters to a single rel_path. Returns None if filtered out. (+7 more)
 
 ### Community 148 - "Community 148"
-Cohesion: 1.0
-Nodes (1): Unit tests for ``stropha.retrieval.graph`` — find_callers / find_related / get_c
+Cohesion: 0.1
+Nodes (36): has_rationale_edges(), Find the most likely ``node_id`` for a fully-qualified symbol.      Strategy (ch, True iff at least one ``rationale_for`` edge exists.      Used to conditionally, resolve_symbol_to_node(), Unit tests for ``stropha.retrieval.graph`` — find_callers / find_related / get_c, Write a graph file and load it into the storage mirror., _seed_graph(), test_find_callers_depth_1() (+28 more)
 
 ### Community 149 - "Community 149"
-Cohesion: 1.0
-Nodes (1): Write a graph file and load it into the storage mirror.
+Cohesion: 0.2
+Nodes (10): 6.1 Comportamento operacional, 6.2 Composição com hooks existentes, 6.3 Detecção de `core.hooksPath`, 6.4 Bootstrap (graphify-out ausente), 6.5 Kill-switch & overrides, 6. Design — Parte C: Hook post-commit, code:bash (#!/bin/sh), code:block20 (⚠ graphify post-commit hook detectado.) (+2 more)
 
 ### Community 150 - "Community 150"
-Cohesion: 1.0
-Nodes (1): Tests for Phase 3 chunker dispatcher and language sub-adapters.
+Cohesion: 0.07
+Nodes (28): Sub-pipeline config: each language → ``{adapter, config}``., Stage adapter — dispatches per file to a language sub-adapter., TreeSitterDispatchChunker, TreeSitterDispatchConfig, FileLevelConfig, FileLevelLanguageChunker, File-level fallback sub-adapter — one chunk per file.  Used as the dispatcher's, Construct the indexing pipeline.          Args:             storage / embedder / (+20 more)
 
 ### Community 151 - "Community 151"
-Cohesion: 1.0
-Nodes (1): Long enough (>15 lines) to bypass AST chunker's SIMPLE_FILE shortcut.
+Cohesion: 0.2
+Nodes (10): §A — Appendix: Adapters concretos registrados (delivery snapshot), Chunker (1 dispatcher + 5 language sub-adapters), Embedder (3), Enricher (5), Quick-reference dos adapter_id shapes (drift detection), Retrieval coordinator (1), Retrieval stream sub-adapters (4), Storage (1) (+2 more)
 
 ### Community 152 - "Community 152"
-Cohesion: 1.0
-Nodes (1): Phase 3 must NOT change chunk_id of unchanged files (no spurious re-embed).
+Cohesion: 0.2
+Nodes (10): 14.1 Topologias, 14.2 CI/CD para o índice, 14.3 Release artifact, 14. Deployment, Cloud (alta disponibilidade), code:block17 (┌────────────────────┐), code:block18 (┌─ Qdrant (Docker)), code:yaml (on:) (+2 more)
 
 ### Community 153 - "Community 153"
-Cohesion: 1.0
-Nodes (1): Unit tests for ``GitDiffWalker`` — Phase B incremental walker.  Uses real ``git
+Cohesion: 0.08
+Nodes (36): FileDelta, One file-level change emitted by the incremental walker (Phase B).      Maps to, _commit(), _git(), Unit tests for ``GitDiffWalker`` — Phase B incremental walker.  Uses real ``git, Legacy `discover` shape is intentionally not supported., File renamed with NO content change → rename delta, similarity 100., Same file renamed AND lightly edited — similarity below 100 but     still above (+28 more)
 
 ### Community 154 - "Community 154"
-Cohesion: 1.0
-Nodes (1): Run git, return stdout, raise on non-zero exit.
+Cohesion: 0.2
+Nodes (9): get_anchor_categories(), get_anchor_pattern_names(), Architectural anchor detection.  Identifies code elements that serve as architec, Get list of all anchor categories from default patterns., Get list of all anchor pattern names., Categories are returned sorted., Pattern names are returned., test_get_anchor_categories() (+1 more)
 
 ### Community 155 - "Community 155"
-Cohesion: 1.0
-Nodes (1): Legacy `discover` shape is intentionally not supported.
+Cohesion: 0.2
+Nodes (10): Competitive Position: Stropha as RAG Backend, Current Status, History, Key Insight, Next Steps (Priority Order), Option A: Best RAG Backend for MCP Clients, Option C: Graph Intelligence Moat, Remaining Gaps (+2 more)
 
 ### Community 156 - "Community 156"
-Cohesion: 1.0
-Nodes (1): File renamed with NO content change → rename delta, similarity 100.
+Cohesion: 0.2
+Nodes (7): _is_symbol_token(), QueryType, Query classification for adaptive retrieval.  Classifies queries as symbol-like, Tokenize query into meaningful tokens., Query classification types., Check if a token looks like a code symbol., _tokenize_query()
 
 ### Community 157 - "Community 157"
-Cohesion: 1.0
-Nodes (1): Same file renamed AND lightly edited — similarity below 100 but     still above
+Cohesion: 0.22
+Nodes (9): 19.1 Stack 100% local, 19.2 Stack com LLM enrichment local, 19.3 Stack cloud (Voyage embedder + Anthropic enricher), 19.4 Stack baseline (apenas BM25, sem embedder), 19. Apêndice — exemplos de YAML, code:yaml (version: 1), code:yaml (version: 1), code:yaml (version: 1) (+1 more)
 
 ### Community 158 - "Community 158"
-Cohesion: 1.0
-Nodes (1): No commits between since and HEAD → empty result, not error.
+Cohesion: 0.22
+Nodes (9): 5.1 Fontes e precedência, 5.2 YAML — exemplo end-to-end, 5.3 Env vars — mapping, 5.4 Legacy env aliases (back-compat), 5.5 Secrets, 5. Configuração, code:block6 (CLI flags  >  Env vars  >  YAML file  >  Built-in defaults), code:yaml (# stropha.yaml — full canonical pipeline configuration) (+1 more)
 
 ### Community 159 - "Community 159"
-Cohesion: 1.0
-Nodes (1): Tests for the bundled enricher adapters (noop + hierarchical).
+Cohesion: 0.13
+Nodes (15): HierarchicalEnricher, HierarchicalEnricherConfig, NoopEnricherConfig, Empty config. The noop enricher has no tunables., EnricherStage, Returns the text that should be fed to the embedder for ``chunk``.      The orig, Return the text to embed.          MUST be deterministic for a given ``(chunk, c, _make_chunk() (+7 more)
 
 ### Community 160 - "Community 160"
-Cohesion: 1.0
-Nodes (1): Switching a toggle MUST change adapter_id so cache + drift invalidate.
+Cohesion: 0.22
+Nodes (9): 6.1 Novos subcomandos, 6.2 Commands existentes mantêm comportamento, 6.3 `stropha pipeline show` output esboçado, 6.4 `stropha adapters list` output, 6. CLI surface, code:bash (stropha index --enricher hierarchical --embedder voyage), code:block11 (Pipeline composition (resolved from: stropha.yaml + 2 env ov), code:block12 (Stage      Adapter                Status      Description) (+1 more)
 
 ### Community 161 - "Community 161"
-Cohesion: 1.0
-Nodes (1): Tests for query intelligence features (HyDE, Query Rewriting).
+Cohesion: 0.28
+Nodes (8): _enabled(), _prompt_template(), HyDE — Hypothetical Document Embeddings (Phase 3 §6.3).  Idea (Gao et al., 202, Select the best code-tuned prompt based on query patterns., Check if code-tuned prompts should be used (default: yes)., Get the appropriate prompt template for the query., _select_prompt(), _use_code_tuned()
 
 ### Community 162 - "Community 162"
-Cohesion: 1.0
-Nodes (1): Tests for HyDE (Hypothetical Document Embeddings).
+Cohesion: 0.22
+Nodes (8): Benchmarks, Best Practices Summary, Embedding Batch Size, Graph Nodes, Indexing Speed (Apple M2, local embedder), Memory Usage, Performance Tuning Guide, Query Latency (cached, local)
 
 ### Community 163 - "Community 163"
-Cohesion: 1.0
-Nodes (1): HyDE should be disabled when env var is not set.
-
-### Community 164 - "Community 164"
-Cohesion: 1.0
-Nodes (1): HyDE should return None for empty queries.
-
-### Community 165 - "Community 165"
-Cohesion: 1.0
-Nodes (1): HyDE should call Ollama API when enabled.
-
-### Community 166 - "Community 166"
-Cohesion: 1.0
-Nodes (1): HyDE should return None when Ollama fails.
-
-### Community 167 - "Community 167"
-Cohesion: 1.0
-Nodes (1): HyDE should return None when Ollama returns empty.
-
-### Community 168 - "Community 168"
-Cohesion: 1.0
-Nodes (1): Tests for Query Rewriting.
-
-### Community 169 - "Community 169"
-Cohesion: 1.0
-Nodes (1): Query rewriting should be disabled when env var is not set.
-
-### Community 170 - "Community 170"
-Cohesion: 1.0
-Nodes (1): Query rewriting should return None for empty queries.
+Cohesion: 0.07
+Nodes (36): Drop the cached Config (forces reload on next call). For tests., reset_config(), maybe_hyde_rewrite(), Return a hypothetical document for ``query`` or ``None`` on fail/skip.      Uses, _enabled(), maybe_rewrite_query(), _prompt_template(), Query Rewriting — transform user queries into more searchable form.  Idea: LLM r (+28 more)
 
 ### Community 171 - "Community 171"
-Cohesion: 1.0
-Nodes (1): Query rewriting should call Ollama API when enabled.
-
-### Community 172 - "Community 172"
-Cohesion: 1.0
-Nodes (1): Query rewriting should combine original query with expanded terms.
-
-### Community 173 - "Community 173"
-Cohesion: 1.0
-Nodes (1): Query rewriting should return None when Ollama fails.
-
-### Community 174 - "Community 174"
-Cohesion: 1.0
-Nodes (1): Query rewriting should truncate very long outputs.
-
-### Community 175 - "Community 175"
-Cohesion: 1.0
-Nodes (1): Tests for hybrid-rrf integration with HyDE and Query Rewriting.
-
-### Community 176 - "Community 176"
-Cohesion: 1.0
-Nodes (1): Integration tests for HyDE and query rewrite in hybrid-rrf.search().
-
-### Community 177 - "Community 177"
-Cohesion: 1.0
-Nodes (1): Storage stub that records search calls and queries.
-
-### Community 178 - "Community 178"
-Cohesion: 1.0
-Nodes (1): Embedder stub that records which text was embedded.
-
-### Community 179 - "Community 179"
-Cohesion: 1.0
-Nodes (1): When hyde_enabled=True, search should use HyDE-rewritten query for embedding.
-
-### Community 180 - "Community 180"
-Cohesion: 1.0
-Nodes (1): When STROPHA_HYDE_ENABLED=1, search should use HyDE even without config flag.
-
-### Community 181 - "Community 181"
-Cohesion: 1.0
-Nodes (1): When query_rewrite_enabled=True, search should use rewritten query for all strea
-
-### Community 182 - "Community 182"
-Cohesion: 1.0
-Nodes (1): When STROPHA_QUERY_REWRITE_ENABLED=1, search should use rewriting.
-
-### Community 183 - "Community 183"
-Cohesion: 1.0
-Nodes (1): When both enabled, HyDE affects dense embedding, query rewrite affects all strea
-
-### Community 184 - "Community 184"
-Cohesion: 1.0
-Nodes (1): When HyDE fails, search should fall back to original query.
-
-### Community 185 - "Community 185"
-Cohesion: 1.0
-Nodes (1): When query rewrite fails, search should fall back to original query.
+Cohesion: 0.33
+Nodes (4): _ndcg(), Compute Normalized Discounted Cumulative Gain.          NDCG = DCG / IDCG where, Tests for NDCG computation., TestNDCG
 
 ### Community 186 - "Community 186"
-Cohesion: 1.0
-Nodes (1): Tests for Reciprocal Rank Fusion.
+Cohesion: 0.42
+Nodes (8): Merge any number of ranked lists into a single ranked list.      Identity is by, rrf_fuse(), _hit(), Tests for Reciprocal Rank Fusion., test_rrf_assigns_consecutive_ranks(), test_rrf_handles_empty_list(), test_rrf_prefers_chunks_in_both_lists(), test_rrf_score_monotonic()
 
 ### Community 187 - "Community 187"
-Cohesion: 1.0
-Nodes (1): Unit tests for ``stropha.ingest.graphify_loader.GraphifyLoader``.  Covers the co
+Cohesion: 0.13
+Nodes (30): GraphifyLoader, Mirror ``graphify-out/graph.json`` into the SQLite ``graph_*`` tables.      The, Unit tests for ``stropha.ingest.graphify_loader.GraphifyLoader``.  Covers the co, YAML config can specify multiple confidence levels., Write a NetworkX node-link style graph file., Initial load of N nodes reports nodes_added=N, nothing deleted., Second load with no graph.json change reports zero deltas., Nodes present in the previous load but absent from the new one     get removed. (+22 more)
 
 ### Community 188 - "Community 188"
-Cohesion: 1.0
-Nodes (1): Write a NetworkX node-link style graph file.
-
-### Community 189 - "Community 189"
-Cohesion: 1.0
-Nodes (1): Initial load of N nodes reports nodes_added=N, nothing deleted.
-
-### Community 190 - "Community 190"
-Cohesion: 1.0
-Nodes (1): Second load with no graph.json change reports zero deltas.
-
-### Community 191 - "Community 191"
-Cohesion: 1.0
-Nodes (1): Nodes present in the previous load but absent from the new one     get removed.
-
-### Community 192 - "Community 192"
-Cohesion: 1.0
-Nodes (1): Initial load + new load with one extra node reports nodes_added=1.
-
-### Community 193 - "Community 193"
-Cohesion: 1.0
-Nodes (1): Edges without source_file/source_location MUST still dedupe across     repeat lo
-
-### Community 194 - "Community 194"
-Cohesion: 1.0
-Nodes (1): Register a fake repo in the storage, returning its ID.
-
-### Community 195 - "Community 195"
-Cohesion: 1.0
-Nodes (1): With repo_id, node IDs are prefixed with '{repo_id}:'.
-
-### Community 196 - "Community 196"
-Cohesion: 1.0
-Nodes (1): Edge source and target IDs are also prefixed with repo_id.
-
-### Community 197 - "Community 197"
-Cohesion: 1.0
-Nodes (1): Two repos can have the same node_id in the graph without collision.
-
-### Community 198 - "Community 198"
-Cohesion: 1.0
-Nodes (1): Each repo has its own staleness check (per-repo mtime meta key).
-
-### Community 199 - "Community 199"
-Cohesion: 1.0
-Nodes (1): Reloading one repo's graph does not affect another repo's nodes.
-
-### Community 200 - "Community 200"
-Cohesion: 1.0
-Nodes (1): stats() with repo_id returns counts for that repo only.
+Cohesion: 0.22
+Nodes (9): code:bash (stropha hook install), code:mermaid (flowchart TB), code:bash (stropha hook status                   # is it installed? wha), code:bash (# Index Mimoria from this stropha checkout, each repo with i), code:bash (stropha eval --top-k 10), code:jsonl ({"id": "auth-001", "query": "where is the login retry policy), Cross-repo installs (v=3), Evaluation (+1 more)
 
 ### Community 201 - "Community 201"
-Cohesion: 1.0
-Nodes (1): Unit tests for ``stropha.eval.harness`` — golden loader, Recall@K, MRR.  We mock
-
-### Community 202 - "Community 202"
-Cohesion: 1.0
-Nodes (1): Returns canned hits per query string. Works as a SearchEngine stub.
-
-### Community 203 - "Community 203"
-Cohesion: 1.0
-Nodes (1): ``expected_paths=['fsrs.py']`` matches ``src/stropha/fsrs.py``.
-
-### Community 204 - "Community 204"
-Cohesion: 1.0
-Nodes (1): ``expected_symbols=['login']`` matches ``AuthService.login``.
-
-### Community 205 - "Community 205"
-Cohesion: 1.0
-Nodes (1): The default golden set must always parse cleanly.
+Cohesion: 0.21
+Nodes (20): EvalCase, Execute every case against ``engine`` and aggregate metrics., One test case loaded from the golden file., run_eval(), _FakeEngine, _FakeHit, Unit tests for ``stropha.eval.harness`` — golden loader, Recall@K, MRR, NDCG.  W, ``expected_symbols=['login']`` matches ``AuthService.login``. (+12 more)
 
 ### Community 206 - "Community 206"
-Cohesion: 1.0
-Nodes (1): Unit tests for HyDE query rewrite and recursive retrieval.  Both are query-path-
-
-### Community 207 - "Community 207"
-Cohesion: 1.0
-Nodes (1): Two hits 3 lines apart on the same file should collapse into one.
-
-### Community 208 - "Community 208"
-Cohesion: 1.0
-Nodes (1): Two hits >adjacency apart stay distinct.
-
-### Community 209 - "Community 209"
-Cohesion: 1.0
-Nodes (1): When two children of the same parent are retrieved, the parent     chunk is used
+Cohesion: 0.06
+Nodes (47): get_prompt_type(), Return the prompt type that would be used for this query (for debugging)., _absorb(), _adjacency_lines(), _adjacent_or_overlap(), _enabled(), _maybe_merge_parent(), merge_hits() (+39 more)
 
 ### Community 210 - "Community 210"
-Cohesion: 1.0
-Nodes (1): Unit tests for the cost dashboard aggregator.
+Cohesion: 0.28
+Nodes (14): aggregate(), Walk the given log paths and return aggregated counters., Unit tests for the cost dashboard aggregator., Empty report → render_table returns None so caller can show error., test_aggregate_counts_adapters_built(), test_aggregate_counts_graphify_load_and_embed(), test_aggregate_counts_hook_events(), test_aggregate_counts_repo_done() (+6 more)
 
 ### Community 211 - "Community 211"
-Cohesion: 1.0
-Nodes (1): Empty report → render_table returns None so caller can show error.
+Cohesion: 0.22
+Nodes (9): Arquivos Criados, Arquivos Modificados, code:block3 (src/stropha/stages/reranker.py                      # Rerank), code:block4 (src/stropha/adapters/retrieval/hybrid_rrf.py  # Integracao r), Comparacao Atualizada, Funcionalidades Entregues, Implementacoes Concluidas, Metricas (+1 more)
 
 ### Community 212 - "Community 212"
-Cohesion: 1.0
-Nodes (1): Structured logging via structlog. Single configuration entry point.
+Cohesion: 0.05
+Nodes (18): Legacy embedder protocol.  Kept for back-compat with code (and test stubs) writt, build_embedder(), Builds the right Embedder based on Config., Return Voyage when key is set, else local fastembed., Embedding providers. Single abstraction (`Embedder`), swappable backends., Git repository identity extraction.  For every file we index we want to remember, IndexStats, Indexing pipeline orchestration.  Composition: Walker → Chunker → Embedder → Sto (+10 more)
 
 ### Community 213 - "Community 213"
-Cohesion: 1.0
-Nodes (1): Configure structlog + stdlib logging.      Uses a console renderer when stderr i
+Cohesion: 0.22
+Nodes (9): [P001] - INCONGRUENCIA: Contagem de testes, [P002] - INCONGRUENCIA: Numero de MCP tools, [P003] - INCONGRUENCIA: Numero de retrieval streams, [P004] - ADAPTER NAO DOCUMENTADO: git-diff walker, [P005] - SCHEMA VERSION INCONSISTENTE, [P006] - NUMERO DE ENRICHERS INCONSISTENTE, [P007] - REFERENCIA A ESTRUTURA DE ARQUIVOS ANTIGA, [P008] - HOOK VERSION INCONSISTENTE (+1 more)
 
 ### Community 214 - "Community 214"
-Cohesion: 1.0
-Nodes (1): Return a structlog logger. Use module __name__ as `name`.
+Cohesion: 0.25
+Nodes (8): 10.1 Unit (rápido, deterministic, sem rede), 10.2 Integração, 10.3 E2E (com Mimoria real, marker `@pytest.mark.e2e`), 10.4 Golden dataset, 10.5 Smoke do hook, 10. Estratégia de testes, code:jsonc ({), code:bash (stropha hook install --target /Users/jonatas/sources/mimoria)
 
 ### Community 215 - "Community 215"
-Cohesion: 1.0
-Nodes (1): MCP server entry point.  Wires Config → Embedder → Storage → SearchEngine inside
-
-### Community 216 - "Community 216"
-Cohesion: 1.0
-Nodes (1): Long-lived dependencies, injected into every tool via the MCP Context.
-
-### Community 217 - "Community 217"
-Cohesion: 1.0
-Nodes (1): Source-repo identity attached to every search result.      A client can run `git
-
-### Community 218 - "Community 218"
-Cohesion: 1.0
-Nodes (1): One entry in the `list_repos` response.
-
-### Community 219 - "Community 219"
-Cohesion: 1.0
-Nodes (1): Apply post-retrieval filters to search hits.          Note: This is post-filteri
-
-### Community 220 - "Community 220"
-Cohesion: 1.0
-Nodes (1): Hybrid search (dense + BM25, fused via RRF). Returns top_k results     with path
-
-### Community 221 - "Community 221"
-Cohesion: 1.0
-Nodes (1): Find by symbol name. Returns up to `limit` matches, exact-match first.
-
-### Community 222 - "Community 222"
-Cohesion: 1.0
-Nodes (1): Aggregate per-repo stats. Cheap query — single GROUP BY.
-
-### Community 223 - "Community 223"
-Cohesion: 1.0
-Nodes (1): Return the chunk-level outline of a file path (repo-relative).
-
-### Community 224 - "Community 224"
-Cohesion: 1.0
-Nodes (1): Return callers of ``symbol`` (BFS up incoming `calls` edges, depth ≤ 3).
-
-### Community 225 - "Community 225"
-Cohesion: 1.0
-Nodes (1): Return any node connected to ``symbol`` via the graph.
-
-### Community 226 - "Community 226"
-Cohesion: 1.0
-Nodes (1): Return the community membership of a symbol or community id.
-
-### Community 227 - "Community 227"
-Cohesion: 1.0
-Nodes (1): Return rationale nodes (docs/ADRs) explaining ``symbol``.
+Cohesion: 0.05
+Nodes (77): BaseModel, Embedder, Synchronous embedder. Async wrappers (when justified) live in subclasses.      P, Embed a batch of documents (chunks during indexing)., Embed a single user query. Providers may use a different input_type., graph_loaded(), True iff the graphify mirror tables exist AND have data.      Used by ``server.p, Escape hatch for debugging or A/B comparison. (+69 more)
 
 ### Community 228 - "Community 228"
-Cohesion: 1.0
-Nodes (1): Return tests that exercise ``symbol`` (path-pattern filtered).
-
-### Community 229 - "Community 229"
-Cohesion: 1.0
-Nodes (1): Walk the call graph from feature-matching entry points.
-
-### Community 230 - "Community 230"
-Cohesion: 1.0
-Nodes (1): Return the active configuration for debugging.
-
-### Community 231 - "Community 231"
-Cohesion: 1.0
-Nodes (1): Index statistics. Exposed as both a Tool and a Resource for discovery.
-
-### Community 232 - "Community 232"
-Cohesion: 1.0
-Nodes (1): Run the MCP server over stdio. Used by `[project.scripts]` console entry.
-
-### Community 233 - "Community 233"
-Cohesion: 1.0
-Nodes (1): Configuration loaded from environment / .env via pydantic-settings.  This module
-
-### Community 234 - "Community 234"
-Cohesion: 1.0
-Nodes (1): Default index path: .stropha/index.db relative to cwd, or ~/.stropha/index.db.
-
-### Community 235 - "Community 235"
-Cohesion: 1.0
-Nodes (1): Default target = current working directory.
-
-### Community 236 - "Community 236"
-Cohesion: 1.0
-Nodes (1): Runtime configuration. All product env vars are prefixed `STROPHA_`.
-
-### Community 237 - "Community 237"
-Cohesion: 1.0
-Nodes (1): Expand ~ and env vars in the configured index path.
-
-### Community 238 - "Community 238"
-Cohesion: 1.0
-Nodes (1): Get the singleton Config instance.          The config is loaded once from envir
-
-### Community 239 - "Community 239"
-Cohesion: 1.0
-Nodes (1): Get configuration details for debugging.          Returns a dict with:     - All
-
-### Community 240 - "Community 240"
-Cohesion: 1.0
-Nodes (1): Reset the singleton (for tests). Forces reload on next get_config().
+Cohesion: 0.25
+Nodes (8): 15.1 Migração de schema, 15.2 Bootstrap recomendado para um novo target repo, 15.3 Upgrade de embedder local (lever de qualidade — recomendado para usuários local-only), 15.4 Rollback, 15. Rollout & migração, code:bash (# Dentro do repo target (ex.: ~/sources/mimoria):), code:bash (# Em .env, trocar o modelo local. Modelos sugeridos por esca), code:bash (# 1. Desligar o hook (preserva schema, preserva tools))
 
 ### Community 241 - "Community 241"
-Cohesion: 1.0
-Nodes (1): Shared pydantic models used across modules.
+Cohesion: 0.02
+Nodes (33): Generic AST chunker built on tree-sitter-language-pack's `process()`.  Strategy, Markdown chunker: split by ATX/setext headings.  Per spec §3.3.1: each section H, Contextual Prefix Enricher — LLM-generated semantic description prepended to chu, Hierarchical enricher — prepend a small skeleton of the parent chunk.  Rationale, MLX LLM enricher — native Apple Silicon inference via ``mlx-lm``.  Same contract, Noop enricher — identity. Default; preserves Phase 0/1 behavior exactly., Ollama LLM enricher — calls a local model to generate a one-line summary prepend, Chunker dispatcher.  For each `SourceFile`, picks a language-specific chunker an (+25 more)
 
 ### Community 242 - "Community 242"
-Cohesion: 1.0
-Nodes (1): A file discovered by the walker, ready to be chunked.
+Cohesion: 0.25
+Nodes (8): 3.1 Visão C4 — Contexto, 3.2 Visão C4 — Container (stropha interno), 3.3 Fluxos chave, 3. Arquitetura de alto nível, code:block1 (┌───────────────────────────────────────────────────────────), code:block2 (┌────────────────────────────── stropha (Python) ───────────), code:block3 (git commit ─►  .git/hooks/post-commit), code:block4 (Claude Code ──tool call──► server.py:find_callers(symbol))
 
 ### Community 243 - "Community 243"
-Cohesion: 1.0
-Nodes (1): One file-level change emitted by the incremental walker (Phase B).      Maps to
+Cohesion: 0.25
+Nodes (8): 7.1 Novo subcomando: `stropha hook`, 7.2 Novo flag em `stropha index`, 7.3 Env vars adicionadas ao `.env.example`, 7. CLI surface, code:block23 (stropha hook install   [--target <repo>] [--force]), code:block24 (Hook target:       /Users/jonatas/sources/mimoria), code:block25 (stropha index [--rebuild] [--refresh-graph]), code:bash (# --- Graphify integration (optional) ---)
 
 ### Community 244 - "Community 244"
-Cohesion: 1.0
-Nodes (1): An indexable unit. Phase 0 = whole file. Phase 1 adds AST kinds.      Phase 1 (p
+Cohesion: 0.1
+Nodes (30): AnchorDetector, AnchorMatch, AnchorPattern, Result of anchor detection for a chunk., Detects architectural anchors in code chunks., A pattern for detecting architectural anchors., Chunk, An indexable unit. Phase 0 = whole file. Phase 1 adds AST kinds.      Phase 1 (p (+22 more)
 
 ### Community 245 - "Community 245"
-Cohesion: 1.0
-Nodes (1): Stable identifier of the git repository a chunk belongs to.      Returned alongs
-
-### Community 246 - "Community 246"
-Cohesion: 1.0
-Nodes (1): A single result from retrieval.
-
-### Community 247 - "Community 247"
-Cohesion: 1.0
-Nodes (1): Per-repo counters reported by Storage.stats() and `list_repos`.
+Cohesion: 0.09
+Nodes (17): SQLite + sqlite-vec storage layer. Single source of truth for the index., _identifier_tokens(), sqlite-vec + FTS5 + metadata, all in one SQLite database.  Per spec §5: keep eve, Top-k via FTS5 BM25 ranking. Returns [] for empty/sanitized queries., Match chunks whose `symbol` column contains identifier tokens from query., Exact + suffix match on symbol column. Used by `get_symbol`.          Matches `F, Build a ``RepoRef`` from a row that LEFT JOINed ``repos``.      Returns ``None``, Extract identifier-like tokens from a free-text query.      Drops stopwords and (+9 more)
 
 ### Community 248 - "Community 248"
-Cohesion: 1.0
-Nodes (1): stropha — RAG system that indexes a codebase and exposes it via MCP.
+Cohesion: 0.05
+Nodes (11): _build_simple(), Builder: resolved config dict → instantiated adapter objects.  Importing this mo, Build a stage that needs no cross-stage dependency injection., Hybrid retrieval (dense + BM25 + symbol-token) fused via RRF.  Phase 4 refactors, ChunkerStage protocol — split files into indexable chunks.  The default adapter, EmbedderStage protocol — text → vector.  Same surface the pre-pipeline ``stropha, Stage-specific protocols.  Each module defines the contract a specific stage's a, ``RerankerStage`` — cross-encoder reranking of retrieval candidates.  Rerankers (+3 more)
 
 ### Community 249 - "Community 249"
-Cohesion: 1.0
-Nodes (1): Typer CLI — composition root.  Subcommands: - ``index``    : walk → chunk → enri
-
-### Community 250 - "Community 250"
-Cohesion: 1.0
-Nodes (1): Get the singleton config instance.
-
-### Community 251 - "Community 251"
-Cohesion: 1.0
-Nodes (1): Initialize logging before any subcommand runs.
-
-### Community 252 - "Community 252"
-Cohesion: 1.0
-Nodes (1): Walk one or more repos, chunk every file, enrich, embed, and store.
-
-### Community 253 - "Community 253"
-Cohesion: 1.0
-Nodes (1): Hybrid retrieval (dense + BM25 + symbol-token fused via RRF).
-
-### Community 254 - "Community 254"
-Cohesion: 1.0
-Nodes (1): Print index metadata.
-
-### Community 255 - "Community 255"
-Cohesion: 1.0
-Nodes (1): Print the fully-resolved pipeline composition (YAML + env + CLI).
-
-### Community 256 - "Community 256"
-Cohesion: 1.0
-Nodes (1): Run a lightweight health probe on every adapter. Exit non-zero on error.
-
-### Community 257 - "Community 257"
-Cohesion: 1.0
-Nodes (1): List every adapter the registry knows about.
-
-### Community 258 - "Community 258"
-Cohesion: 1.0
-Nodes (1): Aggregate the structured log trail into a per-repo / per-adapter view.
-
-### Community 259 - "Community 259"
-Cohesion: 1.0
-Nodes (1): Watch a working tree and re-index on file changes.      Press Ctrl-C to stop.
-
-### Community 260 - "Community 260"
-Cohesion: 1.0
-Nodes (1): Run the offline eval harness against the golden dataset.
-
-### Community 261 - "Community 261"
-Cohesion: 1.0
-Nodes (1): Default to the configured target_repo, then cwd. Validate ``.git/`` exists.
-
-### Community 262 - "Community 262"
-Cohesion: 1.0
-Nodes (1): Install or refresh the post-commit hook for the target repo.
-
-### Community 263 - "Community 263"
-Cohesion: 1.0
-Nodes (1): Remove the stropha block from the post-commit hook.
-
-### Community 264 - "Community 264"
-Cohesion: 1.0
-Nodes (1): Report whether the post-commit hook is installed.
+Cohesion: 0.25
+Nodes (8): 10.1 Golden dataset, 10.2 Métricas, 10.3 Frameworks, 10.4 LLM-as-judge, 10.5 A/B testing online, 10.6 Regression testing em CI, 10. Avaliação, code:jsonc ({)
 
 ### Community 265 - "Community 265"
-Cohesion: 1.0
-Nodes (1): Structured exceptions. Per CLAUDE.md, never raise bare Exception.
+Cohesion: 0.06
+Nodes (13): Chunker dispatcher — picks the right per-language sub-adapter for each file.  Th, _with_repo_key(), Model2Vec static embedder — ultra-fast, no forward pass.  Uses Model2Vec library, Cross-encoder reranker using fastembed's TextCrossEncoder.  Uses ONNX-based cros, AdapterError, ChunkerError, PipelineError, Structured exceptions. Per CLAUDE.md, never raise bare Exception. (+5 more)
 
 ### Community 266 - "Community 266"
-Cohesion: 1.0
-Nodes (1): Base class for all errors raised by stropha.
+Cohesion: 0.25
+Nodes (8): 8.1 Detecção de mudança, 8.2 Triggers de reindex, 8.3 Soft index (working tree), 8.4 Compactação e rebuild, 8.5 Backfill de novos campos, 8.6 Incremental indexing delivery (Phase A/B/C), 8. Atualização incremental, code:block9 (git diff --name-status <last_indexed_commit>..HEAD)
 
 ### Community 267 - "Community 267"
-Cohesion: 1.0
-Nodes (1): Invalid or missing configuration.
+Cohesion: 0.32
+Nodes (7): _graph_nodes_to_hits(), _guess_language(), _parse_line(), Smart search — unified search with automatic query routing.  Combines query in, Convert graph node dicts to SearchHit objects., Parse line number from source_location like 'file.py:42'., Guess language from file extension.
 
 ### Community 268 - "Community 268"
-Cohesion: 1.0
-Nodes (1): Failure while discovering source files.
+Cohesion: 0.06
+Nodes (33): _load_ragignore(), Load .strophaignore patterns from the target repo and from this project.      Bo, Discovers indexable files under a target repository., Walker, Lightweight readiness probe, ≤2 s, non-blocking.          Called by ``stropha pi, One responsibility in the pipeline. Exactly one adapter active per run.      Ada, Stage, BuiltStages (+25 more)
 
 ### Community 269 - "Community 269"
-Cohesion: 1.0
-Nodes (1): Failure while splitting a file into chunks.
+Cohesion: 0.25
+Nodes (8): from_dict(), load_golden(), Parse a JSONL file into :class:`EvalCase` instances.      Empty / comment lines, The default golden set must always parse cleanly., test_load_golden_invalid_json_raises_with_lineno(), test_load_golden_missing_query_raises(), test_load_golden_skips_blank_and_comments(), test_shipped_golden_file_parses()
 
 ### Community 270 - "Community 270"
-Cohesion: 1.0
-Nodes (1): Failure while computing embeddings (network, auth, model).
+Cohesion: 0.05
+Nodes (42): LocalEmbedder, ONNX-based embedder, runs on CPU., dim(), _is_mlx_available(), MlxEmbedder, MlxEmbedderConfig, MLX-based embedder for Apple Silicon GPU acceleration.  Uses ``mlx-embedding-mod, Load the MLX embedding model. (+34 more)
 
 ### Community 271 - "Community 271"
-Cohesion: 1.0
-Nodes (1): Failure in the SQLite/vec layer (schema, IO, corruption).
+Cohesion: 0.22
+Nodes (7): Insert (or update) a chunk and its vector atomically. Returns rowid.          ``, Top-k dense nearest neighbors., Open the SQLite + sqlite-vec store.          Args:             db_path: Filesyst, Float32 little-endian, the format sqlite-vec expects for BLOB inputs., _serialize_vector(), Failure in the SQLite/vec layer (schema, IO, corruption)., StorageError
 
 ### Community 272 - "Community 272"
-Cohesion: 1.0
-Nodes (1): Failure during query execution.
+Cohesion: 0.25
+Nodes (8): code:block4 (# .strophaignore), code:yaml (# repos.yaml), code:bash (stropha index --manifest repos.yaml), code:bash (export STROPHA_MAX_FILE_BYTES=2097152  # 2MB (default 1MB)), code:bash (# Index specific subdirectories), Large Codebase Strategies, Monorepos, Repositories with 100k+ Files
 
 ### Community 273 - "Community 273"
-Cohesion: 1.0
-Nodes (1): Failure assembling or running the pipeline.
+Cohesion: 0.25
+Nodes (8): code:block12 (Error: Failed to start MCP server), code:bash (# Check uv is available), code:json ({), code:bash (# Generate the graphify graph), "graph_loaded: false" from graph tools, MCP Server Issues, Server doesn't start, Tools not appearing in client
 
 ### Community 274 - "Community 274"
-Cohesion: 1.0
-Nodes (1): Failure registering or invoking an adapter.      Raised by ``pipeline.registry``
+Cohesion: 0.25
+Nodes (8): code:bash (# Check you're in a git repo), code:bash (# Use local embedder), code:block7 (StorageError: Embedding dim mismatch: got 1024, expected 512), code:bash (# Rebuild with current embedder), "Embedding dim mismatch", Indexing is extremely slow, Indexing Issues, "No files found to index"
 
 ### Community 275 - "Community 275"
-Cohesion: 1.0
-Nodes (1): Soft index — watch a working tree and re-index on file changes.  Per spec §8 / P
+Cohesion: 0.25
+Nodes (8): Architecture (one screen), code:bash (git clone https://github.com/JonatasFischer/stropha.git), code:bash (pip install -e .), Installation, Optional dependencies, Requirements, Via pip / pipx, Via uv (recommended)
 
 ### Community 276 - "Community 276"
-Cohesion: 1.0
-Nodes (1): File-mtime snapshot for change detection.
+Cohesion: 0.25
+Nodes (8): Analise Comparativa Realizada, code:yaml (retrieval:), code:json ({), Documento Criado, Implementacao Concluida - Sprint 1.1, Implementacao Concluida - Sprint 1.2, Proximos Passos Sprint 1, Sessao 3 - 2026-05-16 (Roadmap + Implementacao)
 
 ### Community 277 - "Community 277"
-Cohesion: 1.0
-Nodes (1): Return ``(changed_or_added, removed)`` since the previous snapshot.
+Cohesion: 0.25
+Nodes (7): 1.1 Reranker Local (Cross-Encoder ONNX), 1.2 Filtros Expostos no MCP, 1.3 Faceted Search Response, code:block1 (adapters/retrieval/), code:yaml (retrieval:), code:json ({), Sprint 1: Reranking + Filtros (Alta Prioridade)
 
 ### Community 278 - "Community 278"
-Cohesion: 1.0
-Nodes (1): Walk via the standard ``Walker`` and capture per-file mtimes.
+Cohesion: 0.36
+Nodes (4): Weights for each retrieval stream in RRF fusion., StreamWeights, Tests for StreamWeights dataclass., TestStreamWeights
 
 ### Community 279 - "Community 279"
-Cohesion: 1.0
-Nodes (1): Watch ``repo`` and re-index changed files after the debounce window.      Args:
+Cohesion: 0.29
+Nodes (7): 11.1 Logging estruturado (`structlog`), 11.2 Métricas (alvo Phase 2 §11.2), 11.3 Tracing (futuro), 11. Observabilidade, code:block29 (graphify_loader.start          target=/path commit=2d22f0aa), code:block30 (rag_graph_nodes_total), code:block31 (mcp.tool.find_callers)
 
 ### Community 280 - "Community 280"
-Cohesion: 1.0
-Nodes (1): Run a fresh ``Pipeline`` pass against ``repo``.
+Cohesion: 0.29
+Nodes (7): 16.1 Construir symbol graph do zero, 16.2 Pre-commit síncrono, 16.3 Hybrid pre-commit (só graphify) + post-commit (RAG), 16.4 File watcher (inotify/fsevents) sempre rodando, 16.5 Auto-bootstrap (rodar `graphify .` se ausente), 16.6 Persistir o grafo em memória (sem SQLite mirror), 16. Alternativas consideradas
 
 ### Community 281 - "Community 281"
-Cohesion: 1.0
-Nodes (1): Controller for a background watch thread.      Use this to start/stop the watche
+Cohesion: 0.29
+Nodes (7): 9. Implementação em fases, Fase 1.5a — Graph loader & SQLite schema (1.5 dia), Fase 1.5b — MCP tools sobre o grafo (1.5 dia), Fase 1.5c — Post-commit hook (1 dia), Fase 1.5d — Docs & polish (0.5 dia), Fase 1.5e — L2: FTS5 augmentation com graph data (0.5 dia), Fase 1.5f — L3 (opt-in): embeddings de nodes/communities (0.5 dia, opcional)
 
 ### Community 282 - "Community 282"
-Cohesion: 1.0
-Nodes (1): Start the watch loop in a background daemon thread.
+Cohesion: 0.29
+Nodes (7): 4.1 Princípio, 4.2 Chunker como sub-pipeline (existente, formaliza), 4.3 Retrieval como sub-pipeline (futuro), 4.4 Limite explícito: não é chain, 4. Sub-pipelines, code:yaml (chunker:), code:yaml (retrieval:)
 
 ### Community 283 - "Community 283"
-Cohesion: 1.0
-Nodes (1): Signal the watch loop to stop and wait for thread to finish.
+Cohesion: 0.29
+Nodes (7): 11.1 Tracing, 11.2 Métricas Prometheus, 11.3 Logging estruturado, 11.4 Cost dashboard, 11. Observabilidade, code:block15 (mcp.tool.search_code), code:block16 (rag_query_total{tool="search_code", status="ok"})
 
 ### Community 284 - "Community 284"
-Cohesion: 1.0
-Nodes (1): The actual watch loop, runs in a background thread.
+Cohesion: 0.29
+Nodes (7): 12.1 Caching multi-nível, 12.2 Batching, 12.3 Connection pooling, 12.4 Prompt caching (Anthropic), 12.5 Quantização e precisão, 12.6 Profiling, 12. Performance e otimização
 
 ### Community 285 - "Community 285"
-Cohesion: 1.0
-Nodes (1): Cost dashboard (Phase 3 §11.4).  Aggregates the structured-log trail produced by
-
-### Community 286 - "Community 286"
-Cohesion: 1.0
-Nodes (1): Walk the given log paths and return aggregated counters.
-
-### Community 287 - "Community 287"
-Cohesion: 1.0
-Nodes (1): Standard locations stropha writes structured logs to.      Honours ``STROPHA_HOO
-
-### Community 288 - "Community 288"
-Cohesion: 1.0
-Nodes (1): Build a :class:`rich.console.RenderableType` table summary.
+Cohesion: 0.11
+Nodes (16): cost(), Aggregate the structured log trail into a per-repo / per-adapter view., AdapterCost, default_log_paths(), GraphCost, HookCost, _iter_log_lines(), Cost dashboard (Phase 3 §11.4).  Aggregates the structured-log trail produced by (+8 more)
 
 ### Community 289 - "Community 289"
-Cohesion: 1.0
-Nodes (1): Pipeline configuration loader.  Cascading precedence (per ``docs/architecture/st
+Cohesion: 0.18
+Nodes (11): _coerce(), _env_to_dict(), _legacy_env_to_dict(), _merge(), Pipeline configuration loader.  Cascading precedence (per ``docs/architecture/st, Translate ``STROPHA_<STAGE>__<KEY>__...`` into nested dict overlay.      ``STROP, Map deprecated env vars onto the new shape. Logs a warning.      Caller MUST res, Cheap coercion for env-var strings to int/float/bool/str. (+3 more)
 
 ### Community 290 - "Community 290"
-Cohesion: 1.0
-Nodes (1): Resolve the full pipeline config dict.      Args:         project_root: dir to l
-
-### Community 291 - "Community 291"
-Cohesion: 1.0
-Nodes (1): Translate ``STROPHA_<STAGE>__<KEY>__...`` into nested dict overlay.      ``STROP
-
-### Community 292 - "Community 292"
-Cohesion: 1.0
-Nodes (1): Map deprecated env vars onto the new shape. Logs a warning.      Caller MUST res
-
-### Community 293 - "Community 293"
-Cohesion: 1.0
-Nodes (1): Cheap coercion for env-var strings to int/float/bool/str.
-
-### Community 294 - "Community 294"
-Cohesion: 1.0
-Nodes (1): Deep merge ``src`` into ``dst`` in-place.
+Cohesion: 0.29
+Nodes (7): 7.1 Test ↔ implementation linking, 7.2 Feature ↔ step linking, 7.3 Glossário de domínio, 7.4 Detecção de "anchors" arquiteturais, 7.5 Indexação de comentários e Javadoc separadamente, 7. Técnicas específicas para código, code:block8 (Subject: atomic knowledge unit (DDD entity); has Content; ha)
 
 ### Community 295 - "Community 295"
-Cohesion: 1.0
-Nodes (1): Adapter registry — populated at import-time via the ``@register_adapter`` decora
+Cohesion: 0.29
+Nodes (6): _parse_paths(), _default_index_path(), PathsConfig, Default index path: ``.stropha/index.db`` relative to cwd, or ``~/.stropha/index, Filesystem paths (YAML: ``paths``; ENV fallback)., Expand ``~`` and env vars in the configured index path.
 
 ### Community 296 - "Community 296"
-Cohesion: 1.0
-Nodes (1): Class decorator. Registers ``cls`` under ``(stage, name)``.      The adapter cla
+Cohesion: 0.29
+Nodes (6): code:bash (# System info), Collect Debug Information, Getting Help, Quick Reference: Common Fixes, Report Issues, Troubleshooting Guide
 
 ### Community 297 - "Community 297"
-Cohesion: 1.0
-Nodes (1): Return the adapter class registered for ``(stage, name)``.      Raises ``ConfigE
+Cohesion: 0.38
+Nodes (4): _dcg(), Compute Discounted Cumulative Gain.          DCG = Σ (2^rel_i - 1) / log2(i + 1), Tests for DCG computation., TestDCG
 
 ### Community 298 - "Community 298"
-Cohesion: 1.0
-Nodes (1): Return sorted adapter names registered for ``stage``.
+Cohesion: 0.29
+Nodes (7): 1. Use Local Embeddings, 2. Enable Query Cache, 3. Use Incremental Indexing, code:bash (# Default: mixedbread-ai/mxbai-embed-large-v1 (1024 dims)), code:bash (export STROPHA_QUERY_CACHE_ENABLED=1), code:bash (# Check hook version), Quick Wins
 
 ### Community 299 - "Community 299"
-Cohesion: 1.0
-Nodes (1): Snapshot of the registry, grouped by stage. Used by ``adapters list``.
+Cohesion: 0.22
+Nodes (9): all_adapters(), Snapshot of the registry, grouped by stage. Used by ``adapters list``., adapters_list(), List every adapter the registry knows about., test_phase2_stages_all_registered(), test_chunker_and_language_chunker_stages_registered(), test_streams_registered(), test_default_adapters_registered() (+1 more)
 
 ### Community 300 - "Community 300"
-Cohesion: 1.0
-Nodes (1): Test helper: clear the registry. Do NOT call from production code.
+Cohesion: 0.29
+Nodes (7): code:bash (# Check hook timing), code:bash (export STROPHA_HOOK_SKIP=1), code:bash (export STROPHA_HOOK_TIMEOUT=1200  # 20 minutes), Fast Commit Experience, Hook Optimization, Hook Timeout, Skip Hook for Large Commits
 
 ### Community 301 - "Community 301"
-Cohesion: 1.0
-Nodes (1): Pipeline framework.  Exports the small surface that callers (CLI, server, tests)
+Cohesion: 0.29
+Nodes (7): code:bash (export STROPHA_LOG_LEVEL=DEBUG), code:bash (# Time chunking), code:bash (stropha cost), Cost Dashboard, Enable Debug Logging, Profiling, Time Individual Stages
 
 ### Community 302 - "Community 302"
-Cohesion: 1.0
-Nodes (1): Builder: resolved config dict → instantiated adapter objects.  Importing this mo
+Cohesion: 0.29
+Nodes (7): code:block1 (StorageError: Your Python sqlite3 was built without extensio), code:bash (uv python install 3.12), code:block3 (ModuleNotFoundError: No module named 'sqlite_vec'), code:bash (uv sync  # Reinstall dependencies), Installation Issues, "No module named 'sqlite_vec'", "sqlite3 was built without extension loading"
 
 ### Community 303 - "Community 303"
-Cohesion: 1.0
-Nodes (1): Set of constructed adapters returned by :func:`build_stages`.      All 6 stages
-
-### Community 304 - "Community 304"
-Cohesion: 1.0
-Nodes (1): Instantiate every adapter named in ``resolved_config``.      ``open_storage=Fals
-
-### Community 305 - "Community 305"
-Cohesion: 1.0
-Nodes (1): Build a stage that needs no cross-stage dependency injection.
+Cohesion: 0.29
+Nodes (7): code:bash (# Use more specific query terms), code:bash (# Disable slow features), code:bash (# Check index exists and has content), "No results" for valid queries, Search is slow, Search Issues, Search returns irrelevant results
 
 ### Community 306 - "Community 306"
-Cohesion: 1.0
-Nodes (1): Pipeline orchestrator — adapter-aware indexing.  Phase 2 wires walker, enricher,
-
-### Community 307 - "Community 307"
-Cohesion: 1.0
-Nodes (1): Per-repo counters returned by :meth:`Pipeline.run`.
-
-### Community 308 - "Community 308"
-Cohesion: 1.0
-Nodes (1): Aggregate result of a :meth:`Pipeline.run`.
-
-### Community 309 - "Community 309"
-Cohesion: 1.0
-Nodes (1): Adapter-aware walker → chunker → enricher → embedder → storage.
-
-### Community 310 - "Community 310"
-Cohesion: 1.0
-Nodes (1): Execute the pipeline.          Args:             rebuild: Wipe chunks before ind
-
-### Community 311 - "Community 311"
-Cohesion: 1.0
-Nodes (1): Reload the graphify mirror tables if the on-disk graph is newer.          After
-
-### Community 312 - "Community 312"
-Cohesion: 1.0
-Nodes (1): Legacy path: walk every file via the configured walker.
+Cohesion: 0.29
+Nodes (7): code:bash (# Check hook status), code:bash (# Check hook version (should be v4+)), code:bash (cat ~/.cache/stropha-hook.log | tail -50), Hook blocking commits, Hook errors in log, Hook Issues, Hook not running
 
 ### Community 313 - "Community 313"
-Cohesion: 1.0
-Nodes (1): Phase B path: ingest only the FileDeltas between since_sha..HEAD.          Falls
+Cohesion: 0.19
+Nodes (9): Pipeline, Execute the pipeline.          Args:             rebuild: Wipe chunks before ind, Reload the graphify mirror tables if the on-disk graph is newer.          After, Legacy path: walk every file via the configured walker., Phase B path: ingest only the FileDeltas between since_sha..HEAD.          Falls, Run the enricher on ``chunks`` and return embed_text in input order.          Sw, Adapter-aware walker → chunker → enricher → embedder → storage., concurrency < 1 is a config error caught at Pipeline.__init__. (+1 more)
 
 ### Community 314 - "Community 314"
-Cohesion: 1.0
-Nodes (1): Stage protocol + shared types.  Per ``docs/architecture/stropha-pipeline-adapter
+Cohesion: 0.29
+Nodes (7): code:bash (# Wait for other processes to finish), code:bash (# Rebuild from scratch), code:bash (du -h .stropha/index.db), Corrupted index, "database is locked", Database Issues, Index too large
 
 ### Community 315 - "Community 315"
-Cohesion: 1.0
-Nodes (1): Cross-cutting context every stage may consult.      Stages NEVER mutate the cont
+Cohesion: 0.16
+Nodes (25): ContextualEnricher, ContextualEnricherConfig, LLM-generated contextual descriptions prepended to chunks.      Implements Anthr, Generate contextual description and prepend to content.          Returns the ori, Generate contextual description using the inference backend.          Uses MLX o, Cross-cutting context every stage may consult.      Stages NEVER mutate the cont, StageContext, _make_chunk() (+17 more)
 
 ### Community 316 - "Community 316"
-Cohesion: 1.0
-Nodes (1): Result of a lightweight readiness probe.      ``status='warning'`` is non-fatal
+Cohesion: 0.08
+Nodes (16): Config schema for the Voyage adapter., Wraps the official ``voyageai`` SDK., VoyageEmbedder, VoyageEmbedderConfig, AstGenericLanguageChunker, Stage adapter for ``AstGenericChunker``., HeadingSplitConfig, HeadingSplitLanguageChunker (+8 more)
 
 ### Community 317 - "Community 317"
-Cohesion: 1.0
-Nodes (1): One responsibility in the pipeline. Exactly one adapter active per run.      Ada
-
-### Community 318 - "Community 318"
-Cohesion: 1.0
-Nodes (1): ``'walker'`` | ``'chunker'`` | ``'enricher'`` | ``'embedder'`` | ``'storage'`` |
-
-### Community 319 - "Community 319"
-Cohesion: 1.0
-Nodes (1): Short identifier, unique per stage (``'noop'``, ``'hierarchical'``, …).
-
-### Community 320 - "Community 320"
-Cohesion: 1.0
-Nodes (1): Stable, fully-qualified id including model/config used for cache keys.
-
-### Community 321 - "Community 321"
-Cohesion: 1.0
-Nodes (1): Pydantic model describing this adapter's config section.
+Cohesion: 0.29
+Nodes (7): code:bash (# Is Ollama running?), code:bash (# Start Ollama), code:block26 (ImportError: mlx_lm not available), code:bash (uv pip install mlx-lm), Enricher Issues, MLX enricher not available, Ollama enricher fails silently
 
 ### Community 322 - "Community 322"
-Cohesion: 1.0
-Nodes (1): Lightweight readiness probe, ≤2 s, non-blocking.          Called by ``stropha pi
+Cohesion: 0.29
+Nodes (7): code:mermaid (flowchart LR), code:mermaid (flowchart TB), code:mermaid (flowchart LR), Graphify integration, How it works, Hybrid retrieval, Indexing pipeline
 
 ### Community 323 - "Community 323"
-Cohesion: 1.0
-Nodes (1): Post-commit hook installer (RFC §6 / §7.1).  Manages the stropha post-commit hoo
+Cohesion: 0.29
+Nodes (7): Adapters Verificados, Chunker (1 dispatcher + 5 language sub-adapters), Embedder (3 implementados), Enricher (5 implementados), Retrieval (1 coordinator + 4 streams), Storage (1 implementado), Walker (4 implementados, 3 documentados)
 
 ### Community 324 - "Community 324"
-Cohesion: 1.0
-Nodes (1): Honour ``core.hooksPath`` so husky / lefthook coexist (RFC §6.3).      Validates
+Cohesion: 0.29
+Nodes (7): 3.1 Auto-Merging Retrieval, 3.2 Recursive Retrieval (completar), 3.3 SPLADE Stream (Sparse Neural), code:block10 (Resultados:), code:yaml (retrieval:), code:block12 ("authentication" → também matcha "login", "session", "token"), Sprint 3: Retrieval Avançado (Média Prioridade)
 
 ### Community 325 - "Community 325"
-Cohesion: 1.0
-Nodes (1): Best-effort path to the user's ``uv`` binary (hooks have stripped PATH).
+Cohesion: 0.29
+Nodes (7): 4.1 Contextual Prefix Enricher, 4.2 Glossário de Domínio, 4.3 Indexação de Comentários Separada, code:block13 (Chunk original:), code:yaml (glossary:), code:block15 (Chunk 1 (kind=comment):), Sprint 4: Contextual Enrichment (Média Prioridade)
 
 ### Community 326 - "Community 326"
-Cohesion: 1.0
-Nodes (1): The script body sandwiched between START and END markers.      Same logic as RFC
+Cohesion: 0.29
+Nodes (6): Comparação: Stropha vs. Concorrentes, Conclusão, Histórico, Métricas de Sucesso, Resumo Executivo, Stropha RAG Roadmap — Feature Parity com Estado da Arte
 
 ### Community 327 - "Community 327"
-Cohesion: 1.0
-Nodes (1): Write ``content`` to ``path`` via tmpfile + rename (RFC §6.2).
+Cohesion: 0.43
+Nodes (4): QueryClassification, Result of query classification., Tests for QueryClassification dataclass., TestQueryClassification
 
 ### Community 328 - "Community 328"
-Cohesion: 1.0
-Nodes (1): Install or update the post-commit hook for ``target`` repo.      Behaviour matri
+Cohesion: 0.33
+Nodes (6): 10.1 Phase 1 — Framework + Embedder + Enricher (~2 dias), 10.2 Phase 2 — Walker + Storage + Retrieval (~2 dias), 10.3 Phase 3 — Chunker como sub-pipeline (~1 dia), 10.4 Phase 4 — Retrieval como sub-pipeline (~0.5 dia), 10.5 Phase 5 — Adapters novos (~0.5 dia cada, sob demanda), 10. Plano de execução em fases
 
 ### Community 329 - "Community 329"
-Cohesion: 1.0
-Nodes (1): Remove our block. Leave any other content intact.      If the resulting file is
+Cohesion: 0.33
+Nodes (6): 3.1 Protocol, 3.2 Tipos canônicos, 3.3 Input/Output por stage, 3. Anatomia de um Stage, code:python (# src/stropha/pipeline/base.py), code:python (@dataclass)
 
 ### Community 330 - "Community 330"
-Cohesion: 1.0
-Nodes (1): Inspect whether the hook is installed for ``target``.      For v=3 hooks the bak
-
-### Community 331 - "Community 331"
-Cohesion: 1.0
-Nodes (1): MCP tools. Empty in Phase 0; populated in Phase 1 (spec §9.2).
+Cohesion: 0.33
+Nodes (6): 8.1 Schema por adapter, 8.2 Erro estruturado, 8.3 Validação cross-stage, 8. Validação de config, code:python (# adapters/enricher/ollama.py), code:block15 (ConfigError: pipeline.enricher.config.timeout_s)
 
 ### Community 332 - "Community 332"
-Cohesion: 1.0
-Nodes (1): Back-compat shim — re-exports the adapter implementation.  The canonical class l
+Cohesion: 0.1
+Nodes (11): BgeM3Config, BgeM3Embedder, bge-m3 embedder adapter — pre-configured local fastembed backend.  ``BAAI/bge-m3, bge-m3 is multilingual + multi-function; defaults tuned for code RAG., Same fastembed backend as ``LocalEmbedder``, pinned to ``BAAI/bge-m3``., LocalEmbedderConfig, Local fastembed embedder (ONNX, no torch, no network).  Default model per ADR-00, Config schema for the local fastembed adapter. (+3 more)
 
 ### Community 333 - "Community 333"
-Cohesion: 1.0
-Nodes (1): Embedding providers. Single abstraction (`Embedder`), swappable backends.
+Cohesion: 0.33
+Nodes (6): 16. Roadmap em fases, Phase 0 — Spike (1 dia) ✓, Phase 1 — MVP MCP (3-5 dias) ✓, Phase 2 — Qualidade (1 semana), Phase 3 — Sofisticação (2 semanas), Phase 4 — Escala / extensão
 
 ### Community 334 - "Community 334"
-Cohesion: 1.0
-Nodes (1): Builds the right Embedder based on Config.
+Cohesion: 0.33
+Nodes (6): 19. Referências, Evaluation, Ferramentas referenciadas, Papers fundacionais, Standards e specs, Técnicas modernas (2023-2025)
 
 ### Community 335 - "Community 335"
-Cohesion: 1.0
-Nodes (1): Return Voyage when key is set, else local fastembed.
-
-### Community 336 - "Community 336"
-Cohesion: 1.0
-Nodes (1): Back-compat shim — re-exports the adapter implementation.  The canonical class l
+Cohesion: 0.4
+Nodes (5): _detect_default_branch(), Git repository identity extraction.  For every file we index we want to rememb, Run a git subcommand. Returns stdout trimmed, or ``None`` on failure.      Nev, Try three sources, in order of fidelity., _run_git()
 
 ### Community 337 - "Community 337"
-Cohesion: 1.0
-Nodes (1): Legacy embedder protocol.  Kept for back-compat with code (and test stubs) writt
+Cohesion: 0.33
+Nodes (4): Config, Unified top-level configuration.      All sections are populated with defaults;, Expand ``~`` and env vars in the configured index path., Return a new Config with the given sections replaced.          Each kwarg must b
 
 ### Community 338 - "Community 338"
-Cohesion: 1.0
-Nodes (1): Synchronous embedder. Async wrappers (when justified) live in subclasses.      P
-
-### Community 339 - "Community 339"
-Cohesion: 1.0
-Nodes (1): Identifier persisted alongside vectors (e.g. 'voyage-code-3').
-
-### Community 340 - "Community 340"
-Cohesion: 1.0
-Nodes (1): Vector dimensionality. Used to size the sqlite-vec virtual table.
-
-### Community 341 - "Community 341"
-Cohesion: 1.0
-Nodes (1): Max items per call. The pipeline batches according to this.
+Cohesion: 0.4
+Nodes (4): EvalResult, Outcome of running one :class:`EvalCase`., Tests for NDCG in EvalResult., TestEvalResultNDCG
 
 ### Community 342 - "Community 342"
-Cohesion: 1.0
-Nodes (1): Embed a batch of documents (chunks during indexing).
+Cohesion: 0.33
+Nodes (6): code:bash (# Fast search (all enhancements off)), code:bash (# Maximum recall (slower)), Disable Expensive Features for Interactive Use, Enable for Batch/Thorough Search, Feature Latency Impact, Query-Time Optimization
 
 ### Community 343 - "Community 343"
-Cohesion: 1.0
-Nodes (1): Embed a single user query. Providers may use a different input_type.
+Cohesion: 0.33
+Nodes (6): code:bash (stropha stats), code:bash (# Use local SSD instead of network storage), Database Location, Database Optimization, Index Size, WAL Mode
 
 ### Community 344 - "Community 344"
-Cohesion: 1.0
-Nodes (1): ``RetrievalStreamStage`` — one ranked-list source consumed by RRF.  A retrieval
+Cohesion: 0.33
+Nodes (6): Available MCP tools, Claude Code / Claude Desktop, code:json ({), code:json ({), MCP integration, OpenCode
 
 ### Community 345 - "Community 345"
-Cohesion: 1.0
-Nodes (1): Returns a ranked list of ``SearchHit`` for a query.
-
-### Community 346 - "Community 346"
-Cohesion: 1.0
-Nodes (1): Per-stream candidate budget. Coordinator passes to the backend.
+Cohesion: 0.4
+Nodes (3): Returns a ranked list of ``SearchHit`` for a query., Return ranked hits. ``query_vec`` may be None for non-dense streams., RetrievalStreamStage
 
 ### Community 347 - "Community 347"
-Cohesion: 1.0
-Nodes (1): Return ranked hits. ``query_vec`` may be None for non-dense streams.
+Cohesion: 0.33
+Nodes (6): B.1 Late Chunking (Jina), B.2 ColBERT Multi-Vector, B.3 Cross-Repo Federated Search, B.4 Step-Back Prompting, B.5 Self-RAG / CRAG, Backlog (Futuro)
 
 ### Community 348 - "Community 348"
-Cohesion: 1.0
-Nodes (1): ``RerankerStage`` — cross-encoder reranking of retrieval candidates.  Rerankers
+Cohesion: 0.33
+Nodes (6): Implementation Order (Optimized for Impact), Phase 1: Quick Wins (1-2 days each), Phase 2: Highest ROI (3-5 days each), Phase 3: Complete the Retrieval Stack (2-3 days each), Phase 4: Polish (2-3 days each), Phase 5: Documentation (1-2 days)
 
 ### Community 349 - "Community 349"
-Cohesion: 1.0
-Nodes (1): Re-scores candidates using a cross-encoder model.
-
-### Community 350 - "Community 350"
-Cohesion: 1.0
-Nodes (1): Re-score hits using cross-encoder and return top_k.                  Args:
+Cohesion: 0.4
+Nodes (3): Re-scores candidates using a cross-encoder model., Re-score hits using cross-encoder and return top_k.                  Args:, RerankerStage
 
 ### Community 351 - "Community 351"
-Cohesion: 1.0
-Nodes (1): ChunkerStage protocol — split files into indexable chunks.  The default adapter
+Cohesion: 0.4
+Nodes (5): 12.1 Threat model resumido, 12.2 Path traversal no loader, 12.3 Logs, 12. Segurança e privacidade, code:python (def _validate_source_file(self, raw: str, repo: Path) -> str)
 
 ### Community 352 - "Community 352"
-Cohesion: 1.0
-Nodes (1): Split an iterable of ``SourceFile`` into ``Chunk`` records.
+Cohesion: 0.4
+Nodes (5): 2.1 Objetivos (MUST), 2.2 Objetivos secundários (SHOULD), 2.3 Não-objetivos (explicitamente fora), 2.4 Critérios de sucesso, 2. Objetivos e não-objetivos
 
 ### Community 353 - "Community 353"
-Cohesion: 1.0
-Nodes (1): Yield every chunk produced by every file.
+Cohesion: 0.4
+Nodes (5): 14.1 Unit, 14.2 Integração, 14.3 Smoke, 14.4 Regression, 14. Estratégia de testes
 
 ### Community 354 - "Community 354"
-Cohesion: 1.0
-Nodes (1): Per-language chunker (sub-adapter of the dispatcher).      The minimal contract
+Cohesion: 0.4
+Nodes (5): 15.1 Logging estruturado (structlog), 15.2 Métricas (futuro Phase 2 da spec mestre), 15. Observabilidade, code:block18 (pipeline.assemble.start), code:block19 (stropha_stage_duration_seconds{stage, adapter, quantile})
 
 ### Community 355 - "Community 355"
-Cohesion: 1.0
-Nodes (1): Split ONE file's content into chunks.
+Cohesion: 0.4
+Nodes (5): 9.1 Auto-registration, 9.2 Auto-import, 9. Adapter discovery & registry, code:python (# pipeline/registry.py), code:python (# adapters/__init__.py)
 
 ### Community 356 - "Community 356"
-Cohesion: 1.0
-Nodes (1): WalkerStage protocol — discover indexable files in a repository.  Phase 2 introd
+Cohesion: 0.4
+Nodes (5): 13.1 Detecção de secrets, 13.2 RBAC (multi-usuário), 13.3 Auditoria, 13.4 Supply chain, 13. Segurança
 
 ### Community 357 - "Community 357"
-Cohesion: 1.0
-Nodes (1): Discover ``SourceFile`` records under a repo root.
+Cohesion: 0.4
+Nodes (5): 4.1 Modelos densos — comparação 2026, 4.2 Embeddings esparsos, 4.3 Embeddings multi-vetoriais, 4.4 Quantização, 4. Embeddings
 
 ### Community 358 - "Community 358"
-Cohesion: 1.0
-Nodes (1): Yield every file the indexer should consider for chunking.
+Cohesion: 0.4
+Nodes (5): 5.1 Vector stores — comparação, 5.2 Algoritmos de indexação aproximada (ANN), 5.3 Persistência paralela, 5.4 Versionamento e migração, 5. Camada de armazenamento
 
 ### Community 359 - "Community 359"
-Cohesion: 1.0
-Nodes (1): Stage-specific protocols.  Each module defines the contract a specific stage's a
+Cohesion: 0.4
+Nodes (3): EvalReport, Aggregate metrics across an evaluation run., Slice results per tag for diagnostic breakdowns.
 
 ### Community 360 - "Community 360"
-Cohesion: 1.0
-Nodes (1): EnricherStage protocol — transform a chunk before embedding.  Phase 1 introduces
+Cohesion: 0.4
+Nodes (5): code:bash (# Generate/update graph), code:bash (# Re-run graphify with community detection), "community_id is None" warnings, Graph Issues, Graph tools return empty results
 
 ### Community 361 - "Community 361"
-Cohesion: 1.0
-Nodes (1): Returns the text that should be fed to the embedder for ``chunk``.      The orig
+Cohesion: 0.4
+Nodes (5): code:bash (# Verify env var is set), code:bash (# Which repo?), Environment Issues, Environment variables not taking effect, Wrong repository being indexed
 
 ### Community 362 - "Community 362"
-Cohesion: 1.0
-Nodes (1): Return the text to embed.          MUST be deterministic for a given ``(chunk, c
+Cohesion: 0.5
+Nodes (5): Adding a new adapter, code:bash (# Test (429 unit tests, runs in ~5 s)), code:block22 (src/stropha/), Development, Repository layout
 
 ### Community 363 - "Community 363"
-Cohesion: 1.0
-Nodes (1): StorageStage protocol — persist chunks + vectors and serve read APIs.  A storage
+Cohesion: 0.07
+Nodes (4): StorageStage protocol — persist chunks + vectors and serve read APIs.  A storage, Sparse retrieval stream — SQLite FTS5 BM25., Identifier-token retrieval stream — direct LIKE match on the symbol column.  Che, Dense ANN retrieval stream — sqlite-vec virtual table.
 
 ### Community 364 - "Community 364"
-Cohesion: 1.0
-Nodes (1): Persistence + read backend for the index.
-
-### Community 365 - "Community 365"
-Cohesion: 1.0
-Nodes (1): Vector dimensionality the backend was provisioned with.
+Cohesion: 0.07
+Nodes (5): Persistence + read backend for the index., StorageStage, LikeTokensConfig, LikeTokensStream, test_like_tokens_stream_routes_to_storage_search_symbol()
 
 ### Community 366 - "Community 366"
-Cohesion: 1.0
-Nodes (1): RetrievalStage protocol — query string → ranked SearchHits.  Phase 2 ships ``hyb
+Cohesion: 0.4
+Nodes (5): CLAUDE.md, Correcoes Aplicadas, docs/architecture/stropha-pipeline-adapters.md, docs/architecture/stropha-system.md, README.md
 
 ### Community 367 - "Community 367"
-Cohesion: 1.0
-Nodes (1): Read-time component. Constructed with refs to embedder + storage.
+Cohesion: 0.4
+Nodes (5): code:yaml (retrieval:), Comparacao Atualizada, Configuracao YAML exemplo, Implementacao Concluida - Sprint 2.1 e 2.2, Sessao 4 - 2026-05-16 (Sprint 2: Query Intelligence)
 
 ### Community 368 - "Community 368"
-Cohesion: 1.0
-Nodes (1): Top-k hits for a free-text query.
+Cohesion: 0.4
+Nodes (5): Duplicacao de Chunks no Grafo, git-diff Walker no Registry, MCP Tools - Contagem Exata, Sessao 2 - 2026-05-16 (continuacao), Verificacoes Adicionais Realizadas
 
 ### Community 369 - "Community 369"
-Cohesion: 1.0
-Nodes (1): EmbedderStage protocol — text → vector.  Same surface the pre-pipeline ``stropha
+Cohesion: 0.4
+Nodes (5): HOOK_VERSION, MCP Tools (via get_file_outline server.py), Numero de Testes, SCHEMA_VERSION, Verificacoes Realizadas (usando Stropha RAG tools)
 
 ### Community 370 - "Community 370"
-Cohesion: 1.0
-Nodes (1): Synchronous embedder. Async wrappers, if ever needed, live in subclasses.      P
-
-### Community 371 - "Community 371"
-Cohesion: 1.0
-Nodes (1): Identifier persisted alongside vectors (e.g. ``'voyage-code-3'``).
-
-### Community 372 - "Community 372"
-Cohesion: 1.0
-Nodes (1): Vector dimensionality. Sizes the sqlite-vec virtual table.
-
-### Community 373 - "Community 373"
-Cohesion: 1.0
-Nodes (1): Max items per ``embed_documents`` call. Pipeline batches accordingly.
+Cohesion: 0.5
+Nodes (4): 13.1 Load do grafo, 13.2 Tool latency, 13.3 Hook impacto, 13. Performance
 
 ### Community 374 - "Community 374"
-Cohesion: 1.0
-Nodes (1): Embed a batch of documents (chunks during indexing).
+Cohesion: 0.5
+Nodes (4): 1.1 Estado atual, 1.2 Lacunas que justificam refatoração, 1.3 Princípios de design, 1. Motivação
 
 ### Community 375 - "Community 375"
-Cohesion: 1.0
-Nodes (1): Embed a single user query. Providers may use a distinct input_type.
+Cohesion: 0.5
+Nodes (4): 2.1 Stages e suas implementações, 2.2 Visão arquitetural, 2. Mapa atual → arquitetura proposta, code:block1 (┌───────────────────────────────────────────────────────────)
 
 ### Community 376 - "Community 376"
-Cohesion: 1.0
-Nodes (1): Git repository identity extraction.  For every file we index we want to remember
+Cohesion: 0.5
+Nodes (4): 7.1 Layout proposto, 7.2 Mapeamento código atual → adapter, 7. Estrutura de arquivos, code:block13 (src/stropha/)
 
 ### Community 377 - "Community 377"
-Cohesion: 1.0
-Nodes (1): Stable identification of a git repository (or a fallback).
-
-### Community 378 - "Community 378"
-Cohesion: 1.0
-Nodes (1): Detect the git identity of ``path``.      Never raises: returns a fallback ``Rep
+Cohesion: 0.5
+Nodes (4): High Memory Usage, Slow Indexing, Slow Queries, Troubleshooting Performance
 
 ### Community 379 - "Community 379"
-Cohesion: 1.0
-Nodes (1): Normalize a git remote URL.      Returns a tuple ``(normalized_key, sanitized_ht
+Cohesion: 0.5
+Nodes (4): Adapter system, code:mermaid (flowchart LR), code:bash ($ stropha adapters list), code:python (from stropha.pipeline.registry import register_adapter)
 
 ### Community 380 - "Community 380"
-Cohesion: 1.0
-Nodes (1): Run a git subcommand. Returns stdout trimmed, or ``None`` on failure.      Never
+Cohesion: 0.5
+Nodes (4): code:yaml (pipeline:), Configuration, Example `stropha.yaml`, Useful environment variables
 
 ### Community 381 - "Community 381"
-Cohesion: 1.0
-Nodes (1): Try three sources, in order of fidelity.
+Cohesion: 0.5
+Nodes (4): ALTA PRIORIDADE (atualizar documentacao), BAIXA PRIORIDADE (informativo), MEDIA PRIORIDADE (inconsistencias menores), Resumo dos Problemas - Prioridade
 
 ### Community 382 - "Community 382"
-Cohesion: 1.0
-Nodes (1): Repo manifest loader — declarative multi-repo lists (Phase 4).  Lets users repla
+Cohesion: 0.5
+Nodes (4): Arquivos de Documentacao Identificados, Comunidades do Grafo (principais), God Nodes (abstraccoes centrais), Sessao 1 - 2026-05-16
 
 ### Community 383 - "Community 383"
-Cohesion: 1.0
-Nodes (1): Failure parsing or validating a repo manifest.
+Cohesion: 0.5
+Nodes (4): 5.1 Soft Index (Working Tree Overlay), 5.2 Detecção de Anchors Arquiteturais, code:block16 (1. File watcher detecta mudança em arquivo), Sprint 5: Soft Index + Polish (Baixa Prioridade)
 
 ### Community 384 - "Community 384"
-Cohesion: 1.0
-Nodes (1): Parse a repo manifest. Returns the **enabled** entries in declaration order.
+Cohesion: 0.5
+Nodes (4): code:toml ([project.optional-dependencies]), Dependências Técnicas, Modelos ONNX a baixar, Novos pacotes Python
 
 ### Community 385 - "Community 385"
-Cohesion: 1.0
-Nodes (1): Chunker dispatcher.  For each `SourceFile`, picks a language-specific chunker an
+Cohesion: 0.67
+Nodes (3): _parse_logging(), LoggingConfig, Logging configuration (YAML: ``logging``).
 
 ### Community 386 - "Community 386"
-Cohesion: 1.0
-Nodes (1): Public entry point. Replaces Phase 0's FileChunker.
+Cohesion: 0.67
+Nodes (3): code:bash (# Use contextual enricher (requires Ollama)), Enricher Tradeoffs, Recommendations
 
 ### Community 387 - "Community 387"
-Cohesion: 1.0
-Nodes (1): Chunk every file. When ``repo_key`` is provided, every emitted         chunk's `
-
-### Community 388 - "Community 388"
-Cohesion: 1.0
-Nodes (1): Re-derive chunk_id with repo discriminator (no-op when repo_key is None).
+Cohesion: 0.67
+Nodes (3): code:bash (# Switch to bge-m3 for multilingual support), Embedder Selection, Switching Embedders
 
 ### Community 389 - "Community 389"
-Cohesion: 1.0
-Nodes (1): Graphify graph loader — populates ``graph_nodes`` / ``graph_edges`` / ``graph_me
-
-### Community 390 - "Community 390"
-Cohesion: 1.0
-Nodes (1): Parse ``STROPHA_GRAPH_CONFIDENCE`` env var into a tuple of tiers.      Empty / u
-
-### Community 391 - "Community 391"
-Cohesion: 1.0
-Nodes (1): Outcome of a :meth:`GraphifyLoader.load` invocation.      Phase C diff-load repo
-
-### Community 392 - "Community 392"
-Cohesion: 1.0
-Nodes (1): Mirror ``graphify-out/graph.json`` into the SQLite ``graph_*`` tables.      The
-
-### Community 393 - "Community 393"
-Cohesion: 1.0
-Nodes (1): Default location: ``<repo_root>/graphify-out/graph.json``.          Honours ``ST
-
-### Community 394 - "Community 394"
-Cohesion: 1.0
-Nodes (1): True iff the graph file is present on disk.
-
-### Community 395 - "Community 395"
-Cohesion: 1.0
-Nodes (1): True iff the graph should be reloaded.          Compares file mtime with ``graph
-
-### Community 396 - "Community 396"
-Cohesion: 1.0
-Nodes (1): Prefix node_id with repo_id for multi-repo isolation.
-
-### Community 397 - "Community 397"
-Cohesion: 1.0
-Nodes (1): Replace ``graph_nodes`` / ``graph_edges`` from the graph file.          Returns
-
-### Community 398 - "Community 398"
-Cohesion: 1.0
-Nodes (1): Return a summary suitable for ``Storage.stats()['graph']``.          ``None`` wh
-
-### Community 399 - "Community 399"
-Cohesion: 1.0
-Nodes (1): Get a meta value, using per-repo key suffix when repo_id is set.
-
-### Community 400 - "Community 400"
-Cohesion: 1.0
-Nodes (1): Source file discovery.  Per spec §3.1: - Use `git ls-files` when target is a git
-
-### Community 401 - "Community 401"
-Cohesion: 1.0
-Nodes (1): Return language tag for a path, or None if unsupported.
-
-### Community 402 - "Community 402"
-Cohesion: 1.0
-Nodes (1): Null-byte heuristic — fast, no libmagic dependency.
-
-### Community 403 - "Community 403"
-Cohesion: 1.0
-Nodes (1): Return tracked files via git, or None if not a git repo / git missing.
-
-### Community 404 - "Community 404"
-Cohesion: 1.0
-Nodes (1): Fallback walker for non-git directories.
-
-### Community 405 - "Community 405"
-Cohesion: 1.0
-Nodes (1): Load .strophaignore patterns from the target repo and from this project.      Bo
-
-### Community 406 - "Community 406"
-Cohesion: 1.0
-Nodes (1): Discovers indexable files under a target repository.
-
-### Community 407 - "Community 407"
-Cohesion: 1.0
-Nodes (1): Yield every file that survives all filters.
-
-### Community 408 - "Community 408"
-Cohesion: 1.0
-Nodes (1): Yield SourceFile only for the explicit subset of paths given.
-
-### Community 409 - "Community 409"
-Cohesion: 1.0
-Nodes (1): Apply all filters to a single rel_path. Returns None if filtered out.
-
-### Community 410 - "Community 410"
-Cohesion: 1.0
-Nodes (1): Embed graph node labels into ``graph_nodes.embedding`` for the ``graph-vec`` ret
-
-### Community 411 - "Community 411"
-Cohesion: 1.0
-Nodes (1): Embed graph node labels using the active embedder.      Idempotent: nodes whose
-
-### Community 412 - "Community 412"
-Cohesion: 1.0
-Nodes (1): True iff at least one node lacks an embedding for the active model.
-
-### Community 413 - "Community 413"
-Cohesion: 1.0
-Nodes (1): Embed every node whose stored embedding model is not current.
-
-### Community 414 - "Community 414"
-Cohesion: 1.0
-Nodes (1): Ingestion pipeline: discover → chunk → (Phase 2: enrich).
-
-### Community 415 - "Community 415"
-Cohesion: 1.0
-Nodes (1): Indexing pipeline orchestration.  Composition: Walker → Chunker → Embedder → Sto
-
-### Community 416 - "Community 416"
-Cohesion: 1.0
-Nodes (1): Per-repo counters reported back from a pipeline run.
-
-### Community 417 - "Community 417"
-Cohesion: 1.0
-Nodes (1): Aggregate result of an `IndexPipeline.run()`.
-
-### Community 418 - "Community 418"
-Cohesion: 1.0
-Nodes (1): Walks one or more repos, chunks each file, embeds, persists.
-
-### Community 419 - "Community 419"
-Cohesion: 1.0
-Nodes (1): Gherkin chunker (custom — tree-sitter-language-pack does not ship a grammar).  P
+Cohesion: 0.17
+Nodes (8): Graphify graph loader — populates ``graph_nodes`` / ``graph_edges`` / ``graph_me, Parse confidence filter from stropha.yaml into a tuple of tiers.      Empty / un, _resolve_confidence_filter(), _resolve_graph_path(), test_resolve_confidence_default_when_unset(), test_resolve_confidence_drops_unknown_values(), test_resolve_confidence_falls_back_when_all_unknown(), test_resolve_confidence_parses_csv()
 
 ### Community 420 - "Community 420"
-Cohesion: 1.0
-Nodes (1): Per-language chunkers. See `chunker.py` for the dispatcher.
-
-### Community 421 - "Community 421"
-Cohesion: 1.0
-Nodes (1): Markdown chunker: split by ATX/setext headings.  Per spec §3.3.1: each section H
-
-### Community 422 - "Community 422"
-Cohesion: 1.0
-Nodes (1): Return [(start_line, end_line, level, title), ...] for every heading block.
-
-### Community 423 - "Community 423"
-Cohesion: 1.0
-Nodes (1): Section-per-chunk. Parent chain encoded via parent_chunk_id.
-
-### Community 424 - "Community 424"
-Cohesion: 1.0
-Nodes (1): Yield (chunk_text, start_line, end_line) splitting on blank lines.
-
-### Community 425 - "Community 425"
-Cohesion: 1.0
-Nodes (1): Generic AST chunker built on tree-sitter-language-pack's `process()`.  Strategy
-
-### Community 426 - "Community 426"
-Cohesion: 1.0
-Nodes (1): Normalize StructureKind enum to a comparable string.
-
-### Community 427 - "Community 427"
-Cohesion: 1.0
-Nodes (1): Uses tslp.process() for languages with structure extraction support.
-
-### Community 428 - "Community 428"
-Cohesion: 1.0
-Nodes (1): Emit a single file-level chunk (or split if oversized).
-
-### Community 429 - "Community 429"
-Cohesion: 1.0
-Nodes (1): Split an oversized span on line boundaries.
-
-### Community 430 - "Community 430"
-Cohesion: 1.0
-Nodes (1): File-level chunker. Used when no AST chunker is registered for a language.
-
-### Community 431 - "Community 431"
-Cohesion: 1.0
-Nodes (1): One chunk per file; line-based split when file exceeds MAX_CHARS_PER_CHUNK.
-
-### Community 432 - "Community 432"
-Cohesion: 1.0
-Nodes (1): Shared contract + helpers for language-specific chunkers.
-
-### Community 433 - "Community 433"
-Cohesion: 1.0
-Nodes (1): Splits a single file into one or more Chunks.
-
-### Community 434 - "Community 434"
-Cohesion: 1.0
-Nodes (1): Deterministic chunk id per spec §3.4.      ``repo_key`` (when provided) is prepe
-
-### Community 435 - "Community 435"
-Cohesion: 1.0
-Nodes (1): Return lines `[start_line, end_line]` inclusive, 1-indexed.
-
-### Community 436 - "Community 436"
-Cohesion: 1.0
-Nodes (1): Vue SFC chunker — splits a single-file component into script/template/style.  Pe
-
-### Community 437 - "Community 437"
-Cohesion: 1.0
-Nodes (1): SQLite + sqlite-vec storage layer. Single source of truth for the index.
-
-### Community 438 - "Community 438"
-Cohesion: 1.0
-Nodes (1): sqlite-vec + FTS5 + metadata, all in one SQLite database.  Per spec §5: keep eve
-
-### Community 439 - "Community 439"
-Cohesion: 1.0
-Nodes (1): Float32 little-endian, the format sqlite-vec expects for BLOB inputs.
-
-### Community 440 - "Community 440"
-Cohesion: 1.0
-Nodes (1): Expand CamelCase + dotted identifiers into separate tokens.      Used on BOTH in
-
-### Community 441 - "Community 441"
-Cohesion: 1.0
-Nodes (1): Turn free text into a safe FTS5 MATCH expression (OR-joined tokens).
+Cohesion: 0.1
+Nodes (23): AstGenericChunker, _kind_str(), _qualified_name(), Emit a single file-level chunk (or split if oversized)., Split an oversized span on line boundaries., Normalize StructureKind enum to a comparable string., Uses tslp.process() for languages with structure extraction support., count_lines() (+15 more)
 
 ### Community 442 - "Community 442"
-Cohesion: 1.0
-Nodes (1): Pre-process chunk content before indexing in FTS5.      We assemble a single FTS
-
-### Community 443 - "Community 443"
-Cohesion: 1.0
-Nodes (1): Build a ``RepoRef`` from a row that LEFT JOINed ``repos``.      Returns ``None``
-
-### Community 444 - "Community 444"
-Cohesion: 1.0
-Nodes (1): Extract identifier-like tokens from a free-text query.      Drops stopwords and
-
-### Community 445 - "Community 445"
-Cohesion: 1.0
-Nodes (1): Owns the SQLite connection. All schema mutations go through here.
-
-### Community 446 - "Community 446"
-Cohesion: 1.0
-Nodes (1): Idempotent ALTER TABLE — SQLite has no IF NOT EXISTS for ADD COLUMN.
-
-### Community 447 - "Community 447"
-Cohesion: 1.0
-Nodes (1): Insert or update a repo row keyed by ``normalized_key``. Returns its id.
+Cohesion: 0.17
+Nodes (9): _extract_directory_tokens(), _extract_file_stem(), _fts_text(), Pre-process chunk content before indexing in FTS5.      We assemble a single FTS, Rebuild FTS5 rows with graph-derived terms appended.          For every ``chunks, Extract the file stem (name without extension) from a path., Move every chunk's ``rel_path`` from ``old_rel_path`` to         ``new_rel_path`, Update the `files` (file_meta) row for a rename, handling the         case where (+1 more)
 
 ### Community 448 - "Community 448"
-Cohesion: 1.0
-Nodes (1): Best-effort assignment of orphan chunks to ``repo_id``.          Used on upgrade
-
-### Community 449 - "Community 449"
-Cohesion: 1.0
-Nodes (1): Per-repo aggregate counters.
-
-### Community 450 - "Community 450"
-Cohesion: 1.0
-Nodes (1): True if the stored chunk matches every (hash, model, enricher).          Per ADR
-
-### Community 451 - "Community 451"
-Cohesion: 1.0
-Nodes (1): Return cached embedding_text for ``(content_hash, enricher_id)`` or None.
-
-### Community 452 - "Community 452"
-Cohesion: 1.0
-Nodes (1): Cache an enrichment result. Safe to call concurrently (UPSERT).
-
-### Community 453 - "Community 453"
-Cohesion: 1.0
-Nodes (1): True iff the stored ``files`` row for ``(repo_id, rel_path)``         matches ``
-
-### Community 454 - "Community 454"
-Cohesion: 1.0
-Nodes (1): Record that ``rel_path`` was indexed at ``mtime`` / ``size_bytes``.
-
-### Community 455 - "Community 455"
-Cohesion: 1.0
-Nodes (1): Drop the ``files`` rows for ``rel_paths`` under ``repo_id``.
-
-### Community 456 - "Community 456"
-Cohesion: 1.0
-Nodes (1): Return ``rel_paths`` of ``files`` rows for ``repo_id`` that are         NOT pres
-
-### Community 457 - "Community 457"
-Cohesion: 1.0
-Nodes (1): Remove every chunk whose rel_path is in the list. Returns count.
-
-### Community 458 - "Community 458"
-Cohesion: 1.0
-Nodes (1): Move every chunk's ``rel_path`` from ``old_rel_path`` to         ``new_rel_path`
-
-### Community 459 - "Community 459"
-Cohesion: 1.0
-Nodes (1): Update the `files` (file_meta) row for a rename, handling the         case where
-
-### Community 460 - "Community 460"
-Cohesion: 1.0
-Nodes (1): Repo-scoped variant of ``delete_by_paths``. Used by the         incremental pipe
-
-### Community 461 - "Community 461"
-Cohesion: 1.0
-Nodes (1): Insert (or update) a chunk and its vector atomically. Returns rowid.          ``
-
-### Community 462 - "Community 462"
-Cohesion: 1.0
-Nodes (1): Rebuild FTS5 rows with graph-derived terms appended.          For every ``chunks
-
-### Community 463 - "Community 463"
-Cohesion: 1.0
-Nodes (1): Wipe the index. Used by `index --rebuild`.          Preserves the ``repos`` tabl
-
-### Community 464 - "Community 464"
-Cohesion: 1.0
-Nodes (1): Top-k dense nearest neighbors.
-
-### Community 465 - "Community 465"
-Cohesion: 1.0
-Nodes (1): Top-k via FTS5 BM25 ranking. Returns [] for empty/sanitized queries.
-
-### Community 466 - "Community 466"
-Cohesion: 1.0
-Nodes (1): Match chunks whose `symbol` column contains identifier tokens from query.
-
-### Community 467 - "Community 467"
-Cohesion: 1.0
-Nodes (1): Exact + suffix match on symbol column. Used by `get_symbol`.          Matches `F
-
-### Community 468 - "Community 468"
-Cohesion: 1.0
-Nodes (1): Symbolic outline of a file (chunks sorted by start_line).
-
-### Community 469 - "Community 469"
-Cohesion: 1.0
-Nodes (1): Aggregate graphify mirror state. Returns None when never loaded.
-
-### Community 470 - "Community 470"
-Cohesion: 1.0
-Nodes (1): Concrete adapters for each pipeline stage.  Per ADR-003 (``docs/architecture/str
-
-### Community 471 - "Community 471"
-Cohesion: 1.0
-Nodes (1): Graph-aware enricher — L2 augmentation per RFC §0.  Prepends the matching graphi
-
-### Community 472 - "Community 472"
-Cohesion: 1.0
-Nodes (1): Prepend graphify community + node label, falling back to raw content.
-
-### Community 473 - "Community 473"
-Cohesion: 1.0
-Nodes (1): Find the graph node whose source_file matches and whose line falls         insid
-
-### Community 474 - "Community 474"
-Cohesion: 1.0
-Nodes (1): Hierarchical enricher — prepend a small skeleton of the parent chunk.  Rationale
-
-### Community 475 - "Community 475"
-Cohesion: 1.0
-Nodes (1): Enricher adapters — transform a chunk's text before embedding.
-
-### Community 476 - "Community 476"
-Cohesion: 1.0
-Nodes (1): Noop enricher — identity. Default; preserves Phase 0/1 behavior exactly.
-
-### Community 477 - "Community 477"
-Cohesion: 1.0
-Nodes (1): Empty config. The noop enricher has no tunables.
-
-### Community 478 - "Community 478"
-Cohesion: 1.0
-Nodes (1): Returns ``chunk.content`` unchanged.
-
-### Community 479 - "Community 479"
-Cohesion: 1.0
-Nodes (1): Ollama LLM enricher — calls a local model to generate a one-line summary prepend
-
-### Community 480 - "Community 480"
-Cohesion: 1.0
-Nodes (1): One-line LLM summary prepended to the chunk for richer embeddings.      Pure std
-
-### Community 481 - "Community 481"
-Cohesion: 1.0
-Nodes (1): Probe ``GET {base_url}/api/tags`` to confirm the daemon and model.
-
-### Community 482 - "Community 482"
-Cohesion: 1.0
-Nodes (1): POST ``/api/generate``. Returns None on any failure (graceful).
-
-### Community 483 - "Community 483"
-Cohesion: 1.0
-Nodes (1): MLX LLM enricher — native Apple Silicon inference via ``mlx-lm``.  Same contract
-
-### Community 484 - "Community 484"
-Cohesion: 1.0
-Nodes (1): In-process MLX inference. ``mlx-lm`` import is lazy + soft.
-
-### Community 485 - "Community 485"
-Cohesion: 1.0
-Nodes (1): Local fastembed embedder (ONNX, no torch, no network).  Default model per ADR-00
-
-### Community 486 - "Community 486"
-Cohesion: 1.0
-Nodes (1): Config schema for the local fastembed adapter.
-
-### Community 487 - "Community 487"
-Cohesion: 1.0
-Nodes (1): ONNX-based embedder, runs on CPU.
-
-### Community 488 - "Community 488"
-Cohesion: 1.0
-Nodes (1): Voyage AI embedder adapter.  Active when ``VOYAGE_API_KEY`` is set. ``voyage-cod
-
-### Community 489 - "Community 489"
-Cohesion: 1.0
-Nodes (1): Config schema for the Voyage adapter.
-
-### Community 490 - "Community 490"
-Cohesion: 1.0
-Nodes (1): Wraps the official ``voyageai`` SDK.
-
-### Community 491 - "Community 491"
-Cohesion: 1.0
-Nodes (1): bge-m3 embedder adapter — pre-configured local fastembed backend.  ``BAAI/bge-m3
-
-### Community 492 - "Community 492"
-Cohesion: 1.0
-Nodes (1): bge-m3 is multilingual + multi-function; defaults tuned for code RAG.
-
-### Community 493 - "Community 493"
-Cohesion: 1.0
-Nodes (1): Same fastembed backend as ``LocalEmbedder``, pinned to ``BAAI/bge-m3``.
-
-### Community 494 - "Community 494"
-Cohesion: 1.0
-Nodes (1): Storage adapter for sqlite-vec.  Subclasses the existing ``stropha.storage.sqlit
-
-### Community 495 - "Community 495"
-Cohesion: 1.0
-Nodes (1): Storage stage backed by SQLite + sqlite-vec + FTS5.
-
-### Community 496 - "Community 496"
-Cohesion: 1.0
-Nodes (1): Hybrid retrieval (dense + BM25 + symbol-token) fused via RRF.  Phase 4 refactors
-
-### Community 497 - "Community 497"
-Cohesion: 1.0
-Nodes (1): RRF over N retrieval streams, with optional cross-encoder reranking.
-
-### Community 498 - "Community 498"
-Cohesion: 1.0
-Nodes (1): Build optional reranker from config.
-
-### Community 499 - "Community 499"
-Cohesion: 1.0
-Nodes (1): Reranker sub-adapters for retrieval stage.  Cross-encoder rerankers re-score can
-
-### Community 500 - "Community 500"
-Cohesion: 1.0
-Nodes (1): Cross-encoder reranker using fastembed's TextCrossEncoder.  Uses ONNX-based cros
-
-### Community 501 - "Community 501"
-Cohesion: 1.0
-Nodes (1): Config for cross-encoder reranker.
-
-### Community 502 - "Community 502"
-Cohesion: 1.0
-Nodes (1): Cross-encoder reranker using fastembed ONNX models.          Reranks candidates
-
-### Community 503 - "Community 503"
-Cohesion: 1.0
-Nodes (1): Lazy-load the cross-encoder model on first use.
-
-### Community 504 - "Community 504"
-Cohesion: 1.0
-Nodes (1): Rerank hits using cross-encoder scores.                  Args:             query
-
-### Community 505 - "Community 505"
-Cohesion: 1.0
-Nodes (1): Noop reranker — pass-through, preserves RRF order.  Default reranker when no cro
-
-### Community 506 - "Community 506"
-Cohesion: 1.0
-Nodes (1): Empty config. The noop reranker has no tunables.
-
-### Community 507 - "Community 507"
-Cohesion: 1.0
-Nodes (1): Pass-through reranker. Returns hits unchanged, truncated to top_k.
-
-### Community 508 - "Community 508"
-Cohesion: 1.0
-Nodes (1): Return hits unchanged, truncated to top_k.
-
-### Community 509 - "Community 509"
-Cohesion: 1.0
-Nodes (1): Graph node embedding retrieval stream — Trilha A L3.  Maps a query vector agains
-
-### Community 510 - "Community 510"
-Cohesion: 1.0
-Nodes (1): Plain Python cosine. Returns 0.0 on zero vectors.
-
-### Community 511 - "Community 511"
-Cohesion: 1.0
-Nodes (1): Top-K graph nodes by cosine similarity to the query vector.
-
-### Community 512 - "Community 512"
-Cohesion: 1.0
-Nodes (1): Retrieval stream sub-adapters consumed by ``hybrid-rrf``.
-
-### Community 513 - "Community 513"
-Cohesion: 1.0
-Nodes (1): Dense ANN retrieval stream — sqlite-vec virtual table.
-
-### Community 514 - "Community 514"
-Cohesion: 1.0
-Nodes (1): Identifier-token retrieval stream — direct LIKE match on the symbol column.  Che
-
-### Community 515 - "Community 515"
-Cohesion: 1.0
-Nodes (1): Sparse retrieval stream — SQLite FTS5 BM25.
-
-### Community 516 - "Community 516"
-Cohesion: 1.0
-Nodes (1): Chunker adapters (dispatcher + per-language sub-adapters).
-
-### Community 517 - "Community 517"
-Cohesion: 1.0
-Nodes (1): Chunker dispatcher — picks the right per-language sub-adapter for each file.  Th
-
-### Community 518 - "Community 518"
-Cohesion: 1.0
-Nodes (1): Sub-pipeline config: each language → ``{adapter, config}``.
-
-### Community 519 - "Community 519"
-Cohesion: 1.0
-Nodes (1): Stage adapter — dispatches per file to a language sub-adapter.
-
-### Community 520 - "Community 520"
-Cohesion: 1.0
-Nodes (1): Per-language chunker sub-adapters.  Each module wraps an existing implementation
-
-### Community 521 - "Community 521"
-Cohesion: 1.0
-Nodes (1): Markdown heading-split sub-adapter.
-
-### Community 522 - "Community 522"
-Cohesion: 1.0
-Nodes (1): Empty for now — the legacy chunker uses fixed heading detection.
-
-### Community 523 - "Community 523"
-Cohesion: 1.0
-Nodes (1): File-level fallback sub-adapter — one chunk per file.  Used as the dispatcher's
-
-### Community 524 - "Community 524"
-Cohesion: 1.0
-Nodes (1): Vue Single-File Component split sub-adapter.
-
-### Community 525 - "Community 525"
-Cohesion: 1.0
-Nodes (1): Gherkin (Cucumber) feature/scenario regex split.
-
-### Community 526 - "Community 526"
-Cohesion: 1.0
-Nodes (1): AST chunker sub-adapter (tree-sitter-language-pack ``process()`` based).  Covers
-
-### Community 527 - "Community 527"
-Cohesion: 1.0
-Nodes (1): Stage adapter for ``AstGenericChunker``.
-
-### Community 528 - "Community 528"
-Cohesion: 1.0
-Nodes (1): Nested-git walker — discovers nested ``.git/`` directories under a root.  Use fo
-
-### Community 529 - "Community 529"
-Cohesion: 1.0
-Nodes (1): Discover every nested ``.git/`` and walk each as its own repo.
-
-### Community 530 - "Community 530"
-Cohesion: 1.0
-Nodes (1): BFS for ``<dir>/.git`` directories under ``root``.          Skips the root's own
-
-### Community 531 - "Community 531"
-Cohesion: 1.0
-Nodes (1): Walk one nested repo, rebasing rel_path against the umbrella root.
-
-### Community 532 - "Community 532"
-Cohesion: 1.0
-Nodes (1): Git-diff aware walker — Phase B incremental ingestion.  Walks only the files tha
-
-### Community 533 - "Community 533"
-Cohesion: 1.0
-Nodes (1): `STROPHA_RENAME_THRESHOLD` overrides; default 80%.      Lower = more aggressive
-
-### Community 534 - "Community 534"
-Cohesion: 1.0
-Nodes (1): Stage walker that produces ``FileDelta`` records for an SHA range.      Note: th
-
-### Community 535 - "Community 535"
-Cohesion: 1.0
-Nodes (1): Not supported — use :meth:`discover_deltas` with a since SHA.
-
-### Community 536 - "Community 536"
-Cohesion: 1.0
-Nodes (1): Return all file deltas between ``since_sha`` and ``until_sha``.          Uses ``
-
-### Community 537 - "Community 537"
-Cohesion: 1.0
-Nodes (1): Parse ``git diff --name-status -z`` output.          Format (NUL-separated):
-
-### Community 538 - "Community 538"
-Cohesion: 1.0
-Nodes (1): Filter to file types stropha can chunk.          Submodule updates show as direc
-
-### Community 539 - "Community 539"
-Cohesion: 1.0
-Nodes (1): Filesystem walker — works for non-git directories.  Use when the target is a pla
-
-### Community 540 - "Community 540"
-Cohesion: 1.0
-Nodes (1): Pure filesystem traversal — does NOT require a git repo.
-
-### Community 541 - "Community 541"
-Cohesion: 1.0
-Nodes (1): Walker adapter that delegates to the existing ``Walker`` class.  The legacy clas
-
-### Community 542 - "Community 542"
-Cohesion: 1.0
-Nodes (1): Stage adapter wrapping ``stropha.ingest.walker.Walker``.
+Cohesion: 0.22
+Nodes (4): Wipe the index. Used by `index --rebuild`.          Preserves the ``repos`` tabl, Reclaim unused disk space by rebuilding the database file.          SQLite ``DEL, Idempotent ALTER TABLE — SQLite has no IF NOT EXISTS for ADD COLUMN., Drop and recreate dim-dependent tables when the embedder dim changed.          C
 
 ### Community 543 - "Community 543"
-Cohesion: 1.0
-Nodes (1): HyDE — Hypothetical Document Embeddings (Phase 3 §6.3).  Idea (Gao et al., 2022)
-
-### Community 544 - "Community 544"
-Cohesion: 1.0
-Nodes (1): Return a hypothetical document for ``query`` or ``None`` on fail/skip.      Call
-
-### Community 545 - "Community 545"
-Cohesion: 1.0
-Nodes (1): Recursive retrieval / auto-merging (Phase 3 §6.4).  Post-processing pass that ta
-
-### Community 546 - "Community 546"
-Cohesion: 1.0
-Nodes (1): Return ``hits`` after auto-merge passes.      Pass-through when disabled or inpu
-
-### Community 547 - "Community 547"
-Cohesion: 1.0
-Nodes (1): If any sibling in ``all_hits`` shares ``hit``'s parent_chunk_id, promote     the
-
-### Community 548 - "Community 548"
-Cohesion: 1.0
-Nodes (1): Return a merged hit covering host ∪ other.
+Cohesion: 0.24
+Nodes (9): _enabled(), _prompt_template(), HyDE — Hypothetical Document Embeddings (Phase 3 §6.3).  Idea (Gao et al., 2022), Select the best code-tuned prompt based on query patterns., Check if HyDE is enabled via stropha.yaml., Check if code-tuned prompts should be used (default: yes)., Get the appropriate prompt template for the query., _select_prompt() (+1 more)
 
 ### Community 549 - "Community 549"
-Cohesion: 1.0
-Nodes (1): Graph traversal helpers backing the ``find_*`` MCP tools.  Reads the SQLite mirr
-
-### Community 550 - "Community 550"
-Cohesion: 1.0
-Nodes (1): Hydrated graphify node, optionally joined with a stropha chunk.
-
-### Community 551 - "Community 551"
-Cohesion: 1.0
-Nodes (1): One edge in the result subgraph.
-
-### Community 552 - "Community 552"
-Cohesion: 1.0
-Nodes (1): True iff the graphify mirror tables exist AND have data.      Used by ``server.p
-
-### Community 553 - "Community 553"
-Cohesion: 1.0
-Nodes (1): Best-effort: convert ``'L42'`` / ``'42'`` / ``'42:5'`` into ``42``.
-
-### Community 554 - "Community 554"
-Cohesion: 1.0
-Nodes (1): Find the most likely ``node_id`` for a fully-qualified symbol.      Strategy (ch
-
-### Community 555 - "Community 555"
-Cohesion: 1.0
-Nodes (1): Take a graph_nodes row and (when possible) attach a chunk snippet.
-
-### Community 556 - "Community 556"
-Cohesion: 1.0
-Nodes (1): Return code locations that call ``symbol`` (BFS up incoming ``calls`` edges).
-
-### Community 557 - "Community 557"
-Cohesion: 1.0
-Nodes (1): Return any node connected to ``symbol`` regardless of edge direction.      Usefu
-
-### Community 558 - "Community 558"
-Cohesion: 1.0
-Nodes (1): Return all members of the community containing ``symbol_or_community_id``.
-
-### Community 559 - "Community 559"
-Cohesion: 1.0
-Nodes (1): Return ``rationale``-style nodes that explain ``symbol``.      Walks ``rationale
-
-### Community 560 - "Community 560"
-Cohesion: 1.0
-Nodes (1): Return test code that exercises ``symbol``.      Closes the trio promised by ``s
-
-### Community 561 - "Community 561"
-Cohesion: 1.0
-Nodes (1): True iff at least one ``rationale_for`` edge exists.      Used to conditionally
-
-### Community 562 - "Community 562"
-Cohesion: 1.0
-Nodes (1): Trace a feature description through the call graph.      Per spec §6.3.5: turn a
-
-### Community 563 - "Community 563"
-Cohesion: 1.0
-Nodes (1): Retrieval pipeline. Phase 1: hybrid dense+BM25 + RRF. Phase 2 will add rerank.
-
-### Community 564 - "Community 564"
-Cohesion: 1.0
-Nodes (1): Query Rewriting — transform user queries into more searchable form.  Idea: LLM r
-
-### Community 565 - "Community 565"
-Cohesion: 1.0
-Nodes (1): Return a rewritten query optimized for code search, or None on fail/skip.      U
-
-### Community 566 - "Community 566"
-Cohesion: 1.0
-Nodes (1): Reciprocal Rank Fusion (Cormack et al., 2009 — spec §6.1).  Formula: score(d) =
-
-### Community 567 - "Community 567"
-Cohesion: 1.0
-Nodes (1): Merge any number of ranked lists into a single ranked list.      Identity is by
-
-### Community 568 - "Community 568"
-Cohesion: 1.0
-Nodes (1): Hybrid retrieval (spec §6.1): dense (vec) + sparse (FTS5) fused via RRF.  Phase
-
-### Community 569 - "Community 569"
-Cohesion: 1.0
-Nodes (1): Hybrid dense+BM25 + RRF. Falls back gracefully if one side is empty.
-
-### Community 570 - "Community 570"
-Cohesion: 1.0
-Nodes (1): Three-stream hybrid retrieval, fused with RRF.          Streams:         - dense
-
-### Community 571 - "Community 571"
-Cohesion: 1.0
-Nodes (1): Escape hatch for debugging or A/B comparison.
+Cohesion: 0.14
+Nodes (22): _fetch_node_rows(), find_callers(), find_rationale(), find_related(), find_tests_for(), get_community(), GraphEdge, GraphNode (+14 more)
 
 ### Community 572 - "Community 572"
-Cohesion: 1.0
-Nodes (1): Golden-dataset evaluation runner.  Schema (JSONL, one case per line):      {
-
-### Community 573 - "Community 573"
-Cohesion: 1.0
-Nodes (1): One test case loaded from the golden file.
-
-### Community 574 - "Community 574"
-Cohesion: 1.0
-Nodes (1): Outcome of running one :class:`EvalCase`.
-
-### Community 575 - "Community 575"
-Cohesion: 1.0
-Nodes (1): Aggregate metrics across an evaluation run.
-
-### Community 576 - "Community 576"
-Cohesion: 1.0
-Nodes (1): Slice results per tag for diagnostic breakdowns.
-
-### Community 577 - "Community 577"
-Cohesion: 1.0
-Nodes (1): Parse a JSONL file into :class:`EvalCase` instances.      Empty / comment lines
-
-### Community 578 - "Community 578"
-Cohesion: 1.0
-Nodes (1): ``actual`` matches when it equals or ends with one of ``expected``.
-
-### Community 579 - "Community 579"
-Cohesion: 1.0
-Nodes (1): Execute every case against ``engine`` and aggregate metrics.
-
-### Community 580 - "Community 580"
-Cohesion: 1.0
-Nodes (1): Evaluation harness — golden dataset + Recall@K + MRR (Phase 2 §16).  The harness
-
-### Community 581 - "Community 581"
-Cohesion: 1.0
-Nodes (1): We don't load the real model in tests — just check the class     declares the co
-
-### Community 582 - "Community 582"
-Cohesion: 1.0
-Nodes (1): Long-lived dependencies, injected into every tool via the MCP Context.
-
-### Community 583 - "Community 583"
-Cohesion: 1.0
-Nodes (1): Source-repo identity attached to every search result.      A client can run `git
-
-### Community 584 - "Community 584"
-Cohesion: 1.0
-Nodes (1): One entry in the `list_repos` response.
-
-### Community 585 - "Community 585"
-Cohesion: 1.0
-Nodes (1): Hybrid search (dense + BM25, fused via RRF). Returns top_k results     with path
-
-### Community 586 - "Community 586"
-Cohesion: 1.0
-Nodes (1): Find by symbol name. Returns up to `limit` matches, exact-match first.
-
-### Community 587 - "Community 587"
-Cohesion: 1.0
-Nodes (1): Aggregate per-repo stats. Cheap query — single GROUP BY.
-
-### Community 588 - "Community 588"
-Cohesion: 1.0
-Nodes (1): Return the chunk-level outline of a file path (repo-relative).
-
-### Community 589 - "Community 589"
-Cohesion: 1.0
-Nodes (1): Return callers of ``symbol`` (BFS up incoming `calls` edges, depth ≤ 3).
-
-### Community 590 - "Community 590"
-Cohesion: 1.0
-Nodes (1): Return any node connected to ``symbol`` via the graph.
-
-### Community 591 - "Community 591"
-Cohesion: 1.0
-Nodes (1): Return the community membership of a symbol or community id.
-
-### Community 592 - "Community 592"
-Cohesion: 1.0
-Nodes (1): Return rationale nodes (docs/ADRs) explaining ``symbol``.
-
-### Community 593 - "Community 593"
-Cohesion: 1.0
-Nodes (1): Return tests that exercise ``symbol`` (path-pattern filtered).
-
-### Community 594 - "Community 594"
-Cohesion: 1.0
-Nodes (1): Walk the call graph from feature-matching entry points.
-
-### Community 595 - "Community 595"
-Cohesion: 1.0
-Nodes (1): Return the active configuration for debugging.
-
-### Community 596 - "Community 596"
-Cohesion: 1.0
-Nodes (1): Index statistics. Exposed as both a Tool and a Resource for discovery.
-
-### Community 597 - "Community 597"
-Cohesion: 1.0
-Nodes (1): Run the MCP server over stdio. Used by `[project.scripts]` console entry.
-
-### Community 598 - "Community 598"
-Cohesion: 1.0
-Nodes (1): Expand ~ and env vars in the configured index path.
-
-### Community 599 - "Community 599"
-Cohesion: 1.0
-Nodes (1): Get the singleton Config instance.          The config is loaded once from envir
-
-### Community 600 - "Community 600"
-Cohesion: 1.0
-Nodes (1): Get configuration details for debugging.          Returns a dict with:     - All
-
-### Community 601 - "Community 601"
-Cohesion: 1.0
-Nodes (1): Reset the singleton (for tests). Forces reload on next get_config().
-
-### Community 602 - "Community 602"
-Cohesion: 1.0
-Nodes (1): File-mtime snapshot for change detection.
-
-### Community 603 - "Community 603"
-Cohesion: 1.0
-Nodes (1): Return ``(changed_or_added, removed)`` since the previous snapshot.
-
-### Community 604 - "Community 604"
-Cohesion: 1.0
-Nodes (1): Walk via the standard ``Walker`` and capture per-file mtimes.
-
-### Community 605 - "Community 605"
-Cohesion: 1.0
-Nodes (1): Watch ``repo`` and re-index changed files after the debounce window.      Args:
-
-### Community 606 - "Community 606"
-Cohesion: 1.0
-Nodes (1): Run a fresh ``Pipeline`` pass against ``repo``.
-
-### Community 607 - "Community 607"
-Cohesion: 1.0
-Nodes (1): Legacy path: walk every file via the configured walker.
-
-### Community 608 - "Community 608"
-Cohesion: 1.0
-Nodes (1): Phase B path: ingest only the FileDeltas between since_sha..HEAD.          Falls
-
-### Community 609 - "Community 609"
-Cohesion: 1.0
-Nodes (1): Default location: ``<repo_root>/graphify-out/graph.json``.          Honours ``ST
-
-### Community 610 - "Community 610"
-Cohesion: 1.0
-Nodes (1): True iff the graph file is present on disk.
-
-### Community 611 - "Community 611"
-Cohesion: 1.0
-Nodes (1): True iff the graph should be reloaded.          Compares file mtime with ``graph
-
-### Community 612 - "Community 612"
-Cohesion: 1.0
-Nodes (1): Replace ``graph_nodes`` / ``graph_edges`` from the graph file.          Returns
-
-### Community 613 - "Community 613"
-Cohesion: 1.0
-Nodes (1): Return a summary suitable for ``Storage.stats()['graph']``.          ``None`` wh
-
-### Community 614 - "Community 614"
-Cohesion: 1.0
-Nodes (1): Float32 little-endian, the format sqlite-vec expects for BLOB inputs.
-
-### Community 615 - "Community 615"
-Cohesion: 1.0
-Nodes (1): Expand CamelCase + dotted identifiers into separate tokens.      Used on BOTH in
-
-### Community 616 - "Community 616"
-Cohesion: 1.0
-Nodes (1): Turn free text into a safe FTS5 MATCH expression (OR-joined tokens).
-
-### Community 617 - "Community 617"
-Cohesion: 1.0
-Nodes (1): Pre-process chunk content before indexing in FTS5.      We assemble a single FTS
-
-### Community 618 - "Community 618"
-Cohesion: 1.0
-Nodes (1): Build a ``RepoRef`` from a row that LEFT JOINed ``repos``.      Returns ``None``
-
-### Community 619 - "Community 619"
-Cohesion: 1.0
-Nodes (1): Extract identifier-like tokens from a free-text query.      Drops stopwords and
-
-### Community 620 - "Community 620"
-Cohesion: 1.0
-Nodes (1): Owns the SQLite connection. All schema mutations go through here.
-
-### Community 621 - "Community 621"
-Cohesion: 1.0
-Nodes (1): Idempotent ALTER TABLE — SQLite has no IF NOT EXISTS for ADD COLUMN.
-
-### Community 622 - "Community 622"
-Cohesion: 1.0
-Nodes (1): Best-effort assignment of orphan chunks to ``repo_id``.          Used on upgrade
-
-### Community 623 - "Community 623"
-Cohesion: 1.0
-Nodes (1): Per-repo aggregate counters.
-
-### Community 624 - "Community 624"
-Cohesion: 1.0
-Nodes (1): True if the stored chunk matches every (hash, model, enricher).          Per ADR
-
-### Community 625 - "Community 625"
-Cohesion: 1.0
-Nodes (1): Return cached embedding_text for ``(content_hash, enricher_id)`` or None.
-
-### Community 626 - "Community 626"
-Cohesion: 1.0
-Nodes (1): Cache an enrichment result. Safe to call concurrently (UPSERT).
-
-### Community 627 - "Community 627"
-Cohesion: 1.0
-Nodes (1): True iff the stored ``files`` row for ``(repo_id, rel_path)``         matches ``
-
-### Community 628 - "Community 628"
-Cohesion: 1.0
-Nodes (1): Record that ``rel_path`` was indexed at ``mtime`` / ``size_bytes``.
-
-### Community 629 - "Community 629"
-Cohesion: 1.0
-Nodes (1): Drop the ``files`` rows for ``rel_paths`` under ``repo_id``.
-
-### Community 630 - "Community 630"
-Cohesion: 1.0
-Nodes (1): Return ``rel_paths`` of ``files`` rows for ``repo_id`` that are         NOT pres
-
-### Community 631 - "Community 631"
-Cohesion: 1.0
-Nodes (1): Remove every chunk whose rel_path is in the list. Returns count.
-
-### Community 632 - "Community 632"
-Cohesion: 1.0
-Nodes (1): Update the `files` (file_meta) row for a rename, handling the         case where
-
-### Community 633 - "Community 633"
-Cohesion: 1.0
-Nodes (1): Repo-scoped variant of ``delete_by_paths``. Used by the         incremental pipe
-
-### Community 634 - "Community 634"
-Cohesion: 1.0
-Nodes (1): Insert (or update) a chunk and its vector atomically. Returns rowid.          ``
-
-### Community 635 - "Community 635"
-Cohesion: 1.0
-Nodes (1): Rebuild FTS5 rows with graph-derived terms appended.          For every ``chunks
+Cohesion: 0.12
+Nodes (5): _path_matches(), Golden-dataset evaluation runner.  Schema (JSONL, one case per line):      {, ``actual`` matches when it equals or ends with one of ``expected``., _symbol_matches(), Evaluation harness — golden dataset + Recall@K + MRR (Phase 2 §16).  The harness
 
 ### Community 636 - "Community 636"
-Cohesion: 1.0
-Nodes (1): Wipe the index. Used by `index --rebuild`.          Preserves the ``repos`` tabl
-
-### Community 637 - "Community 637"
-Cohesion: 1.0
-Nodes (1): Top-k dense nearest neighbors.
-
-### Community 638 - "Community 638"
-Cohesion: 1.0
-Nodes (1): Top-k via FTS5 BM25 ranking. Returns [] for empty/sanitized queries.
-
-### Community 639 - "Community 639"
-Cohesion: 1.0
-Nodes (1): Match chunks whose `symbol` column contains identifier tokens from query.
-
-### Community 640 - "Community 640"
-Cohesion: 1.0
-Nodes (1): Exact + suffix match on symbol column. Used by `get_symbol`.          Matches `F
-
-### Community 641 - "Community 641"
-Cohesion: 1.0
-Nodes (1): Symbolic outline of a file (chunks sorted by start_line).
-
-### Community 642 - "Community 642"
-Cohesion: 1.0
-Nodes (1): Aggregate graphify mirror state. Returns None when never loaded.
-
-### Community 643 - "Community 643"
-Cohesion: 1.0
-Nodes (1): RRF over N retrieval streams, each itself a registered adapter.
-
-### Community 644 - "Community 644"
-Cohesion: 1.0
-Nodes (1): One edge in the result subgraph.
-
-### Community 645 - "Community 645"
-Cohesion: 1.0
-Nodes (1): True iff the graphify mirror tables exist AND have data.      Used by ``server.p
-
-### Community 646 - "Community 646"
-Cohesion: 1.0
-Nodes (1): Best-effort: convert ``'L42'`` / ``'42'`` / ``'42:5'`` into ``42``.
-
-### Community 647 - "Community 647"
-Cohesion: 1.0
-Nodes (1): Find the most likely ``node_id`` for a fully-qualified symbol.      Strategy (ch
-
-### Community 648 - "Community 648"
-Cohesion: 1.0
-Nodes (1): Take a graph_nodes row and (when possible) attach a chunk snippet.
-
-### Community 649 - "Community 649"
-Cohesion: 1.0
-Nodes (1): Return code locations that call ``symbol`` (BFS up incoming ``calls`` edges).
-
-### Community 650 - "Community 650"
-Cohesion: 1.0
-Nodes (1): Return any node connected to ``symbol`` regardless of edge direction.      Usefu
-
-### Community 651 - "Community 651"
-Cohesion: 1.0
-Nodes (1): Return all members of the community containing ``symbol_or_community_id``.
-
-### Community 652 - "Community 652"
-Cohesion: 1.0
-Nodes (1): Return ``rationale``-style nodes that explain ``symbol``.      Walks ``rationale
-
-### Community 653 - "Community 653"
-Cohesion: 1.0
-Nodes (1): Return test code that exercises ``symbol``.      Closes the trio promised by ``s
-
-### Community 654 - "Community 654"
-Cohesion: 1.0
-Nodes (1): True iff at least one ``rationale_for`` edge exists.      Used to conditionally
-
-### Community 655 - "Community 655"
-Cohesion: 1.0
-Nodes (1): Trace a feature description through the call graph.      Per spec §6.3.5: turn a
-
-### Community 656 - "Community 656"
-Cohesion: 1.0
-Nodes (1): Source-repo identity attached to every search result.      A client can run `git
-
-### Community 657 - "Community 657"
-Cohesion: 1.0
-Nodes (1): One entry in the `list_repos` response.
-
-### Community 658 - "Community 658"
-Cohesion: 1.0
-Nodes (1): Hybrid search (dense + BM25, fused via RRF). Returns top_k results     with path
-
-### Community 659 - "Community 659"
-Cohesion: 1.0
-Nodes (1): Find by symbol name. Returns up to `limit` matches, exact-match first.
-
-### Community 660 - "Community 660"
-Cohesion: 1.0
-Nodes (1): Aggregate per-repo stats. Cheap query — single GROUP BY.
-
-### Community 661 - "Community 661"
-Cohesion: 1.0
-Nodes (1): Return the chunk-level outline of a file path (repo-relative).
-
-### Community 662 - "Community 662"
-Cohesion: 1.0
-Nodes (1): Return callers of ``symbol`` (BFS up incoming `calls` edges, depth ≤ 3).
-
-### Community 663 - "Community 663"
-Cohesion: 1.0
-Nodes (1): Return any node connected to ``symbol`` via the graph.
-
-### Community 664 - "Community 664"
-Cohesion: 1.0
-Nodes (1): Return the community membership of a symbol or community id.
-
-### Community 665 - "Community 665"
-Cohesion: 1.0
-Nodes (1): Return rationale nodes (docs/ADRs) explaining ``symbol``.
-
-### Community 666 - "Community 666"
-Cohesion: 1.0
-Nodes (1): Return tests that exercise ``symbol`` (path-pattern filtered).
-
-### Community 667 - "Community 667"
-Cohesion: 1.0
-Nodes (1): Walk the call graph from feature-matching entry points.
-
-### Community 668 - "Community 668"
-Cohesion: 1.0
-Nodes (1): Index statistics. Exposed as both a Tool and a Resource for discovery.
-
-### Community 669 - "Community 669"
-Cohesion: 1.0
-Nodes (1): Run the MCP server over stdio. Used by `[project.scripts]` console entry.
-
-### Community 670 - "Community 670"
-Cohesion: 1.0
-Nodes (1): Default target = current working directory.
-
-### Community 671 - "Community 671"
-Cohesion: 1.0
-Nodes (1): Runtime configuration. All product env vars are prefixed `STROPHA_`.
-
-### Community 672 - "Community 672"
-Cohesion: 1.0
-Nodes (1): Expand ~ and env vars in the configured index path.
-
-### Community 673 - "Community 673"
-Cohesion: 1.0
-Nodes (1): Initialize logging before any subcommand runs.
-
-### Community 674 - "Community 674"
-Cohesion: 1.0
-Nodes (1): Walk one or more repos, chunk every file, enrich, embed, and store.
-
-### Community 675 - "Community 675"
-Cohesion: 1.0
-Nodes (1): Hybrid retrieval (dense + BM25 + symbol-token fused via RRF).
-
-### Community 676 - "Community 676"
-Cohesion: 1.0
-Nodes (1): Print index metadata.
-
-### Community 677 - "Community 677"
-Cohesion: 1.0
-Nodes (1): Print the fully-resolved pipeline composition (YAML + env + CLI).
-
-### Community 678 - "Community 678"
-Cohesion: 1.0
-Nodes (1): Run a lightweight health probe on every adapter. Exit non-zero on error.
-
-### Community 679 - "Community 679"
-Cohesion: 1.0
-Nodes (1): List every adapter the registry knows about.
-
-### Community 680 - "Community 680"
-Cohesion: 1.0
-Nodes (1): Aggregate the structured log trail into a per-repo / per-adapter view.
-
-### Community 681 - "Community 681"
-Cohesion: 1.0
-Nodes (1): Watch a working tree and re-index on file changes.      Press Ctrl-C to stop.
-
-### Community 682 - "Community 682"
-Cohesion: 1.0
-Nodes (1): Run the offline eval harness against the golden dataset.
-
-### Community 683 - "Community 683"
-Cohesion: 1.0
-Nodes (1): Default to the configured target_repo, then cwd. Validate ``.git/`` exists.
-
-### Community 684 - "Community 684"
-Cohesion: 1.0
-Nodes (1): Install or refresh the post-commit hook for the target repo.
-
-### Community 685 - "Community 685"
-Cohesion: 1.0
-Nodes (1): Remove the stropha block from the post-commit hook.
-
-### Community 686 - "Community 686"
-Cohesion: 1.0
-Nodes (1): Report whether the post-commit hook is installed.
-
-### Community 687 - "Community 687"
-Cohesion: 1.0
-Nodes (1): Even after a checkpoint exists, mode='full' walks everything.
-
-### Community 688 - "Community 688"
-Cohesion: 1.0
-Nodes (1): A file present at run 1 but deleted before run 2 has its chunks +     file_meta
-
-### Community 689 - "Community 689"
-Cohesion: 1.0
-Nodes (1): Mirror ``graphify-out/graph.json`` into the SQLite ``graph_*`` tables.      The
-
-### Community 690 - "Community 690"
-Cohesion: 1.0
-Nodes (1): Default location: ``<repo_root>/graphify-out/graph.json``.          Honours ``ST
-
-### Community 691 - "Community 691"
-Cohesion: 1.0
-Nodes (1): True iff the graph file is present on disk.
-
-### Community 692 - "Community 692"
-Cohesion: 1.0
-Nodes (1): True iff the graph should be reloaded.          Compares file mtime with ``graph
-
-### Community 693 - "Community 693"
-Cohesion: 1.0
-Nodes (1): Replace ``graph_nodes`` / ``graph_edges`` from the graph file.          Returns
-
-### Community 694 - "Community 694"
-Cohesion: 1.0
-Nodes (1): Return a summary suitable for ``Storage.stats()['graph']``.          ``None`` wh
-
-### Community 695 - "Community 695"
-Cohesion: 1.0
-Nodes (1): Repo-scoped variant of ``delete_by_paths``. Used by the         incremental pipe
-
-### Community 696 - "Community 696"
-Cohesion: 1.0
-Nodes (1): Insert (or update) a chunk and its vector atomically. Returns rowid.          ``
-
-### Community 697 - "Community 697"
-Cohesion: 1.0
-Nodes (1): Wipe the index. Used by `index --rebuild`.          Preserves the ``repos`` tabl
-
-### Community 698 - "Community 698"
-Cohesion: 1.0
-Nodes (1): Top-k dense nearest neighbors.
-
-### Community 699 - "Community 699"
-Cohesion: 1.0
-Nodes (1): Top-k via FTS5 BM25 ranking. Returns [] for empty/sanitized queries.
-
-### Community 700 - "Community 700"
-Cohesion: 1.0
-Nodes (1): Match chunks whose `symbol` column contains identifier tokens from query.
-
-### Community 701 - "Community 701"
-Cohesion: 1.0
-Nodes (1): Exact + suffix match on symbol column. Used by `get_symbol`.          Matches `F
-
-### Community 702 - "Community 702"
-Cohesion: 1.0
-Nodes (1): Symbolic outline of a file (chunks sorted by start_line).
-
-### Community 703 - "Community 703"
-Cohesion: 1.0
-Nodes (1): Aggregate graphify mirror state. Returns None when never loaded.
-
-### Community 704 - "Community 704"
-Cohesion: 1.0
-Nodes (1): A file present at run 1 but deleted before run 2 has its chunks +     file_meta
-
-### Community 705 - "Community 705"
-Cohesion: 1.0
-Nodes (1): A file discovered by the walker, ready to be chunked.
-
-### Community 706 - "Community 706"
-Cohesion: 1.0
-Nodes (1): An indexable unit. Phase 0 = whole file. Phase 1 adds AST kinds.      Phase 1 (p
-
-### Community 707 - "Community 707"
-Cohesion: 1.0
-Nodes (1): Stable identifier of the git repository a chunk belongs to.      Returned alongs
-
-### Community 708 - "Community 708"
-Cohesion: 1.0
-Nodes (1): A single result from retrieval.
-
-### Community 709 - "Community 709"
-Cohesion: 1.0
-Nodes (1): Per-repo counters reported by Storage.stats() and `list_repos`.
-
-### Community 710 - "Community 710"
-Cohesion: 1.0
-Nodes (1): Walk one or more repos, chunk every file, enrich, embed, and store.
-
-### Community 711 - "Community 711"
-Cohesion: 1.0
-Nodes (1): Hybrid retrieval (dense + BM25 + symbol-token fused via RRF).
-
-### Community 712 - "Community 712"
-Cohesion: 1.0
-Nodes (1): Print index metadata.
-
-### Community 713 - "Community 713"
-Cohesion: 1.0
-Nodes (1): Print the fully-resolved pipeline composition (YAML + env + CLI).
-
-### Community 714 - "Community 714"
-Cohesion: 1.0
-Nodes (1): Run a lightweight health probe on every adapter. Exit non-zero on error.
-
-### Community 715 - "Community 715"
-Cohesion: 1.0
-Nodes (1): List every adapter the registry knows about.
-
-### Community 716 - "Community 716"
-Cohesion: 1.0
-Nodes (1): Aggregate the structured log trail into a per-repo / per-adapter view.
-
-### Community 717 - "Community 717"
-Cohesion: 1.0
-Nodes (1): Watch a working tree and re-index on file changes.      Press Ctrl-C to stop.
-
-### Community 718 - "Community 718"
-Cohesion: 1.0
-Nodes (1): Run the offline eval harness against the golden dataset.
-
-### Community 719 - "Community 719"
-Cohesion: 1.0
-Nodes (1): Default to the configured target_repo, then cwd. Validate ``.git/`` exists.
-
-### Community 720 - "Community 720"
-Cohesion: 1.0
-Nodes (1): Install or refresh the post-commit hook for the target repo.
-
-### Community 721 - "Community 721"
-Cohesion: 1.0
-Nodes (1): Remove the stropha block from the post-commit hook.
-
-### Community 722 - "Community 722"
-Cohesion: 1.0
-Nodes (1): Report whether the post-commit hook is installed.
-
-### Community 723 - "Community 723"
-Cohesion: 1.0
-Nodes (1): Reload the graphify mirror tables if the on-disk graph is newer.          After
-
-### Community 724 - "Community 724"
-Cohesion: 1.0
-Nodes (1): Honour ``core.hooksPath`` so husky / lefthook coexist (RFC §6.3).      Validates
-
-### Community 725 - "Community 725"
-Cohesion: 1.0
-Nodes (1): Best-effort path to the user's ``uv`` binary (hooks have stripped PATH).
-
-### Community 726 - "Community 726"
-Cohesion: 1.0
-Nodes (1): The script body sandwiched between START and END markers.      Same logic as RFC
-
-### Community 727 - "Community 727"
-Cohesion: 1.0
-Nodes (1): Write ``content`` to ``path`` via tmpfile + rename (RFC §6.2).
-
-### Community 728 - "Community 728"
-Cohesion: 1.0
-Nodes (1): Install or update the post-commit hook for ``target`` repo.      Behaviour matri
-
-### Community 729 - "Community 729"
-Cohesion: 1.0
-Nodes (1): Remove our block. Leave any other content intact.      If the resulting file is
-
-### Community 730 - "Community 730"
-Cohesion: 1.0
-Nodes (1): Inspect whether the hook is installed for ``target``.      For v=3 hooks the bak
-
-### Community 731 - "Community 731"
-Cohesion: 1.0
-Nodes (1): Insert (or update) a chunk and its vector atomically. Returns rowid.          ``
-
-### Community 732 - "Community 732"
-Cohesion: 1.0
-Nodes (1): Rebuild FTS5 rows with graph-derived terms appended.          For every ``chunks
-
-### Community 733 - "Community 733"
-Cohesion: 1.0
-Nodes (1): Wipe the index. Used by `index --rebuild`.          Preserves the ``repos`` tabl
-
-### Community 734 - "Community 734"
-Cohesion: 1.0
-Nodes (1): Top-k dense nearest neighbors.
-
-### Community 735 - "Community 735"
-Cohesion: 1.0
-Nodes (1): Top-k via FTS5 BM25 ranking. Returns [] for empty/sanitized queries.
-
-### Community 736 - "Community 736"
-Cohesion: 1.0
-Nodes (1): Match chunks whose `symbol` column contains identifier tokens from query.
-
-### Community 737 - "Community 737"
-Cohesion: 1.0
-Nodes (1): Exact + suffix match on symbol column. Used by `get_symbol`.          Matches `F
-
-### Community 738 - "Community 738"
-Cohesion: 1.0
-Nodes (1): Symbolic outline of a file (chunks sorted by start_line).
-
-### Community 739 - "Community 739"
-Cohesion: 1.0
-Nodes (1): Aggregate graphify mirror state. Returns None when never loaded.
-
-### Community 740 - "Community 740"
-Cohesion: 1.0
-Nodes (1): Hybrid retrieval (dense + BM25 + symbol-token fused via RRF).
-
-### Community 741 - "Community 741"
-Cohesion: 1.0
-Nodes (1): Print index metadata.
-
-### Community 742 - "Community 742"
-Cohesion: 1.0
-Nodes (1): Print the fully-resolved pipeline composition (YAML + env + CLI).
-
-### Community 743 - "Community 743"
-Cohesion: 1.0
-Nodes (1): Run a lightweight health probe on every adapter. Exit non-zero on error.
-
-### Community 744 - "Community 744"
-Cohesion: 1.0
-Nodes (1): List every adapter the registry knows about.
-
-### Community 745 - "Community 745"
-Cohesion: 1.0
-Nodes (1): Aggregate the structured log trail into a per-repo / per-adapter view.
-
-### Community 746 - "Community 746"
-Cohesion: 1.0
-Nodes (1): Watch a working tree and re-index on file changes.      Press Ctrl-C to stop.
-
-### Community 747 - "Community 747"
-Cohesion: 1.0
-Nodes (1): Run the offline eval harness against the golden dataset.
-
-### Community 748 - "Community 748"
-Cohesion: 1.0
-Nodes (1): Default to the configured target_repo, then cwd. Validate ``.git/`` exists.
-
-### Community 749 - "Community 749"
-Cohesion: 1.0
-Nodes (1): Install or refresh the post-commit hook for the target repo.
-
-### Community 750 - "Community 750"
-Cohesion: 1.0
-Nodes (1): Remove the stropha block from the post-commit hook.
-
-### Community 751 - "Community 751"
-Cohesion: 1.0
-Nodes (1): Report whether the post-commit hook is installed.
-
-### Community 752 - "Community 752"
-Cohesion: 1.0
-Nodes (1): Aggregate result of a :meth:`Pipeline.run`.
-
-### Community 753 - "Community 753"
-Cohesion: 1.0
-Nodes (1): Adapter-aware walker → chunker → enricher → embedder → storage.
-
-### Community 754 - "Community 754"
-Cohesion: 1.0
-Nodes (1): Reload the graphify mirror tables if the on-disk graph is newer.          After
-
-### Community 755 - "Community 755"
-Cohesion: 1.0
-Nodes (1): Float32 little-endian, the format sqlite-vec expects for BLOB inputs.
-
-### Community 756 - "Community 756"
-Cohesion: 1.0
-Nodes (1): Expand CamelCase + dotted identifiers into separate tokens.      Used on BOTH in
-
-### Community 757 - "Community 757"
-Cohesion: 1.0
-Nodes (1): Turn free text into a safe FTS5 MATCH expression (OR-joined tokens).
-
-### Community 758 - "Community 758"
-Cohesion: 1.0
-Nodes (1): Pre-process chunk content before indexing in FTS5.      We assemble a single FTS
-
-### Community 759 - "Community 759"
-Cohesion: 1.0
-Nodes (1): Build a ``RepoRef`` from a row that LEFT JOINed ``repos``.      Returns ``None``
-
-### Community 760 - "Community 760"
-Cohesion: 1.0
-Nodes (1): Extract identifier-like tokens from a free-text query.      Drops stopwords and
-
-### Community 761 - "Community 761"
-Cohesion: 1.0
-Nodes (1): Owns the SQLite connection. All schema mutations go through here.
-
-### Community 762 - "Community 762"
-Cohesion: 1.0
-Nodes (1): Idempotent ALTER TABLE — SQLite has no IF NOT EXISTS for ADD COLUMN.
-
-### Community 763 - "Community 763"
-Cohesion: 1.0
-Nodes (1): Insert or update a repo row keyed by ``normalized_key``. Returns its id.
-
-### Community 764 - "Community 764"
-Cohesion: 1.0
-Nodes (1): Best-effort assignment of orphan chunks to ``repo_id``.          Used on upgrade
-
-### Community 765 - "Community 765"
-Cohesion: 1.0
-Nodes (1): Per-repo aggregate counters.
-
-### Community 766 - "Community 766"
-Cohesion: 1.0
-Nodes (1): True if the stored chunk matches every (hash, model, enricher).          Per ADR
-
-### Community 767 - "Community 767"
-Cohesion: 1.0
-Nodes (1): Return cached embedding_text for ``(content_hash, enricher_id)`` or None.
-
-### Community 768 - "Community 768"
-Cohesion: 1.0
-Nodes (1): Cache an enrichment result. Safe to call concurrently (UPSERT).
-
-### Community 769 - "Community 769"
-Cohesion: 1.0
-Nodes (1): Remove every chunk whose rel_path is in the list. Returns count.
-
-### Community 770 - "Community 770"
-Cohesion: 1.0
-Nodes (1): Insert (or update) a chunk and its vector atomically. Returns rowid.          ``
-
-### Community 771 - "Community 771"
-Cohesion: 1.0
-Nodes (1): Rebuild FTS5 rows with graph-derived terms appended.          For every ``chunks
-
-### Community 772 - "Community 772"
-Cohesion: 1.0
-Nodes (1): Wipe the index. Used by `index --rebuild`.          Preserves the ``repos`` tabl
-
-### Community 773 - "Community 773"
-Cohesion: 1.0
-Nodes (1): Top-k dense nearest neighbors.
-
-### Community 774 - "Community 774"
-Cohesion: 1.0
-Nodes (1): Top-k via FTS5 BM25 ranking. Returns [] for empty/sanitized queries.
-
-### Community 775 - "Community 775"
-Cohesion: 1.0
-Nodes (1): Match chunks whose `symbol` column contains identifier tokens from query.
-
-### Community 776 - "Community 776"
-Cohesion: 1.0
-Nodes (1): Exact + suffix match on symbol column. Used by `get_symbol`.          Matches `F
-
-### Community 777 - "Community 777"
-Cohesion: 1.0
-Nodes (1): Symbolic outline of a file (chunks sorted by start_line).
-
-### Community 778 - "Community 778"
-Cohesion: 1.0
-Nodes (1): Aggregate graphify mirror state. Returns None when never loaded.
-
-### Community 779 - "Community 779"
-Cohesion: 1.0
-Nodes (1): Long-lived dependencies, injected into every tool via the MCP Context.
-
-### Community 780 - "Community 780"
-Cohesion: 1.0
-Nodes (1): Source-repo identity attached to every search result.      A client can run `git
-
-### Community 781 - "Community 781"
-Cohesion: 1.0
-Nodes (1): One entry in the `list_repos` response.
-
-### Community 782 - "Community 782"
-Cohesion: 1.0
-Nodes (1): Hybrid search (dense + BM25, fused via RRF). Returns top_k results     with path
-
-### Community 783 - "Community 783"
-Cohesion: 1.0
-Nodes (1): Find by symbol name. Returns up to `limit` matches, exact-match first.
-
-### Community 784 - "Community 784"
-Cohesion: 1.0
-Nodes (1): Aggregate per-repo stats. Cheap query — single GROUP BY.
-
-### Community 785 - "Community 785"
-Cohesion: 1.0
-Nodes (1): Return the chunk-level outline of a file path (repo-relative).
-
-### Community 786 - "Community 786"
-Cohesion: 1.0
-Nodes (1): Return any node connected to ``symbol`` via the graph.
-
-### Community 787 - "Community 787"
-Cohesion: 1.0
-Nodes (1): Return the community membership of a symbol or community id.
-
-### Community 788 - "Community 788"
-Cohesion: 1.0
-Nodes (1): Return rationale nodes (docs/ADRs) explaining ``symbol``.
-
-### Community 789 - "Community 789"
-Cohesion: 1.0
-Nodes (1): Walk the call graph from feature-matching entry points.
-
-### Community 790 - "Community 790"
-Cohesion: 1.0
-Nodes (1): Index statistics. Exposed as both a Tool and a Resource for discovery.
-
-### Community 791 - "Community 791"
-Cohesion: 1.0
-Nodes (1): Run the MCP server over stdio. Used by `[project.scripts]` console entry.
-
-### Community 792 - "Community 792"
-Cohesion: 1.0
-Nodes (1): Run the offline eval harness against the golden dataset.
-
-### Community 793 - "Community 793"
-Cohesion: 1.0
-Nodes (1): Default to the configured target_repo, then cwd. Validate ``.git/`` exists.
-
-### Community 794 - "Community 794"
-Cohesion: 1.0
-Nodes (1): Install or refresh the post-commit hook for the target repo.
-
-### Community 795 - "Community 795"
-Cohesion: 1.0
-Nodes (1): Remove the stropha block from the post-commit hook.
-
-### Community 796 - "Community 796"
-Cohesion: 1.0
-Nodes (1): Report whether the post-commit hook is installed.
-
-### Community 797 - "Community 797"
-Cohesion: 1.0
-Nodes (1): Wipe the index. Used by `index --rebuild`.          Preserves the ``repos`` tabl
-
-### Community 798 - "Community 798"
-Cohesion: 1.0
-Nodes (1): Top-k dense nearest neighbors.
-
-### Community 799 - "Community 799"
-Cohesion: 1.0
-Nodes (1): Top-k via FTS5 BM25 ranking. Returns [] for empty/sanitized queries.
-
-### Community 800 - "Community 800"
-Cohesion: 1.0
-Nodes (1): Match chunks whose `symbol` column contains identifier tokens from query.
-
-### Community 801 - "Community 801"
-Cohesion: 1.0
-Nodes (1): Exact + suffix match on symbol column. Used by `get_symbol`.          Matches `F
-
-### Community 802 - "Community 802"
-Cohesion: 1.0
-Nodes (1): Symbolic outline of a file (chunks sorted by start_line).
-
-### Community 803 - "Community 803"
-Cohesion: 1.0
-Nodes (1): Aggregate graphify mirror state. Returns None when never loaded.
-
-### Community 804 - "Community 804"
-Cohesion: 1.0
-Nodes (1): True iff at least one ``rationale_for`` edge exists.      Used to conditionally
-
-### Community 805 - "Community 805"
-Cohesion: 1.0
-Nodes (1): Trace a feature description through the call graph.      Per spec §6.3.5: turn a
-
-### Community 806 - "Community 806"
-Cohesion: 1.0
-Nodes (1): Escape hatch for debugging or A/B comparison.
-
-### Community 807 - "Community 807"
-Cohesion: 1.0
-Nodes (1): Install or refresh the post-commit hook for the target repo.
-
-### Community 808 - "Community 808"
-Cohesion: 1.0
-Nodes (1): Remove the stropha block from the post-commit hook.
-
-### Community 809 - "Community 809"
-Cohesion: 1.0
-Nodes (1): Report whether the post-commit hook is installed.
-
-### Community 810 - "Community 810"
-Cohesion: 1.0
-Nodes (1): Honour ``core.hooksPath`` so husky / lefthook coexist (RFC §6.3).      Validates
-
-### Community 811 - "Community 811"
-Cohesion: 1.0
-Nodes (1): Best-effort path to the user's ``uv`` binary (hooks have stripped PATH).
-
-### Community 812 - "Community 812"
-Cohesion: 1.0
-Nodes (1): The script body sandwiched between START and END markers.      Same logic as RFC
-
-### Community 813 - "Community 813"
-Cohesion: 1.0
-Nodes (1): Write ``content`` to ``path`` via tmpfile + rename (RFC §6.2).
-
-### Community 814 - "Community 814"
-Cohesion: 1.0
-Nodes (1): Install or update the post-commit hook for ``target`` repo.      Behaviour matri
-
-### Community 815 - "Community 815"
-Cohesion: 1.0
-Nodes (1): Remove our block. Leave any other content intact.      If the resulting file is
-
-### Community 816 - "Community 816"
-Cohesion: 1.0
-Nodes (1): Inspect whether the hook is installed for ``target``.
-
-### Community 817 - "Community 817"
-Cohesion: 1.0
-Nodes (1): Performance: no dense stream → don't pay embed_query cost.
-
-### Community 818 - "Community 818"
-Cohesion: 1.0
-Nodes (1): Long-lived dependencies, injected into every tool via the MCP Context.
-
-### Community 819 - "Community 819"
-Cohesion: 1.0
-Nodes (1): Source-repo identity attached to every search result.      A client can run `git
-
-### Community 820 - "Community 820"
-Cohesion: 1.0
-Nodes (1): One entry in the `list_repos` response.
-
-### Community 821 - "Community 821"
-Cohesion: 1.0
-Nodes (1): Hybrid search (dense + BM25, fused via RRF). Returns top_k results     with path
-
-### Community 822 - "Community 822"
-Cohesion: 1.0
-Nodes (1): Find by symbol name. Returns up to `limit` matches, exact-match first.
-
-### Community 823 - "Community 823"
-Cohesion: 1.0
-Nodes (1): Aggregate per-repo stats. Cheap query — single GROUP BY.
-
-### Community 824 - "Community 824"
-Cohesion: 1.0
-Nodes (1): Return the chunk-level outline of a file path (repo-relative).
-
-### Community 825 - "Community 825"
-Cohesion: 1.0
-Nodes (1): Return callers of ``symbol`` (BFS up incoming `calls` edges, depth ≤ 3).
-
-### Community 826 - "Community 826"
-Cohesion: 1.0
-Nodes (1): Return any node connected to ``symbol`` via the graph.
-
-### Community 827 - "Community 827"
-Cohesion: 1.0
-Nodes (1): Return the community membership of a symbol or community id.
-
-### Community 828 - "Community 828"
-Cohesion: 1.0
-Nodes (1): Return rationale nodes (docs/ADRs) explaining ``symbol``.
-
-### Community 829 - "Community 829"
-Cohesion: 1.0
-Nodes (1): Index statistics. Exposed as both a Tool and a Resource for discovery.
-
-### Community 830 - "Community 830"
-Cohesion: 1.0
-Nodes (1): Run the MCP server over stdio. Used by `[project.scripts]` console entry.
-
-### Community 831 - "Community 831"
-Cohesion: 1.0
-Nodes (1): Walk one or more repos, chunk every file, enrich, embed, and store.
-
-### Community 832 - "Community 832"
-Cohesion: 1.0
-Nodes (1): Hybrid retrieval (dense + BM25 + symbol-token fused via RRF).
-
-### Community 833 - "Community 833"
-Cohesion: 1.0
-Nodes (1): Print the fully-resolved pipeline composition (YAML + env + CLI).
-
-### Community 834 - "Community 834"
-Cohesion: 1.0
-Nodes (1): Run a lightweight health probe on every adapter. Exit non-zero on error.
-
-### Community 835 - "Community 835"
-Cohesion: 1.0
-Nodes (1): Run the offline eval harness against the golden dataset.
-
-### Community 836 - "Community 836"
-Cohesion: 1.0
-Nodes (1): Default to the configured target_repo, then cwd. Validate ``.git/`` exists.
-
-### Community 837 - "Community 837"
-Cohesion: 1.0
-Nodes (1): Install or refresh the post-commit hook for the target repo.
-
-### Community 838 - "Community 838"
-Cohesion: 1.0
-Nodes (1): Remove the stropha block from the post-commit hook.
-
-### Community 839 - "Community 839"
-Cohesion: 1.0
-Nodes (1): Float32 little-endian, the format sqlite-vec expects for BLOB inputs.
-
-### Community 840 - "Community 840"
-Cohesion: 1.0
-Nodes (1): Expand CamelCase + dotted identifiers into separate tokens.      Used on BOTH in
-
-### Community 841 - "Community 841"
-Cohesion: 1.0
-Nodes (1): Pre-process chunk content before indexing in FTS5.      We assemble a single FTS
-
-### Community 842 - "Community 842"
-Cohesion: 1.0
-Nodes (1): Build a ``RepoRef`` from a row that LEFT JOINed ``repos``.      Returns ``None``
-
-### Community 843 - "Community 843"
-Cohesion: 1.0
-Nodes (1): Extract identifier-like tokens from a free-text query.      Drops stopwords and
-
-### Community 844 - "Community 844"
-Cohesion: 1.0
-Nodes (1): Owns the SQLite connection. All schema mutations go through here.
-
-### Community 845 - "Community 845"
-Cohesion: 1.0
-Nodes (1): Idempotent ALTER TABLE — SQLite has no IF NOT EXISTS for ADD COLUMN.
-
-### Community 846 - "Community 846"
-Cohesion: 1.0
-Nodes (1): Insert or update a repo row keyed by ``normalized_key``. Returns its id.
-
-### Community 847 - "Community 847"
-Cohesion: 1.0
-Nodes (1): Best-effort assignment of orphan chunks to ``repo_id``.          Used on upgrade
-
-### Community 848 - "Community 848"
-Cohesion: 1.0
-Nodes (1): Per-repo aggregate counters.
-
-### Community 849 - "Community 849"
-Cohesion: 1.0
-Nodes (1): True if the stored chunk matches every (hash, model, enricher).          Per ADR
-
-### Community 850 - "Community 850"
-Cohesion: 1.0
-Nodes (1): Return cached embedding_text for ``(content_hash, enricher_id)`` or None.
-
-### Community 851 - "Community 851"
-Cohesion: 1.0
-Nodes (1): Cache an enrichment result. Safe to call concurrently (UPSERT).
-
-### Community 852 - "Community 852"
-Cohesion: 1.0
-Nodes (1): Remove every chunk whose rel_path is in the list. Returns count.
-
-### Community 853 - "Community 853"
-Cohesion: 1.0
-Nodes (1): Insert (or update) a chunk and its vector atomically. Returns rowid.          ``
-
-### Community 854 - "Community 854"
-Cohesion: 1.0
-Nodes (1): Wipe the index. Used by `index --rebuild`.          Preserves the ``repos`` tabl
-
-### Community 855 - "Community 855"
-Cohesion: 1.0
-Nodes (1): Top-k dense nearest neighbors.
-
-### Community 856 - "Community 856"
-Cohesion: 1.0
-Nodes (1): Top-k via FTS5 BM25 ranking. Returns [] for empty/sanitized queries.
-
-### Community 857 - "Community 857"
-Cohesion: 1.0
-Nodes (1): Match chunks whose `symbol` column contains identifier tokens from query.
-
-### Community 858 - "Community 858"
-Cohesion: 1.0
-Nodes (1): Exact + suffix match on symbol column. Used by `get_symbol`.          Matches `F
-
-### Community 859 - "Community 859"
-Cohesion: 1.0
-Nodes (1): Symbolic outline of a file (chunks sorted by start_line).
-
-### Community 860 - "Community 860"
-Cohesion: 1.0
-Nodes (1): Aggregate graphify mirror state. Returns None when never loaded.
-
-### Community 861 - "Community 861"
-Cohesion: 1.0
-Nodes (1): Spawn the server, initialize, list tools, call search_code.
-
-### Community 862 - "Community 862"
-Cohesion: 1.0
-Nodes (1): Init a tiny git repo with a Python and a Markdown file.
-
-### Community 863 - "Community 863"
-Cohesion: 1.0
-Nodes (1): Storage stub: returns empty hit lists for all read methods.
-
-### Community 864 - "Community 864"
-Cohesion: 1.0
-Nodes (1): STROPHA_INDEX_PATH must route into pipeline.storage.config.path.
-
-### Community 865 - "Community 865"
-Cohesion: 1.0
-Nodes (1): Records calls + returns deterministic synthetic hits.
-
-### Community 866 - "Community 866"
-Cohesion: 1.0
-Nodes (1): Hashing pseudo-embedder — deterministic and dependency-free.
-
-### Community 867 - "Community 867"
-Cohesion: 1.0
-Nodes (1): Two repos with identical (path, range, content) get distinct ids.
-
-### Community 868 - "Community 868"
-Cohesion: 1.0
-Nodes (1): Default (no repo_key) matches the v0.1 derivation.
-
-### Community 869 - "Community 869"
-Cohesion: 1.0
-Nodes (1): Identical files in two repos yield distinct chunk_ids when repo_key differs.
-
-### Community 870 - "Community 870"
-Cohesion: 1.0
-Nodes (1): Build two real git repos that share the same README content + name.
-
-### Community 871 - "Community 871"
-Cohesion: 1.0
-Nodes (1): Constructing with neither `repo` nor `repos` is a programmer error.
-
-### Community 872 - "Community 872"
-Cohesion: 1.0
-Nodes (1): Regression: STROPHA_VOYAGE_EMBED_MODEL must NOT contaminate a local adapter.
-
-### Community 873 - "Community 873"
-Cohesion: 1.0
-Nodes (1): Deterministic embedder. Vector = hash of text mod a small int.
-
-### Community 874 - "Community 874"
-Cohesion: 1.0
-Nodes (1): Init a tiny git repo with one Python file.
-
-### Community 875 - "Community 875"
-Cohesion: 1.0
-Nodes (1): Upgrading from v0.1.0 (NULL enricher_id) MUST NOT trigger re-embed for noop.
-
-### Community 876 - "Community 876"
-Cohesion: 1.0
-Nodes (1): Long enough (>15 lines) to bypass AST chunker's SIMPLE_FILE shortcut.
-
-### Community 877 - "Community 877"
-Cohesion: 1.0
-Nodes (1): Phase 3 must NOT change chunk_id of unchanged files (no spurious re-embed).
-
-### Community 878 - "Community 878"
-Cohesion: 1.0
-Nodes (1): Long-lived dependencies, injected into every tool via the MCP Context.
-
-### Community 879 - "Community 879"
-Cohesion: 1.0
-Nodes (1): Source-repo identity attached to every search result.      A client can run `git
-
-### Community 880 - "Community 880"
-Cohesion: 1.0
-Nodes (1): One entry in the `list_repos` response.
-
-### Community 881 - "Community 881"
-Cohesion: 1.0
-Nodes (1): Hybrid search (dense + BM25, fused via RRF). Returns top_k results     with path
-
-### Community 882 - "Community 882"
-Cohesion: 1.0
-Nodes (1): Aggregate per-repo stats. Cheap query — single GROUP BY.
-
-### Community 883 - "Community 883"
-Cohesion: 1.0
-Nodes (1): Return the chunk-level outline of a file path (repo-relative).
-
-### Community 884 - "Community 884"
-Cohesion: 1.0
-Nodes (1): Index statistics. Exposed as both a Tool and a Resource for discovery.
-
-### Community 885 - "Community 885"
-Cohesion: 1.0
-Nodes (1): Run the MCP server over stdio. Used by `[project.scripts]` console entry.
-
-### Community 886 - "Community 886"
-Cohesion: 1.0
-Nodes (1): Initialize logging before any subcommand runs.
-
-### Community 887 - "Community 887"
-Cohesion: 1.0
-Nodes (1): Walk one or more repos, chunk every file, enrich, embed, and store.
-
-### Community 888 - "Community 888"
-Cohesion: 1.0
-Nodes (1): Hybrid retrieval (dense + BM25 + symbol-token fused via RRF).
-
-### Community 889 - "Community 889"
-Cohesion: 1.0
-Nodes (1): Print index metadata.
-
-### Community 890 - "Community 890"
-Cohesion: 1.0
-Nodes (1): Print the fully-resolved pipeline composition (YAML + env + CLI).
-
-### Community 891 - "Community 891"
-Cohesion: 1.0
-Nodes (1): Run a lightweight health probe on every adapter. Exit non-zero on error.
-
-### Community 892 - "Community 892"
-Cohesion: 1.0
-Nodes (1): List every adapter the registry knows about.
-
-### Community 893 - "Community 893"
-Cohesion: 1.0
-Nodes (1): Build a stage that needs no cross-stage dependency injection.
-
-### Community 894 - "Community 894"
-Cohesion: 1.0
-Nodes (1): Float32 little-endian, the format sqlite-vec expects for BLOB inputs.
-
-### Community 895 - "Community 895"
-Cohesion: 1.0
-Nodes (1): Expand CamelCase + dotted identifiers into separate tokens.      Used on BOTH in
-
-### Community 896 - "Community 896"
-Cohesion: 1.0
-Nodes (1): Pre-process chunk content before indexing in FTS5.      We assemble a single FTS
-
-### Community 897 - "Community 897"
-Cohesion: 1.0
-Nodes (1): Build a ``RepoRef`` from a row that LEFT JOINed ``repos``.      Returns ``None``
-
-### Community 898 - "Community 898"
-Cohesion: 1.0
-Nodes (1): Extract identifier-like tokens from a free-text query.      Drops stopwords and
-
-### Community 899 - "Community 899"
-Cohesion: 1.0
-Nodes (1): Owns the SQLite connection. All schema mutations go through here.
-
-### Community 900 - "Community 900"
-Cohesion: 1.0
-Nodes (1): Idempotent ALTER TABLE — SQLite has no IF NOT EXISTS for ADD COLUMN.
-
-### Community 901 - "Community 901"
-Cohesion: 1.0
-Nodes (1): Insert or update a repo row keyed by ``normalized_key``. Returns its id.
-
-### Community 902 - "Community 902"
-Cohesion: 1.0
-Nodes (1): Best-effort assignment of orphan chunks to ``repo_id``.          Used on upgrade
-
-### Community 903 - "Community 903"
-Cohesion: 1.0
-Nodes (1): Per-repo aggregate counters.
-
-### Community 904 - "Community 904"
-Cohesion: 1.0
-Nodes (1): True if the stored chunk matches every (hash, model, enricher).          Per ADR
-
-### Community 905 - "Community 905"
-Cohesion: 1.0
-Nodes (1): Return cached embedding_text for ``(content_hash, enricher_id)`` or None.
-
-### Community 906 - "Community 906"
-Cohesion: 1.0
-Nodes (1): Cache an enrichment result. Safe to call concurrently (UPSERT).
-
-### Community 907 - "Community 907"
-Cohesion: 1.0
-Nodes (1): Remove every chunk whose rel_path is in the list. Returns count.
-
-### Community 908 - "Community 908"
-Cohesion: 1.0
-Nodes (1): Insert (or update) a chunk and its vector atomically. Returns rowid.          ``
-
-### Community 909 - "Community 909"
-Cohesion: 1.0
-Nodes (1): Wipe the index. Used by `index --rebuild`.          Preserves the ``repos`` tabl
-
-### Community 910 - "Community 910"
-Cohesion: 1.0
-Nodes (1): Top-k dense nearest neighbors.
-
-### Community 911 - "Community 911"
-Cohesion: 1.0
-Nodes (1): Top-k via FTS5 BM25 ranking. Returns [] for empty/sanitized queries.
-
-### Community 912 - "Community 912"
-Cohesion: 1.0
-Nodes (1): Exact + suffix match on symbol column. Used by `get_symbol`.          Matches `F
-
-### Community 913 - "Community 913"
-Cohesion: 1.0
-Nodes (1): Symbolic outline of a file (chunks sorted by start_line).
-
-### Community 914 - "Community 914"
-Cohesion: 1.0
-Nodes (1): RRF over N retrieval streams, each itself a registered adapter.
-
-### Community 915 - "Community 915"
-Cohesion: 1.0
-Nodes (1): ADR-003: stropha pipeline adapters
-
-### Community 916 - "Community 916"
-Cohesion: 1.0
-Nodes (1): ADR-008: graphify integration (default model choice)
-
-### Community 917 - "Community 917"
-Cohesion: 1.0
-Nodes (1): stropha-system architecture doc
+Cohesion: 0.1
+Nodes (8): Delete a single chunk by its ID.                  Returns:             True if d, Symbolic outline of a file (chunks sorted by start_line)., Owns the SQLite connection. All schema mutations go through here., True if the stored chunk matches every (hash, model, enricher).          Per ADR, Cache an enrichment result. Safe to call concurrently (UPSERT)., True iff the stored ``files`` row for ``(repo_id, rel_path)``         matches ``, Repo-scoped variant of ``delete_by_paths``. Used by the         incremental pipe, Storage
 
 ## Knowledge Gaps
-- **1416 isolated node(s):** `Default index path: .stropha/index.db relative to cwd, or ~/.stropha/index.db.`, `Default target = current working directory.`, `Runtime configuration. All product env vars are prefixed `STROPHA_`.`, `Expand ~ and env vars in the configured index path.`, `Get the singleton Config instance.          The config is loaded once from env` (+1411 more)
+- **2235 isolated node(s):** `Pytest fixtures and configuration for stropha tests.  This module sets up common`, `Isolate tests from the project's stropha.yaml.          This changes cwd to a te`, `Reset cached inference backend before each test.`, `Tests for query decomposition.`, `Test compound query detection.` (+2230 more)
   These have ≤1 connection - possible missing edges or undocumented components.
-- **Thin community `Community 33`** (2 nodes): `AGENTS.md`, `graphify`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 34`** (1 nodes): `Average savings percentage across all searches.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 35`** (1 nodes): `Average number of results per search.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 36`** (1 nodes): `__init__.py`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 37`** (1 nodes): `__init__.py`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 38`** (1 nodes): `__init__.py`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 39`** (1 nodes): `__init__.py`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 40`** (1 nodes): `Identifier persisted alongside vectors (e.g. 'voyage-code-3').`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 41`** (1 nodes): `Vector dimensionality. Used to size the sqlite-vec virtual table.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 42`** (1 nodes): `Max items per call. The pipeline batches according to this.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 43`** (1 nodes): ```'walker'`` | ``'chunker'`` | ``'enricher'`` | ``'embedder'`` | ``'storage'`` |`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 44`** (1 nodes): `Short identifier, unique per stage (``'noop'``, ``'hierarchical'``, …).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 45`** (1 nodes): `Stable, fully-qualified id including model/config used for cache keys.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 46`** (1 nodes): `Pydantic model describing this adapter's config section.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 47`** (1 nodes): `Check if multi-query is enabled via config or env var.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 48`** (1 nodes): `True if query is predominantly symbol-like (>= 80% symbol tokens).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 49`** (1 nodes): `True if query is predominantly natural language (<= 20% symbol tokens).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 50`** (1 nodes): `__init__.py`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 51`** (1 nodes): `__init__.py`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 52`** (1 nodes): `Tests for the chunker dispatcher and per-language chunkers.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 53`** (1 nodes): `Unit tests for ``Storage.augment_fts_with_graph()`` — L2 retroactive FTS5 augmen`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 54`** (1 nodes): `No graph loaded → method reports missing_graph and changes nothing.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 55`** (1 nodes): `A chunk overlapping a graph node gets `community:` + `node:` terms.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 56`** (1 nodes): `When a chunk overlaps multiple nodes, the one closest to its start     wins (mir`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 57`** (1 nodes): `End-to-end through the pipeline: after a real index run with a     graph present`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 58`** (1 nodes): `When STROPHA_GRAPH_FTS_AUGMENT=0 the pipeline should NOT augment.      Tests the`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 59`** (1 nodes): `Smoke test: launch the MCP server as a subprocess and exchange JSON-RPC.  This t`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 60`** (1 nodes): `Spawn the server, initialize, list tools, call search_code.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 61`** (1 nodes): `Unit tests for ``stropha.adapters.enricher.graph_aware.GraphAwareEnricher``.  L2`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 62`** (1 nodes): `When multiple nodes share a file, prefer the one whose line is closest.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 63`** (1 nodes): `End-to-end: build_stages wires storage into the graph-aware enricher.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 64`** (1 nodes): `Unit tests for ``stropha.adapters.enricher.mlx.MlxEnricher``.  We never import t`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 65`** (1 nodes): `Inject a stub ``mlx_lm`` module into ``sys.modules``.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 66`** (1 nodes): `Force ``mlx_lm`` to be missing for tests that need ImportError.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 67`** (1 nodes): ```load()`` raising any exception → graceful fallback.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 68`** (1 nodes): `The expensive `load()` must be cached after the first successful call.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 69`** (1 nodes): `Tests for `stropha watch` snapshot diffing and bge-m3 adapter registration.  `wa`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 70`** (1 nodes): `End-to-end: snapshot picks up real files via the Walker.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 71`** (1 nodes): `WatchController can be started and stopped cleanly.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 72`** (1 nodes): `Starting twice doesn't spawn two threads.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 73`** (1 nodes): `Stopping without starting doesn't raise.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 74`** (1 nodes): `We don't load the real model in tests — just check the class     declares the co`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 75`** (1 nodes): `Tests for the git identity helper.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 76`** (1 nodes): `Tests for Phase A — file-level dirty cache (schema v6).  Covers: - `Storage.file`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 77`** (1 nodes): `4-dim deterministic embedder. Used in tests to avoid loading     fastembed weigh`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 78`** (1 nodes): `Drift contract (ADR-004): switching enricher must invalidate fresh     files eve`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 79`** (1 nodes): `Callers that pass enricher_id=None / embedder_model=None opt out of     that sid`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 80`** (1 nodes): `Two repos with identically-named files; deletion in one must NOT     touch the o`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 81`** (1 nodes): `The user-visible Phase A win: second run of `stropha index` on an     unchanged`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 82`** (1 nodes): `No `last_indexed_sha` stored yet → `--incremental` must NOT error;     it walks`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 83`** (1 nodes): `Add a file in a 2nd commit; incremental mode embeds just that one.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 84`** (1 nodes): `Pure rename → rename_chunks preserves the original chunks (zero     re-embed wor`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 85`** (1 nodes): `After `rename_chunks`, the chunk row's chunk_id reflects the new     rel_path (c`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 86`** (1 nodes): `FTS5 path tokens come from the chunk's rel_path. After rename,     BM25 queries`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 87`** (1 nodes): `After rename, the new chunk_id matches what `make_chunk_id` would     produce fo`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 88`** (1 nodes): `Renaming a path with no chunks under it is a no-op.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 89`** (1 nodes): `Even after a checkpoint exists, mode='full' walks everything.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 90`** (1 nodes): `A file present at run 1 but deleted before run 2 has its chunks +     file_meta`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 91`** (1 nodes): `Unit tests for ``stropha.ingest.manifest.load_manifest``.  Coverage matrix: - va`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 92`** (1 nodes): `Tilde paths are expanded.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 93`** (1 nodes): `Tests for Phase 2 adapters (walker, storage, retrieval) + builder wiring.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 94`** (1 nodes): `Init a tiny git repo with a Python and a Markdown file.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 95`** (1 nodes): `Storage stub: returns empty hit lists for all read methods.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 96`** (1 nodes): `STROPHA_INDEX_PATH must route into pipeline.storage.config.path.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 97`** (1 nodes): `Tests for Phase 4 retrieval sub-pipeline (streams as adapters).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 98`** (1 nodes): `Records calls + returns deterministic synthetic hits.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 99`** (1 nodes): `Performance: no dense stream → don't pay embed_query cost.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 100`** (1 nodes): `Tests for reranker adapters.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 101`** (1 nodes): `Create a minimal SearchHit for testing.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 102`** (1 nodes): `Tests for the noop reranker (pass-through).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 103`** (1 nodes): `Tests for the cross-encoder reranker.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 104`** (1 nodes): `Integration test: actually loads model and reranks.                  Marked as s`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 105`** (1 nodes): `Tests for hybrid-rrf with reranker integration.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 106`** (1 nodes): `Tests for SQLite + sqlite-vec + FTS5 layer.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 107`** (1 nodes): `Return a unit vector aligned to one axis.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 108`** (1 nodes): `Auto-backfill assigns orphan chunks when target_repo paths match.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 109`** (1 nodes): `Auto-backfill is a no-op when the target_repo changed since indexing.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 110`** (1 nodes): `Tests for search filters in MCP server.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 111`** (1 nodes): `Create a minimal SearchHit for testing.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 112`** (1 nodes): `Tests for _apply_filters helper function.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 113`** (1 nodes): `Unit tests for ``GraphVecLoader`` (Trilha A L3) + ``GraphVecStream``.  Uses a de`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 114`** (1 nodes): `Hash-based 4-dim embedder. Same input -> same output. No network.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 115`** (1 nodes): `Insert a chunk row so the GraphVec stream can hydrate hits from it.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 116`** (1 nodes): `Manually plant an embedding orthogonal to the query vector so the     cosine is`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 117`** (1 nodes): `Unit tests for ``stropha.adapters.enricher.ollama.OllamaEnricher``.  The enriche`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 118`** (1 nodes): `Return a context-manager-compatible bytes stream for urlopen mock.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 119`** (1 nodes): ``stropha adapters list --stage enricher` must surface it.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 120`** (1 nodes): `Network failure MUST NOT block indexing.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 121`** (1 nodes): `Multi-repo indexing & chunk_id namespacing (Phase 4).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 122`** (1 nodes): `Hashing pseudo-embedder — deterministic and dependency-free.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 123`** (1 nodes): `Two repos with identical (path, range, content) get distinct ids.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 124`** (1 nodes): `Default (no repo_key) matches the v0.1 derivation.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 125`** (1 nodes): `Identical files in two repos yield distinct chunk_ids when repo_key differs.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 126`** (1 nodes): `Build two real git repos that share the same README content + name.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 127`** (1 nodes): `Constructing with neither `repo` nor `repos` is a programmer error.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 128`** (1 nodes): `Tests for the pipeline framework (base + registry + config + builder).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 129`** (1 nodes): `Regression: STROPHA_VOYAGE_EMBED_MODEL must NOT contaminate a local adapter.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 130`** (1 nodes): `Unit tests for the new walker adapters: filesystem + nested-git.  Both reuse the`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 131`** (1 nodes): `A monorepo umbrella with two sibling git repos inside.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 132`** (1 nodes): `Umbrella root that is itself a git repo with a nested submodule.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 133`** (1 nodes): `When a file would be discovered both via the root walker and a     nested one, o`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 134`** (1 nodes): `Nested git repo deeper than max_depth should be ignored.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 135`** (1 nodes): `Tests for adapter-drift detection (ADR-004) and enrichment cache.  Drift = store`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 136`** (1 nodes): `Deterministic embedder. Vector = hash of text mod a small int.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 137`** (1 nodes): `Init a tiny git repo with one Python file.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 138`** (1 nodes): `Upgrading from v0.1.0 (NULL enricher_id) MUST NOT trigger re-embed for noop.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 139`** (1 nodes): `Unit tests for ``stropha.tools.hook_install``.  Per RFC §6.2 / §9 (Fase 1.5c): -`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 140`** (1 nodes): `Initialise a bare git repo skeleton (just .git/) suitable for hook tests.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 141`** (1 nodes): `No core.hooksPath configured → default `.git/hooks` (RFC §6.3).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 142`** (1 nodes): `When git config core.hooksPath set inside repo, follow it.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 143`** (1 nodes): `A core.hooksPath outside repo and HOME is rejected → falls back.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 144`** (1 nodes): `Back-compat regression guard: install() with no new flags must emit     empty ba`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 145`** (1 nodes): `Upgrade path: a manually-written older-version block must be     cleanly rewritt`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 146`** (1 nodes): `Phase B contract: the generated hook v=4 invokes     ``stropha index --increment`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 147`** (1 nodes): `Smoke tests for the Phase 0 walker (filesystem fallback path).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 148`** (1 nodes): `Unit tests for ``stropha.retrieval.graph`` — find_callers / find_related / get_c`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 149`** (1 nodes): `Write a graph file and load it into the storage mirror.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 150`** (1 nodes): `Tests for Phase 3 chunker dispatcher and language sub-adapters.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 151`** (1 nodes): `Long enough (>15 lines) to bypass AST chunker's SIMPLE_FILE shortcut.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 152`** (1 nodes): `Phase 3 must NOT change chunk_id of unchanged files (no spurious re-embed).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 153`** (1 nodes): `Unit tests for ``GitDiffWalker`` — Phase B incremental walker.  Uses real ``git`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 154`** (1 nodes): `Run git, return stdout, raise on non-zero exit.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 155`** (1 nodes): `Legacy `discover` shape is intentionally not supported.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 156`** (1 nodes): `File renamed with NO content change → rename delta, similarity 100.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 157`** (1 nodes): `Same file renamed AND lightly edited — similarity below 100 but     still above`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 158`** (1 nodes): `No commits between since and HEAD → empty result, not error.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 159`** (1 nodes): `Tests for the bundled enricher adapters (noop + hierarchical).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 160`** (1 nodes): `Switching a toggle MUST change adapter_id so cache + drift invalidate.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 161`** (1 nodes): `Tests for query intelligence features (HyDE, Query Rewriting).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 162`** (1 nodes): `Tests for HyDE (Hypothetical Document Embeddings).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 163`** (1 nodes): `HyDE should be disabled when env var is not set.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 164`** (1 nodes): `HyDE should return None for empty queries.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 165`** (1 nodes): `HyDE should call Ollama API when enabled.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 166`** (1 nodes): `HyDE should return None when Ollama fails.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 167`** (1 nodes): `HyDE should return None when Ollama returns empty.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 168`** (1 nodes): `Tests for Query Rewriting.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 169`** (1 nodes): `Query rewriting should be disabled when env var is not set.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 170`** (1 nodes): `Query rewriting should return None for empty queries.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 171`** (1 nodes): `Query rewriting should call Ollama API when enabled.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 172`** (1 nodes): `Query rewriting should combine original query with expanded terms.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 173`** (1 nodes): `Query rewriting should return None when Ollama fails.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 174`** (1 nodes): `Query rewriting should truncate very long outputs.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 175`** (1 nodes): `Tests for hybrid-rrf integration with HyDE and Query Rewriting.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 176`** (1 nodes): `Integration tests for HyDE and query rewrite in hybrid-rrf.search().`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 177`** (1 nodes): `Storage stub that records search calls and queries.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 178`** (1 nodes): `Embedder stub that records which text was embedded.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 179`** (1 nodes): `When hyde_enabled=True, search should use HyDE-rewritten query for embedding.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 180`** (1 nodes): `When STROPHA_HYDE_ENABLED=1, search should use HyDE even without config flag.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 181`** (1 nodes): `When query_rewrite_enabled=True, search should use rewritten query for all strea`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 182`** (1 nodes): `When STROPHA_QUERY_REWRITE_ENABLED=1, search should use rewriting.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 183`** (1 nodes): `When both enabled, HyDE affects dense embedding, query rewrite affects all strea`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 184`** (1 nodes): `When HyDE fails, search should fall back to original query.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 185`** (1 nodes): `When query rewrite fails, search should fall back to original query.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 186`** (1 nodes): `Tests for Reciprocal Rank Fusion.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 187`** (1 nodes): `Unit tests for ``stropha.ingest.graphify_loader.GraphifyLoader``.  Covers the co`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 188`** (1 nodes): `Write a NetworkX node-link style graph file.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 189`** (1 nodes): `Initial load of N nodes reports nodes_added=N, nothing deleted.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 190`** (1 nodes): `Second load with no graph.json change reports zero deltas.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 191`** (1 nodes): `Nodes present in the previous load but absent from the new one     get removed.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 192`** (1 nodes): `Initial load + new load with one extra node reports nodes_added=1.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 193`** (1 nodes): `Edges without source_file/source_location MUST still dedupe across     repeat lo`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 194`** (1 nodes): `Register a fake repo in the storage, returning its ID.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 195`** (1 nodes): `With repo_id, node IDs are prefixed with '{repo_id}:'.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 196`** (1 nodes): `Edge source and target IDs are also prefixed with repo_id.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 197`** (1 nodes): `Two repos can have the same node_id in the graph without collision.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 198`** (1 nodes): `Each repo has its own staleness check (per-repo mtime meta key).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 199`** (1 nodes): `Reloading one repo's graph does not affect another repo's nodes.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 200`** (1 nodes): `stats() with repo_id returns counts for that repo only.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 201`** (1 nodes): `Unit tests for ``stropha.eval.harness`` — golden loader, Recall@K, MRR.  We mock`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 202`** (1 nodes): `Returns canned hits per query string. Works as a SearchEngine stub.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 203`** (1 nodes): ```expected_paths=['fsrs.py']`` matches ``src/stropha/fsrs.py``.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 204`** (1 nodes): ```expected_symbols=['login']`` matches ``AuthService.login``.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 205`** (1 nodes): `The default golden set must always parse cleanly.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 206`** (1 nodes): `Unit tests for HyDE query rewrite and recursive retrieval.  Both are query-path-`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 207`** (1 nodes): `Two hits 3 lines apart on the same file should collapse into one.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 208`** (1 nodes): `Two hits >adjacency apart stay distinct.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 209`** (1 nodes): `When two children of the same parent are retrieved, the parent     chunk is used`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 210`** (1 nodes): `Unit tests for the cost dashboard aggregator.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 211`** (1 nodes): `Empty report → render_table returns None so caller can show error.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 212`** (1 nodes): `Structured logging via structlog. Single configuration entry point.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 213`** (1 nodes): `Configure structlog + stdlib logging.      Uses a console renderer when stderr i`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 214`** (1 nodes): `Return a structlog logger. Use module __name__ as `name`.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 215`** (1 nodes): `MCP server entry point.  Wires Config → Embedder → Storage → SearchEngine inside`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 216`** (1 nodes): `Long-lived dependencies, injected into every tool via the MCP Context.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 217`** (1 nodes): `Source-repo identity attached to every search result.      A client can run `git`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 218`** (1 nodes): `One entry in the `list_repos` response.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 219`** (1 nodes): `Apply post-retrieval filters to search hits.          Note: This is post-filteri`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 220`** (1 nodes): `Hybrid search (dense + BM25, fused via RRF). Returns top_k results     with path`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 221`** (1 nodes): `Find by symbol name. Returns up to `limit` matches, exact-match first.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 222`** (1 nodes): `Aggregate per-repo stats. Cheap query — single GROUP BY.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 223`** (1 nodes): `Return the chunk-level outline of a file path (repo-relative).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 224`** (1 nodes): `Return callers of ``symbol`` (BFS up incoming `calls` edges, depth ≤ 3).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 225`** (1 nodes): `Return any node connected to ``symbol`` via the graph.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 226`** (1 nodes): `Return the community membership of a symbol or community id.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 227`** (1 nodes): `Return rationale nodes (docs/ADRs) explaining ``symbol``.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 228`** (1 nodes): `Return tests that exercise ``symbol`` (path-pattern filtered).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 229`** (1 nodes): `Walk the call graph from feature-matching entry points.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 230`** (1 nodes): `Return the active configuration for debugging.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 231`** (1 nodes): `Index statistics. Exposed as both a Tool and a Resource for discovery.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 232`** (1 nodes): `Run the MCP server over stdio. Used by `[project.scripts]` console entry.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 233`** (1 nodes): `Configuration loaded from environment / .env via pydantic-settings.  This module`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 234`** (1 nodes): `Default index path: .stropha/index.db relative to cwd, or ~/.stropha/index.db.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 235`** (1 nodes): `Default target = current working directory.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 236`** (1 nodes): `Runtime configuration. All product env vars are prefixed `STROPHA_`.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 237`** (1 nodes): `Expand ~ and env vars in the configured index path.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 238`** (1 nodes): `Get the singleton Config instance.          The config is loaded once from envir`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 239`** (1 nodes): `Get configuration details for debugging.          Returns a dict with:     - All`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 240`** (1 nodes): `Reset the singleton (for tests). Forces reload on next get_config().`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 241`** (1 nodes): `Shared pydantic models used across modules.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 242`** (1 nodes): `A file discovered by the walker, ready to be chunked.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 243`** (1 nodes): `One file-level change emitted by the incremental walker (Phase B).      Maps to`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 244`** (1 nodes): `An indexable unit. Phase 0 = whole file. Phase 1 adds AST kinds.      Phase 1 (p`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 245`** (1 nodes): `Stable identifier of the git repository a chunk belongs to.      Returned alongs`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 246`** (1 nodes): `A single result from retrieval.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 247`** (1 nodes): `Per-repo counters reported by Storage.stats() and `list_repos`.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 248`** (1 nodes): `stropha — RAG system that indexes a codebase and exposes it via MCP.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 249`** (1 nodes): `Typer CLI — composition root.  Subcommands: - ``index``    : walk → chunk → enri`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 250`** (1 nodes): `Get the singleton config instance.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 251`** (1 nodes): `Initialize logging before any subcommand runs.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 252`** (1 nodes): `Walk one or more repos, chunk every file, enrich, embed, and store.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 253`** (1 nodes): `Hybrid retrieval (dense + BM25 + symbol-token fused via RRF).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 254`** (1 nodes): `Print index metadata.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 255`** (1 nodes): `Print the fully-resolved pipeline composition (YAML + env + CLI).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 256`** (1 nodes): `Run a lightweight health probe on every adapter. Exit non-zero on error.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 257`** (1 nodes): `List every adapter the registry knows about.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 258`** (1 nodes): `Aggregate the structured log trail into a per-repo / per-adapter view.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 259`** (1 nodes): `Watch a working tree and re-index on file changes.      Press Ctrl-C to stop.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 260`** (1 nodes): `Run the offline eval harness against the golden dataset.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 261`** (1 nodes): `Default to the configured target_repo, then cwd. Validate ``.git/`` exists.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 262`** (1 nodes): `Install or refresh the post-commit hook for the target repo.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 263`** (1 nodes): `Remove the stropha block from the post-commit hook.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 264`** (1 nodes): `Report whether the post-commit hook is installed.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 265`** (1 nodes): `Structured exceptions. Per CLAUDE.md, never raise bare Exception.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 266`** (1 nodes): `Base class for all errors raised by stropha.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 267`** (1 nodes): `Invalid or missing configuration.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 268`** (1 nodes): `Failure while discovering source files.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 269`** (1 nodes): `Failure while splitting a file into chunks.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 270`** (1 nodes): `Failure while computing embeddings (network, auth, model).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 271`** (1 nodes): `Failure in the SQLite/vec layer (schema, IO, corruption).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 272`** (1 nodes): `Failure during query execution.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 273`** (1 nodes): `Failure assembling or running the pipeline.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 274`** (1 nodes): `Failure registering or invoking an adapter.      Raised by ``pipeline.registry```
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 275`** (1 nodes): `Soft index — watch a working tree and re-index on file changes.  Per spec §8 / P`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 276`** (1 nodes): `File-mtime snapshot for change detection.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 277`** (1 nodes): `Return ``(changed_or_added, removed)`` since the previous snapshot.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 278`** (1 nodes): `Walk via the standard ``Walker`` and capture per-file mtimes.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 279`** (1 nodes): `Watch ``repo`` and re-index changed files after the debounce window.      Args:`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 280`** (1 nodes): `Run a fresh ``Pipeline`` pass against ``repo``.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 281`** (1 nodes): `Controller for a background watch thread.      Use this to start/stop the watche`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 282`** (1 nodes): `Start the watch loop in a background daemon thread.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 283`** (1 nodes): `Signal the watch loop to stop and wait for thread to finish.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 284`** (1 nodes): `The actual watch loop, runs in a background thread.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 285`** (1 nodes): `Cost dashboard (Phase 3 §11.4).  Aggregates the structured-log trail produced by`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 286`** (1 nodes): `Walk the given log paths and return aggregated counters.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 287`** (1 nodes): `Standard locations stropha writes structured logs to.      Honours ``STROPHA_HOO`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 288`** (1 nodes): `Build a :class:`rich.console.RenderableType` table summary.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 289`** (1 nodes): `Pipeline configuration loader.  Cascading precedence (per ``docs/architecture/st`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 290`** (1 nodes): `Resolve the full pipeline config dict.      Args:         project_root: dir to l`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 291`** (1 nodes): `Translate ``STROPHA_<STAGE>__<KEY>__...`` into nested dict overlay.      ``STROP`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 292`** (1 nodes): `Map deprecated env vars onto the new shape. Logs a warning.      Caller MUST res`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 293`** (1 nodes): `Cheap coercion for env-var strings to int/float/bool/str.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 294`** (1 nodes): `Deep merge ``src`` into ``dst`` in-place.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 295`** (1 nodes): `Adapter registry — populated at import-time via the ``@register_adapter`` decora`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 296`** (1 nodes): `Class decorator. Registers ``cls`` under ``(stage, name)``.      The adapter cla`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 297`** (1 nodes): `Return the adapter class registered for ``(stage, name)``.      Raises ``ConfigE`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 298`** (1 nodes): `Return sorted adapter names registered for ``stage``.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 299`** (1 nodes): `Snapshot of the registry, grouped by stage. Used by ``adapters list``.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 300`** (1 nodes): `Test helper: clear the registry. Do NOT call from production code.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 301`** (1 nodes): `Pipeline framework.  Exports the small surface that callers (CLI, server, tests)`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 302`** (1 nodes): `Builder: resolved config dict → instantiated adapter objects.  Importing this mo`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 303`** (1 nodes): `Set of constructed adapters returned by :func:`build_stages`.      All 6 stages`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 304`** (1 nodes): `Instantiate every adapter named in ``resolved_config``.      ``open_storage=Fals`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 305`** (1 nodes): `Build a stage that needs no cross-stage dependency injection.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 306`** (1 nodes): `Pipeline orchestrator — adapter-aware indexing.  Phase 2 wires walker, enricher,`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 307`** (1 nodes): `Per-repo counters returned by :meth:`Pipeline.run`.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 308`** (1 nodes): `Aggregate result of a :meth:`Pipeline.run`.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 309`** (1 nodes): `Adapter-aware walker → chunker → enricher → embedder → storage.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 310`** (1 nodes): `Execute the pipeline.          Args:             rebuild: Wipe chunks before ind`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 311`** (1 nodes): `Reload the graphify mirror tables if the on-disk graph is newer.          After`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 312`** (1 nodes): `Legacy path: walk every file via the configured walker.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 313`** (1 nodes): `Phase B path: ingest only the FileDeltas between since_sha..HEAD.          Falls`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 314`** (1 nodes): `Stage protocol + shared types.  Per ``docs/architecture/stropha-pipeline-adapter`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 315`** (1 nodes): `Cross-cutting context every stage may consult.      Stages NEVER mutate the cont`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 316`** (1 nodes): `Result of a lightweight readiness probe.      ``status='warning'`` is non-fatal`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 317`** (1 nodes): `One responsibility in the pipeline. Exactly one adapter active per run.      Ada`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 318`** (1 nodes): ```'walker'`` | ``'chunker'`` | ``'enricher'`` | ``'embedder'`` | ``'storage'`` |`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 319`** (1 nodes): `Short identifier, unique per stage (``'noop'``, ``'hierarchical'``, …).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 320`** (1 nodes): `Stable, fully-qualified id including model/config used for cache keys.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 321`** (1 nodes): `Pydantic model describing this adapter's config section.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 322`** (1 nodes): `Lightweight readiness probe, ≤2 s, non-blocking.          Called by ``stropha pi`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 323`** (1 nodes): `Post-commit hook installer (RFC §6 / §7.1).  Manages the stropha post-commit hoo`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 324`** (1 nodes): `Honour ``core.hooksPath`` so husky / lefthook coexist (RFC §6.3).      Validates`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 325`** (1 nodes): `Best-effort path to the user's ``uv`` binary (hooks have stripped PATH).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 326`** (1 nodes): `The script body sandwiched between START and END markers.      Same logic as RFC`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 327`** (1 nodes): `Write ``content`` to ``path`` via tmpfile + rename (RFC §6.2).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 328`** (1 nodes): `Install or update the post-commit hook for ``target`` repo.      Behaviour matri`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 329`** (1 nodes): `Remove our block. Leave any other content intact.      If the resulting file is`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 330`** (1 nodes): `Inspect whether the hook is installed for ``target``.      For v=3 hooks the bak`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 331`** (1 nodes): `MCP tools. Empty in Phase 0; populated in Phase 1 (spec §9.2).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 332`** (1 nodes): `Back-compat shim — re-exports the adapter implementation.  The canonical class l`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 333`** (1 nodes): `Embedding providers. Single abstraction (`Embedder`), swappable backends.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 334`** (1 nodes): `Builds the right Embedder based on Config.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 335`** (1 nodes): `Return Voyage when key is set, else local fastembed.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 336`** (1 nodes): `Back-compat shim — re-exports the adapter implementation.  The canonical class l`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 337`** (1 nodes): `Legacy embedder protocol.  Kept for back-compat with code (and test stubs) writt`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 338`** (1 nodes): `Synchronous embedder. Async wrappers (when justified) live in subclasses.      P`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 339`** (1 nodes): `Identifier persisted alongside vectors (e.g. 'voyage-code-3').`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 340`** (1 nodes): `Vector dimensionality. Used to size the sqlite-vec virtual table.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 341`** (1 nodes): `Max items per call. The pipeline batches according to this.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 342`** (1 nodes): `Embed a batch of documents (chunks during indexing).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 343`** (1 nodes): `Embed a single user query. Providers may use a different input_type.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 344`** (1 nodes): ```RetrievalStreamStage`` — one ranked-list source consumed by RRF.  A retrieval`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 345`** (1 nodes): `Returns a ranked list of ``SearchHit`` for a query.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 346`** (1 nodes): `Per-stream candidate budget. Coordinator passes to the backend.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 347`** (1 nodes): `Return ranked hits. ``query_vec`` may be None for non-dense streams.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 348`** (1 nodes): ```RerankerStage`` — cross-encoder reranking of retrieval candidates.  Rerankers`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 349`** (1 nodes): `Re-scores candidates using a cross-encoder model.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 350`** (1 nodes): `Re-score hits using cross-encoder and return top_k.                  Args:`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 351`** (1 nodes): `ChunkerStage protocol — split files into indexable chunks.  The default adapter`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 352`** (1 nodes): `Split an iterable of ``SourceFile`` into ``Chunk`` records.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 353`** (1 nodes): `Yield every chunk produced by every file.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 354`** (1 nodes): `Per-language chunker (sub-adapter of the dispatcher).      The minimal contract`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 355`** (1 nodes): `Split ONE file's content into chunks.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 356`** (1 nodes): `WalkerStage protocol — discover indexable files in a repository.  Phase 2 introd`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 357`** (1 nodes): `Discover ``SourceFile`` records under a repo root.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 358`** (1 nodes): `Yield every file the indexer should consider for chunking.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 359`** (1 nodes): `Stage-specific protocols.  Each module defines the contract a specific stage's a`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 360`** (1 nodes): `EnricherStage protocol — transform a chunk before embedding.  Phase 1 introduces`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 361`** (1 nodes): `Returns the text that should be fed to the embedder for ``chunk``.      The orig`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 362`** (1 nodes): `Return the text to embed.          MUST be deterministic for a given ``(chunk, c`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 363`** (1 nodes): `StorageStage protocol — persist chunks + vectors and serve read APIs.  A storage`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 364`** (1 nodes): `Persistence + read backend for the index.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 365`** (1 nodes): `Vector dimensionality the backend was provisioned with.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 366`** (1 nodes): `RetrievalStage protocol — query string → ranked SearchHits.  Phase 2 ships ``hyb`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 367`** (1 nodes): `Read-time component. Constructed with refs to embedder + storage.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 368`** (1 nodes): `Top-k hits for a free-text query.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 369`** (1 nodes): `EmbedderStage protocol — text → vector.  Same surface the pre-pipeline ``stropha`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 370`** (1 nodes): `Synchronous embedder. Async wrappers, if ever needed, live in subclasses.      P`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 371`** (1 nodes): `Identifier persisted alongside vectors (e.g. ``'voyage-code-3'``).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 372`** (1 nodes): `Vector dimensionality. Sizes the sqlite-vec virtual table.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 373`** (1 nodes): `Max items per ``embed_documents`` call. Pipeline batches accordingly.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 374`** (1 nodes): `Embed a batch of documents (chunks during indexing).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 375`** (1 nodes): `Embed a single user query. Providers may use a distinct input_type.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 376`** (1 nodes): `Git repository identity extraction.  For every file we index we want to remember`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 377`** (1 nodes): `Stable identification of a git repository (or a fallback).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 378`** (1 nodes): `Detect the git identity of ``path``.      Never raises: returns a fallback ``Rep`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 379`** (1 nodes): `Normalize a git remote URL.      Returns a tuple ``(normalized_key, sanitized_ht`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 380`** (1 nodes): `Run a git subcommand. Returns stdout trimmed, or ``None`` on failure.      Never`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 381`** (1 nodes): `Try three sources, in order of fidelity.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 382`** (1 nodes): `Repo manifest loader — declarative multi-repo lists (Phase 4).  Lets users repla`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 383`** (1 nodes): `Failure parsing or validating a repo manifest.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 384`** (1 nodes): `Parse a repo manifest. Returns the **enabled** entries in declaration order.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 385`** (1 nodes): `Chunker dispatcher.  For each `SourceFile`, picks a language-specific chunker an`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 386`** (1 nodes): `Public entry point. Replaces Phase 0's FileChunker.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 387`** (1 nodes): `Chunk every file. When ``repo_key`` is provided, every emitted         chunk's ``
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 388`** (1 nodes): `Re-derive chunk_id with repo discriminator (no-op when repo_key is None).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 389`** (1 nodes): `Graphify graph loader — populates ``graph_nodes`` / ``graph_edges`` / ``graph_me`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 390`** (1 nodes): `Parse ``STROPHA_GRAPH_CONFIDENCE`` env var into a tuple of tiers.      Empty / u`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 391`** (1 nodes): `Outcome of a :meth:`GraphifyLoader.load` invocation.      Phase C diff-load repo`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 392`** (1 nodes): `Mirror ``graphify-out/graph.json`` into the SQLite ``graph_*`` tables.      The`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 393`** (1 nodes): `Default location: ``<repo_root>/graphify-out/graph.json``.          Honours ``ST`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 394`** (1 nodes): `True iff the graph file is present on disk.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 395`** (1 nodes): `True iff the graph should be reloaded.          Compares file mtime with ``graph`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 396`** (1 nodes): `Prefix node_id with repo_id for multi-repo isolation.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 397`** (1 nodes): `Replace ``graph_nodes`` / ``graph_edges`` from the graph file.          Returns`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 398`** (1 nodes): `Return a summary suitable for ``Storage.stats()['graph']``.          ``None`` wh`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 399`** (1 nodes): `Get a meta value, using per-repo key suffix when repo_id is set.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 400`** (1 nodes): `Source file discovery.  Per spec §3.1: - Use `git ls-files` when target is a git`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 401`** (1 nodes): `Return language tag for a path, or None if unsupported.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 402`** (1 nodes): `Null-byte heuristic — fast, no libmagic dependency.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 403`** (1 nodes): `Return tracked files via git, or None if not a git repo / git missing.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 404`** (1 nodes): `Fallback walker for non-git directories.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 405`** (1 nodes): `Load .strophaignore patterns from the target repo and from this project.      Bo`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 406`** (1 nodes): `Discovers indexable files under a target repository.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 407`** (1 nodes): `Yield every file that survives all filters.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 408`** (1 nodes): `Yield SourceFile only for the explicit subset of paths given.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 409`** (1 nodes): `Apply all filters to a single rel_path. Returns None if filtered out.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 410`** (1 nodes): `Embed graph node labels into ``graph_nodes.embedding`` for the ``graph-vec`` ret`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 411`** (1 nodes): `Embed graph node labels using the active embedder.      Idempotent: nodes whose`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 412`** (1 nodes): `True iff at least one node lacks an embedding for the active model.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 413`** (1 nodes): `Embed every node whose stored embedding model is not current.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 414`** (1 nodes): `Ingestion pipeline: discover → chunk → (Phase 2: enrich).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 415`** (1 nodes): `Indexing pipeline orchestration.  Composition: Walker → Chunker → Embedder → Sto`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 416`** (1 nodes): `Per-repo counters reported back from a pipeline run.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 417`** (1 nodes): `Aggregate result of an `IndexPipeline.run()`.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 418`** (1 nodes): `Walks one or more repos, chunks each file, embeds, persists.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 419`** (1 nodes): `Gherkin chunker (custom — tree-sitter-language-pack does not ship a grammar).  P`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 420`** (1 nodes): `Per-language chunkers. See `chunker.py` for the dispatcher.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 421`** (1 nodes): `Markdown chunker: split by ATX/setext headings.  Per spec §3.3.1: each section H`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 422`** (1 nodes): `Return [(start_line, end_line, level, title), ...] for every heading block.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 423`** (1 nodes): `Section-per-chunk. Parent chain encoded via parent_chunk_id.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 424`** (1 nodes): `Yield (chunk_text, start_line, end_line) splitting on blank lines.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 425`** (1 nodes): `Generic AST chunker built on tree-sitter-language-pack's `process()`.  Strategy`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 426`** (1 nodes): `Normalize StructureKind enum to a comparable string.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 427`** (1 nodes): `Uses tslp.process() for languages with structure extraction support.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 428`** (1 nodes): `Emit a single file-level chunk (or split if oversized).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 429`** (1 nodes): `Split an oversized span on line boundaries.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 430`** (1 nodes): `File-level chunker. Used when no AST chunker is registered for a language.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 431`** (1 nodes): `One chunk per file; line-based split when file exceeds MAX_CHARS_PER_CHUNK.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 432`** (1 nodes): `Shared contract + helpers for language-specific chunkers.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 433`** (1 nodes): `Splits a single file into one or more Chunks.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 434`** (1 nodes): `Deterministic chunk id per spec §3.4.      ``repo_key`` (when provided) is prepe`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 435`** (1 nodes): `Return lines `[start_line, end_line]` inclusive, 1-indexed.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 436`** (1 nodes): `Vue SFC chunker — splits a single-file component into script/template/style.  Pe`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 437`** (1 nodes): `SQLite + sqlite-vec storage layer. Single source of truth for the index.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 438`** (1 nodes): `sqlite-vec + FTS5 + metadata, all in one SQLite database.  Per spec §5: keep eve`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 439`** (1 nodes): `Float32 little-endian, the format sqlite-vec expects for BLOB inputs.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 440`** (1 nodes): `Expand CamelCase + dotted identifiers into separate tokens.      Used on BOTH in`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 441`** (1 nodes): `Turn free text into a safe FTS5 MATCH expression (OR-joined tokens).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 442`** (1 nodes): `Pre-process chunk content before indexing in FTS5.      We assemble a single FTS`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 443`** (1 nodes): `Build a ``RepoRef`` from a row that LEFT JOINed ``repos``.      Returns ``None```
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 444`** (1 nodes): `Extract identifier-like tokens from a free-text query.      Drops stopwords and`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 445`** (1 nodes): `Owns the SQLite connection. All schema mutations go through here.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 446`** (1 nodes): `Idempotent ALTER TABLE — SQLite has no IF NOT EXISTS for ADD COLUMN.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 447`** (1 nodes): `Insert or update a repo row keyed by ``normalized_key``. Returns its id.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 448`** (1 nodes): `Best-effort assignment of orphan chunks to ``repo_id``.          Used on upgrade`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 449`** (1 nodes): `Per-repo aggregate counters.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 450`** (1 nodes): `True if the stored chunk matches every (hash, model, enricher).          Per ADR`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 451`** (1 nodes): `Return cached embedding_text for ``(content_hash, enricher_id)`` or None.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 452`** (1 nodes): `Cache an enrichment result. Safe to call concurrently (UPSERT).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 453`** (1 nodes): `True iff the stored ``files`` row for ``(repo_id, rel_path)``         matches ```
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 454`** (1 nodes): `Record that ``rel_path`` was indexed at ``mtime`` / ``size_bytes``.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 455`** (1 nodes): `Drop the ``files`` rows for ``rel_paths`` under ``repo_id``.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 456`** (1 nodes): `Return ``rel_paths`` of ``files`` rows for ``repo_id`` that are         NOT pres`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 457`** (1 nodes): `Remove every chunk whose rel_path is in the list. Returns count.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 458`** (1 nodes): `Move every chunk's ``rel_path`` from ``old_rel_path`` to         ``new_rel_path``
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 459`** (1 nodes): `Update the `files` (file_meta) row for a rename, handling the         case where`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 460`** (1 nodes): `Repo-scoped variant of ``delete_by_paths``. Used by the         incremental pipe`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 461`** (1 nodes): `Insert (or update) a chunk and its vector atomically. Returns rowid.          ```
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 462`** (1 nodes): `Rebuild FTS5 rows with graph-derived terms appended.          For every ``chunks`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 463`** (1 nodes): `Wipe the index. Used by `index --rebuild`.          Preserves the ``repos`` tabl`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 464`** (1 nodes): `Top-k dense nearest neighbors.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 465`** (1 nodes): `Top-k via FTS5 BM25 ranking. Returns [] for empty/sanitized queries.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 466`** (1 nodes): `Match chunks whose `symbol` column contains identifier tokens from query.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 467`** (1 nodes): `Exact + suffix match on symbol column. Used by `get_symbol`.          Matches `F`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 468`** (1 nodes): `Symbolic outline of a file (chunks sorted by start_line).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 469`** (1 nodes): `Aggregate graphify mirror state. Returns None when never loaded.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 470`** (1 nodes): `Concrete adapters for each pipeline stage.  Per ADR-003 (``docs/architecture/str`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 471`** (1 nodes): `Graph-aware enricher — L2 augmentation per RFC §0.  Prepends the matching graphi`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 472`** (1 nodes): `Prepend graphify community + node label, falling back to raw content.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 473`** (1 nodes): `Find the graph node whose source_file matches and whose line falls         insid`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 474`** (1 nodes): `Hierarchical enricher — prepend a small skeleton of the parent chunk.  Rationale`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 475`** (1 nodes): `Enricher adapters — transform a chunk's text before embedding.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 476`** (1 nodes): `Noop enricher — identity. Default; preserves Phase 0/1 behavior exactly.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 477`** (1 nodes): `Empty config. The noop enricher has no tunables.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 478`** (1 nodes): `Returns ``chunk.content`` unchanged.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 479`** (1 nodes): `Ollama LLM enricher — calls a local model to generate a one-line summary prepend`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 480`** (1 nodes): `One-line LLM summary prepended to the chunk for richer embeddings.      Pure std`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 481`** (1 nodes): `Probe ``GET {base_url}/api/tags`` to confirm the daemon and model.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 482`** (1 nodes): `POST ``/api/generate``. Returns None on any failure (graceful).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 483`** (1 nodes): `MLX LLM enricher — native Apple Silicon inference via ``mlx-lm``.  Same contract`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 484`** (1 nodes): `In-process MLX inference. ``mlx-lm`` import is lazy + soft.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 485`** (1 nodes): `Local fastembed embedder (ONNX, no torch, no network).  Default model per ADR-00`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 486`** (1 nodes): `Config schema for the local fastembed adapter.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 487`** (1 nodes): `ONNX-based embedder, runs on CPU.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 488`** (1 nodes): `Voyage AI embedder adapter.  Active when ``VOYAGE_API_KEY`` is set. ``voyage-cod`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 489`** (1 nodes): `Config schema for the Voyage adapter.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 490`** (1 nodes): `Wraps the official ``voyageai`` SDK.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 491`** (1 nodes): `bge-m3 embedder adapter — pre-configured local fastembed backend.  ``BAAI/bge-m3`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 492`** (1 nodes): `bge-m3 is multilingual + multi-function; defaults tuned for code RAG.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 493`** (1 nodes): `Same fastembed backend as ``LocalEmbedder``, pinned to ``BAAI/bge-m3``.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 494`** (1 nodes): `Storage adapter for sqlite-vec.  Subclasses the existing ``stropha.storage.sqlit`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 495`** (1 nodes): `Storage stage backed by SQLite + sqlite-vec + FTS5.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 496`** (1 nodes): `Hybrid retrieval (dense + BM25 + symbol-token) fused via RRF.  Phase 4 refactors`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 497`** (1 nodes): `RRF over N retrieval streams, with optional cross-encoder reranking.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 498`** (1 nodes): `Build optional reranker from config.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 499`** (1 nodes): `Reranker sub-adapters for retrieval stage.  Cross-encoder rerankers re-score can`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 500`** (1 nodes): `Cross-encoder reranker using fastembed's TextCrossEncoder.  Uses ONNX-based cros`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 501`** (1 nodes): `Config for cross-encoder reranker.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 502`** (1 nodes): `Cross-encoder reranker using fastembed ONNX models.          Reranks candidates`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 503`** (1 nodes): `Lazy-load the cross-encoder model on first use.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 504`** (1 nodes): `Rerank hits using cross-encoder scores.                  Args:             query`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 505`** (1 nodes): `Noop reranker — pass-through, preserves RRF order.  Default reranker when no cro`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 506`** (1 nodes): `Empty config. The noop reranker has no tunables.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 507`** (1 nodes): `Pass-through reranker. Returns hits unchanged, truncated to top_k.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 508`** (1 nodes): `Return hits unchanged, truncated to top_k.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 509`** (1 nodes): `Graph node embedding retrieval stream — Trilha A L3.  Maps a query vector agains`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 510`** (1 nodes): `Plain Python cosine. Returns 0.0 on zero vectors.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 511`** (1 nodes): `Top-K graph nodes by cosine similarity to the query vector.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 512`** (1 nodes): `Retrieval stream sub-adapters consumed by ``hybrid-rrf``.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 513`** (1 nodes): `Dense ANN retrieval stream — sqlite-vec virtual table.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 514`** (1 nodes): `Identifier-token retrieval stream — direct LIKE match on the symbol column.  Che`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 515`** (1 nodes): `Sparse retrieval stream — SQLite FTS5 BM25.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 516`** (1 nodes): `Chunker adapters (dispatcher + per-language sub-adapters).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 517`** (1 nodes): `Chunker dispatcher — picks the right per-language sub-adapter for each file.  Th`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 518`** (1 nodes): `Sub-pipeline config: each language → ``{adapter, config}``.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 519`** (1 nodes): `Stage adapter — dispatches per file to a language sub-adapter.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 520`** (1 nodes): `Per-language chunker sub-adapters.  Each module wraps an existing implementation`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 521`** (1 nodes): `Markdown heading-split sub-adapter.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 522`** (1 nodes): `Empty for now — the legacy chunker uses fixed heading detection.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 523`** (1 nodes): `File-level fallback sub-adapter — one chunk per file.  Used as the dispatcher's`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 524`** (1 nodes): `Vue Single-File Component split sub-adapter.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 525`** (1 nodes): `Gherkin (Cucumber) feature/scenario regex split.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 526`** (1 nodes): `AST chunker sub-adapter (tree-sitter-language-pack ``process()`` based).  Covers`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 527`** (1 nodes): `Stage adapter for ``AstGenericChunker``.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 528`** (1 nodes): `Nested-git walker — discovers nested ``.git/`` directories under a root.  Use fo`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 529`** (1 nodes): `Discover every nested ``.git/`` and walk each as its own repo.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 530`** (1 nodes): `BFS for ``<dir>/.git`` directories under ``root``.          Skips the root's own`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 531`** (1 nodes): `Walk one nested repo, rebasing rel_path against the umbrella root.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 532`** (1 nodes): `Git-diff aware walker — Phase B incremental ingestion.  Walks only the files tha`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 533`** (1 nodes): ``STROPHA_RENAME_THRESHOLD` overrides; default 80%.      Lower = more aggressive`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 534`** (1 nodes): `Stage walker that produces ``FileDelta`` records for an SHA range.      Note: th`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 535`** (1 nodes): `Not supported — use :meth:`discover_deltas` with a since SHA.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 536`** (1 nodes): `Return all file deltas between ``since_sha`` and ``until_sha``.          Uses ```
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 537`** (1 nodes): `Parse ``git diff --name-status -z`` output.          Format (NUL-separated):`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 538`** (1 nodes): `Filter to file types stropha can chunk.          Submodule updates show as direc`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 539`** (1 nodes): `Filesystem walker — works for non-git directories.  Use when the target is a pla`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 540`** (1 nodes): `Pure filesystem traversal — does NOT require a git repo.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 541`** (1 nodes): `Walker adapter that delegates to the existing ``Walker`` class.  The legacy clas`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 542`** (1 nodes): `Stage adapter wrapping ``stropha.ingest.walker.Walker``.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 543`** (1 nodes): `HyDE — Hypothetical Document Embeddings (Phase 3 §6.3).  Idea (Gao et al., 2022)`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 544`** (1 nodes): `Return a hypothetical document for ``query`` or ``None`` on fail/skip.      Call`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 545`** (1 nodes): `Recursive retrieval / auto-merging (Phase 3 §6.4).  Post-processing pass that ta`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 546`** (1 nodes): `Return ``hits`` after auto-merge passes.      Pass-through when disabled or inpu`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 547`** (1 nodes): `If any sibling in ``all_hits`` shares ``hit``'s parent_chunk_id, promote     the`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 548`** (1 nodes): `Return a merged hit covering host ∪ other.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 549`** (1 nodes): `Graph traversal helpers backing the ``find_*`` MCP tools.  Reads the SQLite mirr`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 550`** (1 nodes): `Hydrated graphify node, optionally joined with a stropha chunk.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 551`** (1 nodes): `One edge in the result subgraph.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 552`** (1 nodes): `True iff the graphify mirror tables exist AND have data.      Used by ``server.p`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 553`** (1 nodes): `Best-effort: convert ``'L42'`` / ``'42'`` / ``'42:5'`` into ``42``.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 554`** (1 nodes): `Find the most likely ``node_id`` for a fully-qualified symbol.      Strategy (ch`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 555`** (1 nodes): `Take a graph_nodes row and (when possible) attach a chunk snippet.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 556`** (1 nodes): `Return code locations that call ``symbol`` (BFS up incoming ``calls`` edges).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 557`** (1 nodes): `Return any node connected to ``symbol`` regardless of edge direction.      Usefu`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 558`** (1 nodes): `Return all members of the community containing ``symbol_or_community_id``.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 559`** (1 nodes): `Return ``rationale``-style nodes that explain ``symbol``.      Walks ``rationale`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 560`** (1 nodes): `Return test code that exercises ``symbol``.      Closes the trio promised by ``s`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 561`** (1 nodes): `True iff at least one ``rationale_for`` edge exists.      Used to conditionally`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 562`** (1 nodes): `Trace a feature description through the call graph.      Per spec §6.3.5: turn a`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 563`** (1 nodes): `Retrieval pipeline. Phase 1: hybrid dense+BM25 + RRF. Phase 2 will add rerank.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 564`** (1 nodes): `Query Rewriting — transform user queries into more searchable form.  Idea: LLM r`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 565`** (1 nodes): `Return a rewritten query optimized for code search, or None on fail/skip.      U`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 566`** (1 nodes): `Reciprocal Rank Fusion (Cormack et al., 2009 — spec §6.1).  Formula: score(d) =`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 567`** (1 nodes): `Merge any number of ranked lists into a single ranked list.      Identity is by`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 568`** (1 nodes): `Hybrid retrieval (spec §6.1): dense (vec) + sparse (FTS5) fused via RRF.  Phase`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 569`** (1 nodes): `Hybrid dense+BM25 + RRF. Falls back gracefully if one side is empty.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 570`** (1 nodes): `Three-stream hybrid retrieval, fused with RRF.          Streams:         - dense`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 571`** (1 nodes): `Escape hatch for debugging or A/B comparison.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 572`** (1 nodes): `Golden-dataset evaluation runner.  Schema (JSONL, one case per line):      {`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 573`** (1 nodes): `One test case loaded from the golden file.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 574`** (1 nodes): `Outcome of running one :class:`EvalCase`.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 575`** (1 nodes): `Aggregate metrics across an evaluation run.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 576`** (1 nodes): `Slice results per tag for diagnostic breakdowns.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 577`** (1 nodes): `Parse a JSONL file into :class:`EvalCase` instances.      Empty / comment lines`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 578`** (1 nodes): ```actual`` matches when it equals or ends with one of ``expected``.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 579`** (1 nodes): `Execute every case against ``engine`` and aggregate metrics.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 580`** (1 nodes): `Evaluation harness — golden dataset + Recall@K + MRR (Phase 2 §16).  The harness`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 581`** (1 nodes): `We don't load the real model in tests — just check the class     declares the co`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 582`** (1 nodes): `Long-lived dependencies, injected into every tool via the MCP Context.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 583`** (1 nodes): `Source-repo identity attached to every search result.      A client can run `git`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 584`** (1 nodes): `One entry in the `list_repos` response.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 585`** (1 nodes): `Hybrid search (dense + BM25, fused via RRF). Returns top_k results     with path`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 586`** (1 nodes): `Find by symbol name. Returns up to `limit` matches, exact-match first.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 587`** (1 nodes): `Aggregate per-repo stats. Cheap query — single GROUP BY.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 588`** (1 nodes): `Return the chunk-level outline of a file path (repo-relative).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 589`** (1 nodes): `Return callers of ``symbol`` (BFS up incoming `calls` edges, depth ≤ 3).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 590`** (1 nodes): `Return any node connected to ``symbol`` via the graph.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 591`** (1 nodes): `Return the community membership of a symbol or community id.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 592`** (1 nodes): `Return rationale nodes (docs/ADRs) explaining ``symbol``.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 593`** (1 nodes): `Return tests that exercise ``symbol`` (path-pattern filtered).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 594`** (1 nodes): `Walk the call graph from feature-matching entry points.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 595`** (1 nodes): `Return the active configuration for debugging.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 596`** (1 nodes): `Index statistics. Exposed as both a Tool and a Resource for discovery.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 597`** (1 nodes): `Run the MCP server over stdio. Used by `[project.scripts]` console entry.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 598`** (1 nodes): `Expand ~ and env vars in the configured index path.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 599`** (1 nodes): `Get the singleton Config instance.          The config is loaded once from envir`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 600`** (1 nodes): `Get configuration details for debugging.          Returns a dict with:     - All`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 601`** (1 nodes): `Reset the singleton (for tests). Forces reload on next get_config().`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 602`** (1 nodes): `File-mtime snapshot for change detection.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 603`** (1 nodes): `Return ``(changed_or_added, removed)`` since the previous snapshot.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 604`** (1 nodes): `Walk via the standard ``Walker`` and capture per-file mtimes.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 605`** (1 nodes): `Watch ``repo`` and re-index changed files after the debounce window.      Args:`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 606`** (1 nodes): `Run a fresh ``Pipeline`` pass against ``repo``.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 607`** (1 nodes): `Legacy path: walk every file via the configured walker.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 608`** (1 nodes): `Phase B path: ingest only the FileDeltas between since_sha..HEAD.          Falls`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 609`** (1 nodes): `Default location: ``<repo_root>/graphify-out/graph.json``.          Honours ``ST`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 610`** (1 nodes): `True iff the graph file is present on disk.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 611`** (1 nodes): `True iff the graph should be reloaded.          Compares file mtime with ``graph`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 612`** (1 nodes): `Replace ``graph_nodes`` / ``graph_edges`` from the graph file.          Returns`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 613`** (1 nodes): `Return a summary suitable for ``Storage.stats()['graph']``.          ``None`` wh`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 614`** (1 nodes): `Float32 little-endian, the format sqlite-vec expects for BLOB inputs.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 615`** (1 nodes): `Expand CamelCase + dotted identifiers into separate tokens.      Used on BOTH in`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 616`** (1 nodes): `Turn free text into a safe FTS5 MATCH expression (OR-joined tokens).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 617`** (1 nodes): `Pre-process chunk content before indexing in FTS5.      We assemble a single FTS`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 618`** (1 nodes): `Build a ``RepoRef`` from a row that LEFT JOINed ``repos``.      Returns ``None```
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 619`** (1 nodes): `Extract identifier-like tokens from a free-text query.      Drops stopwords and`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 620`** (1 nodes): `Owns the SQLite connection. All schema mutations go through here.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 621`** (1 nodes): `Idempotent ALTER TABLE — SQLite has no IF NOT EXISTS for ADD COLUMN.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 622`** (1 nodes): `Best-effort assignment of orphan chunks to ``repo_id``.          Used on upgrade`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 623`** (1 nodes): `Per-repo aggregate counters.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 624`** (1 nodes): `True if the stored chunk matches every (hash, model, enricher).          Per ADR`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 625`** (1 nodes): `Return cached embedding_text for ``(content_hash, enricher_id)`` or None.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 626`** (1 nodes): `Cache an enrichment result. Safe to call concurrently (UPSERT).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 627`** (1 nodes): `True iff the stored ``files`` row for ``(repo_id, rel_path)``         matches ```
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 628`** (1 nodes): `Record that ``rel_path`` was indexed at ``mtime`` / ``size_bytes``.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 629`** (1 nodes): `Drop the ``files`` rows for ``rel_paths`` under ``repo_id``.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 630`** (1 nodes): `Return ``rel_paths`` of ``files`` rows for ``repo_id`` that are         NOT pres`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 631`** (1 nodes): `Remove every chunk whose rel_path is in the list. Returns count.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 632`** (1 nodes): `Update the `files` (file_meta) row for a rename, handling the         case where`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 633`** (1 nodes): `Repo-scoped variant of ``delete_by_paths``. Used by the         incremental pipe`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 634`** (1 nodes): `Insert (or update) a chunk and its vector atomically. Returns rowid.          ```
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 635`** (1 nodes): `Rebuild FTS5 rows with graph-derived terms appended.          For every ``chunks`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 636`** (1 nodes): `Wipe the index. Used by `index --rebuild`.          Preserves the ``repos`` tabl`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 637`** (1 nodes): `Top-k dense nearest neighbors.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 638`** (1 nodes): `Top-k via FTS5 BM25 ranking. Returns [] for empty/sanitized queries.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 639`** (1 nodes): `Match chunks whose `symbol` column contains identifier tokens from query.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 640`** (1 nodes): `Exact + suffix match on symbol column. Used by `get_symbol`.          Matches `F`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 641`** (1 nodes): `Symbolic outline of a file (chunks sorted by start_line).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 642`** (1 nodes): `Aggregate graphify mirror state. Returns None when never loaded.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 643`** (1 nodes): `RRF over N retrieval streams, each itself a registered adapter.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 644`** (1 nodes): `One edge in the result subgraph.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 645`** (1 nodes): `True iff the graphify mirror tables exist AND have data.      Used by ``server.p`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 646`** (1 nodes): `Best-effort: convert ``'L42'`` / ``'42'`` / ``'42:5'`` into ``42``.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 647`** (1 nodes): `Find the most likely ``node_id`` for a fully-qualified symbol.      Strategy (ch`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 648`** (1 nodes): `Take a graph_nodes row and (when possible) attach a chunk snippet.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 649`** (1 nodes): `Return code locations that call ``symbol`` (BFS up incoming ``calls`` edges).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 650`** (1 nodes): `Return any node connected to ``symbol`` regardless of edge direction.      Usefu`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 651`** (1 nodes): `Return all members of the community containing ``symbol_or_community_id``.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 652`** (1 nodes): `Return ``rationale``-style nodes that explain ``symbol``.      Walks ``rationale`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 653`** (1 nodes): `Return test code that exercises ``symbol``.      Closes the trio promised by ``s`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 654`** (1 nodes): `True iff at least one ``rationale_for`` edge exists.      Used to conditionally`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 655`** (1 nodes): `Trace a feature description through the call graph.      Per spec §6.3.5: turn a`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 656`** (1 nodes): `Source-repo identity attached to every search result.      A client can run `git`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 657`** (1 nodes): `One entry in the `list_repos` response.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 658`** (1 nodes): `Hybrid search (dense + BM25, fused via RRF). Returns top_k results     with path`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 659`** (1 nodes): `Find by symbol name. Returns up to `limit` matches, exact-match first.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 660`** (1 nodes): `Aggregate per-repo stats. Cheap query — single GROUP BY.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 661`** (1 nodes): `Return the chunk-level outline of a file path (repo-relative).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 662`** (1 nodes): `Return callers of ``symbol`` (BFS up incoming `calls` edges, depth ≤ 3).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 663`** (1 nodes): `Return any node connected to ``symbol`` via the graph.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 664`** (1 nodes): `Return the community membership of a symbol or community id.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 665`** (1 nodes): `Return rationale nodes (docs/ADRs) explaining ``symbol``.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 666`** (1 nodes): `Return tests that exercise ``symbol`` (path-pattern filtered).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 667`** (1 nodes): `Walk the call graph from feature-matching entry points.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 668`** (1 nodes): `Index statistics. Exposed as both a Tool and a Resource for discovery.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 669`** (1 nodes): `Run the MCP server over stdio. Used by `[project.scripts]` console entry.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 670`** (1 nodes): `Default target = current working directory.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 671`** (1 nodes): `Runtime configuration. All product env vars are prefixed `STROPHA_`.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 672`** (1 nodes): `Expand ~ and env vars in the configured index path.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 673`** (1 nodes): `Initialize logging before any subcommand runs.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 674`** (1 nodes): `Walk one or more repos, chunk every file, enrich, embed, and store.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 675`** (1 nodes): `Hybrid retrieval (dense + BM25 + symbol-token fused via RRF).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 676`** (1 nodes): `Print index metadata.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 677`** (1 nodes): `Print the fully-resolved pipeline composition (YAML + env + CLI).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 678`** (1 nodes): `Run a lightweight health probe on every adapter. Exit non-zero on error.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 679`** (1 nodes): `List every adapter the registry knows about.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 680`** (1 nodes): `Aggregate the structured log trail into a per-repo / per-adapter view.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 681`** (1 nodes): `Watch a working tree and re-index on file changes.      Press Ctrl-C to stop.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 682`** (1 nodes): `Run the offline eval harness against the golden dataset.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 683`** (1 nodes): `Default to the configured target_repo, then cwd. Validate ``.git/`` exists.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 684`** (1 nodes): `Install or refresh the post-commit hook for the target repo.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 685`** (1 nodes): `Remove the stropha block from the post-commit hook.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 686`** (1 nodes): `Report whether the post-commit hook is installed.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 687`** (1 nodes): `Even after a checkpoint exists, mode='full' walks everything.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 688`** (1 nodes): `A file present at run 1 but deleted before run 2 has its chunks +     file_meta`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 689`** (1 nodes): `Mirror ``graphify-out/graph.json`` into the SQLite ``graph_*`` tables.      The`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 690`** (1 nodes): `Default location: ``<repo_root>/graphify-out/graph.json``.          Honours ``ST`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 691`** (1 nodes): `True iff the graph file is present on disk.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 692`** (1 nodes): `True iff the graph should be reloaded.          Compares file mtime with ``graph`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 693`** (1 nodes): `Replace ``graph_nodes`` / ``graph_edges`` from the graph file.          Returns`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 694`** (1 nodes): `Return a summary suitable for ``Storage.stats()['graph']``.          ``None`` wh`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 695`** (1 nodes): `Repo-scoped variant of ``delete_by_paths``. Used by the         incremental pipe`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 696`** (1 nodes): `Insert (or update) a chunk and its vector atomically. Returns rowid.          ```
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 697`** (1 nodes): `Wipe the index. Used by `index --rebuild`.          Preserves the ``repos`` tabl`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 698`** (1 nodes): `Top-k dense nearest neighbors.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 699`** (1 nodes): `Top-k via FTS5 BM25 ranking. Returns [] for empty/sanitized queries.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 700`** (1 nodes): `Match chunks whose `symbol` column contains identifier tokens from query.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 701`** (1 nodes): `Exact + suffix match on symbol column. Used by `get_symbol`.          Matches `F`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 702`** (1 nodes): `Symbolic outline of a file (chunks sorted by start_line).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 703`** (1 nodes): `Aggregate graphify mirror state. Returns None when never loaded.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 704`** (1 nodes): `A file present at run 1 but deleted before run 2 has its chunks +     file_meta`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 705`** (1 nodes): `A file discovered by the walker, ready to be chunked.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 706`** (1 nodes): `An indexable unit. Phase 0 = whole file. Phase 1 adds AST kinds.      Phase 1 (p`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 707`** (1 nodes): `Stable identifier of the git repository a chunk belongs to.      Returned alongs`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 708`** (1 nodes): `A single result from retrieval.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 709`** (1 nodes): `Per-repo counters reported by Storage.stats() and `list_repos`.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 710`** (1 nodes): `Walk one or more repos, chunk every file, enrich, embed, and store.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 711`** (1 nodes): `Hybrid retrieval (dense + BM25 + symbol-token fused via RRF).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 712`** (1 nodes): `Print index metadata.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 713`** (1 nodes): `Print the fully-resolved pipeline composition (YAML + env + CLI).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 714`** (1 nodes): `Run a lightweight health probe on every adapter. Exit non-zero on error.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 715`** (1 nodes): `List every adapter the registry knows about.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 716`** (1 nodes): `Aggregate the structured log trail into a per-repo / per-adapter view.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 717`** (1 nodes): `Watch a working tree and re-index on file changes.      Press Ctrl-C to stop.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 718`** (1 nodes): `Run the offline eval harness against the golden dataset.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 719`** (1 nodes): `Default to the configured target_repo, then cwd. Validate ``.git/`` exists.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 720`** (1 nodes): `Install or refresh the post-commit hook for the target repo.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 721`** (1 nodes): `Remove the stropha block from the post-commit hook.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 722`** (1 nodes): `Report whether the post-commit hook is installed.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 723`** (1 nodes): `Reload the graphify mirror tables if the on-disk graph is newer.          After`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 724`** (1 nodes): `Honour ``core.hooksPath`` so husky / lefthook coexist (RFC §6.3).      Validates`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 725`** (1 nodes): `Best-effort path to the user's ``uv`` binary (hooks have stripped PATH).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 726`** (1 nodes): `The script body sandwiched between START and END markers.      Same logic as RFC`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 727`** (1 nodes): `Write ``content`` to ``path`` via tmpfile + rename (RFC §6.2).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 728`** (1 nodes): `Install or update the post-commit hook for ``target`` repo.      Behaviour matri`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 729`** (1 nodes): `Remove our block. Leave any other content intact.      If the resulting file is`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 730`** (1 nodes): `Inspect whether the hook is installed for ``target``.      For v=3 hooks the bak`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 731`** (1 nodes): `Insert (or update) a chunk and its vector atomically. Returns rowid.          ```
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 732`** (1 nodes): `Rebuild FTS5 rows with graph-derived terms appended.          For every ``chunks`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 733`** (1 nodes): `Wipe the index. Used by `index --rebuild`.          Preserves the ``repos`` tabl`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 734`** (1 nodes): `Top-k dense nearest neighbors.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 735`** (1 nodes): `Top-k via FTS5 BM25 ranking. Returns [] for empty/sanitized queries.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 736`** (1 nodes): `Match chunks whose `symbol` column contains identifier tokens from query.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 737`** (1 nodes): `Exact + suffix match on symbol column. Used by `get_symbol`.          Matches `F`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 738`** (1 nodes): `Symbolic outline of a file (chunks sorted by start_line).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 739`** (1 nodes): `Aggregate graphify mirror state. Returns None when never loaded.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 740`** (1 nodes): `Hybrid retrieval (dense + BM25 + symbol-token fused via RRF).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 741`** (1 nodes): `Print index metadata.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 742`** (1 nodes): `Print the fully-resolved pipeline composition (YAML + env + CLI).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 743`** (1 nodes): `Run a lightweight health probe on every adapter. Exit non-zero on error.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 744`** (1 nodes): `List every adapter the registry knows about.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 745`** (1 nodes): `Aggregate the structured log trail into a per-repo / per-adapter view.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 746`** (1 nodes): `Watch a working tree and re-index on file changes.      Press Ctrl-C to stop.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 747`** (1 nodes): `Run the offline eval harness against the golden dataset.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 748`** (1 nodes): `Default to the configured target_repo, then cwd. Validate ``.git/`` exists.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 749`** (1 nodes): `Install or refresh the post-commit hook for the target repo.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 750`** (1 nodes): `Remove the stropha block from the post-commit hook.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 751`** (1 nodes): `Report whether the post-commit hook is installed.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 752`** (1 nodes): `Aggregate result of a :meth:`Pipeline.run`.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 753`** (1 nodes): `Adapter-aware walker → chunker → enricher → embedder → storage.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 754`** (1 nodes): `Reload the graphify mirror tables if the on-disk graph is newer.          After`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 755`** (1 nodes): `Float32 little-endian, the format sqlite-vec expects for BLOB inputs.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 756`** (1 nodes): `Expand CamelCase + dotted identifiers into separate tokens.      Used on BOTH in`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 757`** (1 nodes): `Turn free text into a safe FTS5 MATCH expression (OR-joined tokens).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 758`** (1 nodes): `Pre-process chunk content before indexing in FTS5.      We assemble a single FTS`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 759`** (1 nodes): `Build a ``RepoRef`` from a row that LEFT JOINed ``repos``.      Returns ``None```
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 760`** (1 nodes): `Extract identifier-like tokens from a free-text query.      Drops stopwords and`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 761`** (1 nodes): `Owns the SQLite connection. All schema mutations go through here.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 762`** (1 nodes): `Idempotent ALTER TABLE — SQLite has no IF NOT EXISTS for ADD COLUMN.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 763`** (1 nodes): `Insert or update a repo row keyed by ``normalized_key``. Returns its id.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 764`** (1 nodes): `Best-effort assignment of orphan chunks to ``repo_id``.          Used on upgrade`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 765`** (1 nodes): `Per-repo aggregate counters.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 766`** (1 nodes): `True if the stored chunk matches every (hash, model, enricher).          Per ADR`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 767`** (1 nodes): `Return cached embedding_text for ``(content_hash, enricher_id)`` or None.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 768`** (1 nodes): `Cache an enrichment result. Safe to call concurrently (UPSERT).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 769`** (1 nodes): `Remove every chunk whose rel_path is in the list. Returns count.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 770`** (1 nodes): `Insert (or update) a chunk and its vector atomically. Returns rowid.          ```
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 771`** (1 nodes): `Rebuild FTS5 rows with graph-derived terms appended.          For every ``chunks`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 772`** (1 nodes): `Wipe the index. Used by `index --rebuild`.          Preserves the ``repos`` tabl`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 773`** (1 nodes): `Top-k dense nearest neighbors.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 774`** (1 nodes): `Top-k via FTS5 BM25 ranking. Returns [] for empty/sanitized queries.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 775`** (1 nodes): `Match chunks whose `symbol` column contains identifier tokens from query.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 776`** (1 nodes): `Exact + suffix match on symbol column. Used by `get_symbol`.          Matches `F`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 777`** (1 nodes): `Symbolic outline of a file (chunks sorted by start_line).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 778`** (1 nodes): `Aggregate graphify mirror state. Returns None when never loaded.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 779`** (1 nodes): `Long-lived dependencies, injected into every tool via the MCP Context.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 780`** (1 nodes): `Source-repo identity attached to every search result.      A client can run `git`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 781`** (1 nodes): `One entry in the `list_repos` response.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 782`** (1 nodes): `Hybrid search (dense + BM25, fused via RRF). Returns top_k results     with path`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 783`** (1 nodes): `Find by symbol name. Returns up to `limit` matches, exact-match first.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 784`** (1 nodes): `Aggregate per-repo stats. Cheap query — single GROUP BY.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 785`** (1 nodes): `Return the chunk-level outline of a file path (repo-relative).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 786`** (1 nodes): `Return any node connected to ``symbol`` via the graph.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 787`** (1 nodes): `Return the community membership of a symbol or community id.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 788`** (1 nodes): `Return rationale nodes (docs/ADRs) explaining ``symbol``.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 789`** (1 nodes): `Walk the call graph from feature-matching entry points.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 790`** (1 nodes): `Index statistics. Exposed as both a Tool and a Resource for discovery.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 791`** (1 nodes): `Run the MCP server over stdio. Used by `[project.scripts]` console entry.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 792`** (1 nodes): `Run the offline eval harness against the golden dataset.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 793`** (1 nodes): `Default to the configured target_repo, then cwd. Validate ``.git/`` exists.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 794`** (1 nodes): `Install or refresh the post-commit hook for the target repo.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 795`** (1 nodes): `Remove the stropha block from the post-commit hook.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 796`** (1 nodes): `Report whether the post-commit hook is installed.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 797`** (1 nodes): `Wipe the index. Used by `index --rebuild`.          Preserves the ``repos`` tabl`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 798`** (1 nodes): `Top-k dense nearest neighbors.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 799`** (1 nodes): `Top-k via FTS5 BM25 ranking. Returns [] for empty/sanitized queries.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 800`** (1 nodes): `Match chunks whose `symbol` column contains identifier tokens from query.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 801`** (1 nodes): `Exact + suffix match on symbol column. Used by `get_symbol`.          Matches `F`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 802`** (1 nodes): `Symbolic outline of a file (chunks sorted by start_line).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 803`** (1 nodes): `Aggregate graphify mirror state. Returns None when never loaded.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 804`** (1 nodes): `True iff at least one ``rationale_for`` edge exists.      Used to conditionally`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 805`** (1 nodes): `Trace a feature description through the call graph.      Per spec §6.3.5: turn a`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 806`** (1 nodes): `Escape hatch for debugging or A/B comparison.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 807`** (1 nodes): `Install or refresh the post-commit hook for the target repo.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 808`** (1 nodes): `Remove the stropha block from the post-commit hook.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 809`** (1 nodes): `Report whether the post-commit hook is installed.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 810`** (1 nodes): `Honour ``core.hooksPath`` so husky / lefthook coexist (RFC §6.3).      Validates`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 811`** (1 nodes): `Best-effort path to the user's ``uv`` binary (hooks have stripped PATH).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 812`** (1 nodes): `The script body sandwiched between START and END markers.      Same logic as RFC`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 813`** (1 nodes): `Write ``content`` to ``path`` via tmpfile + rename (RFC §6.2).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 814`** (1 nodes): `Install or update the post-commit hook for ``target`` repo.      Behaviour matri`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 815`** (1 nodes): `Remove our block. Leave any other content intact.      If the resulting file is`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 816`** (1 nodes): `Inspect whether the hook is installed for ``target``.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 817`** (1 nodes): `Performance: no dense stream → don't pay embed_query cost.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 818`** (1 nodes): `Long-lived dependencies, injected into every tool via the MCP Context.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 819`** (1 nodes): `Source-repo identity attached to every search result.      A client can run `git`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 820`** (1 nodes): `One entry in the `list_repos` response.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 821`** (1 nodes): `Hybrid search (dense + BM25, fused via RRF). Returns top_k results     with path`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 822`** (1 nodes): `Find by symbol name. Returns up to `limit` matches, exact-match first.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 823`** (1 nodes): `Aggregate per-repo stats. Cheap query — single GROUP BY.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 824`** (1 nodes): `Return the chunk-level outline of a file path (repo-relative).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 825`** (1 nodes): `Return callers of ``symbol`` (BFS up incoming `calls` edges, depth ≤ 3).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 826`** (1 nodes): `Return any node connected to ``symbol`` via the graph.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 827`** (1 nodes): `Return the community membership of a symbol or community id.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 828`** (1 nodes): `Return rationale nodes (docs/ADRs) explaining ``symbol``.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 829`** (1 nodes): `Index statistics. Exposed as both a Tool and a Resource for discovery.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 830`** (1 nodes): `Run the MCP server over stdio. Used by `[project.scripts]` console entry.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 831`** (1 nodes): `Walk one or more repos, chunk every file, enrich, embed, and store.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 832`** (1 nodes): `Hybrid retrieval (dense + BM25 + symbol-token fused via RRF).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 833`** (1 nodes): `Print the fully-resolved pipeline composition (YAML + env + CLI).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 834`** (1 nodes): `Run a lightweight health probe on every adapter. Exit non-zero on error.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 835`** (1 nodes): `Run the offline eval harness against the golden dataset.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 836`** (1 nodes): `Default to the configured target_repo, then cwd. Validate ``.git/`` exists.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 837`** (1 nodes): `Install or refresh the post-commit hook for the target repo.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 838`** (1 nodes): `Remove the stropha block from the post-commit hook.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 839`** (1 nodes): `Float32 little-endian, the format sqlite-vec expects for BLOB inputs.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 840`** (1 nodes): `Expand CamelCase + dotted identifiers into separate tokens.      Used on BOTH in`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 841`** (1 nodes): `Pre-process chunk content before indexing in FTS5.      We assemble a single FTS`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 842`** (1 nodes): `Build a ``RepoRef`` from a row that LEFT JOINed ``repos``.      Returns ``None```
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 843`** (1 nodes): `Extract identifier-like tokens from a free-text query.      Drops stopwords and`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 844`** (1 nodes): `Owns the SQLite connection. All schema mutations go through here.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 845`** (1 nodes): `Idempotent ALTER TABLE — SQLite has no IF NOT EXISTS for ADD COLUMN.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 846`** (1 nodes): `Insert or update a repo row keyed by ``normalized_key``. Returns its id.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 847`** (1 nodes): `Best-effort assignment of orphan chunks to ``repo_id``.          Used on upgrade`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 848`** (1 nodes): `Per-repo aggregate counters.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 849`** (1 nodes): `True if the stored chunk matches every (hash, model, enricher).          Per ADR`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 850`** (1 nodes): `Return cached embedding_text for ``(content_hash, enricher_id)`` or None.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 851`** (1 nodes): `Cache an enrichment result. Safe to call concurrently (UPSERT).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 852`** (1 nodes): `Remove every chunk whose rel_path is in the list. Returns count.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 853`** (1 nodes): `Insert (or update) a chunk and its vector atomically. Returns rowid.          ```
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 854`** (1 nodes): `Wipe the index. Used by `index --rebuild`.          Preserves the ``repos`` tabl`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 855`** (1 nodes): `Top-k dense nearest neighbors.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 856`** (1 nodes): `Top-k via FTS5 BM25 ranking. Returns [] for empty/sanitized queries.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 857`** (1 nodes): `Match chunks whose `symbol` column contains identifier tokens from query.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 858`** (1 nodes): `Exact + suffix match on symbol column. Used by `get_symbol`.          Matches `F`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 859`** (1 nodes): `Symbolic outline of a file (chunks sorted by start_line).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 860`** (1 nodes): `Aggregate graphify mirror state. Returns None when never loaded.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 861`** (1 nodes): `Spawn the server, initialize, list tools, call search_code.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 862`** (1 nodes): `Init a tiny git repo with a Python and a Markdown file.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 863`** (1 nodes): `Storage stub: returns empty hit lists for all read methods.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 864`** (1 nodes): `STROPHA_INDEX_PATH must route into pipeline.storage.config.path.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 865`** (1 nodes): `Records calls + returns deterministic synthetic hits.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 866`** (1 nodes): `Hashing pseudo-embedder — deterministic and dependency-free.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 867`** (1 nodes): `Two repos with identical (path, range, content) get distinct ids.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 868`** (1 nodes): `Default (no repo_key) matches the v0.1 derivation.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 869`** (1 nodes): `Identical files in two repos yield distinct chunk_ids when repo_key differs.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 870`** (1 nodes): `Build two real git repos that share the same README content + name.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 871`** (1 nodes): `Constructing with neither `repo` nor `repos` is a programmer error.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 872`** (1 nodes): `Regression: STROPHA_VOYAGE_EMBED_MODEL must NOT contaminate a local adapter.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 873`** (1 nodes): `Deterministic embedder. Vector = hash of text mod a small int.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 874`** (1 nodes): `Init a tiny git repo with one Python file.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 875`** (1 nodes): `Upgrading from v0.1.0 (NULL enricher_id) MUST NOT trigger re-embed for noop.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 876`** (1 nodes): `Long enough (>15 lines) to bypass AST chunker's SIMPLE_FILE shortcut.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 877`** (1 nodes): `Phase 3 must NOT change chunk_id of unchanged files (no spurious re-embed).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 878`** (1 nodes): `Long-lived dependencies, injected into every tool via the MCP Context.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 879`** (1 nodes): `Source-repo identity attached to every search result.      A client can run `git`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 880`** (1 nodes): `One entry in the `list_repos` response.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 881`** (1 nodes): `Hybrid search (dense + BM25, fused via RRF). Returns top_k results     with path`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 882`** (1 nodes): `Aggregate per-repo stats. Cheap query — single GROUP BY.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 883`** (1 nodes): `Return the chunk-level outline of a file path (repo-relative).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 884`** (1 nodes): `Index statistics. Exposed as both a Tool and a Resource for discovery.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 885`** (1 nodes): `Run the MCP server over stdio. Used by `[project.scripts]` console entry.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 886`** (1 nodes): `Initialize logging before any subcommand runs.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 887`** (1 nodes): `Walk one or more repos, chunk every file, enrich, embed, and store.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 888`** (1 nodes): `Hybrid retrieval (dense + BM25 + symbol-token fused via RRF).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 889`** (1 nodes): `Print index metadata.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 890`** (1 nodes): `Print the fully-resolved pipeline composition (YAML + env + CLI).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 891`** (1 nodes): `Run a lightweight health probe on every adapter. Exit non-zero on error.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 892`** (1 nodes): `List every adapter the registry knows about.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 893`** (1 nodes): `Build a stage that needs no cross-stage dependency injection.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 894`** (1 nodes): `Float32 little-endian, the format sqlite-vec expects for BLOB inputs.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 895`** (1 nodes): `Expand CamelCase + dotted identifiers into separate tokens.      Used on BOTH in`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 896`** (1 nodes): `Pre-process chunk content before indexing in FTS5.      We assemble a single FTS`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 897`** (1 nodes): `Build a ``RepoRef`` from a row that LEFT JOINed ``repos``.      Returns ``None```
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 898`** (1 nodes): `Extract identifier-like tokens from a free-text query.      Drops stopwords and`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 899`** (1 nodes): `Owns the SQLite connection. All schema mutations go through here.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 900`** (1 nodes): `Idempotent ALTER TABLE — SQLite has no IF NOT EXISTS for ADD COLUMN.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 901`** (1 nodes): `Insert or update a repo row keyed by ``normalized_key``. Returns its id.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 902`** (1 nodes): `Best-effort assignment of orphan chunks to ``repo_id``.          Used on upgrade`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 903`** (1 nodes): `Per-repo aggregate counters.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 904`** (1 nodes): `True if the stored chunk matches every (hash, model, enricher).          Per ADR`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 905`** (1 nodes): `Return cached embedding_text for ``(content_hash, enricher_id)`` or None.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 906`** (1 nodes): `Cache an enrichment result. Safe to call concurrently (UPSERT).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 907`** (1 nodes): `Remove every chunk whose rel_path is in the list. Returns count.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 908`** (1 nodes): `Insert (or update) a chunk and its vector atomically. Returns rowid.          ```
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 909`** (1 nodes): `Wipe the index. Used by `index --rebuild`.          Preserves the ``repos`` tabl`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 910`** (1 nodes): `Top-k dense nearest neighbors.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 911`** (1 nodes): `Top-k via FTS5 BM25 ranking. Returns [] for empty/sanitized queries.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 912`** (1 nodes): `Exact + suffix match on symbol column. Used by `get_symbol`.          Matches `F`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 913`** (1 nodes): `Symbolic outline of a file (chunks sorted by start_line).`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 914`** (1 nodes): `RRF over N retrieval streams, each itself a registered adapter.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 915`** (1 nodes): `ADR-003: stropha pipeline adapters`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 916`** (1 nodes): `ADR-008: graphify integration (default model choice)`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 917`** (1 nodes): `stropha-system architecture doc`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
+- **568 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `SearchHit` connect `Community 3` to `Community 0`, `Community 1`, `Community 2`, `Community 4`, `Community 5`, `Community 6`, `Community 12`, `Community 15`, `Community 17`, `Community 18`, `Community 20`, `Community 23`?**
-  _High betweenness centrality (0.099) - this node is a cross-community bridge._
-- **Why does `Chunk` connect `Community 0` to `Community 1`, `Community 2`, `Community 3`, `Community 4`, `Community 5`, `Community 6`, `Community 9`, `Community 14`, `Community 16`, `Community 18`?**
-  _High betweenness centrality (0.070) - this node is a cross-community bridge._
-- **Why does `StageHealth` connect `Community 0` to `Community 1`, `Community 2`, `Community 3`, `Community 4`, `Community 6`, `Community 9`, `Community 10`, `Community 12`, `Community 17`, `Community 27`?**
-  _High betweenness centrality (0.054) - this node is a cross-community bridge._
+- **Why does `SearchHit` connect `Community 17` to `Community 2`, `Community 3`, `Community 4`, `Community 5`, `Community 133`, `Community 10`, `Community 267`, `Community 15`, `Community 18`, `Community 20`, `Community 23`, `Community 55`, `Community 57`, `Community 60`, `Community 62`, `Community 65`, `Community 80`, `Community 85`, `Community 86`, `Community 215`, `Community 101`, `Community 103`, `Community 108`, `Community 115`, `Community 119`?**
+  _High betweenness centrality (0.098) - this node is a cross-community bridge._
+- **Why does `SearchHit` connect `Community 97` to `Community 134`, `Community 136`, `Community 137`, `Community 268`, `Community 143`, `Community 144`, `Community 271`, `Community 278`, `Community 56`, `Community 186`, `Community 66`, `Community 327`, `Community 206`, `Community 79`, `Community 215`, `Community 345`, `Community 349`, `Community 94`, `Community 100`, `Community 105`, `Community 364`, `Community 110`, `Community 241`, `Community 113`, `Community 245`, `Community 636`, `Community 126`, `Community 127`?**
+  _High betweenness centrality (0.089) - this node is a cross-community bridge._
+- **Why does `Chunk` connect `Community 67` to `Community 0`, `Community 1`, `Community 3`, `Community 4`, `Community 133`, `Community 9`, `Community 140`, `Community 14`, `Community 16`, `Community 18`, `Community 55`, `Community 57`, `Community 60`, `Community 62`, `Community 68`, `Community 74`, `Community 80`, `Community 81`, `Community 84`, `Community 85`, `Community 215`, `Community 106`, `Community 119`?**
+  _High betweenness centrality (0.086) - this node is a cross-community bridge._
 - **Are the 314 inferred relationships involving `Chunk` (e.g. with `_Snapshot` and `WatchController`) actually correct?**
   _`Chunk` has 314 INFERRED edges - model-reasoned connections that need verification._
 - **Are the 300 inferred relationships involving `SearchHit` (e.g. with `HybridRrfConfig` and `HybridRrfRetrieval`) actually correct?**
   _`SearchHit` has 300 INFERRED edges - model-reasoned connections that need verification._
-- **Are the 267 inferred relationships involving `StageHealth` (e.g. with `TreeSitterDispatchConfig` and `TreeSitterDispatchChunker`) actually correct?**
+- **Are the 267 inferred relationships involving `StageHealth` (e.g. with `MCP tools. Empty in Phase 0; populated in Phase 1 (spec §9.2).` and `TreeSitterDispatchConfig`) actually correct?**
   _`StageHealth` has 267 INFERRED edges - model-reasoned connections that need verification._
-- **Are the 100 inferred relationships involving `Pipeline` (e.g. with `Typer CLI — composition root.  Subcommands: - ``index``    : walk → chunk → e` and `Get the singleton config instance.`) actually correct?**
-  _`Pipeline` has 100 INFERRED edges - model-reasoned connections that need verification._
+- **Are the 82 inferred relationships involving `StageHealth` (e.g. with `_StubEmbedder` and `_DummyStorage`) actually correct?**
+  _`StageHealth` has 82 INFERRED edges - model-reasoned connections that need verification._
