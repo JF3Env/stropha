@@ -13,6 +13,11 @@ This package is built up phase-by-phase per the RFC:
 
 from __future__ import annotations
 
+from .evaluator import (
+    EvaluatorError,
+    evaluate_candidate,
+    evaluate_from_golden,
+)
 from .feedback import (
     BadResult,
     BadResultStore,
@@ -54,6 +59,7 @@ __all__ = [
     "BadResult",
     "BadResultStore",
     "CandidateRecord",
+    "EvaluatorError",
     "FeedbackError",
     "LabelingContext",
     "PrunePlan",
@@ -65,6 +71,8 @@ __all__ = [
     "aggregate_score",
     "build_scorecard",
     "disk_usage",
+    "evaluate_candidate",
+    "evaluate_from_golden",
     "label_hit",
     "label_hits",
     "outcome_score_decomposition",
