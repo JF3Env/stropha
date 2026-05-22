@@ -63,6 +63,13 @@ from .prune import (
     disk_usage,
     prune,
 )
+from .sandbox import DEFAULT_TIMEOUT_S as SANDBOX_DEFAULT_TIMEOUT_S
+from .sandbox import (
+    RUNNER_MODULE,
+    SandboxError,
+    SandboxResult,
+    SubprocessSandbox,
+)
 from .search_space import (
     DEFAULT_MANIFEST,
     Constraint,
@@ -89,6 +96,8 @@ __all__ = [
     "DEFAULT_TIMEOUT_S",
     "DEFAULT_TRACE_MAX_AGE_DAYS",
     "DIMENSION_SIGNS",
+    "RUNNER_MODULE",
+    "SANDBOX_DEFAULT_TIMEOUT_S",
     "TIER_SCORE",
     "ArtifactStore",
     "ArtifactStoreError",
@@ -116,11 +125,14 @@ __all__ = [
     "ProposerFn",
     "PrunePlan",
     "PytestGate",
+    "SandboxError",
+    "SandboxResult",
     "ScoreCard",
     "SearchSpace",
     "SearchSpaceError",
     "Snapshot",
     "SnapshotError",
+    "SubprocessSandbox",
     "Tier",
     "TierLabel",
     "TraceRecord",
