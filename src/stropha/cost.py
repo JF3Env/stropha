@@ -102,12 +102,29 @@ class SavingsCost:
 
 
 @dataclass
+class MetaDiskCost:
+    """Per-run disk footprint of ``.stropha/meta/`` (WIN-166).
+
+    Populated lazily — only when the caller actually points ``aggregate``
+    at a meta directory via ``meta_dir=...``. Zero defaults so callers
+    that don't care about Meta-Harness state still get a coherent dict.
+    """
+
+    total_bytes: int = 0
+    traces_bytes: int = 0
+    outcomes_bytes: int = 0
+    candidates_bytes: int = 0
+    meta_dir: str | None = None
+
+
+@dataclass
 class CostReport:
     repos: dict[str, RepoCost] = field(default_factory=dict)
     adapters: dict[str, AdapterCost] = field(default_factory=dict)
     graph: GraphCost = field(default_factory=GraphCost)
     hook: HookCost = field(default_factory=HookCost)
     savings: SavingsCost = field(default_factory=SavingsCost)
+    meta_disk: MetaDiskCost = field(default_factory=MetaDiskCost)
     sources_scanned: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
@@ -120,6 +137,7 @@ class CostReport:
             "graph": vars(self.graph),
             "hook": vars(self.hook),
             "savings": savings_dict,
+            "meta_disk": vars(self.meta_disk),
             "sources_scanned": self.sources_scanned,
         }
 
@@ -148,9 +166,32 @@ def _try_json(line: str) -> dict[str, Any] | None:
         return None
 
 
-def aggregate(paths: Iterable[Path]) -> CostReport:
-    """Walk the given log paths and return aggregated counters."""
+def aggregate(
+    paths: Iterable[Path],
+    *,
+    meta_dir: Path | None = None,
+) -> CostReport:
+    """Walk the given log paths and return aggregated counters.
+
+    Args:
+        paths: log files to scan for counters.
+        meta_dir: optional ``.stropha/meta/`` directory. When provided,
+            the resulting :class:`CostReport.meta_disk` is populated with
+            the per-run disk footprint (WIN-166).
+    """
     report = CostReport()
+    if meta_dir is not None and Path(meta_dir).is_dir():
+        # Lazy import keeps the cost module independent of meta when
+        # callers don't ask for disk reporting.
+        from .meta.prune import disk_usage
+        usage = disk_usage(meta_dir)
+        report.meta_disk = MetaDiskCost(
+            total_bytes=usage["total"],
+            traces_bytes=usage["traces"],
+            outcomes_bytes=usage["outcomes"],
+            candidates_bytes=usage["candidates"],
+            meta_dir=str(meta_dir),
+        )
     for src, line in _iter_log_lines(paths):
         if str(src) not in report.sources_scanned:
             report.sources_scanned.append(str(src))

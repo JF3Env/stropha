@@ -19,6 +19,12 @@ from .feedback import (
     FeedbackError,
     resolve_bad_chunks,
 )
+from .prune import (
+    DEFAULT_TRACE_MAX_AGE_DAYS,
+    PrunePlan,
+    disk_usage,
+    prune,
+)
 from .outcome import (
     TIER_SCORE,
     LabelingContext,
@@ -33,6 +39,7 @@ from .store import ArtifactStore, ArtifactStoreError, CandidateRecord
 from .trace import TraceRecord, TraceRecorder
 
 __all__ = [
+    "DEFAULT_TRACE_MAX_AGE_DAYS",
     "TIER_SCORE",
     "ArtifactStore",
     "ArtifactStoreError",
@@ -41,13 +48,16 @@ __all__ = [
     "CandidateRecord",
     "FeedbackError",
     "LabelingContext",
+    "PrunePlan",
     "Tier",
     "TierLabel",
     "TraceRecord",
     "TraceRecorder",
     "aggregate_score",
+    "disk_usage",
     "label_hit",
     "label_hits",
+    "prune",
     "resolve_bad_chunks",
     "tier_summary",
 ]

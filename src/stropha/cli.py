@@ -1663,5 +1663,101 @@ def outcome_backfill_cmd(
     console.print(table)
 
 
+@meta_app.command("prune")
+def meta_prune_cmd(
+    meta_dir: Path = typer.Option(
+        None,
+        "--meta-dir",
+        help=(
+            "Override the meta directory. Defaults to "
+            "<index_path_parent>/meta/ next to the active index."
+        ),
+    ),
+    max_age_days: int = typer.Option(
+        90,
+        "--max-age-days",
+        help="Remove trace JSONL files older than N days. Default 90.",
+    ),
+    keep_top: int = typer.Option(
+        10,
+        "--keep-top",
+        help="Keep the top-N candidates by fitness. Default 10.",
+    ),
+    keep_bottom: int = typer.Option(
+        10,
+        "--keep-bottom",
+        help="Keep the bottom-N candidates (anti-examples). Default 10.",
+    ),
+    keep_recent: int = typer.Option(
+        50,
+        "--keep-recent",
+        help="Keep the most-recent-N candidates by created_at. Default 50.",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Preview what would be removed; do not touch disk.",
+    ),
+    json_out: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit the PrunePlan as JSON to stdout.",
+    ),
+) -> None:
+    """Prune `.stropha/meta/` per the WIN-166 disk-growth policy.
+
+    Three policies, applied independently and unioned:
+
+    1. Trace JSONL files older than --max-age-days are removed.
+    2. Candidates outside (top-N ∪ bottom-N ∪ recent-N) are pruned
+       (their directories removed; a `pruned: true` tombstone remains
+       in `index.jsonl`).
+    3. Disk usage is reported back so `stropha cost` can publish the
+       per-run meta footprint.
+
+    Pass --dry-run first to see what WOULD be removed.
+    """
+    from .meta.prune import prune as run_prune
+
+    cfg = _load_config()
+    if meta_dir is None:
+        index_path = Path(cfg.resolve_index_path()).expanduser().resolve()
+        meta_dir = index_path.parent / "meta"
+    meta_dir = meta_dir.expanduser().resolve()
+
+    if not meta_dir.is_dir():
+        console.print(f"[yellow]Meta dir does not exist:[/yellow] {meta_dir}")
+        raise typer.Exit(code=0)  # nothing to prune is not an error.
+
+    plan = run_prune(
+        meta_dir,
+        max_age_days=max_age_days,
+        keep_top=keep_top,
+        keep_bottom=keep_bottom,
+        keep_recent=keep_recent,
+        dry_run=dry_run,
+    )
+
+    if json_out:
+        import json as _json
+        console.print_json(_json.dumps(plan.to_dict()))
+        return
+
+    mode = "DRY RUN" if dry_run else "PRUNED"
+    table = Table(title=f"Meta prune — {mode}", show_lines=False)
+    table.add_column("Metric", style="cyan")
+    table.add_column("Value")
+    table.add_row("meta_dir", str(plan.meta_dir))
+    table.add_row("total_meta_bytes", _format_size(plan.total_meta_bytes))
+    table.add_row("  traces", _format_size(plan.traces_dir_bytes))
+    table.add_row("  outcomes", _format_size(plan.outcomes_dir_bytes))
+    table.add_row("  candidates", _format_size(plan.candidates_dir_bytes))
+    table.add_row("max_age_days", str(plan.max_age_days))
+    table.add_row("traces_to_remove", str(len(plan.traces_to_remove)))
+    table.add_row("candidates_to_prune", str(len(plan.candidates_to_prune)))
+    table.add_row("bytes_freed", _format_size(plan.bytes_freed))
+    console.print(table)
+
+
 if __name__ == "__main__":
     app()
