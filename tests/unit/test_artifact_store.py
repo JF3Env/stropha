@@ -81,6 +81,25 @@ class TestCandidateRecord:
         # weight for 'b' missing → 1.0; total 1.0 + 2.0 = 3.0
         assert rec.fitness({"a": 1.0}) == pytest.approx(3.0)
 
+    def test_fitness_all_non_numeric_returns_neg_inf(self) -> None:
+        """WIN-193 follow-on: scores may carry dicts (e.g. tier_counts)
+        for provenance. fitness() must ignore those, and when every
+        score is non-numeric the candidate falls back to -inf so it
+        sorts behind anything with real numbers."""
+        rec = CandidateRecord(
+            id="x", created_at="t",
+            scores={"tier_counts": {"T1": 5}, "label": "foo"},
+        )
+        assert rec.fitness() == float("-inf")
+
+    def test_fitness_filters_non_numeric_from_mean(self) -> None:
+        rec = CandidateRecord(
+            id="x", created_at="t",
+            scores={"quality": 0.8, "tier_counts": {"T1": 5}},
+        )
+        # tier_counts is dict → filtered. Mean of {quality: 0.8} = 0.8.
+        assert rec.fitness() == pytest.approx(0.8)
+
 
 # ---------------------------------------------------------------------------
 # ArtifactStore construction

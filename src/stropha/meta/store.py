@@ -87,7 +87,11 @@ class CandidateRecord(BaseModel):
     label: str | None = None
     config: dict[str, Any] = Field(default_factory=dict)
     meta: dict[str, Any] = Field(default_factory=dict)
-    scores: dict[str, float] = Field(default_factory=dict)
+    scores: dict[str, Any] = Field(default_factory=dict)
+    """Score map. Values are usually float, but WIN-169's ScoreCard
+    also surfaces ``tier_counts`` (a dict) for provenance. Pydantic
+    accepts any JSON-serialisable value here; fitness math filters
+    to numeric values."""
     trace_count: int = 0
     pruned: bool = False
     base_dir: Path | None = Field(default=None, exclude=True)
@@ -100,10 +104,16 @@ class CandidateRecord(BaseModel):
         """
         if not self.scores:
             return float("-inf")
+        numeric = {
+            k: float(v) for k, v in self.scores.items()
+            if isinstance(v, (int, float)) and not isinstance(v, bool)
+        }
+        if not numeric:
+            return float("-inf")
         if weights is None:
-            return sum(self.scores.values()) / len(self.scores)
+            return sum(numeric.values()) / len(numeric)
         total = 0.0
-        for name, value in self.scores.items():
+        for name, value in numeric.items():
             total += value * weights.get(name, 1.0)
         return total
 

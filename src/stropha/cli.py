@@ -1873,5 +1873,296 @@ def meta_prune_cmd(
     console.print(table)
 
 
+# ============================================================================ #
+#                       META — Phase 4 LOOP COMMANDS (WIN-193)                 #
+# ============================================================================ #
+
+# ``meta_app`` is already declared earlier in this file for the outcome
+# backfill command. We extend it here with the Phase 4 surface:
+# ``stropha meta {run, status, report, promote, trace, snapshot}``.
+
+
+def _meta_dir_default() -> Path:
+    cfg = _load_config()
+    index_path = Path(cfg.resolve_index_path()).expanduser().resolve()
+    return index_path.parent / "meta"
+
+
+@meta_app.command("run")
+def meta_run_cmd(
+    iterations: int = typer.Option(
+        20, "--iterations", "-n",
+        help="Number of Algorithm 1 iterations (default 20).",
+    ),
+    wall_clock_s: float | None = typer.Option(
+        None, "--wall-clock",
+        help="Wall-clock budget in seconds. Stops on whichever budget fires first.",
+    ),
+    proposer: str = typer.Option(
+        "bandit", "--proposer",
+        help="Proposer strategy: bandit | local-agentic | cloud-agentic.",
+    ),
+    seed: int | None = typer.Option(
+        None, "--seed",
+        help="RNG seed for the bandit + fallback paths (reproducibility).",
+    ),
+    meta_dir: Path = typer.Option(
+        None, "--meta-dir",
+        help="Override meta dir. Defaults to <index_parent>/meta/.",
+    ),
+) -> None:
+    """Run the Meta-Harness outer loop (Algorithm 1, WIN-187).
+
+    Loads the search space from the bundled manifest, instantiates the
+    chosen proposer, and iterates ``--iterations`` times (or until
+    ``--wall-clock`` expires). Persists every candidate via the
+    ArtifactStore (WIN-161). Reports the final frontier.
+
+    The evaluator is a stub identity function for now — the WIN-186 epic
+    ships the loop infrastructure; the production evaluator wiring
+    against a live SearchEngine lands in Phase 5 (WIN-195+).
+    """
+    from .meta import (
+        ArtifactStore,
+        ScoreCard,
+        load_search_space,
+        run_loop,
+    )
+    from .meta.proposer import (
+        make_bandit_proposer,
+        make_cloud_agentic_proposer,
+        make_local_agentic_proposer,
+    )
+
+    if meta_dir is None:
+        meta_dir = _meta_dir_default()
+    meta_dir = meta_dir.expanduser().resolve()
+
+    space = load_search_space()
+    if proposer == "bandit":
+        prop = make_bandit_proposer(space, seed=seed)
+    elif proposer == "local-agentic":
+        prop = make_local_agentic_proposer(space, fallback_seed=seed)
+    elif proposer == "cloud-agentic":
+        prop = make_cloud_agentic_proposer(space, fallback_seed=seed)
+    else:
+        console.print(f"[red]Unknown proposer:[/red] {proposer}")
+        raise typer.Exit(code=1)
+
+    # Stub evaluator — returns a deterministic ScoreCard for now so the
+    # loop's plumbing (proposer + persist + Pareto) is exercisable
+    # without a live SearchEngine. The full evaluator wires in Phase 5.
+    import random as _random
+    rng = _random.Random(seed)
+
+    def stub_eval(cfg: dict[str, Any]) -> ScoreCard:
+        return ScoreCard(
+            quality=rng.uniform(0.4, 0.95),
+            context_efficiency=rng.uniform(0.3, 0.9),
+            outcome_score=rng.uniform(0.0, 0.7),
+            latency_ms=rng.uniform(10, 200),
+            n_queries=20,
+            n_hits=int(rng.uniform(10, 20)),
+        )
+
+    store = ArtifactStore(meta_dir)
+    result = run_loop(
+        proposer=prop,
+        evaluator=stub_eval,
+        store=store,
+        max_iterations=iterations,
+        wall_clock_s=wall_clock_s,
+    )
+    table = Table(title=f"stropha meta run — {result.stopped_reason}")
+    table.add_column("Metric", style="cyan")
+    table.add_column("Value")
+    table.add_row("iterations", str(result.iterations))
+    table.add_row("elapsed_s", f"{result.elapsed_s:.2f}")
+    table.add_row("archive_size", str(len(result.archive)))
+    table.add_row("frontier_size", str(len(result.frontier)))
+    table.add_row("errors", str(len(result.errors)))
+    console.print(table)
+
+
+@meta_app.command("status")
+def meta_status_cmd(
+    meta_dir: Path = typer.Option(None, "--meta-dir"),
+    json_out: bool = typer.Option(False, "--json"),
+) -> None:
+    """Summary of the current archive + Pareto frontier."""
+    from .meta import ArtifactStore, ScoreCard, scorecard_pareto_frontier
+
+    if meta_dir is None:
+        meta_dir = _meta_dir_default()
+    meta_dir = meta_dir.expanduser().resolve()
+    if not (meta_dir / "candidates").is_dir():
+        console.print(f"[yellow]No candidates at:[/yellow] {meta_dir}")
+        raise typer.Exit(code=0)
+    store = ArtifactStore(meta_dir)
+    candidates = store.list_candidates()
+    cards = [
+        ScoreCard(**{k: v for k, v in c.scores.items() if k in {
+            "quality", "context_efficiency", "outcome_score", "latency_ms",
+        }})
+        for c in candidates if c.scores
+    ]
+    frontier = scorecard_pareto_frontier(cards)
+    if json_out:
+        import json as _json
+        console.print_json(_json.dumps({
+            "archive_size": len(candidates),
+            "frontier_size": len(frontier),
+            "meta_dir": str(meta_dir),
+        }))
+        return
+    console.print(
+        f"[bold]archive:[/bold] {len(candidates)} candidates · "
+        f"[bold]frontier:[/bold] {len(frontier)} non-dominated"
+    )
+
+
+@meta_app.command("report")
+def meta_report_cmd(
+    meta_dir: Path = typer.Option(None, "--meta-dir"),
+    limit: int = typer.Option(10, "--limit", "-n",
+                              help="Top-N candidates by fitness."),
+    sort_by: str = typer.Option("fitness", "--sort-by",
+                                 help="created_at | id | fitness | <score_key>"),
+    json_out: bool = typer.Option(False, "--json"),
+) -> None:
+    """List the top candidates by fitness with their score breakdown."""
+    from .meta import ArtifactStore
+
+    if meta_dir is None:
+        meta_dir = _meta_dir_default()
+    meta_dir = meta_dir.expanduser().resolve()
+    if not (meta_dir / "candidates").is_dir():
+        console.print(f"[yellow]No candidates at:[/yellow] {meta_dir}")
+        raise typer.Exit(code=0)
+    store = ArtifactStore(meta_dir)
+    candidates = store.list_candidates(limit=limit, sort_by=sort_by)
+
+    if json_out:
+        import json as _json
+        console.print_json(_json.dumps([c.to_dict() if hasattr(c, "to_dict") else {
+            "id": c.id, "label": c.label, "scores": c.scores,
+            "fitness": c.fitness(),
+        } for c in candidates]))
+        return
+
+    table = Table(title=f"Top {limit} candidates ({sort_by})")
+    table.add_column("ID", style="cyan")
+    table.add_column("Label")
+    table.add_column("Fitness", justify="right")
+    table.add_column("Quality", justify="right")
+    table.add_column("Latency_ms", justify="right")
+    for c in candidates:
+        table.add_row(
+            c.id,
+            c.label or "—",
+            f"{c.fitness():+.4f}",
+            f"{c.scores.get('quality', 0):.3f}" if c.scores else "—",
+            f"{c.scores.get('latency_ms', 0):.1f}" if c.scores else "—",
+        )
+    console.print(table)
+
+
+@meta_app.command("promote")
+def meta_promote_cmd(
+    candidate_id: str = typer.Argument(..., help="Candidate id to promote."),
+    meta_dir: Path = typer.Option(None, "--meta-dir"),
+    dry_run: bool = typer.Option(False, "--dry-run",
+                                  help="Show the candidate's config but do NOT write stropha.yaml."),
+) -> None:
+    """Promote a candidate's config to the production ``stropha.yaml``.
+
+    Writes the chosen candidate's ``config.yaml`` to the cwd's
+    ``stropha.yaml`` (overwriting it). The operator should review the
+    diff before committing.
+    """
+    from .meta import ArtifactStore
+
+    if meta_dir is None:
+        meta_dir = _meta_dir_default()
+    meta_dir = meta_dir.expanduser().resolve()
+    store = ArtifactStore(meta_dir)
+    try:
+        rec = store.read_candidate(candidate_id)
+    except Exception as exc:
+        console.print(f"[red]Cannot read candidate {candidate_id}:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    target = Path.cwd() / "stropha.yaml"
+    if dry_run:
+        console.print(f"[yellow]DRY RUN[/yellow] — would write to {target}")
+        import yaml as _yaml  # type: ignore[import-untyped]
+        console.print(_yaml.safe_dump(rec.config, sort_keys=True))
+        return
+    import yaml as _yaml  # type: ignore[import-untyped]
+    target.write_text(_yaml.safe_dump(rec.config, sort_keys=True))
+    console.print(f"[green]Promoted[/green] {candidate_id} → {target}")
+
+
+@meta_app.command("trace")
+def meta_trace_cmd(
+    candidate_id: str = typer.Argument(..., help="Candidate id to inspect."),
+    meta_dir: Path = typer.Option(None, "--meta-dir"),
+) -> None:
+    """Show the trace files for one candidate."""
+    from .meta import ArtifactStore
+
+    if meta_dir is None:
+        meta_dir = _meta_dir_default()
+    meta_dir = meta_dir.expanduser().resolve()
+    store = ArtifactStore(meta_dir)
+    try:
+        rec = store.read_candidate(candidate_id)
+    except Exception as exc:
+        console.print(f"[red]Cannot read candidate {candidate_id}:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    if rec.base_dir is None:
+        console.print(f"[red]No base_dir on candidate {candidate_id}[/red]")
+        raise typer.Exit(code=1)
+    traces_dir = rec.base_dir / "traces"
+    if not traces_dir.is_dir():
+        console.print(f"[yellow]No traces/ for[/yellow] {candidate_id}")
+        return
+    trace_files = sorted(traces_dir.glob("*.jsonl"))
+    table = Table(title=f"Traces — {candidate_id}")
+    table.add_column("File")
+    table.add_column("Bytes", justify="right")
+    for tf in trace_files:
+        table.add_row(tf.name, str(tf.stat().st_size))
+    console.print(table)
+
+
+@meta_app.command("snapshot")
+def meta_snapshot_cmd(
+    ref: str = typer.Option("HEAD", "--ref",
+                             help="Git ref to pin (HEAD, branch, SHA)."),
+    repo: Path = typer.Option(None, "--repo"),
+    list_only: bool = typer.Option(False, "--list",
+                                    help="List existing snapshots and exit."),
+) -> None:
+    """Create or list git-worktree snapshots (WIN-175)."""
+    from .meta import create_snapshot, list_snapshots
+
+    cfg = _load_config()
+    if repo is None:
+        repo = cfg.target_repo or Path.cwd()
+    repo = repo.expanduser().resolve()
+
+    if list_only:
+        root = repo / ".stropha" / "meta" / "snapshot" / "worktrees"
+        snaps = list_snapshots(root)
+        for sha in snaps:
+            console.print(sha)
+        return
+
+    snap = create_snapshot(source_repo=repo, ref=ref)
+    console.print(f"[green]Snapshot:[/green] {snap.sha} → {snap.path}")
+
+
 if __name__ == "__main__":
     app()
