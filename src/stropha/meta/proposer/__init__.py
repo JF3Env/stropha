@@ -33,15 +33,27 @@ def load_skill() -> str:
 # Imported last to avoid circular import (these modules import load_skill).
 from .agentic import CloudAgenticProposer, make_cloud_agentic_proposer  # noqa: E402
 from .bandit import BanditProposer, make_bandit_proposer  # noqa: E402
+from .code import (  # noqa: E402
+    CloudCodeProposer,
+    CodeProposerMixin,
+    LocalCodeProposer,
+    make_cloud_code_proposer,
+    make_local_code_proposer,
+)
 from .inference_helper import LocalAgenticProposer, make_local_agentic_proposer  # noqa: E402
 
 __all__ = [
     "SKILL_PATH",
     "BanditProposer",
     "CloudAgenticProposer",
+    "CloudCodeProposer",
+    "CodeProposerMixin",
     "LocalAgenticProposer",
+    "LocalCodeProposer",
     "load_skill",
     "make_bandit_proposer",
     "make_cloud_agentic_proposer",
+    "make_cloud_code_proposer",
     "make_local_agentic_proposer",
+    "make_local_code_proposer",
 ]

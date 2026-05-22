@@ -60,6 +60,16 @@ from ..logging import get_logger
 log = get_logger(__name__)
 
 
+# Reserved key inside a candidate's config dict. WIN-196 (Phase 5 code
+# search) lets the agentic proposer attach NEW adapter Python files to a
+# candidate. We pass them through the ``ProposerFn -> dict`` protocol by
+# hiding them under this key — the store pops it during
+# ``register_candidate`` and materialises the files under
+# ``candidates/<id>/adapters/`` instead of letting them blob into
+# ``config.yaml``. Defense-in-depth path validation lives here too.
+CODE_ARTIFACTS_KEY = "__code_artifacts__"
+
+
 class ArtifactStoreError(StrophaError):
     """Raised when the artifact store cannot satisfy a request."""
 
@@ -72,6 +82,43 @@ def _now_utc_iso() -> str:
 def _short_id() -> str:
     """8-char hex id — short enough to type, wide enough for ~4 billion candidates."""
     return uuid.uuid4().hex[:8]
+
+
+def _validate_artifact_rel_path(rel_path: str) -> None:
+    """Reject anything that isn't a plain forward-slash relative path.
+
+    WIN-196: this is the second line of defence behind the proposer's
+    own path validation. The store treats the artifacts dict as
+    untrusted input — production ``src/stropha/adapters/`` MUST NEVER
+    be in scope, no matter what an LLM emits. Raises
+    :class:`ArtifactStoreError` on any violation.
+    """
+    if not isinstance(rel_path, str) or not rel_path:
+        raise ArtifactStoreError(
+            f"artifact path must be a non-empty string; got {rel_path!r}"
+        )
+    if rel_path.startswith("/"):
+        raise ArtifactStoreError(
+            f"artifact path must be relative; got absolute {rel_path!r}"
+        )
+    if "\\" in rel_path:
+        raise ArtifactStoreError(
+            f"artifact path must use POSIX separators; got {rel_path!r}"
+        )
+    # Windows drive prefix ("C:foo", "c:/foo", …) — defensive cross-platform.
+    if len(rel_path) >= 2 and rel_path[1] == ":":
+        raise ArtifactStoreError(
+            f"artifact path must not carry a drive prefix; got {rel_path!r}"
+        )
+    parts = rel_path.split("/")
+    for segment in parts:
+        if segment in ("", "..", "."):
+            # Empty segment = leading "/", double "//", or trailing "/".
+            # ".." and "." are traversal markers.
+            raise ArtifactStoreError(
+                f"artifact path {rel_path!r} contains an illegal segment "
+                f"{segment!r}"
+            )
 
 
 class CandidateRecord(BaseModel):
@@ -173,13 +220,30 @@ class ArtifactStore:
         traces_dir = cand_dir / "traces"
         traces_dir.mkdir(parents=True, exist_ok=True)
 
+        # WIN-196: pull out proposer-supplied code artifacts (new adapter
+        # Python files) before the config is serialised to YAML. They get
+        # materialised separately under ``<cand_dir>/adapters/`` so a future
+        # subprocess sandbox (WIN-198) can load them in isolation. We copy
+        # the caller's dict so a downstream mutation doesn't leak back.
+        clean_config = dict(config)
+        code_artifacts: dict[str, str] = {}
+        raw_artifacts = clean_config.pop(CODE_ARTIFACTS_KEY, None)
+        if raw_artifacts:
+            if not isinstance(raw_artifacts, dict):
+                shutil.rmtree(cand_dir, ignore_errors=True)
+                raise ArtifactStoreError(
+                    f"{CODE_ARTIFACTS_KEY} must be a dict[str, str]; "
+                    f"got {type(raw_artifacts).__name__}"
+                )
+            code_artifacts = {str(k): str(v) for k, v in raw_artifacts.items()}
+
         created_at = _now_utc_iso()
         record = CandidateRecord(
             id=cid,
             parent_id=parent,
             created_at=created_at,
             label=label,
-            config=dict(config),
+            config=clean_config,
             meta=dict(meta or {}),
             scores={},
             trace_count=0,
@@ -207,17 +271,90 @@ class ArtifactStore:
                 encoding="utf-8",
             )
             (cand_dir / "scores.json").write_text("{}\n", encoding="utf-8")
-        except (OSError, TypeError) as exc:
+            if code_artifacts:
+                self._write_code_artifacts(cid, code_artifacts)
+        except (OSError, TypeError, ArtifactStoreError) as exc:
             # Roll back the directory so a failed register doesn't
-            # leave the store in an inconsistent state.
+            # leave the store in an inconsistent state. ArtifactStoreError
+            # is included so artifact-path violations also unwind the
+            # candidate (no half-registered tombstones).
             shutil.rmtree(cand_dir, ignore_errors=True)
+            if isinstance(exc, ArtifactStoreError):
+                raise
             raise ArtifactStoreError(
                 f"failed to write candidate {cid!r}: {exc}"
             ) from exc
 
         self._append_index({"id": cid, "parent_id": parent, "created_at": created_at})
-        log.info("artifactstore.register", id=cid, parent=parent, label=label)
+        log.info(
+            "artifactstore.register",
+            id=cid,
+            parent=parent,
+            label=label,
+            code_artifacts=len(code_artifacts),
+        )
         return record
+
+    def _write_code_artifacts(
+        self,
+        candidate_id: str,
+        artifacts: dict[str, str],
+    ) -> None:
+        """Persist proposer-supplied adapter source files (WIN-196).
+
+        Path contract: every ``rel_path`` is rooted at the candidate
+        directory and MUST start with ``adapters/`` — i.e. the LLM
+        emits a path that looks like ``adapters/<stage>/<name>.py``,
+        and the store writes that path verbatim under
+        ``<candidates_dir>/<candidate_id>/<rel_path>``.
+
+        Every path is validated *defensively* — even though the
+        proposer (``meta/proposer/code.py``) does the same checks before
+        emitting the artifacts, the store treats the dict as untrusted
+        input. The rules:
+
+        - ``rel_path`` MUST be a non-empty relative POSIX path.
+        - No backslashes, no leading ``/``, no Windows drive prefix.
+        - Every segment must be a real name (``..`` rejected).
+        - The path MUST start with ``adapters/`` so it lands under the
+          candidate's adapters tree, not in ``traces/`` or ``scores.json``.
+        - The fully-resolved path MUST stay under
+          ``<candidates_dir>/<candidate_id>/adapters/``.
+        - File suffix MUST be ``.py``.
+
+        Any violation raises :class:`ArtifactStoreError` which the
+        caller in :meth:`register_candidate` translates into a rollback
+        so a partially-written candidate cannot be left on disk.
+        """
+        cand_dir = self.candidates_dir / candidate_id
+        adapters_root = (cand_dir / "adapters").resolve()
+        adapters_root.mkdir(parents=True, exist_ok=True)
+        for rel_path, source in artifacts.items():
+            _validate_artifact_rel_path(rel_path)
+            if not rel_path.startswith("adapters/"):
+                raise ArtifactStoreError(
+                    f"artifact path {rel_path!r} must start with 'adapters/'"
+                )
+            target = (cand_dir / rel_path).resolve()
+            try:
+                target.relative_to(adapters_root)
+            except ValueError as exc:
+                raise ArtifactStoreError(
+                    f"artifact path {rel_path!r} escapes adapters/ root"
+                ) from exc
+            if target.suffix != ".py":
+                raise ArtifactStoreError(
+                    f"artifact path {rel_path!r} must end in .py "
+                    f"(got {target.suffix!r})"
+                )
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(source, encoding="utf-8")
+            log.info(
+                "artifactstore.code_artifact",
+                id=candidate_id,
+                path=str(target.relative_to(cand_dir)),
+                bytes=len(source),
+            )
 
     def write_scores(self, candidate_id: str, scores: dict[str, float]) -> None:
         """Replace ``scores.json`` for ``candidate_id``.

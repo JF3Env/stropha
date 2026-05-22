@@ -1,0 +1,438 @@
+"""Code-search proposer (WIN-196 — EPIC 1.6 Phase 5).
+
+The plain agentic proposers (WIN-190 local, WIN-191 cloud) only choose
+values along the **config** axis: which adapter to use at each stage,
+which retrieval feature to enable, what cache size to try next. The
+**code** proposer can also propose *new adapter source files*, which
+the ``ArtifactStore`` materialises under
+``candidates/<id>/adapters/<rel_path>``.
+
+Why this matters
+----------------
+
+Per ``docs/architecture/stropha-meta-harness.md`` §Phase 5: the paper's
+"search over harness code" is the full Meta-Harness regime. Letting the
+proposer write code (not just pick from a manifest) opens up:
+
+- a new adapter that does X — e.g. a tokenizer-aware chunker the
+  current registry doesn't ship;
+- a fix to a retrieval-stream edge case the proposer noticed in traces;
+- an experimental enricher that fuses two existing strategies.
+
+The safety arguments (paper §5, RFC §7 risk table):
+
+- **Inspectable.** The candidate's source lands on disk in plain text;
+  ``git diff`` shows everything the proposer emitted.
+- **Sandboxed.** WIN-198 will load each candidate's adapters in a
+  subprocess so a runaway proposed adapter cannot kill the loop.
+- **Test-gated.** WIN-197 will run ``uv run pytest -q`` *before*
+  scoring; any candidate that breaks the suite is rejected.
+- **Production-isolated.** ``src/stropha/adapters/`` is never written
+  to. The proposer emits relative paths; the store rejects anything
+  that resolves outside ``candidates/<id>/adapters/``. WIN-200 will add
+  end-to-end safety tests that confirm this invariant.
+
+Output contract
+---------------
+
+The LLM is asked to return ONE JSON object::
+
+    {
+      "config": { "<dim>": <value>, ... },
+      "code_artifacts": { "<rel_path>": "<python source>", ... }
+    }
+
+Both keys are optional. When ``config`` is omitted the whole object is
+treated as a config dict (back-compat with the plain agentic proposer
+prompt). When ``code_artifacts`` is omitted, the proposer behaves
+exactly like its plain agentic parent.
+
+Surviving artifacts are stuffed back into the returned config dict
+under :data:`stropha.meta.store.CODE_ARTIFACTS_KEY`, where the store's
+``register_candidate`` pops them. The loop never sees the key — the
+``ProposerFn -> dict`` protocol is preserved.
+"""
+
+from __future__ import annotations
+
+import re
+from collections.abc import Iterable
+from dataclasses import dataclass, field
+from typing import Any
+
+from ...logging import get_logger
+from ..fitness import ScoreCard
+from ..search_space import SearchSpace
+from ..store import CODE_ARTIFACTS_KEY, CandidateRecord
+from . import load_skill
+from ._agentic_base import (
+    AgenticProposerBase,
+    _clamp_to_space,
+    _extract_json,
+)
+from .agentic import CloudAgenticProposer
+from .inference_helper import LocalAgenticProposer
+
+log = get_logger(__name__)
+
+
+# A proposed adapter source MUST contain this token. The registry decorator
+# is what wires the adapter into the stage; a file that doesn't decorate
+# anything is dead code at best, and at worst a sign the LLM forgot the
+# contract. Cheap sanity gate; the subprocess sandbox in WIN-198 is the
+# real safety net.
+REGISTER_ADAPTER_TOKEN = "@register_adapter"
+
+
+# Path constraints — kept here so the proposer rejects obvious abuse
+# before any byte hits the store. The store re-validates everything
+# defensively (defence-in-depth, see _validate_artifact_rel_path in
+# meta/store.py), but the proposer-side validator avoids the round-trip
+# entirely for the common case of a malformed LLM response.
+_ALLOWED_PATH_RE = re.compile(r"^[A-Za-z0-9_./-]+$")
+"""Whitelist of characters allowed inside an artifact's relative path.
+
+Underscores, dashes, dots, and forward slashes only. NUL bytes,
+backslashes, drive prefixes, and anything fancy are rejected. The
+``ArtifactStore._write_code_artifacts`` validator catches anything this
+regex misses (e.g. ``./../foo`` which passes the regex but contains
+``..``).
+"""
+
+
+# Hard cap on the byte size of one artifact source. Even with cloud
+# models a single adapter rarely needs more than this; the cap is a
+# defence against pathological prompt-injection cases that try to fill
+# the disk.
+MAX_ARTIFACT_SOURCE_BYTES = 64_000
+
+# Hard cap on the number of artifacts in a single proposal. The
+# proposer normally emits one or two files; ten+ is suspect.
+MAX_ARTIFACTS_PER_CANDIDATE = 10
+
+
+# ---------------------------------------------------------------------------
+# Validation
+# ---------------------------------------------------------------------------
+
+
+def _is_valid_artifact_path(rel_path: str) -> bool:
+    """Return True when ``rel_path`` is a safe ``adapters/...<.py>`` path.
+
+    Rejects: absolute paths, backslashes, drive prefixes, empty / dot /
+    parent segments, any non-whitelisted character, any path not ending
+    in ``.py``, and any path not rooted at ``adapters/``.
+
+    The ``adapters/`` prefix is part of the contract surfaced to the
+    LLM (see :func:`build_code_prompt_tail`). The store re-checks the
+    prefix in :meth:`ArtifactStore._write_code_artifacts` and rejects
+    anything that resolves outside ``<candidate>/adapters/``.
+
+    We duplicate the proposer-side checks so the proposer can drop bad
+    paths quietly rather than failing the whole proposal on one bad
+    entry — the LLM still gets to evaluate its config dict; only the
+    malformed artifact is dropped.
+    """
+    if not rel_path or not isinstance(rel_path, str):
+        return False
+    if rel_path.startswith("/"):
+        return False
+    if "\\" in rel_path:
+        return False
+    if len(rel_path) >= 2 and rel_path[1] == ":":
+        return False
+    if not rel_path.endswith(".py"):
+        return False
+    if not _ALLOWED_PATH_RE.fullmatch(rel_path):
+        return False
+    for segment in rel_path.split("/"):
+        if segment in ("", "..", "."):
+            return False
+    # Must land under <candidate>/adapters/ — anything else is out of
+    # scope for Phase 5 code search (no proposer-emitted tests/, etc).
+    return rel_path.startswith("adapters/")
+
+
+def _is_valid_artifact_source(source: str) -> bool:
+    """Return True when ``source`` looks like a real adapter module.
+
+    The bar is intentionally low — we only require the
+    ``@register_adapter`` token to be present somewhere. Concrete
+    importability is enforced by the subprocess sandbox + pytest gate
+    that come in WIN-197 + WIN-198.
+    """
+    if not isinstance(source, str) or not source.strip():
+        return False
+    if len(source.encode("utf-8")) > MAX_ARTIFACT_SOURCE_BYTES:
+        return False
+    return REGISTER_ADAPTER_TOKEN in source
+
+
+def _validate_artifacts(raw: Any) -> dict[str, str]:
+    """Return the subset of ``raw`` that survives every validation rule.
+
+    Bad entries are logged at warning level and dropped — a single
+    malformed file MUST NOT abort the whole proposal. The proposer
+    should still get to evaluate its config; the LLM can do better next
+    iteration.
+    """
+    if not raw:
+        return {}
+    if not isinstance(raw, dict):
+        log.warning("code_proposer.bad_artifacts_type", got=type(raw).__name__)
+        return {}
+    survivors: dict[str, str] = {}
+    for rel_path, source in raw.items():
+        if len(survivors) >= MAX_ARTIFACTS_PER_CANDIDATE:
+            log.warning(
+                "code_proposer.too_many_artifacts",
+                limit=MAX_ARTIFACTS_PER_CANDIDATE,
+            )
+            break
+        if not _is_valid_artifact_path(rel_path):
+            log.warning("code_proposer.bad_artifact_path", path=rel_path)
+            continue
+        if not _is_valid_artifact_source(source):
+            log.warning("code_proposer.bad_artifact_source", path=rel_path)
+            continue
+        survivors[rel_path] = source
+    return survivors
+
+
+# ---------------------------------------------------------------------------
+# Prompt assembly
+# ---------------------------------------------------------------------------
+
+
+# Appended to the standard agentic prompt. Keeps the original instructions
+# (single JSON object, stay within manifest, no prose) and just adds the
+# code_artifacts option.
+_CODE_PROMPT_TAIL = """\
+
+## Code-search option (Phase 5)
+
+You MAY also propose ONE OR MORE brand-new adapter Python files in
+addition to your config dict. Wrap them inside a top-level
+``code_artifacts`` object mapping a relative path (under
+``adapters/<stage>/<name>.py``) to the file's full source. Every source
+MUST decorate at least one class with ``@register_adapter(stage=..., name=...)``.
+
+When you propose code:
+
+- Use forward-slash relative paths only. No leading ``/``, no ``..``,
+  no backslashes.
+- Stick to ``adapters/<stage>/<name>.py`` shape. The stage name MUST be
+  one already in the manifest.
+- Keep each file under {max_bytes} bytes.
+- A maximum of {max_files} files per proposal.
+
+If you DO NOT have a clear code change to make, omit
+``code_artifacts`` entirely. The loop will still evaluate your config.
+
+Schema:
+
+    {{
+      "config": {{ "<dim>": <value>, ... }},
+      "code_artifacts": {{ "<rel_path>": "<full python source>", ... }}
+    }}
+
+Return ONE JSON object — and ONLY that object — and nothing outside it.
+"""
+
+
+def build_code_prompt_tail() -> str:
+    """Return the formatted Phase-5 tail appended to the base prompt."""
+    return _CODE_PROMPT_TAIL.format(
+        max_bytes=MAX_ARTIFACT_SOURCE_BYTES,
+        max_files=MAX_ARTIFACTS_PER_CANDIDATE,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Mixin
+# ---------------------------------------------------------------------------
+
+
+class CodeProposerMixin:
+    """Shared override of ``__call__`` for any code-search proposer.
+
+    The mixin is applied to :class:`LocalAgenticProposer` and
+    :class:`CloudAgenticProposer` (the two concrete agentic proposers).
+    It depends on attributes provided by :class:`AgenticProposerBase`
+    (``space``, ``backend_name``, ``env``, ``_fallback_propose``, …)
+    and overrides:
+
+    - :meth:`_build_prompt` to append the Phase-5 schema.
+    - :meth:`__call__` to parse both ``config`` and ``code_artifacts``.
+
+    Concrete classes (:class:`LocalCodeProposer`,
+    :class:`CloudCodeProposer`) inherit from the mixin AND the
+    underlying agentic proposer to compose the behaviour.
+    """
+
+    def _build_prompt(  # type: ignore[override]
+        self,
+        archive: list[tuple[CandidateRecord, ScoreCard]],
+    ) -> str:
+        # Defer to the agentic base for the standard prompt body, then
+        # append the code-artifacts schema. The base method exists on
+        # AgenticProposerBase; the mixin assumes it via MRO.
+        base = AgenticProposerBase._build_prompt(self, archive)  # type: ignore[arg-type]
+        return base + build_code_prompt_tail()
+
+    def __call__(  # type: ignore[override]
+        self,
+        archive: Iterable[tuple[CandidateRecord, ScoreCard]],
+    ) -> dict[str, Any]:
+        archive_list = list(archive)
+        prompt = self._build_prompt(archive_list)
+        try:
+            raw = self._call_llm(prompt)  # type: ignore[attr-defined]
+        except Exception as exc:
+            log.warning(
+                "code_proposer.llm_failed",
+                backend=getattr(self, "backend_name", "?"),
+                error=str(exc),
+            )
+            return self._fallback_propose(archive_list)  # type: ignore[attr-defined]
+        if raw is None or not raw.strip():
+            log.warning(
+                "code_proposer.empty_response",
+                backend=getattr(self, "backend_name", "?"),
+            )
+            return self._fallback_propose(archive_list)  # type: ignore[attr-defined]
+
+        try:
+            obj = _extract_json(raw)
+        except ValueError as exc:
+            log.warning(
+                "code_proposer.bad_json",
+                backend=getattr(self, "backend_name", "?"),
+                error=str(exc),
+                preview=raw[:120],
+            )
+            return self._fallback_propose(archive_list)  # type: ignore[attr-defined]
+
+        # Two shapes accepted:
+        # 1. Phase-5: ``{"config": {...}, "code_artifacts": {...}}``
+        # 2. Back-compat: ``{...}`` interpreted as the plain config dict.
+        # Heuristic: if "config" key is itself a dict, treat object as a
+        # wrapper. Otherwise treat the whole thing as the config.
+        config_raw: Any
+        artifacts_raw: Any
+        if isinstance(obj.get("config"), dict):
+            config_raw = obj["config"]
+            artifacts_raw = obj.get("code_artifacts")
+        else:
+            config_raw = obj
+            artifacts_raw = obj.get("code_artifacts") if isinstance(obj, dict) else None
+
+        space: SearchSpace = self.space  # type: ignore[attr-defined]
+        cleaned = _clamp_to_space(config_raw, space)
+        env = getattr(self, "env", None) or {}
+        constrained = space.apply_constraints(cleaned, env=env)
+
+        artifacts = _validate_artifacts(artifacts_raw)
+        if artifacts:
+            constrained[CODE_ARTIFACTS_KEY] = artifacts
+            log.info(
+                "code_proposer.artifacts_attached",
+                backend=getattr(self, "backend_name", "?"),
+                count=len(artifacts),
+            )
+        return constrained
+
+
+# ---------------------------------------------------------------------------
+# Concrete proposers
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class LocalCodeProposer(CodeProposerMixin, LocalAgenticProposer):
+    """Code-search proposer routed through the local inference backend.
+
+    Inherits :class:`LocalAgenticProposer`'s backend selection
+    (``prefer_backend`` → mlx / ollama / None=auto) and overlays
+    :class:`CodeProposerMixin`'s code-aware ``__call__``.
+    """
+
+    # ``LocalAgenticProposer`` already declares everything we need;
+    # the mixin overrides ``_build_prompt`` + ``__call__``.
+    enable_code: bool = field(default=True)
+
+
+@dataclass
+class CloudCodeProposer(CodeProposerMixin, CloudAgenticProposer):
+    """Code-search proposer routed through a cloud backend.
+
+    Same shape as :class:`LocalCodeProposer` but uses
+    :class:`CloudAgenticProposer` (Anthropic or DeepSeek). Opt-in only —
+    requires explicit ``inference.backend`` configuration; never auto-
+    selected per CLAUDE.md §3.6.
+    """
+
+    enable_code: bool = field(default=True)
+
+
+# ---------------------------------------------------------------------------
+# Factories
+# ---------------------------------------------------------------------------
+
+
+def make_local_code_proposer(
+    space: SearchSpace,
+    *,
+    prefer_backend: str | None = None,
+    env: dict[str, str] | None = None,
+    fallback_seed: int | None = None,
+) -> LocalCodeProposer:
+    """Factory — loads the skill prompt + wires a local backend.
+
+    Mirrors :func:`make_local_agentic_proposer`'s signature so callers
+    can swap the two with a single import change.
+    """
+    return LocalCodeProposer(
+        space=space,
+        skill=load_skill(),
+        backend_name=prefer_backend or "auto",
+        env=env,
+        fallback_seed=fallback_seed,
+        prefer_backend=prefer_backend,
+    )
+
+
+def make_cloud_code_proposer(
+    space: SearchSpace,
+    *,
+    prefer_backend: str = "anthropic",
+    env: dict[str, str] | None = None,
+    fallback_seed: int | None = None,
+) -> CloudCodeProposer:
+    """Factory — loads the skill prompt + wires a cloud backend.
+
+    Mirrors :func:`make_cloud_agentic_proposer` so the call sites stay
+    symmetric.
+    """
+    return CloudCodeProposer(
+        space=space,
+        skill=load_skill(),
+        backend_name=prefer_backend,
+        env=env,
+        fallback_seed=fallback_seed,
+        prefer_backend=prefer_backend,
+    )
+
+
+__all__ = [
+    "CODE_ARTIFACTS_KEY",
+    "MAX_ARTIFACTS_PER_CANDIDATE",
+    "MAX_ARTIFACT_SOURCE_BYTES",
+    "REGISTER_ADAPTER_TOKEN",
+    "CloudCodeProposer",
+    "CodeProposerMixin",
+    "LocalCodeProposer",
+    "build_code_prompt_tail",
+    "make_cloud_code_proposer",
+    "make_local_code_proposer",
+]
