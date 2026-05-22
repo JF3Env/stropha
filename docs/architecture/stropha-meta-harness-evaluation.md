@@ -1,6 +1,6 @@
 # Meta-Harness RFC — deep evaluation
 
-> **Status:** Evaluation · 2026-05-22
+> **Status:** Evaluation · 2026-05-22 (rev 3 — added §8 paper-vs-docs alignment review after fetching the actual arXiv paper)
 > **Subject:** `docs/architecture/stropha-meta-harness.md` (RFC, Status `Proposed`, dated 2026-05-21)
 > **Companion docs reviewed:** `docs/comparisons/stropha-vs-meta-harness.md`; `CLAUDE.md` (snapshot §2 + invariants §3); source tree at `HEAD` after the meta-harness merge.
 > **Method:** the RFC's expected features were checked against the actual code, one phase at a time. Every claim is anchored to `file:line`. This document does not propose a new design — it stress-tests the proposed one.
@@ -11,10 +11,11 @@
 
 The RFC is **structurally sound and shippable as-is** for Phases 0–2. The decomposition matches the paper (Lee et al., 2026, arXiv:2603.28052), respects every `CLAUDE.md §3` invariant, and lands on stropha's actual strengths (the adapter framework as a declarative search space).
 
-It also **understates how much of Phase 1 is already done** and **overstates how mechanical Phases 2, 3, and 5 are**. Specifically:
+It also **understates how much of Phase 1 is already done**, **overstates how mechanical Phases 2, 3, and 5 are**, and — most consequentially — **proposes a supervision label that confuses "edited" with "used"**, which would train the tuner to deprioritize exactly the read-only retrievals AI agents most rely on. Specifically:
 
 | Finding | Effect on the plan |
 |---|---|
+| **Labeling: edit ≠ use.** The RFC's `meta/outcome.py` correlates returned chunks with `git diff` and marks anything not in the diff as a miss. But the AI uses a chunk every time it reads a class to call its methods, an interface to override it, a type to reference it, a config schema to consume it, a test to match its contract, or a doc to respect its constraint — none of which produces a `git diff` for the file being read. Treating these as misses would train the tuner against comprehension-driven retrieval, which is likely the majority of real usage. | The RFC and the companion analysis have been updated (rev 2) with a tiered labeling scheme that uses the existing graphify symbol graph to bridge "edited line X" → "definitions consulted to write X correctly" (T2 — definition-of-used-symbol), plus same-session MCP follow-up calls (T4 — engagement) and explicit miss reports (T6, via a new `report_bad_result` MCP tool). Absence of all signals is **neutral, not negative**. See finding §4.13. **This is the single highest-leverage decision in the project — the tuner cannot be better than its label.** |
 | **`NDCG@K` and `Precision@K` already exist** in `eval/harness.py:47-92,182,189,220,227` with graded-relevance support. The RFC lists them as "added in Phase 1". | Phase 1 effort drops from M (3-4d) to **S (~1d)**: only the held-out split, the fitness composer, and the per-tag rendering gap (`cli.py:947-965` ignores NDCG/Precision in the by-tag table) remain. |
 | **An unwired observability pathway already exists** end-to-end: `retrieval/savings.py:116-130` (producer) → `cost.py:211-217` (consumer). Three lines of wiring activate it. | Phase 0 can land a meaningful "trace stats" milestone in **hours**, not days, before the full RFC trace schema is built on top. |
 | **A unified local-LLM helper already exists** (`stropha.inference.generate`, with MLX + Ollama backends — `inference/backend.py:34-201`). The RFC's "Claude Code via CLI or Anthropic API call" framing for Phase 4's agentic proposer ignores this. | The bandit-proposer MVP needs zero new dependencies (`numpy>=1.26` is already top-level); the agentic proposer can prototype against the local helper first and treat Claude-Code-via-subprocess as a strictly opt-in escalation. |
@@ -27,7 +28,7 @@ It also **understates how much of Phase 1 is already done** and **overstates how
 | **No `stropha.yaml` writer exists** anywhere in `src/`. | Phase 6 promotion's "emits a diff, never auto-applies" stance is consistent with current posture — no regression risk. But the diff renderer itself is missing (no `difflib` usage in `src/`); the Rich rendering layer is mature, but the diff *computation* is new. |
 | **Hook template is a monolithic f-string with no plugin slots.** | Phase 0 outcome backfill and Phase 6 sleep-time both surgery the same template. Mitigated by the existing `HOOK_VERSION` bump pattern (`tools/hook_install.py:49`), but two phases editing the same string is a soft coupling worth calling out. |
 
-**Verdict.** Phases 0-2 should ship in roughly the order the RFC describes, with **Phase 1 demoted to S effort** (because NDCG/Precision exist) and **Phase 0 split into a "wire `savings.py`" S-effort milestone before the full TraceRecorder**. Phases 3-4 are correctly scoped but the RFC overstates registry-based manifest generation — a hand-edited `search_space.yaml` will be unavoidable. Phase 5 (code-search) carries genuine "first-time in this codebase" risk because of sandbox/subprocess greenfield. Phase 6 is well-shaped; the only sharp edge is reusing `WatchController`.
+**Verdict.** Phases 0-2 should ship in roughly the order the RFC describes, with three notable shifts: (a) **Phase 0's labeling design is the highest-leverage piece**, not the trace plumbing — the tiered T1-T7 scheme (now in the RFC) must ship together with the trace recorder, not as an afterthought; (b) **Phase 1 demoted to S effort** because NDCG/Precision already exist; (c) **Phase 0 split into a "wire `savings.py`" S-effort milestone before the full TraceRecorder**. Phases 3-4 are correctly scoped but the RFC overstates registry-based manifest generation — a hand-edited `search_space.yaml` will be unavoidable. Phase 5 (code-search) carries genuine "first-time in this codebase" risk because of sandbox/subprocess greenfield. Phase 6 is well-shaped; the only sharp edge is reusing `WatchController`.
 
 ---
 
@@ -41,8 +42,9 @@ The RFC has three layers of claims: the **architecture** (§3 of the RFC — mod
 - §5 — open questions the RFC should resolve before Phase 4 lands.
 - §6 — recommended adjustments to the plan.
 - §7 — bottom line.
+- §8 — **paper-vs-docs alignment review (rev 3)** — the actual arXiv paper has been read in full; this section records the misalignments found and the RFC patches applied.
 
-Every `file:line` reference points to the current `HEAD` after the meta-harness merge.
+Every `file:line` reference points to the current `HEAD` after the meta-harness merge. Paper references use `§X.Y` (paper section) / `App. X` (paper appendix) / `Alg. 1 line N` notation.
 
 ---
 
@@ -66,25 +68,30 @@ Every `file:line` reference points to the current `HEAD` after the meta-harness 
 | Hook template extensibility | **NO PLUGIN SLOTS.** The hook body is one monolithic `dedent` f-string at `tools/hook_install.py:172-339`. Steps are appended inside the existing `nohup sh -c "..."` heredoc (`hook_install.py:313-336`). The graphify step at `hook_install.py:320-330` is the only precedent for a guarded conditional step. | `tools/hook_install.py:172-339` |
 | Hook foreground ≤100 ms before fork | **EXTANT and invariant-protected.** Pre-fork section ends at the `nohup ... &` at `hook_install.py:313`; everything before is variable assembly and skip-check `[ -f ... ] && exit 0`. A meta-sleep step inside the `nohup` body inherits the guarantee. | `hook_install.py:228-313`; `CLAUDE.md §3` invariant #5 |
 | Schema migration needed? | **NO** — RFC correctly says filesystem-only. v6 (`files` table at `storage/sqlite.py:426-446`) is the latest indexing-relevant migration; v7 added `repo_id` to graph tables. No conflict. | `storage/sqlite.py:49` (`SCHEMA_VERSION=7`) |
+| **Graphify symbol graph available to outcome labeler** | **EXTANT** — `graph_nodes` / `graph_edges` already store `calls`, `imports`, `references`, `defines` edges (per `graphify-out` mirror + schema v4 onward). The T2 (definition-of-used-symbol) labeling tier reads these tables, no new graph code needed. | `storage/sqlite.py` (graph tables), `retrieval/graph.py` |
+| **Session correlation across MCP tool calls** | **MISSING** — no current `session_id` propagation. Each MCP call is independent; `_ctx(mcp_ctx)` (`server.py:290-291`) returns only the lifespan `AppContext`, not a per-session id. T4 (engagement) labeling needs a session id that ties `search_code` → subsequent `get_symbol` / `find_callers` / etc. FastMCP's `Context` may expose this; if not, a stropha-side per-process UUID rotated per `mcp.startup` is the fallback. | `server.py:290-291` |
 
-**Gap.** All three RFC modules (`trace.py`, `store.py`, `outcome.py`) are genuinely new. The trace **producer** point is correctly identified (RFC says "wire into `server.py` and `retrieval/search.py`" — both are right; the cheapest one-line variant is a `@traced` decorator stacked under `@mcp.tool` plus an emit at the end of `_search_single`). The store layout matches the paper's filesystem design and aligns with the existing `.stropha/` convention.
+**Gap.** All three RFC modules (`trace.py`, `store.py`, `outcome.py`) are genuinely new. The trace **producer** point is correctly identified (RFC says "wire into `server.py` and `retrieval/search.py`" — both are right; the cheapest one-line variant is a `@traced` decorator stacked under `@mcp.tool` plus an emit at the end of `_search_single`). The store layout matches the paper's filesystem design and aligns with the existing `.stropha/` convention. **The hard part of Phase 0 is not the trace plumbing — it is the labeling design** (see §4.13).
 
 **Risks / contradictions:**
 
-1. **The RFC misses an obvious incremental milestone.** Wiring `track_search_savings(query, hits)` in `server.py:458` (just before `return SearchResponse(...)`) lights up the existing `cost.py` savings table immediately. This is a **3-line change** that proves the producer/consumer pattern before any RFC code is written. The full `TraceRecorder` schema is then a strict superset upgrade.
-2. **Trace field `results[].streams` requires a small refactor** of `retrieval/search.py:108-119` because the per-stream lists are currently shadowed by `streams = [...]`. Trivial fix; flagged because the RFC's exit criteria (line 145) assume the field is populable, and a reviewer who doesn't read `_search_single` will miss this.
-3. **Disk-growth concern (`meta-harness.md:262`) is real and underspecified.** The RFC says "JSONL with rotation" and "prune below a score percentile". Neither has a concrete trigger. A 200-chunk search-code call captured fully (results array with embeddings preview, per-stream ranks, snippets) is plausibly 5-10 KB per trace. At 100 calls/day per dev session that is 0.5-1 MB/day per repo. Acceptable, but the pruning rule deserves a concrete spec.
-4. **`get_config_tool` (`server.py:809-831`) returns env-var registry data** that would be useful to capture in `meta.json` per candidate so the proposer sees the full environmental context, not just the resolved `stropha.yaml`. Worth adding to the Phase 0 trace schema.
-5. **Best-effort fire-and-forget** (RFC line 140) needs a concrete implementation strategy. Python's stdlib offers no truly non-blocking JSONL appender; `concurrent.futures.ThreadPoolExecutor(max_workers=1)` or `queue.Queue` + daemon thread are the realistic options. The "<2 ms p95" exit criterion is achievable only if the append happens off-thread.
+1. **Edit ≠ use — the original labeling rule was the riskiest piece of the plan.** RFC rev 1 said `meta/outcome.py` would diff the commit and label results by `edited_files` overlap. This systematically under-credits read-only retrievals (definition lookup, interface reading, type lookup, documentation, config schema reading, test contract reading, pure-explanation queries) — likely the majority of real usage. RFC rev 2 replaces this with a tiered T1-T7 scheme using the graphify graph for T2 (definition-of-used-symbol) and session correlation for T4 (engagement). See finding §4.13. The trace recorder, the session id propagation, the `report_bad_result` tool, and the graph-aware labeler all ship in the same Phase 0 to avoid landing a half-broken supervision signal.
+2. **The RFC misses an obvious incremental milestone.** Wiring `track_search_savings(query, hits)` in `server.py:458` (just before `return SearchResponse(...)`) lights up the existing `cost.py` savings table immediately. This is a **3-line change** that proves the producer/consumer pattern before any RFC code is written. The full `TraceRecorder` schema is then a strict superset upgrade.
+3. **Trace field `results[].streams` requires a small refactor** of `retrieval/search.py:108-119` because the per-stream lists are currently shadowed by `streams = [...]`. Trivial fix; flagged because the RFC's exit criteria (line 145) assume the field is populable, and a reviewer who doesn't read `_search_single` will miss this.
+4. **Disk-growth concern (`meta-harness.md:262`) is real and underspecified.** The RFC says "JSONL with rotation" and "prune below a score percentile". Neither has a concrete trigger. A 200-chunk search-code call captured fully (results array with embeddings preview, per-stream ranks, snippets) is plausibly 5-10 KB per trace. At 100 calls/day per dev session that is 0.5-1 MB/day per repo. Acceptable, but the pruning rule deserves a concrete spec.
+5. **`get_config_tool` (`server.py:809-831`) returns env-var registry data** that would be useful to capture in `meta.json` per candidate so the proposer sees the full environmental context, not just the resolved `stropha.yaml`. Worth adding to the Phase 0 trace schema.
+6. **Best-effort fire-and-forget** (RFC line 140) needs a concrete implementation strategy. Python's stdlib offers no truly non-blocking JSONL appender; `concurrent.futures.ThreadPoolExecutor(max_workers=1)` or `queue.Queue` + daemon thread are the realistic options. The "<2 ms p95" exit criterion is achievable only if the append happens off-thread.
+7. **Per-tier labeling calibration is a Phase 4 prerequisite.** Tiered weights (T1 strong+, T2 strong+, T3 weak+, T4 medium+, T5 weak-, T6 strong-, T7 neutral) are educated guesses until ~1000 traces accumulate. A hand-audit pass tunes them before Phase 4 weights are set. Skipping this audit means Phase 4 optimizes against a miscalibrated signal — a silent failure mode that's expensive to discover later.
 
-**Effort calibration:** the RFC's L (~5-7d) is the right magnitude. A defensible breakdown:
+**Effort calibration:** the RFC's L (~5-7d) **bumps to L (~7-9d)** with the tiered labeler and session correlation. A defensible breakdown:
 - 0.5d: wire `track_search_savings` (the cheap milestone above) and verify in `stropha cost`.
 - 1d: `TraceRecorder` + JSONL append off a daemon thread + `meta/store.py` directory layout + `Config.resolve_meta_path()`.
-- 1.5d: `@traced` decorator wired across all 12 MCP tools + light refactor of `_search_single` to preserve stream details.
-- 1d: `meta/outcome.py` post-hoc back-fill + hook template surgery (bump `HOOK_VERSION` to 5).
-- 1.5d: tests (25 unit tests as the RFC scopes) + dogfood pass to verify <2 ms p95.
+- 1d: session-id propagation through `AppContext` + `@traced` decorator wired across all 12 MCP tools + light refactor of `_search_single` to preserve stream details.
+- 0.5d: `report_bad_result` 13th MCP tool (optional but cheap).
+- 2d: `meta/outcome.py` tiered backfill (T1 edit + T2 graph definition-of-used-symbol + T3 graph neighborhood + T4 session engagement + T5 same-session re-query + T6 explicit report + T7 neutral) + hook template surgery (bump `HOOK_VERSION` to 5).
+- 2d: tests (~30 unit tests, +5 over RFC scope for per-tier label correctness) + dogfood pass to verify <2 ms p95 + verify T2 fires in a stropha-on-stropha session.
 
-**Verdict — Phase 0: Accept with one change.** Add a "wire `track_search_savings`" sub-milestone before the full `TraceRecorder` work. This gives Phase 0 a 4-hour demo point and de-risks the producer/consumer wiring before the schema gets ambitious.
+**Verdict — Phase 0: Accept with two changes.** (1) Add a "wire `track_search_savings`" sub-milestone before the full `TraceRecorder` work. (2) Ship the tiered labeler and session correlation together with the trace recorder — landing the trace without the labeler is worse than not landing at all, because Phase 1 fitness would then consume an edit-only signal and lock in the wrong tuner direction.
 
 ---
 
@@ -115,15 +122,16 @@ Every `file:line` reference points to the current `HEAD` after the meta-harness 
 
 **Risks / contradictions:**
 
-1. **Phase 1 is roughly half the effort the RFC budgets.** With NDCG/Precision done, the remaining work is: (a) add `split:` tagging + filtering — S; (b) build `meta/fitness.py` — S; (c) add per-query latency capture — S; (d) build `meta/evaluator.py` glue — S; (e) backfill the CLI by-tag rendering with NDCG/Precision — S; (f) tests — S. Realistic total: **1-1.5d**, not 3-4d.
-2. **The composite fitness formula needs an empirical sanity check.** The RFC proposes `w₁·NDCG + w₂·Recall + w₃·context_efficiency − w₄·latency_penalty`. Without measured weights this is a free parameter that itself needs tuning (a meta-meta-problem). Recommend starting with `w₁ = w₂ = 0.5`, `w₃` = 0 until token counts are reliably captured, `w₄` = 0; iterate after first 100 candidates land.
-3. **NDCG over binary relevance == Recall-shaped curve.** Until any golden row uses graded relevance, NDCG and Recall will correlate near-perfectly. The composite fitness is therefore not as decorrelated as it looks. Concretely: every entry in `tests/eval/golden.jsonl` and `mimoria_golden.jsonl` has only `expected_paths` + `expected_symbols`, no `relevance: {path1: 3, path2: 1}` map. The RFC's anti-overfitting story relies on this graded relevance materialising.
-4. **`build_stages` with `open_storage=True` requires a real SQLite file on disk.** Phase 1's evaluator therefore cannot run a fully-in-memory eval; it has to point at an index file. That is fine for Phase 1 (one shared production index is enough); it becomes a constraint for Phase 2 (per-candidate index isolation) and for the agentic-proposer prompt construction (proposers need to know which index they're scored against).
-5. **Hard-coded `0.85` Recall@K threshold** at `cli.py:930,968` is appropriate as a CI tripwire but should not gate Phase 1 evaluator calls. A `meta/evaluator.py` invocation must bypass this exit code (return the `EvalReport` regardless of pass/fail).
+1. **Phase 1 is roughly half the effort the RFC originally budgeted.** With NDCG/Precision done, the remaining work is: (a) add `split:` tagging + filtering — S; (b) build `meta/fitness.py` — S; (c) add per-query latency capture — S; (d) build `meta/evaluator.py` glue — S; (e) backfill the CLI by-tag rendering with NDCG/Precision — S; (f) tests — S. Realistic total: **1.5-2d** (the half-day bump over the original 1-1.5d estimate covers the read-only-retrieval fitness test added in RFC rev 2).
+2. **The composite fitness formula needs an empirical sanity check.** RFC rev 2 proposes `w₁·NDCG + w₂·Recall + w₃·context_efficiency + w₄·outcome_score − w₅·latency_penalty`. Without measured weights these are free parameters that themselves need tuning (a meta-meta-problem). Initial values in the RFC: `w₁=w₂=0.3, w₃=0.2, w₄=0.2, w₅=0.0`. Reasonable; iterate after first 100 candidates land.
+3. **Fitness must not collapse to T1 overlap.** `outcome_score` (the supervision signal from Phase 0) is itself an average across tiers — but a naïve implementation might let T1 dominate by giving it 10× the weight of T2/T4. The Phase 0 calibration audit (~1000 traces, hand-audit a stratified sample, tune per-tier weights) is the gate; Phase 1's evaluator tests must include a synthetic case where a configuration that retrieves definitions-consulted-but-not-edited outscores a configuration that retrieves edited-but-redundant chunks. If that test fails, the labeling is miscalibrated and the bandit will optimize the wrong direction.
+4. **NDCG over binary relevance == Recall-shaped curve.** Until any golden row uses graded relevance, NDCG and Recall will correlate near-perfectly. The composite fitness is therefore not as decorrelated as it looks. Concretely: every entry in `tests/eval/golden.jsonl` and `mimoria_golden.jsonl` has only `expected_paths` + `expected_symbols`, no `relevance: {path1: 3, path2: 1}` map. The RFC's anti-overfitting story relies on this graded relevance materialising — *and* on the outcome_score term, which is the only non-relevance-derived signal in the composite.
+5. **`build_stages` with `open_storage=True` requires a real SQLite file on disk.** Phase 1's evaluator therefore cannot run a fully-in-memory eval; it has to point at an index file. That is fine for Phase 1 (one shared production index is enough); it becomes a constraint for Phase 2 (per-candidate index isolation) and for the agentic-proposer prompt construction (proposers need to know which index they're scored against).
+6. **Hard-coded `0.85` Recall@K threshold** at `cli.py:930,968` is appropriate as a CI tripwire but should not gate Phase 1 evaluator calls. A `meta/evaluator.py` invocation must bypass this exit code (return the `EvalReport` regardless of pass/fail).
 
-**Effort calibration:** **demote to S (~1-1.5d)**.
+**Effort calibration:** **demote to S (~1.5-2d)**.
 
-**Verdict — Phase 1: Re-scope.** The RFC's deliverables list overstates the metrics work and understates the fitness-composition design choices (weights, validation strategy). Replace the "add NDCG/Precision" line with "render NDCG/Precision per-tag in `cli.py`" and a paragraph on weight selection methodology.
+**Verdict — Phase 1: Re-scope.** The RFC rev 2 deliverables correctly drop the "add NDCG/Precision" line and add the outcome_score fitness term + the read-only-retrieval fitness test. The remaining shaping work is small. The big design choice — labeling calibration — is owned by Phase 0, not Phase 1.
 
 ---
 
@@ -427,19 +435,71 @@ RFC line 262 says "prune candidates below a score percentile after N iterations,
 
 **Action:** Pin "keep top-10 + bottom-10 + last-50, prune the middle, monthly compaction" or similar.
 
+### 4.13 The original labeling rule confused "edited" with "used" — the highest-leverage flaw in the plan
+
+RFC rev 1's `meta/outcome.py` correlated returned chunks with `git diff` and back-filled an `outcome` of `(edited_files, cited_chunk_ids, derived label)`. This rule treats "the AI didn't edit the file" as evidence the retrieval failed. It is wrong, and it would be silently catastrophic for the whole project.
+
+**Categories of useful retrieval that produce no `git diff` for the read file:**
+
+1. **Definition lookup.** AI calls `UserRepository.findByEmail()` from new code; it had to read `UserRepository`'s class definition to know the signature, return type, and exceptions. The class file is untouched.
+2. **Interface / protocol reading.** AI implements a subclass; it reads the base class to know what to override. The base class file is untouched.
+3. **Configuration / schema reading.** AI reads a config schema to know which keys exist, then writes new code that consumes those keys. The schema file is untouched.
+4. **Test reading.** AI reads existing tests to understand the expected behavior contract, then writes new code that fits the contract. The read tests are untouched.
+5. **Type / constant lookup.** AI reads an enum to know its valid values, then writes new code that references them. The enum file is untouched.
+6. **Documentation / ADR reading.** AI reads a design doc to understand a constraint ("don't add cycles to the dependency graph"), then writes code that respects it. The doc is untouched.
+7. **Pure-explanation retrievals.** A developer asks "explain how authentication works" — the AI summarizes from retrieved chunks, no commit follows. Useful retrieval, zero `git diff`.
+
+Under the original rule, **every one of these gets labeled as a miss** — even though the retrieval was the reason the eventual edit was correct (or, in case 7, the reason the developer's question was answered). Worse: the tuner then learns to *deprioritize* definition lookups, interface reading, type lookups, documentation, test reading. Exactly the kind of retrieval the AI most depends on for code that is correct on first try.
+
+**Stropha is unusually well-positioned to fix this.** Its graphify symbol graph already records:
+
+- `calls` edges (A calls B)
+- `imports` edges (A imports B)
+- `references` edges (A mentions B)
+- `defines` edges (file F defines symbol S)
+
+When the commit lands, the labeler asks the graph: **what does the changed code reference?** Every function called, every class instantiated, every type imported, every constant used. Each of those references points back to a definition that lives somewhere in the codebase — likely in a *different* file than the one that changed. Those definition files were the read-but-not-edited chunks. They get labeled positive at T2.
+
+**The tiered labeling rule (now in RFC rev 2, §Phase 0):**
+
+| Tier | Condition | Signal |
+|---|---|---|
+| T1 | Returned chunk's file is in `git diff`. | Strong positive |
+| T2 | Returned chunk defines a symbol that appears in code edited by the commit (via graphify `calls`/`imports`/`references` edges). | Strong positive — the read-the-class-to-use-it case |
+| T3 | Returned chunk is 1-2 hops in the call/import graph from any edited file. | Weak positive |
+| T4 | Same `session_id` shows subsequent `get_symbol` / `find_callers` / `get_file_outline` / `find_tests_for` calls for paths or symbols in the returned chunks. | Medium positive |
+| T5 | Within the same session, the agent re-queried with similar terms within N seconds (token-overlap ≥ threshold). | Weak negative |
+| T6 | The agent called the new `report_bad_result` MCP tool flagging the result as unhelpful. | Strong negative |
+| T7 | No edit, no engagement, no re-query, no explicit report. | **Neutral / unknown — NOT a miss.** Absence of evidence is not evidence of absence. |
+
+**Downstream implications:**
+
+- **Phase 0** must capture session correlation (each MCP call carries a `session_id` shared with same-session follow-ups). It must also ship a 13th MCP tool (`report_bad_result`) for the only explicit negative signal source.
+- **Phase 1** fitness must consume the *tiered* `outcome_score`, never raw T1 overlap, and its test suite must include a synthetic case where a configuration that retrieves definitions-consulted-but-not-edited outscores a configuration that retrieves edited-but-redundant chunks.
+- **Phase 4** bandit reward is whatever fitness produces. Garbage label → garbage tuner, very efficiently. The label is the project's single highest-leverage decision.
+- **Calibration is an explicit Phase 0 → Phase 4 prerequisite:** collect ~1000 traces with all tiers populated, hand-audit a stratified sample (~50), tune per-tier weights to maximize hand-audit agreement, then freeze for Phase 4. The paper got away with simpler labels because its domains had clean ground truth (test passes / answer correct); code search lacks that crispness, so the labeling design carries the proportional responsibility.
+
+**Action (now applied to all three documents):**
+- RFC `meta-harness.md` Phase 0 — outcome.py spec replaced with the tier table; trace schema's `session_id` documented as the unifying key; new `report_bad_result` stretch goal.
+- RFC `meta-harness.md` Phase 1 — fitness formula now includes `w₄·outcome_score` with the explicit constraint that `outcome_score` consumes the tiered score, never raw T1 overlap.
+- RFC `meta-harness.md` §7 risks — new row covering edit-only labeling as a named failure mode.
+- RFC `meta-harness.md` §10 open questions — new question 2 covers labeling calibration as the highest-leverage tuning decision in the project.
+- Companion analysis `stropha-vs-meta-harness.md` option #34 — rewritten from "correlate with `git diff`" to the tiered scheme.
+
 ---
 
 ## 5. Open questions the RFC should resolve before Phase 4 lands
 
-The RFC's own §10 (line 289) lists three open questions. Augmenting with the audit:
+RFC rev 2's §10 now lists four open questions. Augmenting with the audit:
 
 1. **Fitness ground truth** (RFC §10.1). Proxy-metric overfitting is real because NDCG≈Recall on binary-relevance golden sets. A retrieval-conditioned end-to-end task eval (`vs-meta-harness.md:281`, option #110) needs an LLM judge or a programmatic check — neither of which is local. Decide whether the held-out composite is enough for v1 OR whether `inference.generate()` can do the judging locally (model quality cap is real).
-2. **Agentic proposer host** (RFC §10.2). The audit clarifies: prototype against `inference.generate()` *first*, then escalate to Claude Code CLI in v2 if needed. The Anthropic API path is a niche fallback.
-3. **Promotion autonomy** (RFC §10.3). The current "local diff only" stance is correct; do not revisit until Phase 6 lands.
-4. **NEW: Where does `search_space.yaml` live?** Per-project (`.stropha/meta/search_space.yaml`) or shared (`~/.stropha/search_space.yaml`)? Cross-project reuse is a real ergonomic question.
-5. **NEW: How are stale snapshots cleaned up?** `git worktree prune` discipline + `.stropha/meta/snapshot/` TTL.
-6. **NEW: How is fitness weight tuning bootstrapped?** Hand-set `(w₁, w₂, w₃, w₄)` for the first 100 candidates; revisit after.
-7. **NEW: How are concurrent `stropha watch` + meta-sleep daemons coordinated?** `.strophaignore` excludes `.stropha/meta/` from indexing; meta-sleep writes only there. Document this.
+2. **Labeling-design calibration** (RFC §10.2 — added in rev 2). The tiered T1-T7 scheme has free parameters: per-tier weights, the token-overlap threshold for T5, the graph-hop radius for T3, the time window for T4 attribution. Initial values are educated guesses. Plan: collect ~1000 traces with all tiers populated, hand-audit a stratified sample (~50), tune weights to maximize hand-audit agreement, freeze for Phase 4. **The highest-leverage tuning decision in the project.**
+3. **Agentic proposer host** (RFC §10.3). The audit clarifies: prototype against `inference.generate()` *first*, then escalate to Claude Code CLI in v2 if needed. The Anthropic API path is a niche fallback.
+4. **Promotion autonomy** (RFC §10.4). The current "local diff only" stance is correct; do not revisit until Phase 6 lands.
+5. **NEW: Where does `search_space.yaml` live?** Per-project (`.stropha/meta/search_space.yaml`) or shared (`~/.stropha/search_space.yaml`)? Cross-project reuse is a real ergonomic question.
+6. **NEW: How are stale snapshots cleaned up?** `git worktree prune` discipline + `.stropha/meta/snapshot/` TTL.
+7. **NEW: How is fitness weight tuning bootstrapped?** Hand-set `(w₁..w₅)` for the first 100 candidates; revisit after. The `outcome_score` weight `w₄` is constrained by question 2 above — it cannot be set sensibly until the labeling calibration is done.
+8. **NEW: How are concurrent `stropha watch` + meta-sleep daemons coordinated?** `.strophaignore` excludes `.stropha/meta/` from indexing; meta-sleep writes only there. Document this.
 
 ---
 
@@ -450,7 +510,11 @@ The RFC's own §10 (line 289) lists three open questions. Augmenting with the au
 | **Phase 0**: split into "wire `track_search_savings`" S milestone + full `TraceRecorder` work | De-risks producer/consumer pattern, gives a 4-hour demo point | None — addition only |
 | **Phase 0**: refactor `_search_single` to preserve per-stream lists past `streams = [...]` | RFC's `results[].streams` trace field needs this | +0.2d |
 | **Phase 0**: `Config.resolve_meta_path()` mirrors `resolve_index_path()` | Per-target-repo `.stropha/meta/` discovery | +0.2d |
-| **Phase 1**: demote from M (3-4d) to S (~1-1.5d); replace "add NDCG/Precision" with "render NDCG/Precision per-tag + add MAP + latency" | NDCG/Precision already exist | -2d |
+| **Phase 0**: **tiered T1-T7 labeling in `meta/outcome.py`** using graphify symbol graph for T2 (definition-of-used-symbol), session correlation for T4 (engagement), `report_bad_result` 13th MCP tool for T6 (explicit negative) | **Highest-leverage decision in the plan** — edit-only labeling would train tuner against comprehension-driven retrieval. See finding §4.13. | +2-3d (Phase 0 grows from L 5-7d to L 7-9d) |
+| **Phase 0**: session-id propagation through `AppContext` so MCP follow-up calls (`get_symbol`, `find_callers`, etc.) link to the originating `search_code` | T4 engagement labeling depends on this | included in above |
+| **Phase 0 / 4 gate**: hand-audit ~50 of the first 1000 traces; tune per-tier weights to maximize hand-audit agreement before Phase 4 launches | The bandit can only be as good as its label; uncalibrated labeling produces a silently miscalibrated tuner | +1d (one-time human time, not engineering) |
+| **Phase 1**: demote from M (3-4d) to S (~1.5-2d); replace "add NDCG/Precision" with "render NDCG/Precision per-tag + add MAP + latency + read-only-retrieval fitness test" | NDCG/Precision already exist; +0.5d covers the new read-only-retrieval fitness test | -1.5d (net of the labeling addition above) |
+| **Phase 1**: fitness formula gains `w₄·outcome_score` with explicit "consumes tiered score, never raw T1 overlap" constraint | The labeling tiers exist precisely to weight read-only retrievals at parity; collapsing to T1 would defeat them | included in Phase 1 effort above |
 | **Phase 1**: document weight-tuning bootstrap | Avoids weights becoming a free parameter | None — documentation only |
 | **Phase 2**: add `Storage.backup_to(target_path)` using `sqlite3.Connection.backup` | Safe WAL DB clone | +0.3d |
 | **Phase 2**: explicit "indexing-relevant `adapter_id`s = walker + chunker + enricher + embedder; storage and retrieval excluded" rule | Cache-key correctness | None — documentation only |
@@ -469,16 +533,170 @@ The RFC's own §10 (line 289) lists three open questions. Augmenting with the au
 | **Phase 6**: extend `stropha cost` rather than a parallel `stropha meta report` | Reuse aggregation primitives | -0.5d |
 | **Cross-phase**: refactor `_render_hook_block` to accept `extra_steps: list[str]` | Phase 0 + Phase 6 both modify the hook template; one signature avoids merge churn | +0.3d (paid once, twice in returns) |
 
-Total net change to the original RFC budget: **roughly –1 to –2 days** (Phase 1 savings exceed Phase 2/3/4/6 additions).
+Total net change to the original RFC budget: **roughly +1 day** (the +2-3d for tiered labeling in Phase 0 partly offset by the -1.5d for Phase 1, plus 0.5-1d net of small additions). The MVP grows from ~3-4 weeks to ~4 weeks. The full plan grows from ~7-9 weeks to ~8-10 weeks. **This is the right trade**: a one-week increase to avoid landing a silently miscalibrated supervision signal is unconditionally worth it.
 
 ---
 
 ## 7. Bottom line
 
-The RFC describes a system that can be built on stropha as-is without breaking any invariant, and the order of phases is correct. The strongest pieces of the plan are the artifact-store layout (matches the paper's filesystem-first design), the bandit-MVP scoping (genuinely local, zero new deps), the index-cache idea (correctly identifies the dominant efficiency lever), and the human-gated promotion stance.
+The RFC describes a system that can be built on stropha as-is without breaking any invariant, and the order of phases is correct. The strongest pieces of the plan are the artifact-store layout (matches the paper's filesystem-first design), the bandit-MVP scoping (genuinely local, zero new deps), the index-cache idea (correctly identifies the dominant efficiency lever), the human-gated promotion stance, and — after rev 2 — the **tiered labeling that uses the graph as the bridge from "edited" to "used"**.
 
-The weakest pieces are the **factual error about NDCG/Precision being unimplemented** (Phase 1), the **understated greenfield risk of the agentic proposer** (Phase 4), the **overstated registry-driven manifest generation** (Phase 3), and a handful of small mechanical pitfalls (WAL copy, hook template coupling, watch.py reuse).
+The weakest pieces of rev 1 were the **edit-only labeling** (now fixed in rev 2 — finding §4.13), the **factual error about NDCG/Precision being unimplemented** (Phase 1), the **understated greenfield risk of the agentic proposer** (Phase 4), the **overstated registry-driven manifest generation** (Phase 3), and a handful of small mechanical pitfalls (WAL copy, hook template coupling, watch.py reuse).
 
-None of these are blocking. With the §6 adjustments — most of which are documentation tightenings rather than scope changes — the plan ships. The MVP timeline (3-4 weeks for Phases 0-4 bandit) is realistic; the full plan timeline (7-9 weeks) is realistic *if* the agentic proposer ships as the `inference-helper` variant first and Claude-Code-via-subprocess is treated as v2.
+None of these are blocking. With the §6 adjustments — most of which are documentation tightenings rather than scope changes — the plan ships. The MVP timeline (~4 weeks for Phases 0-4 bandit, including tiered labeling) is realistic; the full plan timeline (8-10 weeks) is realistic *if* the agentic proposer ships as the `inference-helper` variant first and Claude-Code-via-subprocess is treated as v2.
 
-**Recommended next step:** if the team wants to start, ship the "wire `track_search_savings`" sub-milestone of §4.2 immediately (3 lines of code, lights up an existing dead-rendering path in `stropha cost`, costs 30 minutes, demonstrates the producer/consumer wiring) — then commit to Phase 0 in full, then re-evaluate the RFC text against this audit before Phase 1.
+**Recommended next step:** if the team wants to start, ship the "wire `track_search_savings`" sub-milestone of §4.2 immediately (3 lines of code, lights up an existing dead-rendering path in `stropha cost`, costs 30 minutes, demonstrates the producer/consumer wiring) — then commit to Phase 0 in full **including the tiered labeling and session correlation as the same unit of work**. The label is the highest-leverage decision in the project; it must ship calibrated, not aspirational.
+
+---
+
+## 8. Paper-vs-docs alignment review (rev 3)
+
+The RFC's §11 carried a sourcing caveat ("this paper postdates the assistant's knowledge cutoff... read the paper directly before relying on a specific number or algorithm detail"). This section closes that loop: the paper has now been read in full and our three documents (RFC, companion analysis, this evaluation) have been audited against it.
+
+The full paper is `arXiv:2603.28052v1` (Lee, Nair, Zhang, Lee, Khattab, Finn — Stanford/KRAFTON/MIT, 30 Mar 2026). The text in this section quotes the paper directly with `§X.Y` / `App. X` citations.
+
+### 8.1 What we got right
+
+| Our claim | Status | Source |
+|---|---|---|
+| Authors, institutions, arXiv ID, license | ✓ Verified | abstract page |
+| Algorithm 1 shape (`query store → propose k → validate → evaluate → store → repeat N`) | ✓ Verified | §3, Alg. 1 (with one detail we missed — see §8.2.2) |
+| Full-history filesystem access (code + scores + traces) beats compressed feedback | ✓ Verified | §1, §3 |
+| Ablation: full Meta-Harness 50.0 median vs scores-only 34.6 vs scores+summary 34.9 | ✓ Verified verbatim | §4.1, Table 3 |
+| "Median 82 files per iteration" | ✓ Verified verbatim | §1, App. A.1, Table 8 |
+| Proposer = Claude Code with Opus-4.6 | ✓ Verified | §3 |
+| "Results transfer across five held-out models" (math retrieval) | ✓ Verified | §4.2 |
+| TerminalBench-2 win "from environment bootstrapping eliminating 2-4 exploratory turns" | ✓ Verified — including the specific "2-4 turns" phrasing | App. B.3 |
+| Validated harnesses (interface validation gate before evaluation) | ✓ Verified | Alg. 1 line 11 |
+| "Beats hand-engineered baselines" across three domains | ✓ Verified | abstract, §4 |
+
+### 8.2 What we got wrong or omitted
+
+The paper-versus-RFC audit found one factual error, one substantive architectural misalignment, and several material omissions. RFC rev 3 has been patched for all of these; this subsection records what the issues were.
+
+#### 8.2.1 Text classification gain — understated
+
+**Our rev-2 claim (RFC §11.2):** "Discovered harnesses reach **equal/better accuracy** with ~4× fewer context tokens (text classification)"
+
+**The paper actually claims (§4.1, Table 2):** Meta-Harness reaches 48.6% accuracy vs ACE's 40.9% — **a +7.7-point gain** — AND uses 11.4K context tokens vs ACE's 50.8K — **~4.46× fewer**. Both improvements simultaneously, not a trade-off.
+
+Our rev-2 phrasing read as if accuracy was constant and only tokens dropped. That understates the headline result by exactly the +7.7 points. Fixed in RFC rev 3 §11.2 to read "+7.7 points AND ~4× fewer context tokens, both simultaneously".
+
+#### 8.2.2 Pareto frontier vs scalar fitness — the architectural misalignment
+
+This is the most consequential finding from the audit, and it touched the core of Phase 1 and Phase 4.
+
+**The paper's design (§3, Alg. 1 line 13):** Meta-Harness returns a **Pareto frontier** of harnesses. Quote (§3): *"When multiple objectives are relevant (e.g., accuracy and context cost), we evaluate candidates under Pareto dominance and report the resulting frontier."* And: *"Given only the current metrics and the desired trade-off, the proposer is able to discover harnesses across a broad range of the frontier, yielding a smooth accuracy–context Pareto curve in Figure 3."*
+
+The paper explicitly argues against scalar collapse. Its evidence is Figure 3 (the smooth accuracy-context Pareto curve discovered by the proposer when given joint preferences) and the broader claim that scalar fitness loses information the proposer can otherwise exploit.
+
+**Our rev-2 design (RFC Phase 1):** A composite scalar fitness `w₁·NDCG + w₂·Recall + w₃·context_efficiency + w₄·outcome_score − w₅·latency_penalty`. The bandit, the agentic proposer, the final output, and `stropha meta promote` all consumed this single number.
+
+**The misalignment matters for three reasons:**
+1. The agentic proposer (especially Claude Code Opus, but also our local `inference-helper`) reads the artifact store and reasons over multiple objectives natively. Collapsing to scalar throws away the structure the proposer exploits.
+2. Phase 6 promotion consumed "the running-best scalar candidate". But the user might reasonably prefer a Pareto point that's slightly worse on quality and dramatically better on context cost — exactly the choice the paper's Figure 3 visualises.
+3. The "+7.7 points AND 4× fewer tokens" headline finding is precisely the kind of joint-axis improvement scalar fitness obscures: with collapsed weights, a hypothetical candidate at "+7.7 quality, 1× tokens" and another at "+0 quality, 4× cheaper" both score similarly and the structure is lost.
+
+**Fixed in RFC rev 3:**
+- Phase 1 `meta/fitness.py` now exposes `ScoreCard.objectives = (quality, context_efficiency, latency)` as a tuple.
+- A scalar reduction is provided for the bandit (which needs it) and the regression-alert (which is naturally scalar).
+- The agentic proposers + final Phase 4 output + `stropha meta promote` consume the Pareto frontier directly.
+- §10 question 5 explicitly states `stropha meta promote` surfaces the frontier for human choice, not just the running-best scalar.
+
+#### 8.2.3 Initial seed population — implicit in our docs, explicit in Algorithm 1
+
+**Paper's Algorithm 1 line 2:** `Initialize: population ℋ` with a comment `⊳ Initial set of valid harnesses`. The seed is *always* a set of human-designed baselines (zero-shot, few-shot, ACE, MCE for text classification; Terminus 2 and Terminus-KIRA for TerminalBench-2). Line 4-6 evaluates the seed before the iteration loop starts.
+
+**Our rev-2 RFC:** Implicitly started the loop from random sampling of the search space (or didn't say). For stropha, the obvious seed is the live `stropha.yaml`, but we never stated this.
+
+**Fixed in RFC rev 3:** Phase 4 `meta/loop.py` explicitly initializes `ℋ` with the live `stropha.yaml` plus 2-3 hand-picked variants, evaluates the seed, then enters the iteration loop. This matches the paper's protocol and means the first iterations don't waste effort rediscovering reasonable defaults.
+
+#### 8.2.4 The proposer "skill" — missing entirely from rev 2
+
+**Paper's §3 + Appendix D tip #1:** The proposer is steered by a "**minimal domain-specific skill**" — a Markdown operational guide in the Claude Code "agent skill" format. The skill describes: directory layout, available CLI commands, output format, forbidden actions, objectives. Appendix D tip #1 explicitly calls this **"the strongest lever on whether the loop works"** and recommends **3-5 short shakedown evolution runs purely to debug the skill** before a full run. The skill should NOT prescribe a diagnosis procedure — the proposer's reasoning is left free.
+
+**Our rev-2 RFC:** Did not mention any skill file. The agentic proposer description was just "a prompt that points at `.stropha/meta/` and `search_space.yaml`, includes the N best and N worst prior candidates...". This understates the operational structure substantially.
+
+**Fixed in RFC rev 3:** Phase 4 deliverables now include `meta/proposer/skill.md` with the Markdown skill content (directory layout, CLI commands, output format, forbidden actions, objectives), and the Phase 4 effort estimate explicitly includes 3-5 shakedown evolution runs to debug the skill before the first scoring run. This added 2 days to the Phase 4 estimate (L 8-12d → L 10-14d).
+
+#### 8.2.5 Best-of-N as a meaningful baseline — omitted in rev 2
+
+**Paper's §4.1, Table 4:** Best-of-N (independent samples from the seed, no search structure) reaches 34.0 median accuracy. Meta-Harness reaches 50.0. **The 16-point gap is the gain attributable to the loop's structure** (proposer reading prior candidates and forming hypotheses) — not to the seed quality, not to compute, not to randomness.
+
+**Our rev-2 RFC:** Did not mention Best-of-N as a control. The bandit proposer was framed as "the local-only default"; the agentic proposer was framed as "opt-in".
+
+**Why this matters for us:** The bandit proposer is *closer* in structure to Best-of-N than to the full agentic Meta-Harness. It samples + ranks via Thompson/UCB but cannot read traces. The honest expectation is that the bandit lives somewhere between Best-of-N (34.0 median) and the full agentic loop (50.0 median) — and may not capture most of the 16-point gain.
+
+**Fixed in RFC rev 3:** Phase 4 explicitly benchmarks each proposer against Best-of-N. The bandit is now framed as "the zero-LLM control" rather than the headline proposer, and the `inference-helper` (local agentic) mode is the recommended local-default.
+
+#### 8.2.6 Proposer capability caveat — paper Section 5 itself flags this
+
+**Paper §5:** *"our experiments demonstrate that harness search can work with one particularly strong coding-agent proposer (Claude Code); a broader study of how the effect varies across proposer agents remains for future work."*
+
+The paper validated Meta-Harness with **only Claude Code Opus 4.6**. The headline 50.0 / 56.7 / 16-point gain numbers all come from that single proposer's capabilities. Whether a local 7B-32B model reaches even half of that gain is unknown — the paper explicitly disclaims this.
+
+**Our rev-2 evaluation recommended** the `inference-helper` proposer mode (local MLX/Ollama) as the cheap local-only path. The recommendation still stands, but with a sharper caveat: we are extrapolating beyond the paper's validated regime. The "inference-helper hits 50% of the agentic gain" is a hope, not a forecast.
+
+**Fixed in RFC rev 3:** Added a "Proposer capability cap" row to §7 risks. §10 open question 4 explicitly frames the measurement protocol: benchmark bandit, `inference-helper`, and (when available) cloud `agentic` against Best-of-N to quantify how much of the structural gain a local model captures.
+
+#### 8.2.7 Disk growth — under-specified in rev 2
+
+**Paper §1:** *"In the settings we study, a single evaluation can produce up to 10,000,000 tokens of diagnostic information, roughly three orders of magnitude beyond the largest feedback budgets used in prior text optimization settings."*
+
+That's ≈30-40 MB per evaluation at the upper bound. Our stropha-scale evals will be smaller (a golden run of 30-43 queries × per-query trace + the hand-audit sample), but a Phase 4 run of 60 candidates × full eval × 90-day retention is GB-scale.
+
+**Our rev-2 RFC §7 risks:** "JSONL with rotation; prune below a score percentile". No concrete numbers.
+
+**Fixed in RFC rev 3:** §7 risks now cites the 10M-tokens-per-eval upper bound and pins a concrete pruning rule (top-10 + bottom-10 + last-50; trace bodies older than 90 days dropped on monthly compaction; `config.yaml` + `scores.json` + `meta.json` kept indefinitely; `stropha cost` reports per-run disk footprint).
+
+#### 8.2.8 Appendix D operational tips — entirely missing from rev 2
+
+The paper's Appendix D ("Practical Implementation Tips") lists six concrete tips that read like an operational checklist for adapting Meta-Harness to a new domain. None of them appeared in our rev-2 RFC.
+
+| # | Paper tip | Applied to our Phase 4 |
+|---|---|---|
+| 1 | Write a good skill; debug it with 3-5 short runs first | `meta/proposer/skill.md` + shakedown runs (§8.2.4) |
+| 2 | Start from a baseline + a search set that's hard for it; size for ~50 evals | Seed = `stropha.yaml` + 2-3 variants; search set = 30-43 queries (existing golden) — matches the "tens-of-evals" target |
+| 3 | Log in regex-friendly formats (JSON, hierarchical, consistent naming) | `.stropha/meta/` JSONL layout — already in RFC Phase 0 |
+| 4 | Build a small CLI for the artifact store (Pareto frontier, top-k, diff) | `stropha meta {status, report, frontier, diff}` subcommands — extended in RFC rev 3 |
+| 5 | Lightweight validation before expensive eval | Already in RFC Phase 1 (`pipeline validate` precedes evaluation) |
+| 6 | Automate evaluation outside the proposer | RFC Phase 1's `meta/evaluator.py` is exactly this |
+
+Tips 3, 5, 6 are already covered structurally; tips 1, 2, 4 needed explicit lifting into RFC rev 3 (done).
+
+#### 8.2.9 Typical `k` (candidates per iteration)
+
+**Paper §3 + §4.1 + §4.2:** Text classification ran `k=2` (40 candidates / 20 iterations). Math retrieval ran `k≈2.7` (109 candidates / 40 iterations). Overall "a typical run evaluates roughly 60 harnesses over 20 iterations" (≈3 candidates/iter).
+
+**Our rev-2 RFC:** Did not pin a default. The Phase 4 exit criterion example used `--candidates 4`.
+
+**Fixed in RFC rev 3:** Default `k=3`, with explicit note that the paper's typical range is 2-3. `--candidates 4` was wishful — bumped down to `--candidates 3`.
+
+#### 8.2.10 Code-space inspectability as a safety argument
+
+**Paper §5:** *"Overfitting in code space is also more inspectable: brittle if-chains or hard-coded class mappings are visible on inspection in a way that weight-space overfitting is not."*
+
+This is an additional safety argument for Phase 5 (code search) that our rev-2 didn't make. It complements the existing "production `adapters/` never modified" guarantee with "and if a regressed candidate slipped through, its source is grep-able".
+
+**Added to RFC rev 3 §11.2 findings table.**
+
+### 8.3 Cumulative effect on the plan
+
+The misalignment review **adds a net ~+3 days to the Phase 4 estimate** (L 8-12d → L 10-14d), specifically:
+- +2d for the `proposer/skill.md` + 3-5 shakedown runs to debug it (paper Appendix D tip #1, the "strongest lever").
+- +0.5d for the Pareto frontier handling end-to-end (loop, store, report, promote).
+- +0.5d for the initial seed evaluation + the Best-of-N control baseline.
+
+It also **clarifies** several things that were previously fuzzy:
+- The bandit is a control, not the headline proposer.
+- The `inference-helper` (local agentic) proposer is an extrapolation beyond the paper.
+- Promotion surfaces a frontier, not a scalar.
+- Phase 6 sleep-time runs bandit iterations because the agentic proposer is too expensive for the per-commit budget; this is unchanged but now explicit.
+
+### 8.4 What still requires reading the paper to verify
+
+The audit covered the main text + Appendices A, B, D. Two parts of the paper that may carry additional implementation detail but were not deeply inspected:
+- **Appendix C (Dataset Details)** — describes the OOD text classification datasets and the math retrieval corpus. Relevant only if we build a public benchmark suite.
+- **Appendix E (Extended Related Work)** — covers AlphaEvolve, GEPA, prompt orchestration frameworks. Useful for the §11.4 prior-art table, but no implementation impact.
+
+The paper's project page (`https://yoonholee.com/meta-harness/`) and the open-source TerminalBench-2 artifact (`https://github.com/stanford-iris-lab/meta-harness-tbench2-artifact`) are listed in the paper. If we want to ground-truth our `meta/proposer/skill.md` against a known-working skill, the artifact repo is the place to look — but it is not a hard prerequisite for Phase 4.
