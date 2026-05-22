@@ -45,6 +45,34 @@ class BuiltStages:
     retrieval: RetrievalStage
     resolved: dict[str, Any]
 
+    def indexing_hash(self) -> str:
+        """Stable hash of the four adapters that determine index contents.
+
+        WIN-176: the Meta-Harness index cache (WIN-177) keys on this
+        hash. Two builds that produce byte-identical index databases
+        share the same indexing_hash; flipping any walker, chunker,
+        enricher, or embedder adapter_id forces a fresh hash, which
+        invalidates the cache.
+
+        Storage and retrieval are **deliberately excluded**: changing
+        from sqlite-vec to lancedb (storage) or from hybrid-rrf to a
+        different fusion (retrieval) does NOT change what chunks are
+        in the index, only how they're queried back. The Meta-Harness
+        wants those to share the cache.
+        """
+        import hashlib
+
+        parts = [
+            f"walker={getattr(self.walker, 'adapter_id', '?')}",
+            f"chunker={getattr(self.chunker, 'adapter_id', '?')}",
+            f"enricher={getattr(self.enricher, 'adapter_id', '?')}",
+            f"embedder={getattr(self.embedder, 'adapter_id', '?')}",
+        ]
+        digest = hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
+        # Short prefix is plenty — 12 hex chars = 48 bits ≈ 280 trillion
+        # buckets. Plenty of headroom for tens of thousands of candidates.
+        return digest[:12]
+
 
 def build_stages(
     resolved_config: dict[str, Any],
