@@ -74,12 +74,19 @@ log = get_logger(__name__)
 
 @dataclass
 class AppContext:
-    """Long-lived dependencies, injected into every tool via the MCP Context."""
+    """Long-lived dependencies, injected into every tool via the MCP Context.
+
+    ``built`` is the full :class:`BuiltStages` so MCP tools can introspect
+    every pipeline stage (walker, chunker, enricher, retrieval, reranker)
+    — not just storage + embedder. The ``get_config`` tool uses this to
+    render a comprehensive runtime snapshot for the calling agent.
+    """
 
     config: Config
     storage: Storage
     embedder: Embedder
     search_engine: SearchEngine
+    built: object  # BuiltStages; typed as object to avoid the heavy import here
 
 
 @asynccontextmanager
@@ -119,7 +126,7 @@ async def _lifespan(app: FastMCP) -> AsyncIterator[AppContext]:
         watcher.start()
 
     try:
-        yield AppContext(cfg, storage, embedder, engine)
+        yield AppContext(cfg, storage, embedder, engine, built)
     finally:
         if watcher is not None:
             watcher.stop()
@@ -800,27 +807,284 @@ def trace_feature(
     )
 
 
+def _pipeline_snapshot(app: AppContext) -> dict:
+    """Introspect every built pipeline stage into a JSON-safe dict.
+
+    Returns a structure shaped for the calling LLM agent's convenience:
+    each stage shows what adapter is active, its ``adapter_id`` (the
+    drift-detection key — see CLAUDE.md §3.1), and any sub-adapters
+    (retrieval streams, reranker). Caller can use this to answer
+    questions like "is the cross-encoder reranker on?", "which embedder
+    model is producing vectors right now?", "what graph confidence
+    filter is the retrieval using?" — all without reading yaml/env.
+    """
+    built = app.built  # BuiltStages
+    cfg = app.config
+
+    def _stage(stage_obj):
+        if stage_obj is None:
+            return None
+        return {
+            "adapter": getattr(stage_obj, "adapter_name", "?"),
+            "adapter_id": getattr(stage_obj, "adapter_id", "?"),
+        }
+
+    # Retrieval has nested sub-adapters (streams + reranker) — expose them.
+    retrieval_info = _stage(built.retrieval)
+    if built.retrieval is not None:
+        streams_info: dict[str, dict] = {}
+        for name, stream in getattr(built.retrieval, "_streams", {}).items():
+            streams_info[name] = {
+                "adapter": getattr(stream, "adapter_name", "?"),
+                "adapter_id": getattr(stream, "adapter_id", "?"),
+            }
+        retrieval_info["streams"] = streams_info  # type: ignore[index]
+        reranker = getattr(built.retrieval, "_reranker", None)
+        if reranker is not None:
+            retrieval_info["reranker"] = {  # type: ignore[index]
+                "adapter": getattr(reranker, "adapter_name", "?"),
+                "adapter_id": getattr(reranker, "adapter_id", "?"),
+                "active": True,
+            }
+        else:
+            retrieval_info["reranker"] = {  # type: ignore[index]
+                "adapter": "noop",
+                "adapter_id": "reranker:noop",
+                "active": False,
+            }
+
+    return {
+        "walker": _stage(built.walker),
+        "chunker": _stage(built.chunker),
+        "enricher": _stage(built.enricher),
+        "embedder": {
+            **(_stage(built.embedder) or {}),
+            "model": getattr(built.embedder, "model_name", "?"),
+            "dim": getattr(built.embedder, "dim", 0),
+        },
+        "storage": {
+            **(_stage(built.storage) or {}),
+            "path": str(cfg.resolve_index_path()),
+        },
+        "retrieval": retrieval_info,
+    }
+
+
+def _inference_snapshot(cfg: Config) -> dict:
+    """Active LLM inference backend (used by enricher / HyDE / query rewrite)."""
+    backend = (cfg.inference.backend or "auto").lower()
+    base: dict = {
+        "backend": backend,
+        "enricher_concurrency": cfg.inference.enricher_concurrency,
+    }
+    if backend == "deepseek":
+        base.update(
+            {
+                "model": cfg.inference.deepseek_model,
+                "endpoint": cfg.inference.deepseek_base_url,
+                "api_key_set": cfg.secrets.has_deepseek,
+                "timeout_s": cfg.inference.deepseek_timeout,
+                "max_retries": cfg.inference.deepseek_max_retries,
+                "location": "cloud (China-routed)",
+            }
+        )
+    elif backend == "mlx":
+        base.update(
+            {
+                "model": cfg.inference.mlx_model,
+                "location": "local (Apple Silicon GPU)",
+            }
+        )
+    elif backend == "ollama":
+        base.update(
+            {
+                "model": cfg.inference.ollama_model,
+                "endpoint": cfg.inference.ollama_host,
+                "location": "local (Ollama daemon)",
+            }
+        )
+    return base
+
+
+def _graph_snapshot(app: AppContext) -> dict:
+    """graphify symbol-mirror status: loaded? size? embedded?"""
+    storage = app.storage
+    cfg = app.config
+    summary: dict = {
+        "confidence_filter": cfg.graph.confidence,
+        "fts_augment": cfg.graph.fts_augment,
+        "graphify_out_path": (
+            str(cfg.graph.graphify_out)
+            if cfg.graph.graphify_out
+            else f"{cfg.target_repo}/graphify-out"
+        ),
+    }
+    # Pull graph stats directly from Storage. May be absent on a fresh DB.
+    try:
+        stats = storage.stats()
+        graph_stats = stats.get("graph") if isinstance(stats, dict) else None
+        if graph_stats:
+            summary["loaded"] = True
+            summary["node_count"] = graph_stats.get("nodes", 0)
+            summary["edge_count"] = graph_stats.get("edges", 0)
+            summary["last_loaded_at"] = graph_stats.get("last_loaded_at")
+            summary["embedding_model"] = graph_stats.get("embedding_model")
+            summary["embedding_dim"] = graph_stats.get("embedding_dim")
+        else:
+            summary["loaded"] = False
+            summary["hint"] = "Run `graphify .` in the target repo to populate."
+    except Exception as exc:  # pragma: no cover  defensive
+        summary["loaded"] = False
+        summary["error"] = str(exc)
+    return summary
+
+
+def _features_snapshot(cfg: Config) -> dict:
+    """Every query-time toggle from retrieval_features, with on/off summary."""
+    rf = cfg.retrieval_features
+    return {
+        "hyde": {
+            "enabled": rf.hyde_enabled,
+            "code_tuned": rf.hyde_code_tuned,
+            "purpose": "Generate hypothetical code via LLM, embed THAT for dense search.",
+        },
+        "query_decomposition": {
+            "enabled": rf.query_decomposition_enabled,
+            "uses_llm": rf.query_decomposition_llm,
+            "purpose": "Split compound queries ('X and Y') into sub-queries; RRF-fuse results.",
+        },
+        "query_router_llm": {
+            "enabled": rf.query_router_llm,
+            "purpose": "LLM classifies query intent and routes to find_callers / find_tests_for / etc.",
+        },
+        "query_rewrite": {
+            "enabled": rf.query_rewrite_enabled,
+            "purpose": "LLM expands natural language into code-style terms. Redundant with HyDE for most cases.",
+        },
+        "multi_query": {
+            "enabled": rf.multi_query_enabled,
+            "count": rf.multi_query_count,
+            "purpose": "Generate N paraphrases of the query, fuse results. Costs N LLM calls per query.",
+        },
+        "recursive_retrieval": {
+            "enabled": rf.recursive_enabled,
+            "adjacency": rf.recursive_adjacency,
+            "purpose": "Auto-merge adjacent chunks + promote parent when siblings hit.",
+        },
+        "query_cache": {
+            "enabled": rf.cache_enabled,
+            "size": rf.cache_size,
+            "ttl_s": rf.cache_ttl,
+            "purpose": "LRU cache of recent query results.",
+        },
+        "adaptive_weighting": {
+            "enabled": rf.adaptive_weighting,
+            "purpose": "Symbol-shaped queries → boost lexical streams; natural → boost dense.",
+        },
+    }
+
+
+def _available_adapters() -> dict[str, list[str]]:
+    """Enumerate every adapter registered with the framework.
+
+    Lets the calling agent know which alternatives could be activated
+    without having to call a separate ``list_adapters`` endpoint.
+    Sorted alphabetically for deterministic output.
+    """
+    from .pipeline.registry import all_adapters
+
+    reg = all_adapters()
+    # all_adapters() returns dict[str, list[str]] already.
+    return {stage: sorted(names) for stage, names in reg.items()}
+
+
+def _features_summary(app: AppContext) -> dict:
+    """Cheat-sheet for the calling LLM: one-glance status of every major knob."""
+    cfg = app.config
+    rf = cfg.retrieval_features
+    built = app.built
+
+    # Reranker is "active" if a non-noop adapter was built.
+    reranker = (
+        getattr(built.retrieval, "_reranker", None) if built.retrieval else None
+    )
+    reranker_active = reranker is not None and getattr(
+        reranker, "adapter_name", "noop"
+    ) != "noop"
+
+    # Enricher uses an LLM iff it's contextual / ollama / mlx.
+    enricher_uses_llm = getattr(built.enricher, "adapter_name", "noop") in {
+        "contextual", "ollama", "mlx",
+    }
+
+    # Build a "active LLM features" list for quick scan.
+    llm_active: list[str] = []
+    if enricher_uses_llm:
+        llm_active.append(f"enricher({built.enricher.adapter_name})")
+    if rf.hyde_enabled:
+        llm_active.append("hyde")
+    if rf.query_rewrite_enabled:
+        llm_active.append("query_rewrite")
+    if rf.query_router_llm:
+        llm_active.append("query_router")
+    if rf.query_decomposition_llm:
+        llm_active.append("query_decomposition")
+    if rf.multi_query_enabled:
+        llm_active.append(f"multi_query×{rf.multi_query_count}")
+
+    return {
+        "embedder": f"{built.embedder.adapter_name}:{built.embedder.model_name}@{built.embedder.dim}d",
+        "enricher": built.enricher.adapter_name,
+        "enricher_uses_llm": enricher_uses_llm,
+        "inference_backend": (cfg.inference.backend or "auto"),
+        "rerank_active": reranker_active,
+        "rerank_model": (
+            getattr(reranker, "adapter_id", None) if reranker_active else None
+        ),
+        "llm_features_active_at_query_time": llm_active,
+        "mcp_auto_watch": cfg.mcp_watch,
+        "graph_traversal_available": _graph_snapshot(app).get("loaded", False),
+    }
+
+
 @mcp.tool(
     name="get_config",
     description=(
-        "Show the active stropha configuration. Returns every supported env var "
-        "(value + default + source: env/dotenv/default) grouped by feature area "
-        "(core, embedder, inference, query, cache, retrieval, mcp, git, hook), "
-        "plus the full pydantic settings dump, runtime paths, active embedder "
-        "model + dim, and index stats. Secrets are redacted as '(set)'. Use this "
-        "to debug which database the MCP server is using, which knobs are active, "
-        "and where each value came from."
+        "Comprehensive runtime configuration snapshot for the active stropha "
+        "MCP server. Returns:\n"
+        "- 'features_summary': one-glance cheat sheet (active embedder, "
+        "  reranker on/off, LLM features at query time, graph status).\n"
+        "- 'pipeline': every built stage (walker, chunker, enricher, embedder, "
+        "  storage, retrieval) with its adapter + adapter_id, plus retrieval "
+        "  sub-streams and the active reranker.\n"
+        "- 'inference': active LLM backend with model, endpoint, timeout, "
+        "  retry policy, and enricher concurrency.\n"
+        "- 'retrieval_features': every query-time toggle (hyde, recursive, "
+        "  cache, multi_query, etc) with enabled flag and one-line purpose.\n"
+        "- 'graph': graphify mirror state (loaded? node/edge counts? embedding model?).\n"
+        "- 'available_adapters': enumeration of every registered adapter per "
+        "  stage so the caller knows which alternatives could be activated.\n"
+        "- Plus the legacy env-var snapshot (sources, env_values, env_groups) "
+        "  for back-compat with older callers.\n"
+        "\n"
+        "All paths are stringified, secrets are redacted as '(set)'. Use this "
+        "to verify which DB the MCP is reading, which embedder is producing "
+        "vectors, which features cost LLM calls per query, and what could be "
+        "enabled to improve retrieval quality."
     ),
 )
 def get_config_tool(*, ctx: Context) -> dict:
-    """Return the active configuration for debugging."""
+    """Return the active configuration for debugging.
+
+    Backwards-compatible: the legacy ``config`` / ``settings`` / ``sources`` /
+    ``env_values`` / ``env_groups`` / ``runtime`` / ``embedder`` /
+    ``index_stats`` keys are preserved. New keys are additive.
+    """
     app = _ctx(ctx)
     stats = app.storage.stats()
-    
-    # Get the centralized config info
+
+    # Legacy fields (preserved for back-compat).
     info = get_config_info()
-    
-    # Add runtime stats from the active storage/embedder
     info["embedder"] = {
         "model": app.embedder.model_name,
         "dim": app.embedder.dim,
@@ -833,7 +1097,15 @@ def get_config_tool(*, ctx: Context) -> dict:
             for r in stats.get("repos", [])
         ],
     }
-    
+
+    # Comprehensive runtime snapshot for the agent.
+    info["features_summary"] = _features_summary(app)
+    info["pipeline"] = _pipeline_snapshot(app)
+    info["inference"] = _inference_snapshot(app.config)
+    info["retrieval_features"] = _features_snapshot(app.config)
+    info["graph"] = _graph_snapshot(app)
+    info["available_adapters"] = _available_adapters()
+
     return info
 
 
