@@ -31,6 +31,7 @@ from .fitness import (
     outcome_score_decomposition,
 )
 from .fitness import pareto_frontier as scorecard_pareto_frontier
+from .index_cache import CacheEntry, IndexCache, IndexCacheError
 from .outcome import (
     TIER_SCORE,
     LabelingContext,
@@ -66,9 +67,12 @@ __all__ = [
     "ArtifactStoreError",
     "BadResult",
     "BadResultStore",
+    "CacheEntry",
     "CandidateRecord",
     "EvaluatorError",
     "FeedbackError",
+    "IndexCache",
+    "IndexCacheError",
     "LabelingContext",
     "PrunePlan",
     "ScoreCard",
