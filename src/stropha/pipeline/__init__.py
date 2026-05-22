@@ -7,7 +7,7 @@ concrete adapters live under ``stropha.adapters`` — see
 
 from .base import Stage, StageContext, StageHealth
 from .builder import BuiltStages, build_stages
-from .config import load_pipeline_config
+from .config import load_pipeline_config, pipeline_config_from_dict
 from .pipeline import Pipeline, PipelineStats, RepoStats
 from .registry import (
     all_adapters,
@@ -29,5 +29,6 @@ __all__ = [
     "build_stages",
     "load_pipeline_config",
     "lookup_adapter",
+    "pipeline_config_from_dict",
     "register_adapter",
 ]

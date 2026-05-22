@@ -54,6 +54,56 @@ _LEGACY_ALIASES: dict[str, tuple[str, str]] = {
 }
 
 
+def pipeline_config_from_dict(
+    overrides: dict[str, Any],
+    *,
+    resolve_storage_path: bool = True,
+) -> dict[str, Any]:
+    """Build a resolved pipeline config from ``overrides`` ONLY.
+
+    WIN-179: the Meta-Harness loop needs to score candidate configs in
+    full isolation. ``load_pipeline_config`` reads
+    ``~/.stropha/config.yaml`` and ``./stropha.yaml`` and the env, so
+    two candidate evaluations on the same host would silently inherit
+    whatever the operator has in those files — fitness comparisons
+    become non-reproducible.
+
+    This helper bypasses every external source. It deep-merges
+    ``overrides`` onto the built-in ``_DEFAULTS`` skeleton, runs the
+    embedder=None auto-resolution against an EMPTY environment (so the
+    default lands on ``local`` regardless of ``VOYAGE_API_KEY``), and
+    optionally materialises the storage path.
+
+    Args:
+        overrides: the candidate's pipeline config. Same shape as
+            ``load_pipeline_config`` returns.
+        resolve_storage_path: when True (default), fills
+            ``storage.config.path`` with the built-in default if the
+            caller didn't set one. Set to False when the caller has
+            already chosen an explicit path (e.g. from the WIN-177
+            index cache).
+
+    Returns the fully-resolved config dict.
+    """
+    cfg = copy.deepcopy(_DEFAULTS)
+    if overrides:
+        _merge(cfg, overrides)
+
+    # Auto-resolve embedder=None — but use an EMPTY env so the call is
+    # deterministic regardless of VOYAGE_API_KEY on the host.
+    if cfg["embedder"].get("adapter") is None:
+        cfg["embedder"]["adapter"] = "local"
+
+    if resolve_storage_path:
+        storage_cfg = cfg.setdefault("storage", {}).setdefault("config", {})
+        if not storage_cfg.get("path"):
+            from ..config.models import _default_index_path
+            storage_cfg["path"] = str(_default_index_path())
+
+    log.debug("pipeline.config.from_dict", resolved=cfg)
+    return cfg
+
+
 def load_pipeline_config(
     *,
     project_root: Path | None = None,
