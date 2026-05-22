@@ -1259,8 +1259,16 @@ def eval(
     console.print(
         f"[bold]Summary:[/bold] {summary['hits']}/{summary['cases']} hits · "
         f"recall@{report.top_k}={summary[f'recall@{report.top_k}']} · "
-        f"mrr={summary['mrr']}"
+        f"mrr={summary['mrr']} · "
+        f"ndcg@{report.top_k}={summary[f'ndcg@{report.top_k}']} · "
+        f"precision@{report.top_k}={summary[f'precision@{report.top_k}']} · "
+        f"map@{report.top_k}={summary[f'map@{report.top_k}']} · "
+        f"latency_p95={summary['latency_p95_ms']}ms"
     )
+
+    # WIN-172: every quality metric in the by-tag table so a regression
+    # in one tag (e.g. retrieval ranking gets worse on graph queries
+    # while recall stays high) is visible at a glance.
     by_tag = report.by_tag()
     if len(by_tag) > 1:
         tag_table = Table(title="By tag", show_lines=False)
@@ -1268,12 +1276,41 @@ def eval(
         tag_table.add_column("Cases", justify="right")
         tag_table.add_column(f"Recall@{report.top_k}", justify="right")
         tag_table.add_column("MRR", justify="right")
+        tag_table.add_column(f"NDCG@{report.top_k}", justify="right")
+        tag_table.add_column(f"Prec@{report.top_k}", justify="right")
+        tag_table.add_column(f"MAP@{report.top_k}", justify="right")
         for t, sub in sorted(by_tag.items()):
             tag_table.add_row(
-                t, str(sub.n),
-                f"{sub.recall_at_k:.2f}", f"{sub.mrr:.2f}",
+                t,
+                str(sub.n),
+                f"{sub.recall_at_k:.2f}",
+                f"{sub.mrr:.2f}",
+                f"{sub.ndcg_at_k:.2f}",
+                f"{sub.precision_at_k:.2f}",
+                f"{sub.map_at_k:.2f}",
             )
         console.print(tag_table)
+
+    # WIN-168: surface split-aware metrics too (search vs holdout) so
+    # the operator can spot overfitting at a glance.
+    by_split = report.by_split()
+    if len(by_split) > 1:
+        split_table = Table(title="By split", show_lines=False)
+        split_table.add_column("Split", style="cyan")
+        split_table.add_column("Cases", justify="right")
+        split_table.add_column(f"Recall@{report.top_k}", justify="right")
+        split_table.add_column(f"NDCG@{report.top_k}", justify="right")
+        split_table.add_column(f"MAP@{report.top_k}", justify="right")
+        for s in sorted(by_split):
+            sub = by_split[s]
+            split_table.add_row(
+                s,
+                str(sub.n),
+                f"{sub.recall_at_k:.2f}",
+                f"{sub.ndcg_at_k:.2f}",
+                f"{sub.map_at_k:.2f}",
+            )
+        console.print(split_table)
 
     # Non-zero exit when below the spec threshold so CI catches regressions.
     raise typer.Exit(code=0 if report.recall_at_k >= 0.85 else 2)
