@@ -38,10 +38,15 @@ pipeline:
   # Embedder: converts text to vectors
   # Options: local (ONNX), voyage (cloud), mlx (Apple Silicon GPU), bge-m3
   embedder:
-    adapter: mlx
+    adapter: voyage
     config:
-      model: bge-m3  # Best multilingual + code understanding, 1024-dim
-      batch_size: 64  # MLX handles larger batches efficiently
+      model: voyage-code-3        # SOTA code embedder (MTEB-code top)
+      dim: 512                    # Matryoshka — pick 256/512/1024/2048
+    # Previously: adapter: mlx, model: bge-m3 (1024-dim local). Switched
+    # to voyage on 2026-05-22. Cost ~$0.18/M input tokens (~$0.14 for a
+    # full stropha reindex). Requires VOYAGE_API_KEY in .env. To revert,
+    # restore the block above and run `stropha index --rebuild --vacuum`
+    # to recreate the 1024-dim schema.
 
   # Storage: vector + FTS5 + metadata
   storage:
