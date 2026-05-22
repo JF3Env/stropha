@@ -67,6 +67,7 @@ def _print_index_summary(
     *,
     rebuild: bool,
     vacuum: bool,
+    enricher_concurrency: int = 1,
 ) -> None:
     """Print a consolidated configuration table at the start of `stropha index`.
 
@@ -172,12 +173,31 @@ def _print_index_summary(
                 f"timeout={cfg.inference.deepseek_timeout:.0f}s · "
                 f"retries={cfg.inference.deepseek_max_retries} (exp backoff)",
             )
+            concurrency_color = (
+                "green" if enricher_concurrency > 1 else "yellow"
+            )
+            concurrency_hint = (
+                "parallel" if enricher_concurrency > 1 else "serial — slow for cloud"
+            )
+            table.add_row(
+                "  concurrency",
+                f"[{concurrency_color}]{enricher_concurrency}[/{concurrency_color}] "
+                f"in-flight  [dim]({concurrency_hint})[/dim]",
+            )
         elif backend == "mlx":
             table.add_row(
                 "Backend",
                 f"[green]mlx[/green] [dim](local, Apple Silicon)[/dim]  →  "
                 f"{cfg.inference.mlx_model}",
             )
+            if enricher_concurrency > 1:
+                table.add_row(
+                    "  concurrency",
+                    f"[yellow]{enricher_concurrency}[/yellow] in-flight  "
+                    "[dim](local GPU saturates — parallelism rarely helps)[/dim]",
+                )
+            else:
+                table.add_row("  concurrency", "1  [dim](serial — fits local GPU)[/dim]")
         elif backend == "ollama":
             table.add_row(
                 "Backend",
@@ -185,6 +205,12 @@ def _print_index_summary(
                 f"{cfg.inference.ollama_model}",
             )
             table.add_row("  endpoint", cfg.inference.ollama_host)
+            if enricher_concurrency > 1:
+                table.add_row(
+                    "  concurrency",
+                    f"[yellow]{enricher_concurrency}[/yellow] in-flight  "
+                    "[dim](Ollama queues internally — minimal gain)[/dim]",
+                )
         else:
             table.add_row("Backend", f"{backend} [dim](auto-detect: mlx → ollama)[/dim]")
 
@@ -308,6 +334,17 @@ def index(
         "--embedder",
         help="Override pipeline.embedder.adapter (e.g. `local`, `voyage`).",
     ),
+    concurrency: int | None = typer.Option(
+        None,
+        "--concurrency", "-c",
+        help=(
+            "Number of concurrent enricher (LLM) calls. Overrides "
+            "inference.enricher_concurrency from stropha.yaml. "
+            "1 = serial (default, safe for local backends). 8 is a "
+            "good starting point for cloud backends (deepseek / openai); "
+            "raise if you have higher rate limits."
+        ),
+    ),
 ) -> None:
     """Walk one or more repos, chunk every file, enrich, embed, and store."""
     cfg = _load_config()
@@ -366,10 +403,20 @@ def index(
         mode = "auto"
 
     # Print the consolidated config summary right before the index loop starts.
+    # Resolve enricher concurrency: CLI flag wins over YAML.
+    effective_concurrency = (
+        concurrency if concurrency is not None
+        else cfg.inference.enricher_concurrency
+    )
+
     # Everything resolved above (target repos, adapter ids from build_stages,
     # mode flags, inference backend, feature toggles) feeds into one panel so
     # the user sees the full state in a single glance.
-    _print_index_summary(cfg, built, targets, mode, rebuild=rebuild, vacuum=vacuum)
+    _print_index_summary(
+        cfg, built, targets, mode,
+        rebuild=rebuild, vacuum=vacuum,
+        enricher_concurrency=effective_concurrency,
+    )
 
     try:
         with built.storage as storage:  # type: ignore[union-attr]
@@ -380,6 +427,7 @@ def index(
                 walker=built.walker,
                 chunker=built.chunker,
                 repos=targets,
+                enricher_concurrency=effective_concurrency,
             )
             stats = pipeline.run(rebuild=rebuild, mode=mode, since_sha=since)
             if vacuum:

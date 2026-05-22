@@ -68,6 +68,11 @@ inference:
   # DeepSeek (cloud, requires DEEPSEEK_API_KEY in .env)
   deepseek_model: deepseek-chat        # alias -> deepseek-v4-flash (current)
   deepseek_base_url: https://api.deepseek.com/v1
+  # Concurrent in-flight enrichment requests during indexing. Cloud
+  # backends (DeepSeek / OpenAI / Anthropic) wait ~5s on network per
+  # call — 8 in-flight uses that latency efficiently. Local backends
+  # (mlx / ollama) saturate a single GPU regardless; keep at 1 for them.
+  enricher_concurrency: 8
 
 # Query-time features (no re-index needed to change these)
 retrieval_features:
