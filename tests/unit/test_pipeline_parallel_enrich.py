@@ -1,0 +1,227 @@
+"""Tests for parallel enrichment in Pipeline._enrich_chunks.
+
+The parallel path is exercised when ``Pipeline(enricher_concurrency=N)``
+with ``N > 1`` and the file has 2+ chunks pending enrichment. The serial
+fallback covers concurrency=1 and the single-chunk-pending edge case.
+"""
+
+from __future__ import annotations
+
+import time
+from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor
+
+import pytest
+
+from stropha.models import Chunk
+from stropha.pipeline.base import StageContext, StageHealth
+from stropha.pipeline.pipeline import Pipeline
+
+
+# ---------------------------------------------------------------------------
+# Test doubles
+# ---------------------------------------------------------------------------
+
+
+class _SleepyEnricher:
+    """Enricher that sleeps to simulate network latency.
+
+    Tracks call count and thread id of each call so tests can verify
+    that the parallel path actually overlaps execution.
+    """
+
+    adapter_id = "sleepy:v1"
+    stage_name = "enricher"
+    adapter_name = "sleepy"
+
+    def __init__(self, latency_s: float = 0.1) -> None:
+        self._latency_s = latency_s
+        self.calls: list[tuple[str, int]] = []  # (chunk_id, thread_id)
+
+    @property
+    def config_schema(self):  # pragma: no cover  not exercised
+        from pydantic import BaseModel
+        class _C(BaseModel):
+            pass
+        return _C
+
+    def health(self) -> StageHealth:
+        return StageHealth(status="ready", message="sleepy ok")
+
+    def enrich(self, chunk: Chunk, ctx: StageContext) -> str:
+        import threading
+        time.sleep(self._latency_s)
+        self.calls.append((chunk.chunk_id, threading.get_ident()))
+        return f"enriched({chunk.chunk_id})"
+
+
+def _make_chunk(chunk_id: str) -> Chunk:
+    return Chunk(
+        chunk_id=chunk_id,
+        rel_path="a.py",
+        start_line=1,
+        end_line=2,
+        content=f"code-{chunk_id}",
+        content_hash=f"hash-{chunk_id}",
+        language="python",
+    )
+
+
+def _make_pipeline_shell(concurrency: int, latency_s: float = 0.1) -> tuple[Pipeline, _SleepyEnricher]:
+    """Build a Pipeline instance bypassing __init__ to avoid storage/embedder setup.
+
+    Only ``_enricher`` and ``_enricher_concurrency`` are needed for
+    ``_enrich_chunks`` tests — the rest of the Pipeline is irrelevant.
+    """
+    enricher = _SleepyEnricher(latency_s=latency_s)
+    pipe = Pipeline.__new__(Pipeline)
+    pipe._enricher = enricher
+    pipe._enricher_concurrency = concurrency
+    return pipe, enricher
+
+
+# ---------------------------------------------------------------------------
+# Parallel path: speedup + order preservation
+# ---------------------------------------------------------------------------
+
+
+def test_parallel_enrichment_speedup_is_real():
+    """8 chunks × 100ms with concurrency=8 must complete in ~100ms, not 800ms."""
+    pipe, enricher = _make_pipeline_shell(concurrency=8, latency_s=0.1)
+    chunks = [_make_chunk(f"c{i}") for i in range(8)]
+    contexts = [StageContext(repo_key="test") for _ in chunks]
+
+    t0 = time.time()
+    results = pipe._enrich_chunks(chunks, contexts)
+    elapsed = time.time() - t0
+
+    # Speedup tolerance: should be ~100ms not 800ms. We accept up to 300ms
+    # to absorb thread spin-up overhead on slow CI runners.
+    assert elapsed < 0.3, f"Parallel enrichment took {elapsed:.2f}s — too slow (expected <0.3s)"
+    assert len(results) == 8
+
+
+def test_parallel_enrichment_preserves_order():
+    """Even though workers complete out of order, results MUST come back in input order."""
+    pipe, enricher = _make_pipeline_shell(concurrency=8, latency_s=0.05)
+    # Reverse-ordered chunk IDs to make any unintended reordering obvious.
+    chunks = [_make_chunk(f"c{i}") for i in [7, 3, 5, 1, 0, 6, 2, 4]]
+    contexts = [StageContext(repo_key="test") for _ in chunks]
+
+    results = pipe._enrich_chunks(chunks, contexts)
+
+    expected = [f"enriched({c.chunk_id})" for c in chunks]
+    assert results == expected
+
+
+def test_parallel_uses_multiple_threads():
+    """Verify the workers actually run on distinct OS threads."""
+    pipe, enricher = _make_pipeline_shell(concurrency=4, latency_s=0.1)
+    chunks = [_make_chunk(f"c{i}") for i in range(4)]
+    contexts = [StageContext(repo_key="test") for _ in chunks]
+
+    pipe._enrich_chunks(chunks, contexts)
+
+    thread_ids = {tid for _, tid in enricher.calls}
+    assert len(thread_ids) >= 2, (
+        f"Expected calls to spread across threads, got {len(thread_ids)} unique tid(s)"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Serial fallback
+# ---------------------------------------------------------------------------
+
+
+def test_concurrency_one_uses_serial_path():
+    """concurrency=1 means no thread pool — single-thread execution."""
+    pipe, enricher = _make_pipeline_shell(concurrency=1, latency_s=0.05)
+    chunks = [_make_chunk(f"c{i}") for i in range(4)]
+    contexts = [StageContext(repo_key="test") for _ in chunks]
+
+    pipe._enrich_chunks(chunks, contexts)
+
+    thread_ids = {tid for _, tid in enricher.calls}
+    assert len(thread_ids) == 1, f"Serial path must use one thread, saw {thread_ids}"
+
+    # Serial timing: 4 × 50ms ≈ 200ms+, never under 150ms.
+    pipe2, enricher2 = _make_pipeline_shell(concurrency=1, latency_s=0.05)
+    t0 = time.time()
+    pipe2._enrich_chunks(chunks, contexts)
+    elapsed = time.time() - t0
+    assert elapsed >= 0.15, (
+        f"Serial 4×50ms should take ≥150ms, got {elapsed:.3f}s — accidentally parallelized?"
+    )
+
+
+def test_single_chunk_skips_thread_pool():
+    """1 pending chunk → don't pay the thread pool spin-up cost."""
+    pipe, enricher = _make_pipeline_shell(concurrency=8, latency_s=0.05)
+    chunks = [_make_chunk("only")]
+    contexts = [StageContext(repo_key="test")]
+
+    results = pipe._enrich_chunks(chunks, contexts)
+
+    assert results == ["enriched(only)"]
+    # The one call should be on the main thread (no pool spawned).
+    import threading
+    main_tid = threading.get_ident()
+    assert enricher.calls[0][1] == main_tid
+
+
+# ---------------------------------------------------------------------------
+# Edge cases
+# ---------------------------------------------------------------------------
+
+
+def test_empty_input_returns_empty_list():
+    pipe, enricher = _make_pipeline_shell(concurrency=8)
+    assert pipe._enrich_chunks([], []) == []
+    assert enricher.calls == []
+
+
+def test_mismatched_lengths_raise_value_error():
+    pipe, _ = _make_pipeline_shell(concurrency=8)
+    with pytest.raises(ValueError, match="must have the same length"):
+        pipe._enrich_chunks(
+            [_make_chunk("a"), _make_chunk("b")],
+            [StageContext(repo_key="test")],  # only 1 context for 2 chunks
+        )
+
+
+def test_invalid_concurrency_rejected_at_pipeline_init():
+    """concurrency < 1 is a config error caught at Pipeline.__init__."""
+    from stropha.pipeline.pipeline import Pipeline
+    from unittest.mock import MagicMock
+
+    storage = MagicMock()
+    embedder = MagicMock(batch_size=64, dim=512, model_name="m")
+    enricher = MagicMock()
+
+    with pytest.raises(ValueError, match="enricher_concurrency must be >= 1"):
+        Pipeline(
+            storage=storage,
+            embedder=embedder,
+            enricher=enricher,
+            repos=[__import__("pathlib").Path("/tmp")],
+            enricher_concurrency=0,
+        )
+
+
+def test_enricher_exceptions_propagate():
+    """If the enricher raises (not just returns None), the parallel map
+    surfaces the exception so the caller can handle/log it. Currently the
+    contextual enricher returns None on failure rather than raising, but
+    if a custom enricher raises, we should not swallow it silently."""
+    pipe, _ = _make_pipeline_shell(concurrency=4, latency_s=0.0)
+
+    class RaisingEnricher(_SleepyEnricher):
+        def enrich(self, chunk, ctx):
+            raise RuntimeError(f"boom on {chunk.chunk_id}")
+
+    pipe._enricher = RaisingEnricher()
+    chunks = [_make_chunk(f"c{i}") for i in range(3)]
+    contexts = [StageContext(repo_key="test") for _ in chunks]
+
+    with pytest.raises(RuntimeError, match="boom on"):
+        pipe._enrich_chunks(chunks, contexts)
