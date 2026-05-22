@@ -19,12 +19,13 @@ from .feedback import (
     FeedbackError,
     resolve_bad_chunks,
 )
-from .prune import (
-    DEFAULT_TRACE_MAX_AGE_DAYS,
-    PrunePlan,
-    disk_usage,
-    prune,
+from .fitness import (
+    DIMENSION_SIGNS,
+    ScoreCard,
+    build_scorecard,
+    outcome_score_decomposition,
 )
+from .fitness import pareto_frontier as scorecard_pareto_frontier
 from .outcome import (
     TIER_SCORE,
     LabelingContext,
@@ -35,11 +36,18 @@ from .outcome import (
     label_hits,
     tier_summary,
 )
+from .prune import (
+    DEFAULT_TRACE_MAX_AGE_DAYS,
+    PrunePlan,
+    disk_usage,
+    prune,
+)
 from .store import ArtifactStore, ArtifactStoreError, CandidateRecord
 from .trace import TraceRecord, TraceRecorder
 
 __all__ = [
     "DEFAULT_TRACE_MAX_AGE_DAYS",
+    "DIMENSION_SIGNS",
     "TIER_SCORE",
     "ArtifactStore",
     "ArtifactStoreError",
@@ -49,15 +57,19 @@ __all__ = [
     "FeedbackError",
     "LabelingContext",
     "PrunePlan",
+    "ScoreCard",
     "Tier",
     "TierLabel",
     "TraceRecord",
     "TraceRecorder",
     "aggregate_score",
+    "build_scorecard",
     "disk_usage",
     "label_hit",
     "label_hits",
+    "outcome_score_decomposition",
     "prune",
     "resolve_bad_chunks",
+    "scorecard_pareto_frontier",
     "tier_summary",
 ]
