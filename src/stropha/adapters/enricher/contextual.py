@@ -45,11 +45,13 @@ from ...pipeline.registry import register_adapter
 from ...stages.enricher import EnricherStage
 
 _DEFAULT_PROMPT = """\
-Describe this code chunk's purpose and context in 2-3 sentences.
-Include:
+Write a dense 2-3 sentence semantic description of this code chunk for retrieval.
+Cover:
 - What this code does (functionality)
 - Where it fits (layer, module, responsibility)
 - Related concepts or components it interacts with
+
+Keep it concrete. Avoid filler words and meta-commentary.
 
 Code:
 ```{language}
@@ -59,8 +61,14 @@ Code:
 File: {rel_path}
 Symbol: {symbol}
 
-Write ONLY the description, no code, no preamble. Start with "This..."
+Output: ONLY the description, starting with "This...". No code, no preamble, no markdown.
 """
+# Prompt v2 (2026-05): tightened wording for brevity + output discipline. The
+# wording change also forces the adapter_id (prompt_hash) to flip, which
+# invalidates any chunks whose enrichment was cached with raw content during
+# the v1 era of DeepSeek timeouts (before retry+backoff landed). On the next
+# `stropha index`, drift detection re-enriches every chunk against the new
+# adapter_id — failed v1 chunks get a clean second attempt.
 
 _CONTEXT_PREFIX = "[Context: {description}]\n\n"
 
