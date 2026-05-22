@@ -186,6 +186,7 @@ Per file: `test_anchors` 26 · `test_chunker` 8 · `test_contextual_enricher` 19
 The companion specs:
 - `docs/architecture/stropha-pipeline-adapters.md` — ADR for the Stage/adapter framework (Phase 1–4 shipped).
 - `docs/architecture/stropha-graphify-integration.md` — RFC for graphify mirror + post-commit hook + L2/L3 augmentation (Fase 1.5a/b/c/e/f shipped, status `Implemented`).
+- `docs/architecture/stropha-meta-harness.md` — RFC: implementation plan for a Meta-Harness over stropha (an outer loop optimizing the adapter search space), per Lee et al. (arXiv:2603.28052). Status `Proposed` — nothing shipped. Companion analysis: `docs/comparisons/stropha-vs-meta-harness.md`.
 
 Each spec carries its own `Status` line. Update both when behaviour changes.
 
@@ -680,6 +681,9 @@ The golden dataset is at `tests/eval/golden.jsonl` (~30 queries; see §2.6 for t
 | `docs/architecture/stropha-system.md` | Master design doc (v1.0 — solution space mapping) |
 | `docs/architecture/stropha-pipeline-adapters.md` | ADR for the Stage / adapter framework (status `Implemented`) |
 | `docs/architecture/stropha-graphify-integration.md` | RFC for graphify mirror + post-commit hook (status `Implemented`) |
+| `docs/architecture/stropha-meta-harness.md` | RFC — Meta-Harness implementation plan (status `Proposed`; 7 phases, ~3–4wk MVP) |
+| `docs/comparisons/stropha-vs-meta-harness.md` | Concept analysis — stropha as a harness + 118 improvement options |
+| `https://arxiv.org/abs/2603.28052` | Meta-Harness paper (Lee et al., 2026) — the source for both docs above |
 | `graphify-out/GRAPH_REPORT.md` | Live structural map — god nodes + community labels (regenerated on every commit by the hook) |
 | `graphify-out/graph.json` | Raw graph (1500+ nodes — backs the MCP `find_*` tools) |
 | `~/.cache/stropha-hook.log` | Hook execution log; `~/.cache/stropha-hook-*.log` for cross-repo installs |
