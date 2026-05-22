@@ -164,10 +164,21 @@ class IndexCache:
         try:
             _materialise(src, dst_index, copy_mode)
         except OSError as exc:
-            shutil.rmtree(entry_dir, ignore_errors=True)
-            raise IndexCacheError(
-                f"failed to materialise index for {indexing_hash!r}: {exc}"
-            ) from exc
+            # WIN-180 race-condition fix: if a concurrent ``put()`` for
+            # the same hash already wrote ``dst_index``, our hardlink /
+            # copy raises FileExistsError or similar. The entry is
+            # actually valid (someone else won the race), so DO NOT
+            # rmtree the dir — that would destroy the sibling's work.
+            if dst_index.is_file():
+                log.info(
+                    "index_cache.race_idempotent",
+                    indexing_hash=indexing_hash,
+                )
+            else:
+                shutil.rmtree(entry_dir, ignore_errors=True)
+                raise IndexCacheError(
+                    f"failed to materialise index for {indexing_hash!r}: {exc}"
+                ) from exc
 
         meta = {
             "indexing_hash": indexing_hash,
