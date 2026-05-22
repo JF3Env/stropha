@@ -14,6 +14,7 @@ from pathlib import Path
 
 import typer
 from rich.console import Console
+from rich.panel import Panel
 from rich.table import Table
 
 from . import __version__
@@ -45,6 +46,192 @@ def _load_config() -> Config:
         return get_config()
     except Exception as exc:
         raise typer.BadParameter(f"Config error: {exc}") from exc
+
+
+def _format_size(num_bytes: int) -> str:
+    """Render a byte count in the largest fitting unit."""
+    units = ("B", "KB", "MB", "GB")
+    size = float(num_bytes)
+    idx = 0
+    while size >= 1024 and idx < len(units) - 1:
+        size /= 1024
+        idx += 1
+    return f"{size:.1f} {units[idx]}"
+
+
+def _print_index_summary(
+    cfg: Config,
+    built,
+    targets: list[Path],
+    mode: str,
+    *,
+    rebuild: bool,
+    vacuum: bool,
+) -> None:
+    """Print a consolidated configuration table at the start of `stropha index`.
+
+    Shows the user every knob that will be in effect for this run — index path
+    + size, target repos, mode (full / incremental / auto + rebuild flag),
+    every pipeline stage with its adapter_id, the LLM inference backend with
+    its model + timeout + retry policy, query-time feature toggles, and graph
+    integration settings. Replaces the 4 scattered ``console.print`` lines of
+    the previous "Target / Index / Embedder / Enricher" output with a single
+    auditable view.
+
+    The structlog ``pipeline.adapter.built`` events still fire — this panel
+    is the human-facing summary; the JSON log stream is the machine-facing
+    one. Both stay in sync via the same ``built.<stage>.adapter_id`` source.
+    """
+    index_path = cfg.resolve_index_path()
+    # DB stats are cheap (single SQL count) — fetch them so the panel shows
+    # current state of the index file before we mutate it.
+    try:
+        stats = built.storage.stats()
+        db_chunks = stats.get("chunks", "?")
+        db_files = stats.get("files", "?")
+        db_size = _format_size(int(stats.get("size_bytes", 0)))
+    except Exception:
+        db_chunks = db_files = "?"
+        db_size = _format_size(index_path.stat().st_size) if index_path.exists() else "0 B"
+
+    # Left col: tight label (no wrap). Right col: flexes + wraps long values
+    # (overflow=fold) so the panel never truncates URLs / adapter_ids with `…`.
+    table = Table.grid(padding=(0, 2))
+    table.add_column(style="bold cyan", no_wrap=True, justify="left")
+    table.add_column(overflow="fold", ratio=1)
+
+    def section(label: str, hint: str = "") -> None:
+        """Add a vertically-spaced section header.
+
+        ``label`` lands in the (tight) left column. ``hint`` is an optional
+        clarifier rendered dim in the value column on the same row, so the
+        section divider doubles as inline documentation without widening
+        the label column.
+        """
+        table.add_row("", "")  # blank spacer line
+        table.add_row(
+            f"[bold yellow]{label}[/bold yellow]",
+            f"[dim]{hint}[/dim]" if hint else "",
+        )
+
+    # ---- Resources ------------------------------------------------------
+    targets_str = "\n".join(str(t) for t in targets) if len(targets) > 1 else str(targets[0])
+    table.add_row(
+        "Target",
+        targets_str + (f"  [dim]({len(targets)} repos)[/dim]" if len(targets) > 1 else ""),
+    )
+    table.add_row("Index DB", str(index_path))
+    table.add_row(
+        "  state",
+        f"[dim]{db_chunks} chunks · {db_files} files · {db_size}[/dim]",
+    )
+
+    # ---- Run mode -------------------------------------------------------
+    mode_flags = [f"[green]{mode}[/green]"]
+    if rebuild:
+        mode_flags.append("[red]rebuild[/red] (wipes chunks)")
+    if vacuum:
+        mode_flags.append("vacuum (reclaim disk)")
+    table.add_row("Mode", " · ".join(mode_flags))
+
+    # ---- Pipeline stages -----------------------------------------------
+    section("Pipeline")
+    table.add_row("Walker", f"{built.walker.adapter_name}  [dim]({built.walker.adapter_id})[/dim]")
+    table.add_row("Chunker", f"{built.chunker.adapter_name}  [dim]({built.chunker.adapter_id})[/dim]")
+    table.add_row("Enricher", f"{built.enricher.adapter_name}  [dim]({built.enricher.adapter_id})[/dim]")
+    table.add_row(
+        "Embedder",
+        f"{built.embedder.adapter_name}:{built.embedder.model_name}  "
+        f"[dim](dim={built.embedder.dim})[/dim]",
+    )
+    table.add_row("Storage", f"{built.storage.adapter_name}  [dim]({built.storage.adapter_id})[/dim]")
+    table.add_row(
+        "Retrieval",
+        f"{built.retrieval.adapter_name}  [dim]({built.retrieval.adapter_id})[/dim]",
+    )
+
+    # ---- Inference (only meaningful when enricher actually calls LLM) --
+    enricher_uses_llm = built.enricher.adapter_name in {"contextual", "ollama", "mlx"}
+    if enricher_uses_llm:
+        section("Inference", "LLM for enricher / HyDE / query rewrite")
+        backend = cfg.inference.backend or "auto"
+        if backend == "deepseek":
+            table.add_row(
+                "Backend",
+                f"[magenta]deepseek[/magenta] [dim](cloud)[/dim]  →  "
+                f"{cfg.inference.deepseek_model}",
+            )
+            table.add_row("  endpoint", cfg.inference.deepseek_base_url)
+            api_key_set = bool(cfg.secrets.has_deepseek)
+            table.add_row(
+                "  api key",
+                "[green]set[/green]" if api_key_set else "[red]MISSING[/red] — set DEEPSEEK_API_KEY",
+            )
+            table.add_row(
+                "  resilience",
+                f"timeout={cfg.inference.deepseek_timeout:.0f}s · "
+                f"retries={cfg.inference.deepseek_max_retries} (exp backoff)",
+            )
+        elif backend == "mlx":
+            table.add_row(
+                "Backend",
+                f"[green]mlx[/green] [dim](local, Apple Silicon)[/dim]  →  "
+                f"{cfg.inference.mlx_model}",
+            )
+        elif backend == "ollama":
+            table.add_row(
+                "Backend",
+                f"[green]ollama[/green] [dim](local)[/dim]  →  "
+                f"{cfg.inference.ollama_model}",
+            )
+            table.add_row("  endpoint", cfg.inference.ollama_host)
+        else:
+            table.add_row("Backend", f"{backend} [dim](auto-detect: mlx → ollama)[/dim]")
+
+    # ---- Query-time features -------------------------------------------
+    rf = cfg.retrieval_features
+    enabled_features = []
+    if rf.hyde_enabled:
+        enabled_features.append("hyde" + ("(code-tuned)" if rf.hyde_code_tuned else ""))
+    if rf.query_decomposition_enabled:
+        enabled_features.append("decomp" + ("(llm)" if rf.query_decomposition_llm else ""))
+    if rf.query_router_llm:
+        enabled_features.append("router(llm)")
+    if rf.query_rewrite_enabled:
+        enabled_features.append("rewrite")
+    if rf.multi_query_enabled:
+        enabled_features.append(f"multi-query×{rf.multi_query_count}")
+    if rf.recursive_enabled:
+        enabled_features.append(f"recursive(adj={rf.recursive_adjacency})")
+    if rf.cache_enabled:
+        enabled_features.append(f"cache(n={rf.cache_size},ttl={int(rf.cache_ttl)}s)")
+    if rf.adaptive_weighting:
+        enabled_features.append("adaptive-weights")
+    if enabled_features:
+        section("Features", "query-time toggles (no re-index needed)")
+        table.add_row("Enabled", " · ".join(enabled_features))
+
+    # ---- Graph integration ---------------------------------------------
+    section("Graph", "graphify symbol mirror")
+    table.add_row(
+        "Source",
+        str(cfg.graph.graphify_out) if cfg.graph.graphify_out else "<repo>/graphify-out",
+    )
+    table.add_row(
+        "Filter",
+        f"confidence={cfg.graph.confidence} · "
+        f"fts_augment={'on' if cfg.graph.fts_augment else 'off'}",
+    )
+
+    console.print()
+    console.print(Panel(
+        table,
+        title="[bold]stropha index — configuration[/bold]",
+        title_align="left",
+        border_style="cyan",
+        padding=(0, 1),
+    ))
+    console.print()
 
 
 @app.callback()
@@ -156,24 +343,11 @@ def index(
         overrides.setdefault("embedder", {})["adapter"] = embedder
     resolved = load_pipeline_config(overrides=overrides or None)
 
-    console.print(
-        "[bold]Target"
-        + ("s" if len(targets) > 1 else "")
-        + ":[/bold] "
-        + ", ".join(str(t) for t in targets)
-    )
-    console.print(f"[bold]Index :[/bold] {cfg.resolve_index_path()}")
-
     try:
         built = build_stages(resolved)
     except StrophaError as exc:
         console.print(f"[red]Pipeline build error:[/red] {exc}")
         raise typer.Exit(code=1) from exc
-    console.print(
-        f"[bold]Embedder:[/bold] {built.embedder.adapter_id} "
-        f"(dim={built.embedder.dim})"
-    )
-    console.print(f"[bold]Enricher:[/bold] {built.enricher.adapter_id}")
 
     if full and incremental:
         console.print("[red]--full and --incremental are mutually exclusive[/red]")
@@ -184,6 +358,12 @@ def index(
         mode = "incremental"
     else:
         mode = "auto"
+
+    # Print the consolidated config summary right before the index loop starts.
+    # Everything resolved above (target repos, adapter ids from build_stages,
+    # mode flags, inference backend, feature toggles) feeds into one panel so
+    # the user sees the full state in a single glance.
+    _print_index_summary(cfg, built, targets, mode, rebuild=rebuild, vacuum=vacuum)
 
     try:
         with built.storage as storage:  # type: ignore[union-attr]
