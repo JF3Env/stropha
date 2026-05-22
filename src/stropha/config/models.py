@@ -84,6 +84,13 @@ class InferenceConfig:
     ollama_host: str = "http://localhost:11434"
     deepseek_model: str = "deepseek-chat"
     deepseek_base_url: str = "https://api.deepseek.com/v1"
+    # DeepSeek is hosted abroad and goes through transcontinental links.
+    # 60s is tight under load — 120s gives generous headroom while still
+    # bounding the worst-case per-chunk wait.
+    deepseek_timeout: float = 120.0
+    # Retry on URLError / OSError / TimeoutError only (HTTP 4xx are surfaced
+    # immediately — they're not transient). Exponential backoff: 1s, 2s, 4s.
+    deepseek_max_retries: int = 2
 
 
 # ---------------------------------------------------------------------------

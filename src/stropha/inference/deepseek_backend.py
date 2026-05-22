@@ -28,6 +28,7 @@ API contract (mirrors :class:`OllamaBackend`):
 from __future__ import annotations
 
 import json
+import time
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 
@@ -36,6 +37,14 @@ from ..logging import get_logger
 from .backend import InferenceBackend
 
 log = get_logger(__name__)
+
+# Errors that are worth retrying — network-level transient failures.
+# HTTPError (4xx/5xx) is handled separately because 4xx is permanent.
+_RETRYABLE_NETWORK_ERRORS: tuple[type[BaseException], ...] = (
+    urllib_error.URLError,
+    OSError,
+    TimeoutError,
+)
 
 
 class DeepSeekBackend(InferenceBackend):
@@ -46,7 +55,8 @@ class DeepSeekBackend(InferenceBackend):
         model: str | None = None,
         base_url: str | None = None,
         api_key: str | None = None,
-        timeout: float = 60.0,
+        timeout: float | None = None,
+        max_retries: int | None = None,
     ) -> None:
         """Initialize the DeepSeek backend.
 
@@ -58,15 +68,22 @@ class DeepSeekBackend(InferenceBackend):
                 ``inference.deepseek_base_url`` in config.
             api_key: Bearer token. Falls back to ``DEEPSEEK_API_KEY``
                 env var (via ``secrets.deepseek_api_key``).
-            timeout: Per-request timeout in seconds. Cloud round-trips
-                are slower than localhost so default is 60s vs 30s for
-                Ollama.
+            timeout: Per-request timeout in seconds. Falls back to
+                ``inference.deepseek_timeout`` (default 120s — the
+                China-routed DeepSeek endpoint can be slow under load).
+            max_retries: Extra attempts on transient network errors.
+                Falls back to ``inference.deepseek_max_retries``
+                (default 2 → up to 3 total attempts with 1s/2s
+                exponential backoff).
         """
         cfg = get_config()
         self._default_model = model or cfg.inference.deepseek_model
         self._base_url = (base_url or cfg.inference.deepseek_base_url).rstrip("/")
         self._api_key = api_key or cfg.secrets.deepseek_api_key
-        self._timeout = timeout
+        self._timeout = timeout if timeout is not None else cfg.inference.deepseek_timeout
+        self._max_retries = (
+            max_retries if max_retries is not None else cfg.inference.deepseek_max_retries
+        )
 
     @property
     def name(self) -> str:
@@ -119,43 +136,88 @@ class DeepSeekBackend(InferenceBackend):
             }
         ).encode("utf-8")
 
-        try:
-            req = urllib_request.Request(
-                f"{self._base_url}/chat/completions",
-                data=body,
-                headers={
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {self._api_key}",
-                },
-                method="POST",
-            )
-            with urllib_request.urlopen(req, timeout=self._timeout) as resp:
-                payload = json.loads(resp.read().decode("utf-8"))
-
-            choices = payload.get("choices") or []
-            if not choices:
-                log.warning("deepseek.generate_failed", reason="no choices in response")
-                return None
-            message = choices[0].get("message") or {}
-            text = (message.get("content") or "").strip()
-            return text if text else None
-
-        except urllib_error.HTTPError as exc:
-            # Common: 401 (bad key), 402 (out of credits), 429 (rate limit).
+        max_attempts = self._max_retries + 1
+        for attempt in range(1, max_attempts + 1):
             try:
-                err_body = exc.read().decode("utf-8", errors="replace")
-            except Exception:
-                err_body = ""
-            log.warning(
-                "deepseek.generate_failed",
-                status=exc.code,
-                reason=exc.reason,
-                body=err_body[:500],
-            )
-            return None
-        except (urllib_error.URLError, OSError, json.JSONDecodeError, TimeoutError) as exc:
-            log.warning("deepseek.generate_failed", error=str(exc))
-            return None
+                req = urllib_request.Request(
+                    f"{self._base_url}/chat/completions",
+                    data=body,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": f"Bearer {self._api_key}",
+                    },
+                    method="POST",
+                )
+                with urllib_request.urlopen(req, timeout=self._timeout) as resp:
+                    payload = json.loads(resp.read().decode("utf-8"))
+
+                choices = payload.get("choices") or []
+                if not choices:
+                    log.warning(
+                        "deepseek.generate_failed",
+                        reason="no choices in response",
+                        attempt=attempt,
+                    )
+                    return None
+                message = choices[0].get("message") or {}
+                text = (message.get("content") or "").strip()
+                return text if text else None
+
+            except urllib_error.HTTPError as exc:
+                # 4xx is permanent (bad key, bad request, rate limit hit) —
+                # do NOT retry. 5xx is transient — retry.
+                try:
+                    err_body = exc.read().decode("utf-8", errors="replace")
+                except Exception:
+                    err_body = ""
+                if exc.code >= 500 and attempt < max_attempts:
+                    backoff = 2 ** (attempt - 1)
+                    log.warning(
+                        "deepseek.generate_retry",
+                        attempt=attempt,
+                        max_attempts=max_attempts,
+                        backoff_s=backoff,
+                        status=exc.code,
+                        reason=exc.reason,
+                    )
+                    time.sleep(backoff)
+                    continue
+                log.warning(
+                    "deepseek.generate_failed",
+                    status=exc.code,
+                    reason=exc.reason,
+                    body=err_body[:500],
+                    attempt=attempt,
+                )
+                return None
+
+            except _RETRYABLE_NETWORK_ERRORS as exc:
+                # Connection error / timeout / DNS — retry with backoff.
+                if attempt < max_attempts:
+                    backoff = 2 ** (attempt - 1)
+                    log.warning(
+                        "deepseek.generate_retry",
+                        attempt=attempt,
+                        max_attempts=max_attempts,
+                        backoff_s=backoff,
+                        error=str(exc),
+                    )
+                    time.sleep(backoff)
+                    continue
+                log.warning(
+                    "deepseek.generate_failed",
+                    error=str(exc),
+                    attempts=attempt,
+                )
+                return None
+
+            except json.JSONDecodeError as exc:
+                # Malformed body — not retryable, the server returned garbage.
+                log.warning("deepseek.generate_failed", error=str(exc), attempt=attempt)
+                return None
+
+        # Loop exited without returning — should not happen but guard anyway.
+        return None
 
     def health_check(self) -> tuple[bool, str]:
         """Check DeepSeek backend health.

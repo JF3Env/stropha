@@ -386,6 +386,8 @@ def _parse_inference(raw: dict[str, Any]) -> InferenceConfig:
         ollama_host=str(ollama_host),
         deepseek_model=str(raw.get("deepseek_model", "deepseek-chat")),
         deepseek_base_url=str(deepseek_base_url),
+        deepseek_timeout=_float(raw.get("deepseek_timeout"), 120.0),
+        deepseek_max_retries=_int(raw.get("deepseek_max_retries"), 2),
     )
 
 
