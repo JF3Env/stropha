@@ -348,3 +348,146 @@ class TestCostReportSavings:
         assert d["savings"]["total_searches"] == 10
         assert d["savings"]["avg_savings_pct"] == 90.0
         assert d["savings"]["avg_results_per_search"] == 5.0
+
+
+class TestSearchCodeWiring:
+    """WIN-158: search_code MCP tool emits search.served via track_search_savings.
+
+    The producer at retrieval/savings.py has been live since the savings work
+    landed, but the consumer at cost.py:211 had no producer calling it from
+    the request path. These tests guard the 3-line wire in server.py against
+    regression.
+    """
+
+    @staticmethod
+    def _mock_ctx(hits: list[SearchHit]):
+        """Build a Context-like double whose lifespan_context exposes a
+        search_engine.search returning ``hits``. We avoid spinning up the
+        real lifespan: the unit under test is the wiring, not retrieval."""
+        from unittest.mock import MagicMock
+
+        app = MagicMock()
+        app.search_engine.search.return_value = list(hits)
+        app.storage.compute_facets.return_value = {
+            "language": {}, "kind": {}, "repo": {},
+        }
+        ctx = MagicMock()
+        ctx.request_context.lifespan_context = app
+        return ctx, app
+
+    def test_search_code_calls_track_savings(self):
+        from unittest.mock import patch
+
+        from stropha.server import search_code
+
+        hits = [
+            _make_hit(chunk_id="1", snippet="def add(a, b): return a + b"),
+            _make_hit(chunk_id="2", snippet="def mul(a, b): return a * b"),
+        ]
+        ctx, _ = self._mock_ctx(hits)
+
+        with patch("stropha.server.track_search_savings") as mock_track:
+            resp = search_code(query="addition", ctx=ctx)
+
+        # Producer was invoked with the query + hits seen by the caller.
+        mock_track.assert_called_once()
+        call_args = mock_track.call_args
+        assert call_args[0][0] == "addition"
+        assert call_args[0][1] == hits
+        # Response is still well-formed.
+        assert resp.query == "addition"
+        assert resp.total_candidates == 2
+        assert len(resp.results) == 2
+
+    def test_search_code_swallows_savings_exception(self):
+        """A bug in the savings calc must never break a search response."""
+        from unittest.mock import patch
+
+        from stropha.server import search_code
+
+        hits = [_make_hit(chunk_id="1", snippet="def f(): pass")]
+        ctx, _ = self._mock_ctx(hits)
+
+        with patch(
+            "stropha.server.track_search_savings",
+            side_effect=RuntimeError("simulated savings bug"),
+        ) as mock_track:
+            resp = search_code(query="anything", ctx=ctx)
+
+        mock_track.assert_called_once()
+        # The response is still well-formed; the exception was swallowed.
+        assert resp.query == "anything"
+        assert len(resp.results) == 1
+
+    def test_search_code_emits_search_served_event(self):
+        """End-to-end through the real track_search_savings: log.info fires
+        with event='search.served' and the schema cost.py:211 expects."""
+        from unittest.mock import patch
+
+        from stropha.server import search_code
+
+        hits = [
+            _make_hit(chunk_id="1", snippet="def hello(): return 'world'"),
+            _make_hit(chunk_id="2", snippet="class Greeter: pass"),
+        ]
+        ctx, _ = self._mock_ctx(hits)
+
+        with patch("stropha.retrieval.savings.log") as mock_log:
+            search_code(query="greeting", ctx=ctx)
+
+        # The savings module logged exactly the event the aggregator parses.
+        mock_log.info.assert_called_once()
+        call_args = mock_log.info.call_args
+        assert call_args[0][0] == "search.served"
+        kwargs = call_args[1]
+        # Every field cost.py:211-217 reads must be present.
+        assert kwargs["query"] == "greeting"
+        assert kwargs["results_count"] == 2
+        assert "returned_tokens" in kwargs
+        assert "baseline_tokens" in kwargs
+        assert "tokens_saved" in kwargs
+
+    def test_search_code_tracks_savings_on_empty_results(self):
+        """Empty hit lists are still tracked — they teach the cost report
+        which queries miss the index entirely."""
+        from unittest.mock import patch
+
+        from stropha.server import search_code
+
+        ctx, _ = self._mock_ctx([])
+
+        with patch("stropha.server.track_search_savings") as mock_track:
+            resp = search_code(query="no-results", ctx=ctx)
+
+        mock_track.assert_called_once()
+        assert mock_track.call_args[0][0] == "no-results"
+        assert mock_track.call_args[0][1] == []
+        assert resp.total_candidates == 0
+        assert resp.results == []
+
+    def test_search_code_tracks_after_filters(self):
+        """Tracking must observe the post-filter / post-truncate hit set —
+        the set the caller actually receives — not the raw retrieval output.
+        """
+        from unittest.mock import patch
+
+        from stropha.server import search_code
+
+        # Build 4 hits across two languages.
+        hits = [
+            _make_hit(chunk_id="1", rel_path="a.py", snippet="x"),
+            _make_hit(chunk_id="2", rel_path="b.py", snippet="y"),
+            _make_hit(chunk_id="3", rel_path="c.ts", snippet="z"),
+            _make_hit(chunk_id="4", rel_path="d.ts", snippet="w"),
+        ]
+        # Override language on the TS hits so the filter has work to do.
+        hits[2].language = "typescript"
+        hits[3].language = "typescript"
+        ctx, _ = self._mock_ctx(hits)
+
+        with patch("stropha.server.track_search_savings") as mock_track:
+            search_code(query="x", ctx=ctx, language=["python"])
+
+        tracked_hits = mock_track.call_args[0][1]
+        # Only the two .py hits should have reached the savings tracker.
+        assert {h.chunk_id for h in tracked_hits} == {"1", "2"}

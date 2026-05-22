@@ -50,6 +50,7 @@ from .retrieval.graph import (
     has_rationale_edges,
     trace_feature as graph_trace_feature,
 )
+from .retrieval.savings import track_search_savings
 from .retrieval.smart_search import SmartSearchResult, smart_search
 from .retrieval.graph import (
     find_rationale as graph_find_rationale,
@@ -467,6 +468,17 @@ def search_code(
 
     # Truncate to requested top_k
     hits = hits[:top_k]
+
+    # WIN-158: Track token savings so `stropha cost` can report on RAG value.
+    # The producer at retrieval/savings.py emits a `search.served` structlog
+    # event which the consumer at cost.py:211 already aggregates. Wrapped in
+    # try/except so a savings-calc bug can never break a search response —
+    # this is an observability hook, not a critical path.
+    try:
+        track_search_savings(query, hits)
+    except Exception:
+        # Defensive: never fail a search response on a stats-tracking bug.
+        log.debug("search.savings.track_failed", exc_info=True)
 
     return SearchResponse(
         results=[_to_result(h) for h in hits],
