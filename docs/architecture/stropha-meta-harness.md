@@ -8,7 +8,7 @@
 > - `docs/comparisons/stropha-vs-meta-harness.md` — the concept analysis + 118 improvement options this plan operationalizes.
 > - `docs/architecture/stropha-pipeline-adapters.md` — the adapter framework that *is* the search space.
 > - `CLAUDE.md §3` — the invariants this plan must not break.
-> **Primary source:** Lee, Nair, Zhang, Lee, Khattab, Finn. *Meta-Harness: End-to-End Optimization of Model Harnesses.* arXiv:2603.28052 (2026).
+> **Primary source:** Lee et al., *Meta-Harness: End-to-End Optimization of Model Harnesses*, arXiv:2603.28052 [cs.AI], 2026 — see §11 for the full citation, links, and the implementation-relevant findings.
 
 ---
 
@@ -291,3 +291,73 @@ This plan optimizes stropha *as it is*. The richer stropha is *as a harness* —
 1. **Fitness ground truth.** The composite metric is a proxy. Is a retrieval-conditioned task eval (an agent solving golden tasks with the candidate harness) worth the cost as the loop's true objective, or does the held-out composite suffice? Decide before Phase 4 weights are tuned.
 2. **Agentic proposer host.** Claude Code CLI as a subprocess vs. a direct Anthropic API loop — the former reuses the user's existing harness and auth; the latter is simpler to sandbox. Prototype both in Phase 4.
 3. **Promotion autonomy.** Should sleep-time operation ever open a PR automatically (human reviews the PR), or only ever leave a local diff? This plan assumes the latter; revisit after Phase 6 lands.
+
+---
+
+## 11. References & background — the Meta-Harness paper
+
+### 11.1 The paper
+
+> Yoonho Lee, Roshen Nair, Qizheng Zhang, Kangwook Lee, Omar Khattab, Chelsea Finn.
+> **Meta-Harness: End-to-End Optimization of Model Harnesses.**
+> arXiv:2603.28052 [cs.AI], submitted 2026-03-30. Stanford University · KRAFTON · MIT. License: CC BY 4.0.
+
+| Link | URL |
+|---|---|
+| Abstract | https://arxiv.org/abs/2603.28052 |
+| Full text (HTML) | https://arxiv.org/html/2603.28052v1 |
+| PDF | https://arxiv.org/pdf/2603.28052 |
+| DOI | https://doi.org/10.48550/arXiv.2603.28052 |
+
+```bibtex
+@misc{lee2026metaharness,
+  title         = {Meta-Harness: End-to-End Optimization of Model Harnesses},
+  author        = {Lee, Yoonho and Nair, Roshen and Zhang, Qizheng and
+                   Lee, Kangwook and Khattab, Omar and Finn, Chelsea},
+  year          = {2026},
+  eprint        = {2603.28052},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.AI},
+  doi           = {10.48550/arXiv.2603.28052},
+  url           = {https://arxiv.org/abs/2603.28052}
+}
+```
+
+> **Sourcing caveat.** This paper postdates the knowledge cutoff of the assistant that drafted this plan. Every claim attributed to it here was extracted from the arXiv HTML and abstract page, fetched 2026-05-21. Before relying on a specific number or algorithm detail, **read the paper directly** — start with the HTML link above.
+
+### 11.2 Findings that drive this plan
+
+Each phase below traces back to a concrete result in the paper. Read this table as "why the plan is shaped this way".
+
+| Paper finding | Why it matters for stropha | Drives |
+|---|---|---|
+| **Algorithm 1**: `query store → propose k harnesses → validate → evaluate on the search set → store (code + scores + traces) → repeat N` | The exact shape of the outer loop | Phase 4 |
+| **Full-history filesystem access** — the proposer reads the *source code*, *scores*, and *complete execution traces* (prompts, tool calls, model outputs, state updates) of every prior candidate | The artifact store must hold raw traces, not summaries or scalars | Phase 0 |
+| **Ablation**: full-history access ≈50% vs. scores-only / summary-only ≈34.6–34.9% | Compressed feedback is decisively worse — this justifies paying the cost of trace capture | Phase 0 |
+| **Proposer = a coding agent** (the paper uses Claude Code), accessing the store via `grep`/`cat` — a median of 82 files read per iteration across 20+ prior candidates | The store is a **grep-able filesystem tree**, not a database blob; the proposer is an agent, not a raw LLM call | Phase 0 layout · Phase 4 agentic proposer |
+| Discovered harnesses reach equal/better accuracy with **~4× fewer context tokens** (text classification) | Token efficiency must be a first-class term in the fitness function, not an afterthought | Phase 1 fitness |
+| The loop "evaluates **validated** harnesses" — candidates are validated (they must run) before scoring | A validation gate precedes evaluation | Phase 1 |
+| Results transfer across **five held-out models** / out-of-distribution datasets | Generalization must be measured on a held-out split kept away from the proposer | Phase 1 split |
+| TerminalBench-2 win came partly from **environment bootstrapping** before the first agent turn (eliminating 2–4 exploratory turns) | A repo/environment snapshot as warm-start is a high-value harness feature | §8 parallel track (`stropha-vs-meta-harness.md` #19) |
+| Headline result: discovered harnesses **beat hand-engineered baselines** across three domains | The thesis — automated context engineering can outperform the hand-tuned `stropha.yaml` | the whole plan |
+
+### 11.3 Internal references (where to start coding)
+
+| Resource | Role in this plan |
+|---|---|
+| `docs/comparisons/stropha-vs-meta-harness.md` | Companion concept analysis — the 118 options and the 12-piece gap table this plan operationalizes |
+| `docs/architecture/stropha-pipeline-adapters.md` | The adapter framework = the search space (Phase 3) |
+| `src/stropha/eval/harness.py` | The evaluator to extend with NDCG + the search/held-out split (Phase 1) |
+| `src/stropha/pipeline/builder.py` | `build_stages(resolved)` — how the evaluator instantiates a candidate harness |
+| `src/stropha/pipeline/registry.py` | The adapter registry — the source from which the search-space manifest is generated (Phase 3) |
+| `src/stropha/pipeline/config.py` | YAML + env + CLI config cascade — the shape of a candidate `config.yaml` |
+| `src/stropha/server.py`, `src/stropha/retrieval/search.py` | Where `TraceRecorder` is wired in (Phase 0) |
+| `src/stropha/tools/hook_install.py` | The post-commit hook template — extended for outcome back-fill (Phase 0) and sleep-time operation (Phase 6) |
+| `CLAUDE.md §3` | The invariants every phase must respect |
+
+### 11.4 Prior art
+
+| Reference | Relevance |
+|---|---|
+| DSPy — https://github.com/stanfordnlp/dspy | Automated optimization of LM pipelines/prompts; Omar Khattab (a Meta-Harness co-author) is its lead author. The closest existing system to "treat the harness as a tunable artifact" — useful prior art for the proposer and the search-space manifest. |
+| Model Context Protocol — https://modelcontextprotocol.io/specification | The protocol stropha's harness is exposed over; traces (Phase 0) are captured at the MCP tool boundary. |

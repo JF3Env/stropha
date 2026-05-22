@@ -4,8 +4,11 @@
 **Scope:** stropha @ HEAD (the *concept*, not a line-by-line audit), positioned against the **harness / Meta-Harness** distinction from the literature.
 **Goal:** locate stropha precisely in that vocabulary, show what it would take to make it a full *harness* and then a *Meta-Harness target*, and enumerate **118 realistic, state-of-the-art improvement options** — without breaking the §3 invariants (drift detection, forward-only migrations, local-only default, non-blocking hook).
 
-**Primary source (read via its arXiv HTML, 2026-05-21):**
-> Lee, Nair, Zhang, Lee, Khattab, Finn. *Meta-Harness: End-to-End Optimization of Model Harnesses.* arXiv:2603.28052 (2026). Stanford / KRAFTON / MIT.
+**Primary source:**
+> Yoonho Lee, Roshen Nair, Qizheng Zhang, Kangwook Lee, Omar Khattab, Chelsea Finn. *Meta-Harness: End-to-End Optimization of Model Harnesses.* arXiv:2603.28052 [cs.AI], submitted 2026-03-30. Stanford · KRAFTON · MIT. CC BY 4.0.
+> [abstract](https://arxiv.org/abs/2603.28052) · [HTML](https://arxiv.org/html/2603.28052v1) · [PDF](https://arxiv.org/pdf/2603.28052) · [DOI](https://doi.org/10.48550/arXiv.2603.28052)
+> Summarized from the arXiv HTML; metadata confirmed against the abstract page (fetched 2026-05-21). The paper postdates the assistant's knowledge cutoff — read it directly before relying on a specific figure.
+> The implementation plan derived from this analysis is `docs/architecture/stropha-meta-harness.md`.
 
 **Other sources verified:**
 - `CLAUDE.md` §2 (snapshot), §3 (invariants), §6 (history)
