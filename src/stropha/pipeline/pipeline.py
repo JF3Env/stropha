@@ -14,6 +14,7 @@ same content+adapter combo has been seen before in this DB.
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -104,13 +105,47 @@ class Pipeline:
         repos: Sequence[Path],
         walker: WalkerStage | None = None,
         chunker: ChunkerStage | None = None,
+        enricher_concurrency: int = 1,
     ) -> None:
+        """Construct the indexing pipeline.
+
+        Args:
+            storage / embedder / enricher: the adapter instances.
+            repos: target repository paths.
+            walker / chunker: optional override adapters (default: git-ls-files
+                + tree-sitter-dispatch).
+            enricher_concurrency: number of concurrent enricher calls during
+                indexing. Cloud LLM backends (DeepSeek / OpenAI / Anthropic)
+                wait ~250-500ms per request on network round-trip — running
+                8 in-flight pipelines that latency efficiently. Local
+                backends (mlx / ollama) saturate a single GPU regardless, so
+                concurrency >1 mostly adds overhead. Default 1 (serial) is
+                safe for any backend; opt in via stropha.yaml's
+                ``inference.enricher_concurrency`` or ``--concurrency N``
+                CLI flag.
+        """
         if not repos:
             raise ValueError("Pipeline requires at least one repo")
+        if enricher_concurrency < 1:
+            raise ValueError(
+                f"enricher_concurrency must be >= 1, got {enricher_concurrency}"
+            )
         self._storage = storage
         self._embedder = embedder
         self._enricher = enricher
         self._repos = [p.resolve() for p in repos]
+        self._enricher_concurrency = enricher_concurrency
+
+        # Pre-warm the enricher's lazy state (e.g. inference backend
+        # singleton) so the first batch of N parallel enrichment calls
+        # doesn't race on backend instantiation. health() is the cheapest
+        # way to force the warmup; any probe error is benign and the
+        # first real enrich() call will retry naturally.
+        if enricher_concurrency > 1:
+            try:
+                enricher.health()
+            except Exception as exc:  # pragma: no cover  defensive
+                log.debug("pipeline.enricher_prewarm_failed", error=str(exc))
         # Lazy import — keeps the framework decoupled from a specific
         # adapter until the caller passes one or we fall back here.
         if walker is None:
@@ -568,6 +603,20 @@ class Pipeline:
             # content_hash as a proxy when the chunker emits a file-level
             # chunk; otherwise we hash the on-disk content here.
             file_content_hash: str | None = None
+
+            # Two-pass split to enable parallel enrichment:
+            #   pass 1 (serial, fast): chunk freshness + enrichment cache
+            #     checks. These are cheap SQL queries; running them in
+            #     parallel would just contend on the SQLite connection.
+            #   pass 2 (parallel-able): LLM enrichment for chunks that
+            #     missed the cache. Each call waits ~250-500ms on network
+            #     for cloud backends; ThreadPoolExecutor lets N requests
+            #     fly concurrently. Order is preserved by ``map()``.
+            pending_chunks: list[Chunk] = []
+            pending_embed_text_indices: list[int] = []
+            # ``staged`` is the per-file workbench: each entry is the chunk
+            # plus its eventual embed_text (None when still to enrich).
+            staged: list[tuple[Chunk, str | None]] = []
             for chunk in file_chunks:
                 stats.chunks_seen += 1
                 if self._storage.chunk_is_fresh(
@@ -579,24 +628,44 @@ class Pipeline:
                     stats.chunks_skipped_fresh += 1
                     continue
 
-                # Enrich (cache-aware).
                 cached = self._storage.get_enrichment(chunk.content_hash, enricher_id)
                 if cached is not None:
-                    embed_text = cached
                     stats.chunks_enriched_from_cache += 1
+                    staged.append((chunk, cached))
                 else:
-                    parent = (
-                        by_id.get(chunk.parent_chunk_id)
-                        if chunk.parent_chunk_id
-                        else None
+                    # Mark for the parallel enrichment pass.
+                    pending_embed_text_indices.append(len(staged))
+                    staged.append((chunk, None))
+                    pending_chunks.append(chunk)
+
+            # Pass 2: enrich the pending chunks (parallel when concurrency>1
+            # and there are 2+ to amortize the executor overhead).
+            if pending_chunks:
+                # Build StageContext per chunk now — context construction is
+                # local + serial, no benefit in parallelizing it.
+                contexts = [
+                    StageContext(
+                        repo_key=repo_key,
+                        parent_chunk=(
+                            by_id.get(c.parent_chunk_id) if c.parent_chunk_id else None
+                        ),
                     )
-                    ctx = StageContext(repo_key=repo_key, parent_chunk=parent)
-                    embed_text = self._enricher.enrich(chunk, ctx)
+                    for c in pending_chunks
+                ]
+                results = self._enrich_chunks(pending_chunks, contexts)
+                # Splice results back into ``staged`` (order-preserving) and
+                # cache each result.
+                for idx, embed_text in zip(pending_embed_text_indices, results):
+                    chunk = staged[idx][0]
+                    staged[idx] = (chunk, embed_text)
                     self._storage.put_enrichment(
                         chunk.content_hash, enricher_id, embed_text
                     )
                     stats.chunks_enriched_fresh += 1
 
+            # Drain ``staged`` into the embedder batch (order-preserving).
+            for chunk, embed_text in staged:
+                assert embed_text is not None  # set by pass 2 if previously None
                 batch_texts.append(embed_text)
                 batch_chunks.append(chunk)
                 batch_embed_texts.append(embed_text)
@@ -629,3 +698,67 @@ class Pipeline:
                 embedder_model=embedder_model,
             )
         flush()
+
+    def _enrich_chunks(
+        self,
+        chunks: Sequence[Chunk],
+        contexts: Sequence[StageContext],
+    ) -> list[str]:
+        """Run the enricher on ``chunks`` and return embed_text in input order.
+
+        Switches between serial and ThreadPool execution based on
+        ``self._enricher_concurrency`` (default 1 = serial). The function
+        is the only place that knows about parallelism; everything upstream
+        (cache checks, freshness checks) and downstream (storage writes,
+        embedding) stays serial — that keeps SQLite single-writer (it is
+        NOT thread-safe per default) and embedder batching deterministic.
+
+        Thread-safety notes:
+          - ``enricher.enrich`` is a pure compute-or-network call. The
+            ``contextual`` enricher routes through ``stropha.inference``
+            which uses module-level stdlib urllib — safe under threads.
+          - The ``get_backend`` singleton may race on first init, but
+            after init it's a read-only lookup. Pre-warming by calling
+            it serially before the first batch avoids the race entirely.
+          - We do NOT touch ``self._storage`` here; all storage writes
+            happen in the caller after this returns.
+
+        Order preservation: ``ThreadPoolExecutor.map`` yields results in
+        input order regardless of completion order, so the returned list
+        zips 1:1 with ``chunks``.
+        """
+        if len(chunks) != len(contexts):
+            raise ValueError(
+                f"chunks ({len(chunks)}) and contexts ({len(contexts)}) "
+                "must have the same length"
+            )
+
+        # Serial path: same behaviour as before, no thread overhead. Also
+        # the right choice when there's only 1 chunk pending — a worker
+        # pool for a single task is wasteful.
+        if self._enricher_concurrency <= 1 or len(chunks) <= 1:
+            return [
+                self._enricher.enrich(chunk, ctx)
+                for chunk, ctx in zip(chunks, contexts)
+            ]
+
+        # Parallel path. max_workers is capped at len(chunks) so we never
+        # spin up idle threads. The executor lifetime is scoped to this
+        # call — we want clean teardown between files so a stuck network
+        # call in one batch can't bleed into the next.
+        max_workers = min(self._enricher_concurrency, len(chunks))
+        log.debug(
+            "pipeline.enricher_parallel",
+            workers=max_workers,
+            pending=len(chunks),
+        )
+        with ThreadPoolExecutor(
+            max_workers=max_workers,
+            thread_name_prefix="stropha-enrich",
+        ) as executor:
+            return list(
+                executor.map(
+                    lambda pair: self._enricher.enrich(pair[0], pair[1]),
+                    zip(chunks, contexts, strict=True),
+                )
+            )

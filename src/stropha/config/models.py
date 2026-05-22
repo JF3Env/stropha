@@ -88,9 +88,17 @@ class InferenceConfig:
     # 60s is tight under load — 120s gives generous headroom while still
     # bounding the worst-case per-chunk wait.
     deepseek_timeout: float = 120.0
-    # Retry on URLError / OSError / TimeoutError only (HTTP 4xx are surfaced
-    # immediately — they're not transient). Exponential backoff: 1s, 2s, 4s.
+    # Retry on URLError / OSError / TimeoutError / HTTP 5xx with
+    # exponential backoff (1s, 2s, 4s). HTTP 4xx (bad key, bad request,
+    # rate limit) is permanent and short-circuits without retry.
     deepseek_max_retries: int = 2
+    # Concurrent in-flight LLM requests during indexing. 1 = serial
+    # (legacy behaviour, no thread overhead). 8 is a good default for
+    # cloud backends (DeepSeek / OpenAI / Anthropic) — each chunk waits
+    # ~5s on network, so 8 in-flight uses the available concurrency without
+    # tripping rate limits at the basic-tier 60 req/min. Local backends
+    # (mlx, ollama) saturate a single GPU regardless — keep at 1.
+    enricher_concurrency: int = 1
 
 
 # ---------------------------------------------------------------------------

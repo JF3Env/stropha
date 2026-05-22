@@ -388,6 +388,7 @@ def _parse_inference(raw: dict[str, Any]) -> InferenceConfig:
         deepseek_base_url=str(deepseek_base_url),
         deepseek_timeout=_float(raw.get("deepseek_timeout"), 120.0),
         deepseek_max_retries=_int(raw.get("deepseek_max_retries"), 2),
+        enricher_concurrency=_int(raw.get("enricher_concurrency"), 1),
     )
 
 
