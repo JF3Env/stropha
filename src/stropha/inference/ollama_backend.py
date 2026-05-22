@@ -15,7 +15,7 @@ import json
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 
-from ..config_features import get_config
+from ..config import get_config
 from ..logging import get_logger
 from .backend import InferenceBackend
 

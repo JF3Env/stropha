@@ -47,7 +47,7 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any
 
-from ..config_features import get_config
+from ..config import get_config
 from ..logging import get_logger
 from ..models import SearchHit
 

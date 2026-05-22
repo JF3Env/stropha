@@ -213,7 +213,7 @@ class HybridRrfRetrieval(RetrievalStage):
             return []
         k = top_k or self._config.top_k
         
-        from ...config_features import get_config
+        from ...config import get_config
         
         # Check if multi-query expansion is enabled
         multi_query_enabled = (
@@ -230,7 +230,7 @@ class HybridRrfRetrieval(RetrievalStage):
         self, query: str, k: int, *, search_query: str | None = None
     ) -> list[SearchHit]:
         """Execute search with a single query (the standard path)."""
-        from ...config_features import get_config
+        from ...config import get_config
         
         # Query rewriting: expand natural language to code terms (affects ALL streams)
         if search_query is None:
@@ -255,7 +255,7 @@ class HybridRrfRetrieval(RetrievalStage):
         # Enabled via config.hyde_enabled OR retrieval_features.hyde_enabled in YAML
         dense_query = search_query
         if needs_vec:
-            from ...config_features import get_config
+            from ...config import get_config
             hyde_enabled = (
                 self._config.hyde_enabled
                 or get_config().retrieval_features.hyde_enabled

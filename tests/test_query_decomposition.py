@@ -121,7 +121,7 @@ class TestIsDecompositionEnabled:
 
     def test_enabled_when_set(self, isolated_test_env):
         """Config file enables decomposition."""
-        from stropha.config_features import reset_config
+        from stropha.config import reset_config
         yaml_path = isolated_test_env / "stropha.yaml"
         yaml_path.write_text("""
 retrieval_features:
@@ -132,7 +132,7 @@ retrieval_features:
 
     def test_disabled_when_false(self, isolated_test_env):
         """Config file explicitly disables decomposition."""
-        from stropha.config_features import reset_config
+        from stropha.config import reset_config
         yaml_path = isolated_test_env / "stropha.yaml"
         yaml_path.write_text("""
 retrieval_features:

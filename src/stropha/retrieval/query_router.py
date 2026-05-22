@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING
 
-from ..config_features import get_config
+from ..config import get_config
 from ..logging import get_logger
 
 if TYPE_CHECKING:

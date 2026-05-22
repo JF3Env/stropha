@@ -32,7 +32,7 @@ def test_hyde_disabled_by_default(isolated_test_env) -> None:
 
 def test_hyde_returns_text_when_enabled(isolated_test_env) -> None:
     """HyDE returns LLM-generated text when enabled via YAML."""
-    from stropha.config_features import reset_config
+    from stropha.config import reset_config
     yaml_path = isolated_test_env / "stropha.yaml"
     yaml_path.write_text("""
 retrieval_features:
@@ -48,7 +48,7 @@ retrieval_features:
 
 def test_hyde_fallback_on_http_error(isolated_test_env) -> None:
     """HyDE falls back to None on generation failure."""
-    from stropha.config_features import reset_config
+    from stropha.config import reset_config
     yaml_path = isolated_test_env / "stropha.yaml"
     yaml_path.write_text("""
 retrieval_features:
@@ -62,7 +62,7 @@ retrieval_features:
 
 def test_hyde_fallback_on_empty_response(isolated_test_env) -> None:
     """HyDE falls back to None on empty response."""
-    from stropha.config_features import reset_config
+    from stropha.config import reset_config
     yaml_path = isolated_test_env / "stropha.yaml"
     yaml_path.write_text("""
 retrieval_features:
@@ -76,7 +76,7 @@ retrieval_features:
 
 def test_hyde_empty_query_short_circuits(isolated_test_env) -> None:
     """HyDE returns None for empty queries even when enabled."""
-    from stropha.config_features import reset_config
+    from stropha.config import reset_config
     yaml_path = isolated_test_env / "stropha.yaml"
     yaml_path.write_text("""
 retrieval_features:
@@ -89,7 +89,7 @@ retrieval_features:
 
 def test_hyde_caps_long_output(isolated_test_env) -> None:
     """HyDE truncates overly long LLM responses."""
-    from stropha.config_features import reset_config
+    from stropha.config import reset_config
     yaml_path = isolated_test_env / "stropha.yaml"
     yaml_path.write_text("""
 retrieval_features:
@@ -106,7 +106,7 @@ retrieval_features:
 
 def test_hyde_strips_code_fences(isolated_test_env) -> None:
     """HyDE should strip markdown code fences from LLM output."""
-    from stropha.config_features import reset_config
+    from stropha.config import reset_config
     yaml_path = isolated_test_env / "stropha.yaml"
     yaml_path.write_text("""
 retrieval_features:
@@ -176,7 +176,7 @@ def test_hyde_code_tuned_default_query() -> None:
 
 def test_hyde_code_tuned_disabled(isolated_test_env) -> None:
     """Code-tuned prompts can be disabled via YAML config."""
-    from stropha.config_features import reset_config
+    from stropha.config import reset_config
     yaml_path = isolated_test_env / "stropha.yaml"
     yaml_path.write_text("""
 retrieval_features:

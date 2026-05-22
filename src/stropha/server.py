@@ -35,10 +35,10 @@ from pydantic import BaseModel, Field
 
 from . import __version__
 from .config import Config, get_config, get_config_info
-from .embeddings import build_embedder
 from .embeddings.base import Embedder
 from .errors import StrophaError
 from .logging import configure_logging, get_logger
+from .pipeline import build_stages, load_pipeline_config
 from .retrieval import SearchEngine
 from .retrieval.graph import (
     find_callers as graph_find_callers,
@@ -95,8 +95,14 @@ async def _lifespan(app: FastMCP) -> AsyncIterator[AppContext]:
         target=str(cfg.target_repo),
         mcp_watch=cfg.mcp_watch,
     )
-    embedder = build_embedder(cfg)
-    storage = Storage(cfg.resolve_index_path(), embedding_dim=embedder.dim)
+    # Route through the adapter framework so pipeline.embedder.adapter from
+    # stropha.yaml is honored (mlx, voyage, local, bge-m3, …). Without this
+    # the MCP server would diverge from `stropha index` / `stropha search`,
+    # which both go through build_stages().
+    resolved = load_pipeline_config()
+    built = build_stages(resolved)
+    embedder = built.embedder
+    storage = built.storage  # already open; sqlite-vec adapter subclass of Storage
     engine = SearchEngine(storage, embedder)
 
     # Start background file watcher if enabled (default: on).
@@ -835,11 +841,12 @@ def get_config_tool(*, ctx: Context) -> dict:
 def index_stats_resource() -> StatsPayload:
     """Index statistics. Exposed as both a Tool and a Resource for discovery."""
     # FastMCP resources cannot use the lifespan context directly today, so we
-    # re-derive what we need from the config singleton + a short-lived Storage
-    # handle. This is fine because the resource is read-only and called rarely.
-    cfg = get_config()
-    embedder = build_embedder(cfg)
-    with Storage(cfg.resolve_index_path(), embedding_dim=embedder.dim) as storage:
+    # re-derive what we need by routing through the adapter framework (same
+    # path as the lifespan). Read-only and called rarely, so the per-call
+    # rebuild is acceptable.
+    resolved = load_pipeline_config()
+    built = build_stages(resolved)
+    with built.storage as storage:
         info = storage.stats()
     return StatsPayload(**info)
 

@@ -184,7 +184,7 @@ def test_explicit_confidence_filter_overrides_default(tmp_path: Path, storage: S
 
 def test_yaml_config_drives_confidence_filter(isolated_test_env, tmp_path: Path, storage: Storage) -> None:
     """YAML config can specify multiple confidence levels."""
-    from stropha.config_features import reset_config
+    from stropha.config import reset_config
     
     # Write config to the isolated env
     yaml_path = isolated_test_env / "stropha.yaml"

@@ -40,7 +40,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from ..config_features import get_config
+from ..config import get_config
 from ..logging import get_logger
 from ..storage.sqlite import Storage
 

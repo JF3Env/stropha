@@ -19,7 +19,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
-from ..config_features import get_config
+from ..config import get_config
 from ..logging import get_logger
 
 if TYPE_CHECKING:

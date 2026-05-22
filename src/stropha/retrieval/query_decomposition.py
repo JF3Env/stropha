@@ -36,7 +36,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from ..config_features import get_config
+from ..config import get_config
 from ..logging import get_logger
 
 log = get_logger(__name__)

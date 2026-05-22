@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from ..config_features import get_config
+from ..config import get_config
 from ..logging import get_logger
 from ..models import SearchHit
 from ..storage import Storage

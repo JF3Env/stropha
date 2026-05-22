@@ -268,7 +268,7 @@ class Pipeline:
         # L2 retroactive FTS augmentation. Toggle via graph.fts_augment in
         # stropha.yaml (default true). The augmentation is a no-op when
         # graph_nodes is empty.
-        from ..config_features import get_config as _get_config
+        from ..config import get_config as _get_config
         if _get_config().graph.fts_augment:
             try:
                 self._storage.augment_fts_with_graph()  # type: ignore[attr-defined]

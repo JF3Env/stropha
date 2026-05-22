@@ -22,7 +22,7 @@ def isolated_test_env(tmp_path, monkeypatch):
     instead of project-specific settings.
     """
     # Reset config cache before changing directory
-    from stropha.config_features import reset_config
+    from stropha.config import reset_config
     reset_config()
     
     # Change to temp directory

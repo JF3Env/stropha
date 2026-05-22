@@ -85,7 +85,7 @@ class TestMlxBackend:
 
     def test_yaml_model_override(self, isolated_test_env):
         """YAML config can override MLX model."""
-        from stropha.config_features import reset_config
+        from stropha.config import reset_config
         yaml_path = isolated_test_env / "stropha.yaml"
         yaml_path.write_text("""
 inference:
@@ -123,7 +123,7 @@ class TestOllamaBackend:
 
     def test_env_var_host_override(self, isolated_test_env):
         """OLLAMA_HOST env var still works for ecosystem compatibility."""
-        from stropha.config_features import reset_config
+        from stropha.config import reset_config
         with patch.dict(os.environ, {"OLLAMA_HOST": "http://env-host:5678"}):
             reset_config()  # Reload config to pick up env var
             backend = OllamaBackend()
@@ -176,7 +176,7 @@ class TestGetBackend:
 
     def test_yaml_config_backend_override(self, isolated_test_env):
         """YAML config can select backend."""
-        from stropha.config_features import reset_config
+        from stropha.config import reset_config
         yaml_path = isolated_test_env / "stropha.yaml"
         yaml_path.write_text("""
 inference:
