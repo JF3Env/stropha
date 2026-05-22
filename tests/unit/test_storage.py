@@ -457,3 +457,113 @@ def test_vacuum_on_empty_database(tmp_path: Path) -> None:
     assert size_after >= 0
     # An empty DB may shrink slightly or stay the same — both are fine.
     assert size_after <= size_before
+
+
+def test_dim_mismatch_without_force_rebuild_raises(tmp_path: Path) -> None:
+    """Opening an existing index at a different dim MUST raise unless rebuild.
+
+    This is the contract the consistency check protects: a silent dim shift
+    would put mismatched vectors into vec_chunks and corrupt search results.
+    """
+    db = tmp_path / "test.db"
+
+    # First open: dim=1024 (e.g. bge-m3 era).
+    s = Storage(db, embedding_dim=1024)
+    repo_id = s.register_repo(_identity())
+    s.upsert_chunk(
+        _make_chunk("c1", "a.py", "x = 1"),
+        _vec(0, dim=1024),
+        "model-a",
+        1024,
+        repo_id=repo_id,
+        embedding_text="x = 1",
+        enricher_id="noop",
+    )
+    s.commit()
+    s.close()
+
+    # Reopen at dim=512 (e.g. voyage-code-3 era) without force_rebuild.
+    with pytest.raises(StorageError, match="dim=1024.*dim=512"):
+        Storage(db, embedding_dim=512)
+
+
+def test_dim_mismatch_with_force_rebuild_recreates_vec_chunks(tmp_path: Path) -> None:
+    """Regression: --rebuild MUST resolve a dim shift in one shot.
+
+    Before the fix, ``stropha index --rebuild`` would still raise the dim
+    mismatch error during ``build_stages()`` (which constructs the storage
+    BEFORE Pipeline.run gets a chance to call clear()), leaving the user
+    stuck in a loop where the suggested fix (--rebuild) did not actually
+    work. force_rebuild=True at Storage.__init__ now drops + recreates
+    vec_chunks at the new dim BEFORE the consistency check fires.
+    """
+    db = tmp_path / "test.db"
+
+    # First open: dim=1024.
+    s = Storage(db, embedding_dim=1024)
+    repo_id = s.register_repo(_identity())
+    s.upsert_chunk(
+        _make_chunk("c1", "a.py", "x = 1"),
+        _vec(0, dim=1024),
+        "model-a",
+        1024,
+        repo_id=repo_id,
+        embedding_text="x = 1",
+        enricher_id="noop",
+    )
+    s.commit()
+    chunks_before = s._conn.execute("SELECT COUNT(*) AS n FROM chunks").fetchone()["n"]
+    assert chunks_before == 1
+    s.close()
+
+    # Reopen at dim=512 with force_rebuild=True. Should NOT raise; should
+    # silently drop the dim-coupled tables and recreate vec_chunks at 512.
+    s2 = Storage(db, embedding_dim=512, force_rebuild=True)
+    assert s2.dim == 512
+
+    # All dim-coupled data is now cleared.
+    assert s2._conn.execute("SELECT COUNT(*) AS n FROM chunks").fetchone()["n"] == 0
+
+    # The vec_chunks table is now keyed at the new dim — inserting a
+    # 512-vector works, while a 1024-vector would have failed.
+    repo_id_2 = s2.register_repo(_identity())
+    s2.upsert_chunk(
+        _make_chunk("c2", "b.py", "y = 2"),
+        _vec(0, dim=512),
+        "model-b",
+        512,
+        repo_id=repo_id_2,
+        embedding_text="y = 2",
+        enricher_id="noop",
+    )
+    s2.commit()
+    assert s2._conn.execute("SELECT COUNT(*) AS n FROM chunks").fetchone()["n"] == 1
+
+
+def test_force_rebuild_is_noop_when_dim_unchanged(tmp_path: Path) -> None:
+    """force_rebuild=True with matching dim must not destroy existing data.
+
+    Use case: user runs --rebuild without changing the embedder. The
+    storage path should be ready to clear via Pipeline.clear() but must
+    not silently nuke the chunks at construction time.
+    """
+    db = tmp_path / "test.db"
+
+    s = Storage(db, embedding_dim=4)
+    repo_id = s.register_repo(_identity())
+    s.upsert_chunk(
+        _make_chunk("c1", "a.py", "x = 1"),
+        _vec(0),
+        "model-a",
+        4,
+        repo_id=repo_id,
+        embedding_text="x = 1",
+        enricher_id="noop",
+    )
+    s.commit()
+    s.close()
+
+    # Reopen at the SAME dim with force_rebuild=True — should preserve data.
+    # (Pipeline.run will call clear() separately when rebuild=True.)
+    s2 = Storage(db, embedding_dim=4, force_rebuild=True)
+    assert s2._conn.execute("SELECT COUNT(*) AS n FROM chunks").fetchone()["n"] == 1
