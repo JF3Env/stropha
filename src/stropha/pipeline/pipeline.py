@@ -492,6 +492,7 @@ class Pipeline:
         def flush() -> None:
             if not batch_texts:
                 return
+            batch_n = len(batch_chunks)
             vectors = self._embedder.embed_documents(batch_texts)
             for chunk, vec, embedded_text in zip(
                 batch_chunks, vectors, batch_embed_texts, strict=True
@@ -507,11 +508,27 @@ class Pipeline:
                 )
                 stats.chunks_embedded += 1
             self._storage.commit()
+            # Periodic progress signal. Each batch = 32-64 chunks ≈ a few
+            # seconds of work (slower with the contextual enricher hitting
+            # a remote LLM). Tail this with:
+            #   tail -f /tmp/stropha.log | grep pipeline.batch_flushed
+            log.info(
+                "pipeline.batch_flushed",
+                repo=repo_key,
+                batch_size=batch_n,
+                files_visited=stats.files_visited,
+                chunks_seen=stats.chunks_seen,
+                chunks_embedded=stats.chunks_embedded,
+                enriched_fresh=stats.chunks_enriched_fresh,
+                enriched_cached=stats.chunks_enriched_from_cache,
+                skipped_fresh=stats.chunks_skipped_fresh,
+            )
             batch_texts.clear()
             batch_chunks.clear()
             batch_embed_texts.clear()
 
         for sf in files:
+            log.debug("pipeline.file_start", repo=repo_key, rel_path=sf.rel_path)
             seen_paths.add(sf.rel_path)
             stats.files_visited += 1
 
