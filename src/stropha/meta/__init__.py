@@ -31,6 +31,13 @@ from .fitness import (
     outcome_score_decomposition,
 )
 from .fitness import pareto_frontier as scorecard_pareto_frontier
+from .frontier import (
+    FrontierEntry,
+    FrontierReport,
+    FrontierTracker,
+    HoldoutEvaluatorFn,
+    evaluate_frontier_on_holdout,
+)
 from .index_cache import CacheEntry, IndexCache, IndexCacheError
 from .loop import EvaluatorFn, LoopError, LoopResult, ProposerFn, run_loop
 from .outcome import (
@@ -85,6 +92,10 @@ __all__ = [
     "EvaluatorError",
     "EvaluatorFn",
     "FeedbackError",
+    "FrontierEntry",
+    "FrontierReport",
+    "FrontierTracker",
+    "HoldoutEvaluatorFn",
     "IndexCache",
     "IndexCacheError",
     "LabelingContext",
@@ -108,6 +119,7 @@ __all__ = [
     "disk_usage",
     "evaluate_candidate",
     "evaluate_from_golden",
+    "evaluate_frontier_on_holdout",
     "label_hit",
     "label_hits",
     "list_snapshots",
