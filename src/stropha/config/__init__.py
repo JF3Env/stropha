@@ -114,7 +114,7 @@ _ENV_REGISTRY: tuple[_EnvVar, ...] = (
         "STROPHA_INFERENCE_BACKEND",
         "inference",
         None,
-        "Preferred LLM backend (ollama/mlx); YAML inference.backend is canonical",
+        "Preferred LLM backend (ollama/mlx/deepseek); YAML inference.backend is canonical",
     ),
     _EnvVar(
         "STROPHA_OLLAMA_MODEL",
@@ -123,6 +123,19 @@ _ENV_REGISTRY: tuple[_EnvVar, ...] = (
         "[deprecated] use stropha.yaml inference.ollama_model",
     ),
     _EnvVar("OLLAMA_HOST", "inference", "http://localhost:11434", "Ollama HTTP endpoint"),
+    _EnvVar(
+        "DEEPSEEK_API_KEY",
+        "inference",
+        None,
+        "DeepSeek API key (required when inference.backend=deepseek)",
+        secret=True,
+    ),
+    _EnvVar(
+        "DEEPSEEK_BASE_URL",
+        "inference",
+        "https://api.deepseek.com/v1",
+        "DeepSeek API base URL (override for proxies / self-hosted gateways)",
+    ),
     # --- query intelligence (deprecated — YAML retrieval_features.* canonical)
     _EnvVar(
         "STROPHA_HYDE_ENABLED",
@@ -362,11 +375,17 @@ def _parse_inference(raw: dict[str, Any]) -> InferenceConfig:
     ollama_host = raw.get("ollama_host") or os.environ.get(
         "OLLAMA_HOST", "http://localhost:11434"
     )
+    # DeepSeek base URL: YAML wins; env override for ecosystem compat.
+    deepseek_base_url = raw.get("deepseek_base_url") or os.environ.get(
+        "DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1"
+    )
     return InferenceConfig(
         backend=raw.get("backend"),
         mlx_model=str(raw.get("mlx_model", "mlx-community/Qwen2.5-Coder-1.5B-Instruct-4bit")),
         ollama_model=str(raw.get("ollama_model", "qwen2.5-coder:1.5b")),
         ollama_host=str(ollama_host),
+        deepseek_model=str(raw.get("deepseek_model", "deepseek-chat")),
+        deepseek_base_url=str(deepseek_base_url),
     )
 
 
@@ -392,6 +411,7 @@ def _parse_secrets() -> SecretsConfig:
     return SecretsConfig(
         voyage_api_key=os.environ.get("VOYAGE_API_KEY"),
         anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY"),
+        deepseek_api_key=os.environ.get("DEEPSEEK_API_KEY"),
     )
 
 

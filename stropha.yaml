@@ -56,10 +56,13 @@ pipeline:
 
 # Inference: LLM backend for enrichment, HyDE, query decomposition
 inference:
-  backend: mlx  # Options: mlx, ollama, or null (auto-detect)
+  backend: deepseek  # Options: mlx, ollama, deepseek, or null (auto-detect, local-only)
   mlx_model: mlx-community/Qwen2.5-Coder-7B-Instruct-4bit
   ollama_model: qwen2.5-coder:7b
   ollama_host: http://localhost:11434
+  # DeepSeek (cloud, requires DEEPSEEK_API_KEY in .env)
+  deepseek_model: deepseek-chat        # alias -> deepseek-v4-flash (current)
+  deepseek_base_url: https://api.deepseek.com/v1
 
 # Query-time features (no re-index needed to change these)
 retrieval_features:

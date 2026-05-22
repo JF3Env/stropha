@@ -71,12 +71,19 @@ class RetrievalFeatures:
 
 @dataclass(frozen=True)
 class InferenceConfig:
-    """LLM inference backend configuration (YAML: ``inference``)."""
+    """LLM inference backend configuration (YAML: ``inference``).
 
-    backend: str | None = None  # "mlx", "ollama", or None for auto-detect
+    The ``deepseek_*`` fields are opt-in cloud knobs — the backend is
+    only selected when ``backend == "deepseek"``. The API key lives in
+    :class:`SecretsConfig` (ENV only, never YAML).
+    """
+
+    backend: str | None = None  # "mlx", "ollama", "deepseek", or None for auto-detect
     mlx_model: str = "mlx-community/Qwen2.5-Coder-1.5B-Instruct-4bit"
     ollama_model: str = "qwen2.5-coder:1.5b"
     ollama_host: str = "http://localhost:11434"
+    deepseek_model: str = "deepseek-chat"
+    deepseek_base_url: str = "https://api.deepseek.com/v1"
 
 
 # ---------------------------------------------------------------------------
@@ -129,10 +136,15 @@ class SecretsConfig:
 
     voyage_api_key: str | None = None
     anthropic_api_key: str | None = None
+    deepseek_api_key: str | None = None
 
     @property
     def has_voyage(self) -> bool:
         return bool(self.voyage_api_key and self.voyage_api_key.strip())
+
+    @property
+    def has_deepseek(self) -> bool:
+        return bool(self.deepseek_api_key and self.deepseek_api_key.strip())
 
 
 # ---------------------------------------------------------------------------

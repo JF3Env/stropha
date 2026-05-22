@@ -125,10 +125,15 @@ retrieval_features:
 
 # LLM inference backend
 inference:
-  backend: null                 # "mlx", "ollama", or null for auto-detect
+  backend: null                 # "mlx", "ollama", "deepseek", or null for auto-detect
   mlx_model: mlx-community/Qwen2.5-Coder-1.5B-Instruct-4bit
   ollama_model: qwen2.5-coder:1.5b
   ollama_host: http://localhost:11434  # Also reads OLLAMA_HOST env
+  # DeepSeek (cloud, opt-in — requires DEEPSEEK_API_KEY env var).
+  # Auto-detection NEVER selects deepseek (local-first invariant §3.6);
+  # set `backend: deepseek` explicitly to use it.
+  deepseek_model: deepseek-chat       # or deepseek-reasoner
+  deepseek_base_url: https://api.deepseek.com/v1  # also reads DEEPSEEK_BASE_URL env
 
 # Graph integration
 graph:
@@ -145,6 +150,8 @@ graph:
 | `STROPHA_LOG_LEVEL` | `INFO` | structlog level |
 | `VOYAGE_API_KEY` | unset | Enables the `voyage` embedder |
 | `OLLAMA_HOST` | `http://localhost:11434` | Ollama daemon (kept for ecosystem compat) |
+| `DEEPSEEK_API_KEY` | unset | Required when `inference.backend: deepseek` |
+| `DEEPSEEK_BASE_URL` | `https://api.deepseek.com/v1` | Override for proxies / self-hosted gateways |
 | `STROPHA_GRAPHIFY_OUT` | `<repo>/graphify-out` | Override path to graphify output |
 | `STROPHA_HOOK_SKIP=1` | unset | Bypass the post-commit hook |
 | `STROPHA_HOOK_TIMEOUT` | `600` | Hook bg-process wall-clock (seconds) |

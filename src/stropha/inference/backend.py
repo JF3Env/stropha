@@ -109,17 +109,35 @@ def is_ollama_available() -> bool:
         return False
 
 
+def is_deepseek_available() -> bool:
+    """Cheap availability probe for DeepSeek.
+
+    Only checks that ``DEEPSEEK_API_KEY`` is set — we deliberately do
+    NOT make a network round-trip on every probe. Real failures surface
+    inside :meth:`DeepSeekBackend.generate` as ``None`` with a logged
+    error. This matches the local-first invariant (no surprise network
+    calls during startup).
+    """
+    return get_config().secrets.has_deepseek
+
+
 def get_backend(prefer: str | None = None) -> InferenceBackend:
     """Get the best available inference backend.
 
     Args:
-        prefer: Preferred backend ('mlx' or 'ollama'). If not available,
-                falls back to the other. If None, auto-detects from config.
+        prefer: Preferred backend (``'mlx'``, ``'ollama'``, or
+            ``'deepseek'``). If not available, falls back to the next
+            local option. If ``None``, auto-detects from config.
 
     Returns:
         An InferenceBackend instance.
 
     The backend is cached globally for reuse.
+
+    Auto-detection NEVER selects ``deepseek`` — it's a cloud backend
+    and must be opted into explicitly via ``inference.backend:
+    deepseek`` in ``stropha.yaml`` (or ``prefer='deepseek'``). This
+    preserves the ``CLAUDE.md`` §3.6 local-only-by-default invariant.
     """
     global _BACKEND
 
@@ -134,6 +152,7 @@ def get_backend(prefer: str | None = None) -> InferenceBackend:
         if prefer is None or _BACKEND.name == prefer:
             return _BACKEND
 
+    from .deepseek_backend import DeepSeekBackend
     from .mlx_backend import MlxBackend
     from .ollama_backend import OllamaBackend
 
@@ -158,7 +177,23 @@ def get_backend(prefer: str | None = None) -> InferenceBackend:
         _BACKEND = MlxBackend()
         return _BACKEND
 
-    # Auto-detect: prefer MLX (faster, more efficient)
+    if prefer == "deepseek":
+        backend = DeepSeekBackend()
+        if backend.is_available:
+            _BACKEND = backend
+            log.info("inference.backend_selected", backend="deepseek")
+            return _BACKEND
+        # DEEPSEEK_API_KEY missing → don't silently fall back to a local
+        # model (the user explicitly asked for DeepSeek). Cache the
+        # instance anyway so `health_check()` reports the actionable
+        # "set DEEPSEEK_API_KEY" message. Consumers see ``None`` from
+        # ``generate`` per the contract.
+        log.warning("inference.deepseek_no_api_key")
+        _BACKEND = backend
+        return _BACKEND
+
+    # Auto-detect: prefer MLX (faster, more efficient). DeepSeek is
+    # NEVER auto-selected — see docstring.
     if is_mlx_available():
         _BACKEND = MlxBackend()
         log.info("inference.backend_auto_selected", backend="mlx")
