@@ -53,11 +53,22 @@ pipeline:
     adapter: sqlite-vec
     config: {}
 
-  # Retrieval: hybrid search with RRF fusion
+  # Retrieval: hybrid search with RRF fusion + cross-encoder reranking
   retrieval:
     adapter: hybrid-rrf
     config:
-      k: 60  # RRF smoothing parameter
+      k: 60                # RRF smoothing parameter
+      candidate_k: 50      # Top-N from RRF passed to reranker (then trimmed to top_k=10)
+      # Cross-encoder reranker: takes the 50 RRF candidates, computes a
+      # (query, chunk) relevance score per pair via the BAAI/bge-reranker-base
+      # ONNX model (local, ~1GB, downloaded on first use), and re-sorts.
+      # Latency: ~150-300ms added per query on CPU; significant precision
+      # bump (~10-20% recall@10 on natural-language queries) over RRF alone.
+      reranker:
+        adapter: cross-encoder
+        config:
+          model: BAAI/bge-reranker-base
+          batch_size: 32
 
 # Inference: LLM backend for enrichment, HyDE, query decomposition
 inference:
