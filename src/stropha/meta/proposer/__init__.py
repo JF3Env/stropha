@@ -17,8 +17,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .bandit import BanditProposer, make_bandit_proposer
-
 SKILL_PATH: Path = Path(__file__).resolve().parent / "skill.md"
 """Path to the operational skill prompt (WIN-188)."""
 
@@ -32,4 +30,18 @@ def load_skill() -> str:
     return SKILL_PATH.read_text(encoding="utf-8")
 
 
-__all__ = ["SKILL_PATH", "BanditProposer", "load_skill", "make_bandit_proposer"]
+# Imported last to avoid circular import (these modules import load_skill).
+from .agentic import CloudAgenticProposer, make_cloud_agentic_proposer  # noqa: E402
+from .bandit import BanditProposer, make_bandit_proposer  # noqa: E402
+from .inference_helper import LocalAgenticProposer, make_local_agentic_proposer  # noqa: E402
+
+__all__ = [
+    "SKILL_PATH",
+    "BanditProposer",
+    "CloudAgenticProposer",
+    "LocalAgenticProposer",
+    "load_skill",
+    "make_bandit_proposer",
+    "make_cloud_agentic_proposer",
+    "make_local_agentic_proposer",
+]
