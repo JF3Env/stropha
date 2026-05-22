@@ -26,13 +26,14 @@ def rrf_fuse(
     k: int = DEFAULT_K,
     top_k: int = 10,
     weights: list[float] | None = None,
+    stream_names: list[str] | None = None,
 ) -> list[SearchHit]:
     """Merge any number of ranked lists into a single ranked list.
 
     Identity is by `chunk_id`. The returned `SearchHit` keeps the metadata of
     the first occurrence of each chunk (typically the dense hit, since dense
     is usually passed first), with its `score` replaced by the RRF score.
-    
+
     Args:
         *ranked_lists: One or more ranked lists of SearchHit objects.
         k: RRF smoothing constant (default 60).
@@ -40,6 +41,11 @@ def rrf_fuse(
         weights: Optional per-stream weights. If provided, must have same
             length as ranked_lists. Each stream's contribution is multiplied
             by its weight. Default weights are 1.0.
+        stream_names: Optional labels (one per ranked list, e.g.
+            ``["dense", "sparse", "symbol"]``). When provided, each returned
+            ``SearchHit`` carries a ``streams`` dict mapping the labels of
+            the streams it appeared in to their per-stream RRF contribution.
+            Consumed by the Meta-Harness trace recorder (WIN-160).
     """
     if weights is None:
         weights = [1.0] * len(ranked_lists)
@@ -47,21 +53,33 @@ def rrf_fuse(
         raise ValueError(
             f"weights length ({len(weights)}) must match number of ranked lists ({len(ranked_lists)})"
         )
-    
+    if stream_names is not None and len(stream_names) != len(ranked_lists):
+        raise ValueError(
+            f"stream_names length ({len(stream_names)}) must match number of ranked lists ({len(ranked_lists)})"
+        )
+
     scores: dict[str, float] = {}
     seen: dict[str, SearchHit] = {}
-    for weight, lst in zip(weights, ranked_lists):
+    # Per-chunk breakdown — populated only when stream_names was provided.
+    breakdown: dict[str, dict[str, float]] = {}
+    for idx, (weight, lst) in enumerate(zip(weights, ranked_lists, strict=False)):
+        label = stream_names[idx] if stream_names is not None else None
         for rank, hit in enumerate(lst, start=1):
             contribution = weight / (k + rank)
             scores[hit.chunk_id] = scores.get(hit.chunk_id, 0.0) + contribution
             if hit.chunk_id not in seen:
                 seen[hit.chunk_id] = hit
+            if label is not None:
+                breakdown.setdefault(hit.chunk_id, {})[label] = contribution
 
     ordered = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
     out: list[SearchHit] = []
     for new_rank, (chunk_id, score) in enumerate(ordered[:top_k], start=1):
         base = seen[chunk_id]
-        out.append(base.model_copy(update={"rank": new_rank, "score": score}))
+        update: dict[str, object] = {"rank": new_rank, "score": score}
+        if stream_names is not None:
+            update["streams"] = breakdown.get(chunk_id, {})
+        out.append(base.model_copy(update=update))
     return out
 
 
@@ -73,10 +91,10 @@ def rrf_fuse_named(
     weights: dict[str, float] | None = None,
 ) -> list[SearchHit]:
     """Merge named ranked lists with optional per-stream weights.
-    
-    This variant accepts a dict of {stream_name: ranked_list} and optional
-    weights by stream name, making it easier to use with adaptive weighting.
-    
+
+    Stream names are preserved on each returned hit's ``streams`` field,
+    so callers can see which stream(s) contributed and by how much.
+
     Args:
         ranked_lists: Dict mapping stream names to ranked lists.
         k: RRF smoothing constant (default 60).
@@ -86,10 +104,16 @@ def rrf_fuse_named(
     """
     if weights is None:
         weights = {}
-    
+
     # Convert to positional format
     names = list(ranked_lists.keys())
     lists = [ranked_lists[name] for name in names]
     weight_list = [weights.get(name, 1.0) for name in names]
-    
-    return rrf_fuse(*lists, k=k, top_k=top_k, weights=weight_list)
+
+    return rrf_fuse(
+        *lists,
+        k=k,
+        top_k=top_k,
+        weights=weight_list,
+        stream_names=names,
+    )

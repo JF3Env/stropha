@@ -11,7 +11,7 @@ from ..embeddings.base import Embedder
 from ..logging import get_logger
 from ..models import SearchHit
 from ..storage import Storage
-from .rrf import DEFAULT_K, rrf_fuse
+from .rrf import DEFAULT_K, rrf_fuse, rrf_fuse_named
 
 log = get_logger(__name__)
 
@@ -110,13 +110,37 @@ class SearchEngine:
         sparse_hits = self._storage.search_bm25(query, k=candidate_k)
         symbol_hits = self._storage.search_symbol_tokens(query, k=20)
 
-        streams = [s for s in (dense_hits, sparse_hits, symbol_hits) if s]
-        if not streams:
+        # WIN-160: keep the source stream label on every hit so the trace
+        # recorder can attribute each result to dense / sparse / symbol.
+        # The single-stream short-circuit synthesises a streams field too
+        # so downstream consumers never see a None when fusion was skipped.
+        named_streams = {
+            name: hits
+            for name, hits in (
+                ("dense", dense_hits),
+                ("sparse", sparse_hits),
+                ("symbol", symbol_hits),
+            )
+            if hits
+        }
+        if not named_streams:
             return []
-        if len(streams) == 1:
-            fused = streams[0][:top_k]
+        if len(named_streams) == 1:
+            (only_name, only_hits), = named_streams.items()
+            fused = [
+                h.model_copy(update={"streams": {only_name: h.score}})
+                for h in only_hits[:top_k]
+            ]
         else:
-            fused = rrf_fuse(*streams, k=rrf_k, top_k=top_k)
+            # rrf_fuse_named signature is Mapping[str, Iterable[SearchHit]];
+            # cast for mypy which sees the value list[...] as invariant.
+            from collections.abc import Iterable
+            from typing import cast
+            fused = rrf_fuse_named(
+                cast("dict[str, Iterable[SearchHit]]", named_streams),
+                k=rrf_k,
+                top_k=top_k,
+            )
         # Recursive retrieval / auto-merge (Phase 3 §6.4). No-op when
         # STROPHA_RECURSIVE_RETRIEVAL is unset / 0 — back-compat preserved.
         from .recursive import merge_hits

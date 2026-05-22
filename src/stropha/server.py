@@ -52,6 +52,7 @@ from .retrieval.graph import (
 )
 from .retrieval.savings import track_search_savings
 from .retrieval.smart_search import SmartSearchResult, smart_search
+from .meta.decorator import traced
 from .retrieval.graph import (
     find_rationale as graph_find_rationale,
 )
@@ -81,6 +82,10 @@ class AppContext:
     every pipeline stage (walker, chunker, enricher, retrieval, reranker)
     — not just storage + embedder. The ``get_config`` tool uses this to
     render a comprehensive runtime snapshot for the calling agent.
+
+    ``session_id`` (WIN-160) is rotated on every ``mcp.startup`` — one uuid4
+    per process, recorded on every trace entry so the Meta-Harness outcome
+    labeler can detect engagement between correlated calls (tier T4).
     """
 
     config: Config
@@ -88,20 +93,31 @@ class AppContext:
     embedder: Embedder
     search_engine: SearchEngine
     built: object  # BuiltStages; typed as object to avoid the heavy import here
+    session_id: str = ""
+    trace_recorder: object = None  # TraceRecorder | None; typed loose to avoid import cycles
 
 
 @asynccontextmanager
 async def _lifespan(app: FastMCP) -> AsyncIterator[AppContext]:
+    import uuid as _uuid
+    from pathlib import Path as _Path
+
+    from .meta import TraceRecorder as _TraceRecorder
+
     # Use the centralized config singleton. It handles .env loading with proper
     # precedence (env vars from MCP client override .env file values).
     cfg = get_config()
     configure_logging(cfg.log_level)
+    # WIN-160: one session_id per process, generated at mcp.startup. Logged
+    # immediately so the operator can correlate this run's events.
+    session_id = _uuid.uuid4().hex
     log.info(
         "mcp.startup",
         version=__version__,
         index_path=str(cfg.resolve_index_path()),
         target=str(cfg.target_repo),
         mcp_watch=cfg.mcp_watch,
+        session_id=session_id,
     )
     # Route through the adapter framework so pipeline.embedder.adapter from
     # stropha.yaml is honored (mlx, voyage, local, bge-m3, …). Without this
@@ -112,6 +128,24 @@ async def _lifespan(app: FastMCP) -> AsyncIterator[AppContext]:
     embedder = built.embedder
     storage = built.storage  # already open; sqlite-vec adapter subclass of Storage
     engine = SearchEngine(storage, embedder)
+
+    # WIN-160: spin up the Meta-Harness trace recorder. Default location is
+    # ``<index_parent>/meta/traces/`` next to ``index.db`` so a single repo's
+    # meta state stays self-contained. WIN-161 will formalize the layout.
+    traces_dir = (
+        _Path(os.environ.get("STROPHA_TRACES_DIR"))
+        if os.environ.get("STROPHA_TRACES_DIR")
+        else _Path(cfg.resolve_index_path()).parent / "meta" / "traces"
+    )
+    try:
+        trace_recorder: object = _TraceRecorder(
+            base_dir=traces_dir, session_id=session_id
+        )
+    except OSError as exc:
+        # Trace recording is observability, not critical path. If we cannot
+        # open the directory (read-only fs, permission, …) log and continue.
+        log.warning("mcp.trace_recorder.disabled", error=str(exc))
+        trace_recorder = None
 
     # Start background file watcher if enabled (default: on).
     # This keeps the index fresh as the user edits files, so MCP queries
@@ -127,11 +161,24 @@ async def _lifespan(app: FastMCP) -> AsyncIterator[AppContext]:
         watcher.start()
 
     try:
-        yield AppContext(cfg, storage, embedder, engine, built)
+        yield AppContext(
+            config=cfg,
+            storage=storage,
+            embedder=embedder,
+            search_engine=engine,
+            built=built,
+            session_id=session_id,
+            trace_recorder=trace_recorder,
+        )
     finally:
         if watcher is not None:
             watcher.stop()
-        log.info("mcp.shutdown")
+        if trace_recorder is not None:
+            try:
+                trace_recorder.close()  # type: ignore[attr-defined]
+            except Exception as exc:  # noqa: BLE001 — defensive shutdown
+                log.warning("mcp.trace_recorder.close_failed", error=str(exc))
+        log.info("mcp.shutdown", session_id=session_id)
         storage.close()
 
 
@@ -302,7 +349,20 @@ class StatsPayload(BaseModel):
 # ---- helpers ---------------------------------------------------------------
 
 def _ctx(mcp_ctx: Context) -> AppContext:
-    return mcp_ctx.request_context.lifespan_context
+    """Pull the AppContext out of an MCP Context and bind session_id to logs.
+
+    WIN-160: ``structlog.contextvars.bind_contextvars`` makes ``session_id``
+    appear on every structlog event emitted while this request is in flight,
+    without each tool having to remember to pass it. The bind is per-thread
+    (Python's contextvars semantics), so concurrent MCP calls do not bleed
+    each other's session ids.
+    """
+    import structlog
+
+    app: AppContext = mcp_ctx.request_context.lifespan_context
+    if app.session_id:
+        structlog.contextvars.bind_contextvars(session_id=app.session_id)
+    return app
 
 
 def _to_result(hit) -> SearchResult:  # type: ignore[no-untyped-def]
@@ -381,6 +441,7 @@ def _apply_filters(
         "Results include file path (relative to repo root), line numbers, and snippet."
     ),
 )
+@traced("search_code")
 def search_code(
     query: str,
     top_k: int = 10,
@@ -516,6 +577,7 @@ class SmartSearchResponse(BaseModel):
         "Prefer this over manually choosing tools when the query type is ambiguous."
     ),
 )
+@traced("smart_search")
 def smart_search_tool(
     query: str,
     top_k: int = 10,
@@ -577,6 +639,7 @@ def smart_search_tool(
         "Returns file path, line numbers, and code snippet for each match."
     ),
 )
+@traced("get_symbol")
 def get_symbol(symbol: str, limit: int = 5, *, ctx: Context) -> list[SearchResult]:
     """Find by symbol name. Returns up to `limit` matches, exact-match first."""
     app = _ctx(ctx)
@@ -592,6 +655,7 @@ def get_symbol(symbol: str, limit: int = 5, *, ctx: Context) -> list[SearchResul
         "and indexing stats. Use this to understand what code is searchable."
     ),
 )
+@traced("list_repos")
 def list_repos(*, ctx: Context) -> list[RepoSummary]:
     """Aggregate per-repo stats. Cheap query — single GROUP BY.
 
@@ -624,6 +688,7 @@ def list_repos(*, ctx: Context) -> list[RepoSummary]:
         "then you can Read just lines 45-67 for the specific method you need."
     ),
 )
+@traced("get_file_outline")
 def get_file_outline(path: str, *, ctx: Context) -> list[OutlineEntry]:
     """Return the chunk-level outline of a file path (repo-relative)."""
     app = _ctx(ctx)
@@ -667,6 +732,7 @@ def _graph_unavailable() -> dict:
         "Requires graphify graph (returns {graph_loaded: false} if missing)."
     ),
 )
+@traced("find_callers")
 def find_callers(
     symbol: str,
     *,
@@ -690,6 +756,7 @@ def find_callers(
         "Use for exploring dependencies and connections around a symbol."
     ),
 )
+@traced("find_related")
 def find_related(
     symbol: str,
     *,
@@ -717,6 +784,7 @@ def find_related(
         "see everything that participates in a coherent feature/module."
     ),
 )
+@traced("get_community")
 def get_community(
     symbol_or_community_id: str,
     *,
@@ -745,6 +813,7 @@ def get_community(
         "when no rationale edges target the symbol."
     ),
 )
+@traced("find_rationale")
 def find_rationale(
     symbol: str,
     *,
@@ -773,6 +842,7 @@ def find_rationale(
         "Pass custom test_path_patterns for non-standard test conventions."
     ),
 )
+@traced("find_tests_for")
 def find_tests_for(
     symbol: str,
     *,
@@ -803,6 +873,7 @@ def find_tests_for(
         "Great for understanding end-to-end flows and Gherkin scenario traces."
     ),
 )
+@traced("trace_feature")
 def trace_feature(
     feature: str,
     *,
@@ -1085,6 +1156,7 @@ def _features_summary(app: AppContext) -> dict:
         "enabled to improve retrieval quality."
     ),
 )
+@traced("get_config")
 def get_config_tool(*, ctx: Context) -> dict:
     """Return the active configuration for debugging.
 

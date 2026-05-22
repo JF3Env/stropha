@@ -131,6 +131,15 @@ class SearchHit(BaseModel):
         description="Source repository identity. None for legacy chunks "
         "indexed before schema v2.",
     )
+    streams: dict[str, float] | None = Field(
+        default=None,
+        description=(
+            "Per-stream RRF contributions when this hit came from a fused "
+            "retrieval (e.g. {'dense': 0.0164, 'sparse': 0.0162}). None for "
+            "hits that did not pass through fusion. Consumed by the "
+            "Meta-Harness trace recorder (WIN-160)."
+        ),
+    )
 
 
 class RepoStats(BaseModel):
