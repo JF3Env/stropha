@@ -183,6 +183,11 @@ class EvalResult:
     relevances: tuple[float, ...] = ()
     # Number of relevant hits in top-K (for Precision@K)
     relevant_count: int = 0
+    # WIN-170: per-query latency capture. ``latency_ms`` is the wall-clock
+    # cost of the single retrieval call this result describes. Captured by
+    # ``run_eval`` so latency is first-class fitness, not an invisible-in-CI
+    # afterthought.
+    latency_ms: float = 0.0
 
     @property
     def hit(self) -> bool:
@@ -191,18 +196,39 @@ class EvalResult:
     @property
     def reciprocal_rank(self) -> float:
         return 1.0 / self.rank_of_first_hit if self.rank_of_first_hit else 0.0
-    
+
     @property
     def ndcg(self) -> float:
         """NDCG for this single case."""
         if not self.relevances:
             return 0.0
         return _ndcg(list(self.relevances), self.top_k)
-    
+
     @property
     def precision(self) -> float:
         """Precision@K for this case."""
         return self.relevant_count / self.top_k if self.top_k > 0 else 0.0
+
+    @property
+    def average_precision(self) -> float:
+        """Average Precision (AP) for this single case.
+
+        AP = mean of precision-at-each-relevant-rank within the top-K.
+        Returns 0.0 when no relevant hit is in the top-K. Used by
+        :attr:`EvalReport.map_at_k` (mean AP = MAP).
+        """
+        if not self.relevances:
+            return 0.0
+        n_relevant = sum(1 for r in self.relevances if r > 0)
+        if n_relevant == 0:
+            return 0.0
+        ap_sum = 0.0
+        running_relevant = 0
+        for i, rel in enumerate(self.relevances, start=1):
+            if rel > 0:
+                running_relevant += 1
+                ap_sum += running_relevant / i
+        return ap_sum / n_relevant
 
 
 @dataclass
@@ -244,12 +270,57 @@ class EvalReport:
             return 0.0
         return sum(r.precision for r in self.results) / self.n
 
+    @property
+    def map_at_k(self) -> float:
+        """Mean Average Precision @K — the first-class quality metric
+        the WIN-169 fitness function consumes for retrieval quality.
+
+        Robust to single-rank reranking jitter in a way recall@K is not:
+        moving a relevant hit from rank 4 to rank 1 doesn't change
+        recall but lifts MAP, which is exactly what the proposer should
+        optimise toward.
+        """
+        if not self.results:
+            return 0.0
+        return sum(r.average_precision for r in self.results) / self.n
+
+    @property
+    def latency_p50_ms(self) -> float:
+        """Median per-query latency across all cases (ms)."""
+        return self._latency_percentile(50)
+
+    @property
+    def latency_p95_ms(self) -> float:
+        """p95 per-query latency (ms). The fitness function (WIN-169)
+        consumes this directly as the ``latency_ms`` dimension."""
+        return self._latency_percentile(95)
+
+    @property
+    def latency_p99_ms(self) -> float:
+        return self._latency_percentile(99)
+
+    def _latency_percentile(self, pct: int) -> float:
+        if not self.results:
+            return 0.0
+        samples = sorted(r.latency_ms for r in self.results)
+        idx = max(0, min(len(samples) - 1, int(len(samples) * pct / 100)))
+        return samples[idx]
+
     def by_tag(self) -> dict[str, EvalReport]:
         """Slice results per tag for diagnostic breakdowns."""
         buckets: dict[str, EvalReport] = {}
         for r in self.results:
             for t in r.case.tags or ("(untagged)",):
                 buckets.setdefault(t, EvalReport(top_k=self.top_k)).results.append(r)
+        return buckets
+
+    def by_split(self) -> dict[str, EvalReport]:
+        """WIN-168 — slice results per split (search vs holdout) so the
+        evaluator can report both numbers without having to re-run."""
+        buckets: dict[str, EvalReport] = {}
+        for r in self.results:
+            key = r.case.split
+            buckets.setdefault(key, EvalReport(top_k=self.top_k)).results.append(r)
         return buckets
 
     def summary(self) -> dict[str, Any]:
@@ -260,6 +331,10 @@ class EvalReport:
             "mrr": round(self.mrr, 4),
             f"ndcg@{self.top_k}": round(self.ndcg_at_k, 4),
             f"precision@{self.top_k}": round(self.precision_at_k, 4),
+            f"map@{self.top_k}": round(self.map_at_k, 4),
+            "latency_p50_ms": round(self.latency_p50_ms, 3),
+            "latency_p95_ms": round(self.latency_p95_ms, 3),
+            "latency_p99_ms": round(self.latency_p99_ms, 3),
         }
 
 
@@ -350,31 +425,38 @@ def run_eval(
     top_k: int = 10,
 ) -> EvalReport:
     """Execute every case against ``engine`` and aggregate metrics."""
+    import time as _time
+
     report = EvalReport(top_k=top_k)
     for case in cases:
+        # WIN-170: capture per-query latency. perf_counter() is monotonic
+        # and high-resolution; the cost (~50 ns per call) is irrelevant
+        # next to a multi-millisecond search.
+        start = _time.perf_counter()
         hits = engine.search(case.query, top_k=top_k)
-        
+        latency_ms = (_time.perf_counter() - start) * 1000.0
+
         # Track relevance at each rank for NDCG
         relevances: list[float] = []
         relevant_count = 0
         first_hit_rank: int | None = None
         first_matched_path: str | None = None
         first_matched_symbol: str | None = None
-        
+
         for rank, h in enumerate(hits, 1):
             # Tolerate both real SearchHit (.rel_path) and tests' fake hits (.path).
             actual_path = getattr(h, "rel_path", None) or getattr(h, "path", "")
             actual_symbol = getattr(h, "symbol", None)
-            
+
             mp = _path_matches(actual_path, case.expected_paths)
             ms = _symbol_matches(actual_symbol, case.expected_symbols)
-            
+
             if mp or ms:
                 # This hit is relevant
                 rel = case.get_relevance(actual_path, actual_symbol)
                 relevances.append(rel)
                 relevant_count += 1
-                
+
                 if first_hit_rank is None:
                     first_hit_rank = rank
                     first_matched_path = mp
@@ -382,11 +464,11 @@ def run_eval(
             else:
                 # Not relevant
                 relevances.append(0.0)
-        
+
         # Pad with zeros if fewer hits than top_k
         while len(relevances) < top_k:
             relevances.append(0.0)
-        
+
         result = EvalResult(
             case=case,
             rank_of_first_hit=first_hit_rank,
@@ -395,6 +477,7 @@ def run_eval(
             matched_symbol=first_matched_symbol,
             relevances=tuple(relevances),
             relevant_count=relevant_count,
+            latency_ms=latency_ms,
         )
         report.results.append(result)
         log.info(
@@ -404,6 +487,7 @@ def run_eval(
             rank=first_hit_rank,
             ndcg=round(result.ndcg, 4),
             precision=round(result.precision, 4),
+            latency_ms=round(latency_ms, 3),
             tags=list(case.tags),
         )
     log.info("eval.run.summary", **report.summary())

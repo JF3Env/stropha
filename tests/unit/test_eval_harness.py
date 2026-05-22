@@ -429,3 +429,251 @@ class TestEvalSplit:
             f"holdout share {holdout_pct:.0%} outside [20%, 40%] "
             f"(counts={counts})"
         )
+
+
+# ---------------------------------------------------------------------------
+# WIN-170 — per-query latency capture + MAP + by_split
+# ---------------------------------------------------------------------------
+
+
+class TestPerQueryLatency:
+    def test_run_eval_captures_latency_per_case(self):
+        import time as _time
+
+        def slow_engine_search(self, query, top_k):
+            _time.sleep(0.005)
+            return []
+
+        class _SlowEngine:
+            search = slow_engine_search
+
+        cases = [
+            EvalCase(id="c1", query="q1"),
+            EvalCase(id="c2", query="q2"),
+        ]
+        report = run_eval(cases, _SlowEngine(), top_k=5)  # type: ignore[arg-type]
+        # Each result has latency_ms; both ≥ ~5ms (the sleep), < 500ms (slop).
+        for r in report.results:
+            assert r.latency_ms >= 4.0
+            assert r.latency_ms < 500.0
+
+    def test_eval_result_default_latency_is_zero(self):
+        """Direct EvalResult construction without latency keeps the zero
+        default — back-compat with synthetic tests that don't time."""
+        r = EvalResult(case=EvalCase(id="x", query="q"), rank_of_first_hit=1, top_k=10)
+        assert r.latency_ms == 0.0
+
+
+class TestLatencyPercentiles:
+    def _result_with_latency(self, latency_ms: float) -> EvalResult:
+        return EvalResult(
+            case=EvalCase(id="x", query="q"),
+            rank_of_first_hit=1,
+            top_k=10,
+            latency_ms=latency_ms,
+        )
+
+    def test_empty_report_zero_percentiles(self):
+        from stropha.eval import EvalReport
+
+        report = EvalReport(top_k=10)
+        assert report.latency_p50_ms == 0.0
+        assert report.latency_p95_ms == 0.0
+        assert report.latency_p99_ms == 0.0
+
+    def test_percentiles_match_sorted_position(self):
+        from stropha.eval import EvalReport
+
+        report = EvalReport(top_k=10)
+        report.results = [self._result_with_latency(float(i)) for i in range(1, 101)]
+        # 100 samples, p50 = 50th value (sorted), p95 = 95th, p99 = 99th.
+        # _latency_percentile uses int(N*pct/100), so p50=index 50 → value 51.
+        assert report.latency_p50_ms in (50.0, 51.0)
+        assert report.latency_p95_ms in (95.0, 96.0)
+        assert report.latency_p99_ms in (99.0, 100.0)
+
+    def test_percentile_clamps_for_tiny_sample(self):
+        """1 sample: every percentile returns that sample."""
+        from stropha.eval import EvalReport
+
+        report = EvalReport(top_k=10)
+        report.results = [self._result_with_latency(12.5)]
+        assert report.latency_p50_ms == 12.5
+        assert report.latency_p95_ms == 12.5
+        assert report.latency_p99_ms == 12.5
+
+
+class TestAveragePrecisionAndMap:
+    def test_ap_zero_for_no_relevances(self):
+        r = EvalResult(case=EvalCase(id="x", query="q"), rank_of_first_hit=None, top_k=10)
+        assert r.average_precision == 0.0
+
+    def test_ap_zero_when_top_k_all_zeroes(self):
+        r = EvalResult(
+            case=EvalCase(id="x", query="q"),
+            rank_of_first_hit=None,
+            top_k=5,
+            relevances=(0.0, 0.0, 0.0, 0.0, 0.0),
+        )
+        assert r.average_precision == 0.0
+
+    def test_ap_perfect_first_rank(self):
+        """Single relevant at rank 1 → AP = 1.0."""
+        r = EvalResult(
+            case=EvalCase(id="x", query="q"),
+            rank_of_first_hit=1,
+            top_k=5,
+            relevances=(1.0, 0.0, 0.0, 0.0, 0.0),
+        )
+        assert r.average_precision == pytest.approx(1.0)
+
+    def test_ap_relevant_at_second_rank(self):
+        """Single relevant at rank 2 → AP = 1/2 = 0.5."""
+        r = EvalResult(
+            case=EvalCase(id="x", query="q"),
+            rank_of_first_hit=2,
+            top_k=5,
+            relevances=(0.0, 1.0, 0.0, 0.0, 0.0),
+        )
+        assert r.average_precision == pytest.approx(0.5)
+
+    def test_ap_multiple_relevant(self):
+        """Relevant at ranks 1 and 3 → AP = (1/1 + 2/3) / 2 ≈ 0.833."""
+        r = EvalResult(
+            case=EvalCase(id="x", query="q"),
+            rank_of_first_hit=1,
+            top_k=5,
+            relevances=(1.0, 0.0, 1.0, 0.0, 0.0),
+        )
+        assert r.average_precision == pytest.approx((1.0 + 2/3) / 2)
+
+    def test_map_at_k_is_mean_ap(self):
+        from stropha.eval import EvalReport
+
+        report = EvalReport(top_k=5)
+        report.results = [
+            EvalResult(
+                case=EvalCase(id="a", query="qa"),
+                rank_of_first_hit=1,
+                top_k=5,
+                relevances=(1.0, 0.0, 0.0, 0.0, 0.0),
+            ),  # AP = 1.0
+            EvalResult(
+                case=EvalCase(id="b", query="qb"),
+                rank_of_first_hit=2,
+                top_k=5,
+                relevances=(0.0, 1.0, 0.0, 0.0, 0.0),
+            ),  # AP = 0.5
+        ]
+        assert report.map_at_k == pytest.approx(0.75)
+
+    def test_map_at_k_empty_report(self):
+        from stropha.eval import EvalReport
+
+        assert EvalReport(top_k=5).map_at_k == 0.0
+
+
+class TestSummaryAndBySplit:
+    def test_summary_includes_map_and_latency_percentiles(self):
+        cases = [EvalCase(id="c1", query="q1", expected_paths=("a.py",))]
+        engine = _FakeEngine({"q1": [_FakeHit("a.py", None)]})
+        report = run_eval(cases, engine, top_k=5)  # type: ignore[arg-type]
+        s = report.summary()
+        for key in ("map@5", "latency_p50_ms", "latency_p95_ms", "latency_p99_ms"):
+            assert key in s
+
+    def test_by_split_groups_results(self):
+        from stropha.eval import EvalReport
+
+        report = EvalReport(top_k=5)
+        report.results = [
+            EvalResult(
+                case=EvalCase(id="s1", query="q1", split="search"),
+                rank_of_first_hit=1, top_k=5,
+            ),
+            EvalResult(
+                case=EvalCase(id="h1", query="q2", split="holdout"),
+                rank_of_first_hit=1, top_k=5,
+            ),
+            EvalResult(
+                case=EvalCase(id="s2", query="q3", split="search"),
+                rank_of_first_hit=2, top_k=5,
+            ),
+        ]
+        buckets = report.by_split()
+        assert set(buckets) == {"search", "holdout"}
+        assert buckets["search"].n == 2
+        assert buckets["holdout"].n == 1
+
+
+# ---------------------------------------------------------------------------
+# Pre-existing coverage gaps closed under WIN-170 (push harness.py to 100%)
+# ---------------------------------------------------------------------------
+
+
+class TestPreExistingGapsClosedForCompleteness:
+    """Targeted tests that fill defensive branches the prior eval suite
+    happened to skip. Closed in WIN-170 since the same module gained MAP
+    + latency surface and coverage was being pushed to 100% anyway."""
+
+    def test_eval_result_ndcg_zero_when_no_relevances(self):
+        r = EvalResult(
+            case=EvalCase(id="x", query="q"),
+            rank_of_first_hit=None,
+            top_k=5,
+            relevances=(),
+        )
+        assert r.ndcg == 0.0
+
+    def test_empty_report_mrr_zero(self):
+        from stropha.eval import EvalReport
+
+        assert EvalReport(top_k=5).mrr == 0.0
+
+    def test_empty_report_ndcg_at_k_zero(self):
+        from stropha.eval import EvalReport
+
+        assert EvalReport(top_k=5).ndcg_at_k == 0.0
+
+    def test_empty_report_precision_at_k_zero(self):
+        from stropha.eval import EvalReport
+
+        assert EvalReport(top_k=5).precision_at_k == 0.0
+
+    def test_get_relevance_with_graded_map(self):
+        case = EvalCase.from_dict({
+            "id": "g1",
+            "query": "graded",
+            "expected_paths": ["src/foo.py"],
+            "relevance": {"src/foo.py": 3.0, "FooClass": 2.0},
+        })
+        assert case.get_relevance("src/foo.py", None) == 3.0
+        assert case.get_relevance(None, "FooClass") == 2.0
+        # Unknown path/symbol falls through to 1.0 (binary fallback —
+        # the relevance lookup does not penalise misses, only graded
+        # matches get a score >1; misses outside the map still count
+        # as binary relevant).
+        assert case.get_relevance("other.py", "Other") == 1.0
+
+    def test_path_matches_skips_empty_expected(self):
+        """``_path_matches`` MUST skip empty entries in the expected list
+        instead of treating them as a wildcard."""
+        from stropha.eval.harness import _path_matches
+
+        # Empty strings in the expected list are silently skipped.
+        assert _path_matches("src/foo.py", ["", "src/foo.py"]) == "src/foo.py"
+        assert _path_matches("src/foo.py", [""]) is None
+
+    def test_symbol_matches_skips_empty_expected(self):
+        from stropha.eval.harness import _symbol_matches
+
+        assert _symbol_matches("Foo", ["", "Foo"]) == "Foo"
+        assert _symbol_matches("Foo", [""]) is None
+
+    def test_ndcg_zero_idcg_branch(self):
+        """``_ndcg`` returns 0 when the ideal DCG would be 0 (all
+        relevances are zero) — guards against div-by-zero."""
+        from stropha.eval.harness import _ndcg
+
+        assert _ndcg([0.0, 0.0, 0.0], 3) == 0.0
+        assert _ndcg([], 5) == 0.0
