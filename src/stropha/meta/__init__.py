@@ -32,6 +32,7 @@ from .fitness import (
 )
 from .fitness import pareto_frontier as scorecard_pareto_frontier
 from .index_cache import CacheEntry, IndexCache, IndexCacheError
+from .loop import EvaluatorFn, LoopError, LoopResult, ProposerFn, run_loop
 from .outcome import (
     TIER_SCORE,
     LabelingContext,
@@ -82,10 +83,14 @@ __all__ = [
     "Constraint",
     "Dimension",
     "EvaluatorError",
+    "EvaluatorFn",
     "FeedbackError",
     "IndexCache",
     "IndexCacheError",
     "LabelingContext",
+    "LoopError",
+    "LoopResult",
+    "ProposerFn",
     "PrunePlan",
     "ScoreCard",
     "SearchSpace",
@@ -112,6 +117,7 @@ __all__ = [
     "prune_snapshots",
     "resolve_bad_chunks",
     "resolve_sha",
+    "run_loop",
     "scorecard_pareto_frontier",
     "tier_summary",
 ]
