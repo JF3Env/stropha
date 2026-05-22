@@ -53,6 +53,7 @@ class SqliteVecStorage(Storage):
         config: SqliteVecStorageConfig | None = None,
         *,
         embedding_dim: int | None = None,
+        force_rebuild: bool = False,
     ) -> None:
         if config is None:
             config = SqliteVecStorageConfig()
@@ -63,7 +64,14 @@ class SqliteVecStorage(Storage):
             )
         self._adapter_config = config
         resolved = Path(os.path.expandvars(config.path)).expanduser()
-        super().__init__(resolved, embedding_dim=embedding_dim)
+        # force_rebuild=True lets the storage drop dim-dependent tables
+        # (vec_chunks) before the consistency check fires. Required when
+        # switching embedder dims (e.g. bge-m3 1024 → voyage-code-3 512).
+        super().__init__(
+            resolved,
+            embedding_dim=embedding_dim,
+            force_rebuild=force_rebuild,
+        )
 
     # ----- Stage contract -------------------------------------------------
 

@@ -241,7 +241,29 @@ def _identifier_tokens(query: str) -> list[str]:
 class Storage:
     """Owns the SQLite connection. All schema mutations go through here."""
 
-    def __init__(self, db_path: Path, embedding_dim: int) -> None:
+    def __init__(
+        self,
+        db_path: Path,
+        embedding_dim: int,
+        *,
+        force_rebuild: bool = False,
+    ) -> None:
+        """Open the SQLite + sqlite-vec store.
+
+        Args:
+            db_path: Filesystem path to the SQLite file.
+            embedding_dim: The dimensionality of vectors this store will
+                hold. The first time the store is opened, this becomes
+                the fixed dim of the ``vec_chunks`` virtual table.
+            force_rebuild: When the caller knows a ``--rebuild`` is in
+                effect, set this to ``True``. The constructor will then
+                reset every dim-dependent table (vec_chunks must be DROP +
+                recreated when the dim changes; you cannot ALTER a
+                ``CREATE VIRTUAL TABLE ... USING vec0(embedding float[N])``).
+                Without this flag, opening at a different dim raises a
+                :class:`StorageError` so an unintentional dim shift cannot
+                silently invalidate the index.
+        """
         self._db_path = db_path
         self._dim = embedding_dim
         db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -263,6 +285,10 @@ class Storage:
         self._conn.row_factory = sqlite3.Row
 
         self._migrate()
+        if force_rebuild:
+            # Resolve any dim mismatch BEFORE the consistency check would
+            # raise. No-op when the stored dim already matches self._dim.
+            self._reset_dim_dependent_tables_if_needed()
         self._check_dimension_consistency()
 
     @property
@@ -497,6 +523,61 @@ class Storage:
                 f"Index was built with dim={stored_dim} but current embedder uses dim={self._dim}. "
                 f"Run `stropha index --rebuild` to rebuild."
             )
+
+    def _reset_dim_dependent_tables_if_needed(self) -> None:
+        """Drop and recreate dim-dependent tables when the embedder dim changed.
+
+        Called from ``__init__`` ONLY when ``force_rebuild=True``. SQLite's
+        sqlite-vec extension creates ``vec_chunks`` as a virtual table with
+        the dimensionality baked into the schema:
+
+            CREATE VIRTUAL TABLE vec_chunks USING vec0(embedding float[N]);
+
+        That ``N`` cannot be ALTERed — and ``DELETE FROM vec_chunks`` only
+        clears rows, not the column type. So switching from a 1024-dim
+        embedder (e.g. ``bge-m3``) to a 512-dim one (e.g. ``voyage-code-3``)
+        requires a full table replacement.
+
+        This method:
+
+        1. Reads the previous dim from ``meta``.
+        2. No-op if it already matches the new dim (or no previous dim).
+        3. Otherwise: ``DROP TABLE vec_chunks`` + clear every dim-coupled
+           data table (chunks, fts_chunks, files, enrichments).
+        4. Deletes the ``meta.embedding_dim`` row so the next migrate
+           writes the new value cleanly.
+        5. Re-runs ``_migrate()`` which recreates ``vec_chunks`` at the
+           current ``self._dim``.
+
+        Idempotent — safe to call repeatedly.
+        """
+        row = self._conn.execute(
+            "SELECT value FROM meta WHERE key='embedding_dim'"
+        ).fetchone()
+        stored_dim = int(row["value"]) if row else self._dim
+        if stored_dim == self._dim:
+            return  # No mismatch — nothing to reset.
+
+        log.warning(
+            "storage.dim_rebuild",
+            old_dim=stored_dim,
+            new_dim=self._dim,
+            advice="vec_chunks is being dropped and recreated; all chunks cleared",
+        )
+        self._conn.executescript(
+            """
+            DROP TABLE IF EXISTS vec_chunks;
+            DELETE FROM chunks;
+            DELETE FROM fts_chunks;
+            DELETE FROM files;
+            DELETE FROM enrichments;
+            DELETE FROM meta WHERE key='embedding_dim';
+            """
+        )
+        self._conn.commit()
+        # _migrate recreates vec_chunks at self._dim and writes the new
+        # meta.embedding_dim row via _set_meta inside the migration.
+        self._migrate()
 
     # ----- repos -----
 

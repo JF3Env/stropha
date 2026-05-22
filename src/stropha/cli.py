@@ -344,7 +344,13 @@ def index(
     resolved = load_pipeline_config(overrides=overrides or None)
 
     try:
-        built = build_stages(resolved)
+        # Pass --rebuild through so the storage adapter can drop and
+        # recreate dim-dependent tables (vec_chunks) when the embedder dim
+        # changed between runs. Without this, the dim consistency check
+        # raises BEFORE Pipeline.run(rebuild=True) gets a chance to clear
+        # — leaving the user stuck in a loop where the error tells them
+        # to run --rebuild but --rebuild is what they were already running.
+        built = build_stages(resolved, force_rebuild=rebuild)
     except StrophaError as exc:
         console.print(f"[red]Pipeline build error:[/red] {exc}")
         raise typer.Exit(code=1) from exc

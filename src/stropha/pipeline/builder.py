@@ -50,6 +50,7 @@ def build_stages(
     resolved_config: dict[str, Any],
     *,
     open_storage: bool = True,
+    force_rebuild: bool = False,
 ) -> BuiltStages:
     """Instantiate every adapter named in ``resolved_config``.
 
@@ -57,6 +58,12 @@ def build_stages(
     returns ``None`` for those slots. Useful for ``stropha pipeline show``
     when the user has not yet populated an index file (avoids opening a
     SQLite connection just to print config).
+
+    ``force_rebuild=True`` is propagated to the storage adapter so it can
+    drop+recreate dim-dependent tables before the consistency check
+    rejects a dim shift (e.g. ``bge-m3`` 1024 → ``voyage-code-3`` 512).
+    Caller is responsible for actually triggering ``Pipeline.run(rebuild=True)``
+    after — passing this flag without the rebuild leaves the index empty.
     """
     walker = _build_simple(resolved_config, "walker")
     chunker = _build_simple(resolved_config, "chunker")
@@ -75,7 +82,19 @@ def build_stages(
             raise ConfigError(
                 f"Invalid config for pipeline.storage adapter={storage_name!r}: {exc}"
             ) from exc
-        storage = storage_cls(storage_cfg, embedding_dim=embedder.dim)
+        # Forward force_rebuild — only the sqlite-vec adapter honours it
+        # today, but the kwarg lets every future StorageStage opt in.
+        try:
+            storage = storage_cls(
+                storage_cfg,
+                embedding_dim=embedder.dim,
+                force_rebuild=force_rebuild,
+            )
+        except TypeError:
+            # Adapter not yet aware of force_rebuild — fall back to the
+            # original signature. The user gets the dim-mismatch error if
+            # any (i.e. behaviour matches pre-flag world).
+            storage = storage_cls(storage_cfg, embedding_dim=embedder.dim)
         log.info(
             "pipeline.adapter.built",
             stage="storage",
