@@ -346,3 +346,86 @@ class TestEvalReportNDCG:
         summary = report.summary()
         assert "ndcg@10" in summary
         assert "precision@10" in summary
+
+
+# ---------------------------------------------------------------------------
+# WIN-168 — split: search | holdout
+# ---------------------------------------------------------------------------
+
+
+class TestEvalSplit:
+    """Anti-overfit split tagging on EvalCase + the filter/count helpers."""
+
+    def test_legacy_case_defaults_to_search(self):
+        """A golden line without a split field must NOT be silently
+        treated as holdout — the proposer would lose half its training set."""
+        case = EvalCase.from_dict({"query": "q1"})
+        assert case.split == "search"
+
+    def test_split_field_round_trip(self):
+        case = EvalCase.from_dict({"query": "q1", "split": "holdout"})
+        assert case.split == "holdout"
+
+    def test_split_normalised_case_insensitive(self):
+        case = EvalCase.from_dict({"query": "q1", "split": "HOLDOUT"})
+        assert case.split == "holdout"
+
+    def test_invalid_split_raises(self):
+        import pytest as _pytest
+
+        with _pytest.raises(ValueError, match="invalid split"):
+            EvalCase.from_dict({"query": "q1", "split": "train"})
+
+    def test_filter_by_split_returns_only_matching(self):
+        from stropha.eval import filter_by_split
+
+        cases = [
+            EvalCase(id="s1", query="q1", split="search"),
+            EvalCase(id="h1", query="q2", split="holdout"),
+            EvalCase(id="s2", query="q3", split="search"),
+        ]
+        assert [c.id for c in filter_by_split(cases, "search")] == ["s1", "s2"]
+        assert [c.id for c in filter_by_split(cases, "holdout")] == ["h1"]
+
+    def test_split_counts_reports_both_buckets(self):
+        from stropha.eval import split_counts
+
+        cases = [
+            EvalCase(id="s1", query="q1", split="search"),
+            EvalCase(id="s2", query="q2", split="search"),
+            EvalCase(id="h1", query="q3", split="holdout"),
+        ]
+        counts = split_counts(cases)
+        assert counts == {"search": 2, "holdout": 1}
+
+    def test_load_golden_propagates_invalid_split_with_lineno(self, tmp_path):
+        import pytest as _pytest
+
+        from stropha.eval import load_golden
+
+        f = tmp_path / "bad.jsonl"
+        f.write_text(
+            '{"id": "ok", "query": "ok"}\n'
+            '{"id": "bad", "query": "q", "split": "train"}\n'
+        )
+        with _pytest.raises(ValueError, match=r"bad\.jsonl:2:.*invalid split"):
+            load_golden(f)
+
+    def test_real_golden_file_is_validly_split(self):
+        """End-to-end: the shipped tests/eval/golden.jsonl loads and the
+        70/30 split target holds (allowing for some slack)."""
+        from pathlib import Path as _Path
+
+        from stropha.eval import load_golden, split_counts
+
+        golden = _Path(__file__).resolve().parent.parent.parent / "tests" / "eval" / "golden.jsonl"
+        cases = load_golden(golden)
+        counts = split_counts(cases)
+        total = counts["search"] + counts["holdout"]
+        assert total >= 25, f"expected >=25 golden cases, got {total}"
+        # Holdout share between 20% and 40% — wide tolerance.
+        holdout_pct = counts["holdout"] / total
+        assert 0.20 <= holdout_pct <= 0.40, (
+            f"holdout share {holdout_pct:.0%} outside [20%, 40%] "
+            f"(counts={counts})"
+        )

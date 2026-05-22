@@ -15,14 +15,18 @@ from .harness import (
     EvalCase,
     EvalReport,
     EvalResult,
+    filter_by_split,
     load_golden,
     run_eval,
+    split_counts,
 )
 
 __all__ = [
     "EvalCase",
     "EvalReport",
     "EvalResult",
+    "filter_by_split",
     "load_golden",
     "run_eval",
+    "split_counts",
 ]

@@ -33,7 +33,7 @@ import math
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from ..logging import get_logger
 from ..retrieval.search import SearchEngine
@@ -105,6 +105,12 @@ class EvalCase:
     # mapping path/symbol to relevance score (0-3). If not provided, binary
     # relevance (1 for match, 0 for non-match) is used.
     relevance_map: dict[str, float] = field(default_factory=dict)
+    # WIN-168 anti-overfit split. ``"search"`` is the subset the
+    # Meta-Harness proposer can optimise against. ``"holdout"`` is reserved
+    # for generalisation measurement and must NOT be visible to the
+    # proposer. Legacy cases without the field default to ``"search"`` so
+    # existing eval runs keep working unchanged.
+    split: Literal["search", "holdout"] = "search"
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> EvalCase:
@@ -121,7 +127,14 @@ class EvalCase:
                 for i, r in enumerate(rel):
                     if i < len(expected):
                         relevance_map[expected[i]] = float(r)
-        
+
+        split_raw = str(d.get("split", "search")).lower()
+        if split_raw not in ("search", "holdout"):
+            raise ValueError(
+                f"invalid split {split_raw!r} for case {d.get('id')!r}; "
+                f"expected 'search' or 'holdout'"
+            )
+
         return cls(
             id=str(d.get("id") or d.get("query", "")[:40]),
             query=str(d["query"]),
@@ -129,6 +142,7 @@ class EvalCase:
             expected_symbols=tuple(d.get("expected_symbols") or ()),
             tags=tuple(d.get("tags") or ()),
             relevance_map=relevance_map,
+            split=split_raw,  # type: ignore[arg-type]  # validated above
         )
     
     def get_relevance(self, path: str | None, symbol: str | None) -> float:
@@ -270,8 +284,36 @@ def load_golden(path: Path) -> list[EvalCase]:
             raise ValueError(f"{path}:{lineno}: invalid JSON ({exc})") from exc
         if not isinstance(payload, dict) or "query" not in payload:
             raise ValueError(f"{path}:{lineno}: missing required `query` key")
-        cases.append(EvalCase.from_dict(payload))
+        try:
+            cases.append(EvalCase.from_dict(payload))
+        except ValueError as exc:
+            # Re-raise with line-number context so misformed split values
+            # (or any future field validation) surface where the user can
+            # find them.
+            raise ValueError(f"{path}:{lineno}: {exc}") from exc
     return cases
+
+
+def filter_by_split(
+    cases: Iterable[EvalCase],
+    split: Literal["search", "holdout"],
+) -> list[EvalCase]:
+    """Return only the cases tagged with ``split``.
+
+    The Meta-Harness proposer should only ever see the ``"search"`` subset
+    — anything else is overfit waiting to happen. ``"holdout"`` is the
+    locked anti-overfit measure consumed by the evaluator at promotion
+    time (Phase 4).
+    """
+    return [c for c in cases if c.split == split]
+
+
+def split_counts(cases: Iterable[EvalCase]) -> dict[str, int]:
+    """How many cases fall into each split. Sanity check for golden hygiene."""
+    counts = {"search": 0, "holdout": 0}
+    for c in cases:
+        counts[c.split] = counts.get(c.split, 0) + 1
+    return counts
 
 
 # --------------------------------------------------------------------- runner
