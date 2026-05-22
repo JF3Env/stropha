@@ -127,3 +127,8 @@ markers = [
     "slow: spawns subprocess / hits the network; skipped in fast CI runs.",
     "e2e: end-to-end against a real target repo.",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest-cov>=7.1.0",
+]

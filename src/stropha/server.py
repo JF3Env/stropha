@@ -1041,6 +1041,18 @@ def _inference_snapshot(cfg: Config) -> dict:
                 "location": "cloud (China-routed)",
             }
         )
+    elif backend == "anthropic":
+        base.update(
+            {
+                "model": cfg.inference.anthropic_model,
+                "endpoint": cfg.inference.anthropic_base_url,
+                "api_key_set": cfg.secrets.has_anthropic,
+                "timeout_s": cfg.inference.anthropic_timeout,
+                "max_retries": cfg.inference.anthropic_max_retries,
+                "anthropic_version": cfg.inference.anthropic_version,
+                "location": "cloud (Anthropic Messages API)",
+            }
+        )
     elif backend == "mlx":
         base.update(
             {

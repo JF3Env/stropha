@@ -4,33 +4,57 @@ This module sets up common test fixtures including:
 - Config cache reset (ensures tests don't share config state)
 - Inference backend reset
 - Isolated working directory (so tests don't pick up stropha.yaml from project root)
+- Isolated HOME (so tests don't pick up ~/.stropha/config.yaml from the
+  developer's machine — see docstring on isolated_test_env for the rationale)
 """
 
 from __future__ import annotations
 
 import os
-import tempfile
+from pathlib import Path
 
 import pytest
 
 
 @pytest.fixture(autouse=True)
 def isolated_test_env(tmp_path, monkeypatch):
-    """Isolate tests from the project's stropha.yaml.
-    
-    This changes cwd to a temp directory so tests get default config values
-    instead of project-specific settings.
+    """Isolate tests from BOTH the project's stropha.yaml AND the user-level
+    ``~/.stropha/config.yaml``.
+
+    Why both: the config loader merges in this order (see
+    ``src/stropha/pipeline/config.py``):
+
+        1. User YAML (~/.stropha/config.yaml)
+        2. Project YAML (./stropha.yaml)
+        3. Env vars
+        4. CLI overrides
+
+    Pre-2026-05 the fixture only chdir'd to tmp_path, which masked layer (2)
+    but left layer (1) leaking from the developer's home dir. Tests like
+    ``test_auto_detect_never_picks_deepseek`` that asserted "no YAML present"
+    were silently broken whenever the developer had `inference.backend: …`
+    set in their personal config. Patching ``Path.home()`` closes that hole.
+
+    The replacement HOME is the test's ``tmp_path``, so a test that needs
+    to write a user-level config can do::
+
+        (tmp_path / ".stropha").mkdir()
+        (tmp_path / ".stropha" / "config.yaml").write_text("...")
     """
     # Reset config cache before changing directory
     from stropha.config import reset_config
     reset_config()
-    
-    # Change to temp directory
+
+    # Change to temp directory + isolate HOME from real ~/.stropha/
     original_cwd = os.getcwd()
     monkeypatch.chdir(tmp_path)
-    
+    monkeypatch.setenv("HOME", str(tmp_path))
+    # Pathlib's Path.home() consults HOME on POSIX but caches via os.path.expanduser.
+    # On macOS / Linux this monkeypatch is enough; pathlib re-reads HOME per call.
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+
     yield tmp_path
-    
+
     # Restore original directory and reset config
     monkeypatch.chdir(original_cwd)
     reset_config()

@@ -108,13 +108,19 @@ _ENV_REGISTRY: tuple[_EnvVar, ...] = (
     _EnvVar("STROPHA_VOYAGE_EMBED_MODEL", "embedder", "voyage-code-3", "Voyage embedder model id"),
     _EnvVar("STROPHA_VOYAGE_EMBED_DIM", "embedder", "512", "Voyage embedding dim (Matryoshka)"),
     _EnvVar("VOYAGE_API_KEY", "embedder", None, "Voyage AI API key", secret=True),
-    _EnvVar("ANTHROPIC_API_KEY", "embedder", None, "Anthropic API key (optional)", secret=True),
     # --- inference backends -------------------------------------------------
     _EnvVar(
         "STROPHA_INFERENCE_BACKEND",
         "inference",
         None,
-        "Preferred LLM backend (ollama/mlx/deepseek); YAML inference.backend is canonical",
+        "Preferred LLM backend (ollama/mlx/deepseek/anthropic); YAML inference.backend is canonical",
+    ),
+    _EnvVar(
+        "ANTHROPIC_API_KEY",
+        "inference",
+        None,
+        "Anthropic API key (required when inference.backend=anthropic)",
+        secret=True,
     ),
     _EnvVar(
         "STROPHA_OLLAMA_MODEL",
@@ -379,6 +385,11 @@ def _parse_inference(raw: dict[str, Any]) -> InferenceConfig:
     deepseek_base_url = raw.get("deepseek_base_url") or os.environ.get(
         "DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1"
     )
+    # Anthropic base URL: YAML wins; env override for ecosystem compat
+    # (proxies, self-hosted gateways).
+    anthropic_base_url = raw.get("anthropic_base_url") or os.environ.get(
+        "ANTHROPIC_BASE_URL", "https://api.anthropic.com/v1"
+    )
     return InferenceConfig(
         backend=raw.get("backend"),
         mlx_model=str(raw.get("mlx_model", "mlx-community/Qwen2.5-Coder-1.5B-Instruct-4bit")),
@@ -388,7 +399,13 @@ def _parse_inference(raw: dict[str, Any]) -> InferenceConfig:
         deepseek_base_url=str(deepseek_base_url),
         deepseek_timeout=_float(raw.get("deepseek_timeout"), 120.0),
         deepseek_max_retries=_int(raw.get("deepseek_max_retries"), 2),
+        anthropic_model=str(raw.get("anthropic_model", "claude-haiku-4-5")),
+        anthropic_base_url=str(anthropic_base_url),
+        anthropic_timeout=_float(raw.get("anthropic_timeout"), 60.0),
+        anthropic_max_retries=_int(raw.get("anthropic_max_retries"), 2),
+        anthropic_version=str(raw.get("anthropic_version", "2023-06-01")),
         enricher_concurrency=_int(raw.get("enricher_concurrency"), 1),
+        enricher_batch_size=_int(raw.get("enricher_batch_size"), 1),
     )
 
 

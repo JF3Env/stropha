@@ -50,6 +50,9 @@ class RepoStats:
     chunks_skipped_fresh: int = 0
     chunks_enriched_from_cache: int = 0
     chunks_enriched_fresh: int = 0
+    chunks_enriched_failed: int = 0
+    """Chunks the enricher tried and failed (e.g. LLM rate-limit). The
+    result is NOT cached so the next index run will retry."""
 
 
 @dataclass
@@ -92,6 +95,10 @@ class PipelineStats:
     def chunks_enriched_fresh(self) -> int:
         return sum(r.chunks_enriched_fresh for r in self.repos)
 
+    @property
+    def chunks_enriched_failed(self) -> int:
+        return sum(r.chunks_enriched_failed for r in self.repos)
+
 
 class Pipeline:
     """Adapter-aware walker → chunker → enricher → embedder → storage."""
@@ -106,6 +113,7 @@ class Pipeline:
         walker: WalkerStage | None = None,
         chunker: ChunkerStage | None = None,
         enricher_concurrency: int = 1,
+        enricher_batch_size: int = 1,
     ) -> None:
         """Construct the indexing pipeline.
 
@@ -123,6 +131,12 @@ class Pipeline:
                 safe for any backend; opt in via stropha.yaml's
                 ``inference.enricher_concurrency`` or ``--concurrency N``
                 CLI flag.
+            enricher_batch_size: chunks packed into a single LLM call. 1 =
+                per-chunk (legacy). N>1 multiplies effective throughput by
+                N under the same rate-limit budget. Only ``contextual``
+                implements true batching; other enrichers (noop,
+                hierarchical, graph-aware, ollama, mlx) ignore the knob and
+                stay per-chunk. Config: ``inference.enricher_batch_size``.
         """
         if not repos:
             raise ValueError("Pipeline requires at least one repo")
@@ -130,11 +144,16 @@ class Pipeline:
             raise ValueError(
                 f"enricher_concurrency must be >= 1, got {enricher_concurrency}"
             )
+        if enricher_batch_size < 1:
+            raise ValueError(
+                f"enricher_batch_size must be >= 1, got {enricher_batch_size}"
+            )
         self._storage = storage
         self._embedder = embedder
         self._enricher = enricher
         self._repos = [p.resolve() for p in repos]
         self._enricher_concurrency = enricher_concurrency
+        self._enricher_batch_size = enricher_batch_size
 
         # Pre-warm the enricher's lazy state (e.g. inference backend
         # singleton) so the first batch of N parallel enrichment calls
@@ -654,14 +673,22 @@ class Pipeline:
                 ]
                 results = self._enrich_chunks(pending_chunks, contexts)
                 # Splice results back into ``staged`` (order-preserving) and
-                # cache each result.
-                for idx, embed_text in zip(pending_embed_text_indices, results):
+                # cache each *successful* result. Failed enrichments stage
+                # raw content but skip the cache write — see ``enrich_with_status``
+                # in ``stropha.stages.enricher`` for why poisoning the cache
+                # is worse than re-attempting next run.
+                for idx, (embed_text, success) in zip(
+                    pending_embed_text_indices, results
+                ):
                     chunk = staged[idx][0]
                     staged[idx] = (chunk, embed_text)
-                    self._storage.put_enrichment(
-                        chunk.content_hash, enricher_id, embed_text
-                    )
-                    stats.chunks_enriched_fresh += 1
+                    if success:
+                        self._storage.put_enrichment(
+                            chunk.content_hash, enricher_id, embed_text
+                        )
+                        stats.chunks_enriched_fresh += 1
+                    else:
+                        stats.chunks_enriched_failed += 1
 
             # Drain ``staged`` into the embedder batch (order-preserving).
             for chunk, embed_text in staged:
@@ -703,8 +730,17 @@ class Pipeline:
         self,
         chunks: Sequence[Chunk],
         contexts: Sequence[StageContext],
-    ) -> list[str]:
-        """Run the enricher on ``chunks`` and return embed_text in input order.
+    ) -> list[tuple[str, bool]]:
+        """Run the enricher on ``chunks`` and return ``(embed_text, success)``
+        in input order.
+
+        The ``success`` bit is provided by
+        :func:`stropha.stages.enricher.enrich_with_status`, which dispatches
+        to ``enricher.enrich_with_status`` when the adapter implements it,
+        otherwise wraps ``enricher.enrich`` and assumes success. Adapters
+        that can fail gracefully (LLM-backed) MUST override
+        ``enrich_with_status`` so the pipeline can skip caching failed
+        results.
 
         Switches between serial and ThreadPool execution based on
         ``self._enricher_concurrency`` (default 1 = serial). The function
@@ -733,12 +769,26 @@ class Pipeline:
                 "must have the same length"
             )
 
+        # Import lazily to avoid a circular import (stages.enricher imports
+        # pipeline.base, pipeline.base is sibling of pipeline.pipeline).
+        from ..stages.enricher import enrich_batch_with_status, enrich_with_status
+
+        # Decide whether to batch. The adapter must expose ``enrich_batch``
+        # AND the configured batch size must be > 1. Other enrichers stay
+        # per-chunk regardless of the knob.
+        adapter_supports_batch = callable(getattr(self._enricher, "enrich_batch", None))
+        batch_size = self._enricher_batch_size if adapter_supports_batch else 1
+
+        if batch_size > 1 and len(chunks) > 1:
+            return self._enrich_chunks_batched(chunks, contexts, batch_size)
+
+        # Per-chunk path (legacy default).
         # Serial path: same behaviour as before, no thread overhead. Also
         # the right choice when there's only 1 chunk pending — a worker
         # pool for a single task is wasteful.
         if self._enricher_concurrency <= 1 or len(chunks) <= 1:
             return [
-                self._enricher.enrich(chunk, ctx)
+                enrich_with_status(self._enricher, chunk, ctx)
                 for chunk, ctx in zip(chunks, contexts)
             ]
 
@@ -758,7 +808,71 @@ class Pipeline:
         ) as executor:
             return list(
                 executor.map(
-                    lambda pair: self._enricher.enrich(pair[0], pair[1]),
+                    lambda pair: enrich_with_status(
+                        self._enricher, pair[0], pair[1]
+                    ),
                     zip(chunks, contexts, strict=True),
                 )
             )
+
+    def _enrich_chunks_batched(
+        self,
+        chunks: Sequence[Chunk],
+        contexts: Sequence[StageContext],
+        batch_size: int,
+    ) -> list[tuple[str, bool]]:
+        """Split ``chunks`` into ``batch_size`` groups and dispatch each as
+        one ``enricher.enrich_batch`` call.
+
+        Combines with ``enricher_concurrency``: each batch is one LLM call
+        (e.g. 10 chunks → 1 request), and the ThreadPool runs up to
+        ``concurrency`` batches in parallel (e.g. 8 batches × 10 chunks =
+        80 chunks per round-trip cycle). Order is preserved across batches.
+        """
+        from ..stages.enricher import enrich_batch_with_status
+
+        # Slice chunks/contexts into batches of size ``batch_size``. The
+        # last batch may be smaller; the enricher handles N<batch_size fine.
+        batches: list[tuple[Sequence[Chunk], Sequence[StageContext]]] = []
+        for start in range(0, len(chunks), batch_size):
+            end = start + batch_size
+            batches.append((chunks[start:end], contexts[start:end]))
+
+        log.debug(
+            "pipeline.enricher_batched",
+            batches=len(batches),
+            batch_size=batch_size,
+            total_chunks=len(chunks),
+            concurrency=self._enricher_concurrency,
+        )
+
+        # Serial dispatch (concurrency=1 OR a single batch).
+        if self._enricher_concurrency <= 1 or len(batches) <= 1:
+            results: list[tuple[str, bool]] = []
+            for batch_chunks, batch_contexts in batches:
+                results.extend(
+                    enrich_batch_with_status(
+                        self._enricher, batch_chunks, batch_contexts
+                    )
+                )
+            return results
+
+        # Parallel dispatch: ThreadPool runs up to ``concurrency`` batches
+        # at once. Each worker holds a small slice of chunks, so the GIL
+        # is released on the network call and the executor.map() output
+        # preserves batch order (and therefore chunk order).
+        max_workers = min(self._enricher_concurrency, len(batches))
+        with ThreadPoolExecutor(
+            max_workers=max_workers,
+            thread_name_prefix="stropha-enrich-batch",
+        ) as executor:
+            batch_results = list(
+                executor.map(
+                    lambda pair: enrich_batch_with_status(
+                        self._enricher, pair[0], pair[1]
+                    ),
+                    batches,
+                )
+            )
+        # Flatten while keeping order.
+        return [item for batch_result in batch_results for item in batch_result]

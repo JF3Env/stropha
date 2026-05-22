@@ -59,6 +59,34 @@ def _format_size(num_bytes: int) -> str:
     return f"{size:.1f} {units[idx]}"
 
 
+def _add_batch_row(table, batch_size: int, enricher_name: str) -> None:
+    """Add the ``batch size`` row to the inference panel.
+
+    Only the ``contextual`` enricher implements batching today. For other
+    enrichers we surface the configured value with a note that the knob is
+    inactive — so the user is not confused about why throughput hasn't
+    changed when they bumped the setting against e.g. the ``ollama`` enricher.
+    """
+    if enricher_name == "contextual" and batch_size > 1:
+        # Effective throughput multiplier under the same rate budget.
+        table.add_row(
+            "  batch size",
+            f"[green]{batch_size}[/green] chunks/request  "
+            f"[dim](×{batch_size} throughput vs per-chunk)[/dim]",
+        )
+    elif batch_size > 1:
+        table.add_row(
+            "  batch size",
+            f"[dim]{batch_size} (configured)[/dim]  "
+            f"[yellow]ignored — {enricher_name} enricher has no batch support[/yellow]",
+        )
+    else:
+        table.add_row(
+            "  batch size",
+            "1  [dim](per-chunk request)[/dim]",
+        )
+
+
 def _print_index_summary(
     cfg: Config,
     built,
@@ -68,6 +96,7 @@ def _print_index_summary(
     rebuild: bool,
     vacuum: bool,
     enricher_concurrency: int = 1,
+    enricher_batch_size: int = 1,
 ) -> None:
     """Print a consolidated configuration table at the start of `stropha index`.
 
@@ -184,6 +213,36 @@ def _print_index_summary(
                 f"[{concurrency_color}]{enricher_concurrency}[/{concurrency_color}] "
                 f"in-flight  [dim]({concurrency_hint})[/dim]",
             )
+            _add_batch_row(table, enricher_batch_size, built.enricher.adapter_name)
+        elif backend == "anthropic":
+            table.add_row(
+                "Backend",
+                f"[magenta]anthropic[/magenta] [dim](cloud)[/dim]  →  "
+                f"{cfg.inference.anthropic_model}",
+            )
+            table.add_row("  endpoint", cfg.inference.anthropic_base_url)
+            api_key_set = bool(cfg.secrets.has_anthropic)
+            table.add_row(
+                "  api key",
+                "[green]set[/green]" if api_key_set else "[red]MISSING[/red] — set ANTHROPIC_API_KEY",
+            )
+            table.add_row(
+                "  resilience",
+                f"timeout={cfg.inference.anthropic_timeout:.0f}s · "
+                f"retries={cfg.inference.anthropic_max_retries} (exp backoff)",
+            )
+            concurrency_color = (
+                "green" if enricher_concurrency > 1 else "yellow"
+            )
+            concurrency_hint = (
+                "parallel" if enricher_concurrency > 1 else "serial — slow for cloud"
+            )
+            table.add_row(
+                "  concurrency",
+                f"[{concurrency_color}]{enricher_concurrency}[/{concurrency_color}] "
+                f"in-flight  [dim]({concurrency_hint})[/dim]",
+            )
+            _add_batch_row(table, enricher_batch_size, built.enricher.adapter_name)
         elif backend == "mlx":
             table.add_row(
                 "Backend",
@@ -345,6 +404,18 @@ def index(
             "raise if you have higher rate limits."
         ),
     ),
+    batch_size: int | None = typer.Option(
+        None,
+        "--batch-size", "-b",
+        help=(
+            "Chunks packed into a single LLM call. Overrides "
+            "inference.enricher_batch_size from stropha.yaml. 1 = "
+            "per-chunk (legacy). N>1 multiplies effective throughput by "
+            "N under the same rate-limit budget. Only the `contextual` "
+            "enricher implements batching today; other enrichers ignore "
+            "this flag. Suggested: 10 for Anthropic / DeepSeek / OpenAI."
+        ),
+    ),
 ) -> None:
     """Walk one or more repos, chunk every file, enrich, embed, and store."""
     cfg = _load_config()
@@ -403,10 +474,14 @@ def index(
         mode = "auto"
 
     # Print the consolidated config summary right before the index loop starts.
-    # Resolve enricher concurrency: CLI flag wins over YAML.
+    # Resolve enricher concurrency + batch size: CLI flag wins over YAML.
     effective_concurrency = (
         concurrency if concurrency is not None
         else cfg.inference.enricher_concurrency
+    )
+    effective_batch_size = (
+        batch_size if batch_size is not None
+        else cfg.inference.enricher_batch_size
     )
 
     # Everything resolved above (target repos, adapter ids from build_stages,
@@ -416,6 +491,7 @@ def index(
         cfg, built, targets, mode,
         rebuild=rebuild, vacuum=vacuum,
         enricher_concurrency=effective_concurrency,
+        enricher_batch_size=effective_batch_size,
     )
 
     try:
@@ -428,6 +504,7 @@ def index(
                 chunker=built.chunker,
                 repos=targets,
                 enricher_concurrency=effective_concurrency,
+                enricher_batch_size=effective_batch_size,
             )
             stats = pipeline.run(rebuild=rebuild, mode=mode, since_sha=since)
             if vacuum:

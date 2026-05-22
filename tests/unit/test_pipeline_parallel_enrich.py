@@ -110,7 +110,9 @@ def test_parallel_enrichment_preserves_order():
 
     results = pipe._enrich_chunks(chunks, contexts)
 
-    expected = [f"enriched({c.chunk_id})" for c in chunks]
+    # _enrich_chunks now returns list[tuple[str, bool]] — legacy enrichers
+    # without enrich_with_status default to success=True.
+    expected = [(f"enriched({c.chunk_id})", True) for c in chunks]
     assert results == expected
 
 
@@ -162,7 +164,7 @@ def test_single_chunk_skips_thread_pool():
 
     results = pipe._enrich_chunks(chunks, contexts)
 
-    assert results == ["enriched(only)"]
+    assert results == [("enriched(only)", True)]
     # The one call should be on the main thread (no pool spawned).
     import threading
     main_tid = threading.get_ident()
@@ -225,3 +227,245 @@ def test_enricher_exceptions_propagate():
 
     with pytest.raises(RuntimeError, match="boom on"):
         pipe._enrich_chunks(chunks, contexts)
+
+
+# ---------------------------------------------------------------------------
+# Fix 2: enrich_with_status — failed enrichments must NOT poison the cache
+# ---------------------------------------------------------------------------
+
+
+class _FailingEnricher:
+    """Enricher whose ``enrich_with_status`` reports failure for chunks
+    whose id contains ``'fail'``. Models the contextual enricher under
+    rate limit: returns raw content + success=False so the pipeline knows
+    not to cache the result."""
+
+    adapter_id = "failing:v1"
+    stage_name = "enricher"
+    adapter_name = "failing"
+
+    @property
+    def config_schema(self):  # pragma: no cover
+        from pydantic import BaseModel
+        class _C(BaseModel):
+            pass
+        return _C
+
+    def health(self):
+        return StageHealth(status="ready", message="ok")
+
+    def enrich(self, chunk, ctx):
+        return self.enrich_with_status(chunk, ctx)[0]
+
+    def enrich_with_status(self, chunk, ctx):
+        if "fail" in chunk.chunk_id:
+            # Simulate LLM call returning None → fallback to raw content.
+            return chunk.content, False
+        return f"enriched({chunk.chunk_id})", True
+
+
+def test_enrich_with_status_surfaces_failure_bit():
+    """The serial path returns (text, success) tuples — success must reflect
+    the enricher's signal, not always True."""
+    pipe = Pipeline.__new__(Pipeline)
+    pipe._enricher = _FailingEnricher()
+    pipe._enricher_concurrency = 1
+
+    chunks = [_make_chunk("ok-1"), _make_chunk("fail-2"), _make_chunk("ok-3")]
+    contexts = [StageContext(repo_key="test") for _ in chunks]
+
+    results = pipe._enrich_chunks(chunks, contexts)
+
+    assert results == [
+        ("enriched(ok-1)", True),
+        ("code-fail-2", False),  # raw content, success=False
+        ("enriched(ok-3)", True),
+    ]
+
+
+def test_enrich_with_status_parallel_path_preserves_status():
+    """The ThreadPool path must also propagate the success bit per chunk."""
+    pipe = Pipeline.__new__(Pipeline)
+    pipe._enricher = _FailingEnricher()
+    pipe._enricher_concurrency = 4
+
+    chunks = [_make_chunk(f"{'fail' if i % 2 else 'ok'}-{i}") for i in range(6)]
+    contexts = [StageContext(repo_key="test") for _ in chunks]
+
+    results = pipe._enrich_chunks(chunks, contexts)
+
+    statuses = [success for _, success in results]
+    assert statuses == [True, False, True, False, True, False]
+
+
+def test_legacy_enricher_without_enrich_with_status_defaults_to_true():
+    """Enrichers that only implement ``enrich`` (noop, hierarchical) MUST
+    keep working — the helper defaults success=True for them."""
+    pipe, _ = _make_pipeline_shell(concurrency=1, latency_s=0.0)
+    chunks = [_make_chunk("c1"), _make_chunk("c2")]
+    contexts = [StageContext(repo_key="test") for _ in chunks]
+
+    results = pipe._enrich_chunks(chunks, contexts)
+
+    assert results == [("enriched(c1)", True), ("enriched(c2)", True)]
+
+
+# ---------------------------------------------------------------------------
+# Fix 3: batched dispatch
+# ---------------------------------------------------------------------------
+
+
+class _BatchingEnricher:
+    """Enricher that implements ``enrich_batch`` and records call sizes
+    so tests can verify the pipeline split chunks into the right batches."""
+
+    adapter_id = "batching:v1"
+    stage_name = "enricher"
+    adapter_name = "batching"
+
+    def __init__(self) -> None:
+        self.batch_sizes: list[int] = []
+        self.total_calls = 0
+
+    @property
+    def config_schema(self):  # pragma: no cover
+        from pydantic import BaseModel
+        class _C(BaseModel):
+            pass
+        return _C
+
+    def health(self):
+        return StageHealth(status="ready", message="ok")
+
+    def enrich(self, chunk, ctx):
+        return f"single({chunk.chunk_id})"
+
+    def enrich_with_status(self, chunk, ctx):
+        return f"single({chunk.chunk_id})", True
+
+    def enrich_batch(self, chunks, contexts):
+        self.batch_sizes.append(len(chunks))
+        self.total_calls += 1
+        return [(f"batched({c.chunk_id})", True) for c in chunks]
+
+
+def test_pipeline_uses_enrich_batch_when_batch_size_gt_one():
+    """batch_size=10 + 10 chunks → 1 call to enrich_batch with all 10."""
+    enricher = _BatchingEnricher()
+    pipe = Pipeline.__new__(Pipeline)
+    pipe._enricher = enricher
+    pipe._enricher_concurrency = 1
+    pipe._enricher_batch_size = 10
+
+    chunks = [_make_chunk(f"c{i}") for i in range(10)]
+    contexts = [StageContext(repo_key="test") for _ in chunks]
+
+    results = pipe._enrich_chunks(chunks, contexts)
+
+    assert enricher.total_calls == 1
+    assert enricher.batch_sizes == [10]
+    assert all(text.startswith("batched(") for text, _ in results)
+    assert len(results) == 10
+
+
+def test_pipeline_splits_into_batches_of_size_n():
+    """25 chunks with batch_size=10 → 3 calls (10 + 10 + 5)."""
+    enricher = _BatchingEnricher()
+    pipe = Pipeline.__new__(Pipeline)
+    pipe._enricher = enricher
+    pipe._enricher_concurrency = 1
+    pipe._enricher_batch_size = 10
+
+    chunks = [_make_chunk(f"c{i}") for i in range(25)]
+    contexts = [StageContext(repo_key="test") for _ in chunks]
+
+    results = pipe._enrich_chunks(chunks, contexts)
+
+    assert enricher.batch_sizes == [10, 10, 5]
+    assert len(results) == 25
+    # Order preservation across batches.
+    assert results[0][0] == "batched(c0)"
+    assert results[12][0] == "batched(c12)"
+    assert results[24][0] == "batched(c24)"
+
+
+def test_pipeline_batch_path_respects_concurrency():
+    """3 batches × concurrency=2 → at least 2 batches run in parallel."""
+    import threading
+
+    enricher = _BatchingEnricher()
+
+    # Patch enrich_batch to record thread ids so we can verify parallelism.
+    seen_threads: set[int] = set()
+    lock = threading.Lock()
+
+    def slow_enrich_batch(chunks, contexts):
+        import time as _t
+        _t.sleep(0.05)
+        with lock:
+            seen_threads.add(threading.get_ident())
+        return [(f"batched({c.chunk_id})", True) for c in chunks]
+
+    enricher.enrich_batch = slow_enrich_batch  # type: ignore[method-assign]
+
+    pipe = Pipeline.__new__(Pipeline)
+    pipe._enricher = enricher
+    pipe._enricher_concurrency = 2
+    pipe._enricher_batch_size = 5
+
+    chunks = [_make_chunk(f"c{i}") for i in range(15)]  # 3 batches of 5
+    contexts = [StageContext(repo_key="test") for _ in chunks]
+
+    pipe._enrich_chunks(chunks, contexts)
+
+    assert len(seen_threads) >= 2
+
+
+def test_pipeline_batch_size_one_uses_per_chunk_path():
+    """batch_size=1 must NOT call enrich_batch — legacy per-chunk path."""
+    enricher = _BatchingEnricher()
+    pipe = Pipeline.__new__(Pipeline)
+    pipe._enricher = enricher
+    pipe._enricher_concurrency = 1
+    pipe._enricher_batch_size = 1
+
+    chunks = [_make_chunk(f"c{i}") for i in range(3)]
+    contexts = [StageContext(repo_key="test") for _ in chunks]
+
+    results = pipe._enrich_chunks(chunks, contexts)
+
+    assert enricher.total_calls == 0  # enrich_batch never called
+    assert all(text.startswith("single(") for text, _ in results)
+
+
+def test_pipeline_adapter_without_enrich_batch_falls_back():
+    """Even with batch_size=10, an enricher without enrich_batch goes per-chunk."""
+    pipe, sleepy = _make_pipeline_shell(concurrency=1, latency_s=0.0)
+    pipe._enricher_batch_size = 10  # configured but adapter doesn't support
+
+    chunks = [_make_chunk(f"c{i}") for i in range(5)]
+    contexts = [StageContext(repo_key="test") for _ in chunks]
+
+    results = pipe._enrich_chunks(chunks, contexts)
+
+    # Falls back to the per-chunk dispatch — one call per chunk.
+    assert len(sleepy.calls) == 5
+    assert results == [(f"enriched(c{i})", True) for i in range(5)]
+
+
+def test_pipeline_init_rejects_invalid_batch_size():
+    """batch_size < 1 is a config error caught at Pipeline.__init__."""
+    from unittest.mock import MagicMock
+
+    storage = MagicMock()
+    embedder = MagicMock(batch_size=64, dim=512, model_name="m")
+    enricher = MagicMock()
+
+    with pytest.raises(ValueError, match="enricher_batch_size must be >= 1"):
+        Pipeline(
+            storage=storage,
+            embedder=embedder,
+            enricher=enricher,
+            repos=[__import__("pathlib").Path("/tmp")],
+            enricher_batch_size=0,
+        )

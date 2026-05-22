@@ -121,6 +121,15 @@ def is_deepseek_available() -> bool:
     return get_config().secrets.has_deepseek
 
 
+def is_anthropic_available() -> bool:
+    """Cheap availability probe for Anthropic.
+
+    Only checks that ``ANTHROPIC_API_KEY`` is set — mirrors the
+    DeepSeek policy: never auto-probe a cloud endpoint at startup.
+    """
+    return get_config().secrets.has_anthropic
+
+
 def get_backend(prefer: str | None = None) -> InferenceBackend:
     """Get the best available inference backend.
 
@@ -134,10 +143,11 @@ def get_backend(prefer: str | None = None) -> InferenceBackend:
 
     The backend is cached globally for reuse.
 
-    Auto-detection NEVER selects ``deepseek`` — it's a cloud backend
-    and must be opted into explicitly via ``inference.backend:
-    deepseek`` in ``stropha.yaml`` (or ``prefer='deepseek'``). This
-    preserves the ``CLAUDE.md`` §3.6 local-only-by-default invariant.
+    Auto-detection NEVER selects ``deepseek`` or ``anthropic`` — both
+    are cloud backends and must be opted into explicitly via
+    ``inference.backend: deepseek|anthropic`` in ``stropha.yaml`` (or
+    ``prefer='deepseek'|'anthropic'``). This preserves the
+    ``CLAUDE.md`` §3.6 local-only-by-default invariant.
     """
     global _BACKEND
 
@@ -152,6 +162,7 @@ def get_backend(prefer: str | None = None) -> InferenceBackend:
         if prefer is None or _BACKEND.name == prefer:
             return _BACKEND
 
+    from .anthropic_backend import AnthropicBackend
     from .deepseek_backend import DeepSeekBackend
     from .mlx_backend import MlxBackend
     from .ollama_backend import OllamaBackend
@@ -192,8 +203,21 @@ def get_backend(prefer: str | None = None) -> InferenceBackend:
         _BACKEND = backend
         return _BACKEND
 
-    # Auto-detect: prefer MLX (faster, more efficient). DeepSeek is
-    # NEVER auto-selected — see docstring.
+    if prefer == "anthropic":
+        backend = AnthropicBackend()
+        if backend.is_available:
+            _BACKEND = backend
+            log.info("inference.backend_selected", backend="anthropic")
+            return _BACKEND
+        # Same policy as DeepSeek: never silently fall back when the
+        # user explicitly asked for Anthropic. Cache so health_check
+        # reports actionable guidance.
+        log.warning("inference.anthropic_no_api_key")
+        _BACKEND = backend
+        return _BACKEND
+
+    # Auto-detect: prefer MLX (faster, more efficient). DeepSeek and
+    # Anthropic are NEVER auto-selected — see docstring.
     if is_mlx_available():
         _BACKEND = MlxBackend()
         log.info("inference.backend_auto_selected", backend="mlx")

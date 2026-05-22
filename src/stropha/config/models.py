@@ -73,12 +73,13 @@ class RetrievalFeatures:
 class InferenceConfig:
     """LLM inference backend configuration (YAML: ``inference``).
 
-    The ``deepseek_*`` fields are opt-in cloud knobs — the backend is
-    only selected when ``backend == "deepseek"``. The API key lives in
-    :class:`SecretsConfig` (ENV only, never YAML).
+    The ``deepseek_*`` and ``anthropic_*`` fields are opt-in cloud knobs
+    — the backend is only selected when ``backend == "deepseek"`` or
+    ``"anthropic"``. The API keys live in :class:`SecretsConfig`
+    (ENV only, never YAML).
     """
 
-    backend: str | None = None  # "mlx", "ollama", "deepseek", or None for auto-detect
+    backend: str | None = None  # "mlx", "ollama", "deepseek", "anthropic", or None for auto-detect
     mlx_model: str = "mlx-community/Qwen2.5-Coder-1.5B-Instruct-4bit"
     ollama_model: str = "qwen2.5-coder:1.5b"
     ollama_host: str = "http://localhost:11434"
@@ -92,6 +93,19 @@ class InferenceConfig:
     # exponential backoff (1s, 2s, 4s). HTTP 4xx (bad key, bad request,
     # rate limit) is permanent and short-circuits without retry.
     deepseek_max_retries: int = 2
+    # Anthropic Messages API (https://api.anthropic.com/v1/messages).
+    # Default is claude-haiku-4-5 — fast + cheap, good fit for the
+    # contextual enricher's per-chunk pattern (thousands of short calls).
+    # Use claude-sonnet-4-5 or claude-opus-4-7 for higher quality at higher cost.
+    anthropic_model: str = "claude-haiku-4-5"
+    anthropic_base_url: str = "https://api.anthropic.com/v1"
+    # Anthropic's US endpoint is fast — 60s is plenty for the Messages API,
+    # which streams responses internally. Match DeepSeek's retry policy.
+    anthropic_timeout: float = 60.0
+    anthropic_max_retries: int = 2
+    # Anthropic-Version header (required by the API). Pinned to the
+    # last GA version; bump when Anthropic releases a new stable.
+    anthropic_version: str = "2023-06-01"
     # Concurrent in-flight LLM requests during indexing. 1 = serial
     # (legacy behaviour, no thread overhead). 8 is a good default for
     # cloud backends (DeepSeek / OpenAI / Anthropic) — each chunk waits
@@ -99,6 +113,17 @@ class InferenceConfig:
     # tripping rate limits at the basic-tier 60 req/min. Local backends
     # (mlx, ollama) saturate a single GPU regardless — keep at 1.
     enricher_concurrency: int = 1
+    # Chunks packed into a single LLM call. 1 = legacy per-chunk requests
+    # (one Messages API call per chunk). N>1 makes the contextual enricher
+    # pack N chunks into one structured-JSON prompt — the model returns an
+    # array of descriptions in one round-trip. Multiplies effective
+    # throughput by N under the same rate limit (50 req/min Anthropic →
+    # 50*N chunks/min). Same token cost (Anthropic bills per token, not
+    # per request). Other enrichers (noop, hierarchical, …) ignore this
+    # knob and stay per-chunk.
+    # Suggested: 1 for local backends (mlx, ollama — single GPU); 10 for
+    # cloud (Anthropic, DeepSeek, OpenAI).
+    enricher_batch_size: int = 1
 
 
 # ---------------------------------------------------------------------------
@@ -160,6 +185,10 @@ class SecretsConfig:
     @property
     def has_deepseek(self) -> bool:
         return bool(self.deepseek_api_key and self.deepseek_api_key.strip())
+
+    @property
+    def has_anthropic(self) -> bool:
+        return bool(self.anthropic_api_key and self.anthropic_api_key.strip())
 
 
 # ---------------------------------------------------------------------------

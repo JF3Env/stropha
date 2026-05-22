@@ -9,7 +9,7 @@ Operational guide for LLM coding agents (Claude Code, OpenCode, etc.) working on
 3. **Use the RAG before reading files.** The MCP tools `mcp_Stropha_search_code`, `mcp_Stropha_get_symbol`, `mcp_Stropha_get_file_outline` answer 90% of "where is X?" questions cheaper than a `Read`.
 4. **The hook auto-refreshes on commit.** `.git/hooks/post-commit` v=3 runs `graphify update` → `stropha index` in detached background after every commit. Do NOT manually run `stropha index` unless you are debugging the hook itself. Logs: `~/.cache/stropha-hook.log`.
 5. **Before editing code, check §3 invariants.** Drift detection, schema migration discipline, and the local-only policy are non-negotiable.
-6. **After editing code:** `uv run pytest -q` MUST stay green (429 tests at last bump). The hook regenerates the graph; you don't have to.
+6. **After editing code:** `uv run pytest -q` MUST stay green (920 tests at last bump). The hook regenerates the graph; you don't have to.
 
 For the public pitch + install instructions, see `README.md`. For design rationale, see the specs in `docs/architecture/`.
 
@@ -41,7 +41,7 @@ All migrations are forward-only and idempotent (`_add_column_if_missing` + `CREA
 
 **Multi-repo graphify support (v7)**: Multiple repos with their own `graphify-out/graph.json` can share a single stropha index. Node IDs are prefixed with `{repo_id}:` to avoid collisions (e.g., repo_id=3, node "FooClass" becomes "3:FooClass"). Graph tools (find_callers, find_related, etc.) work cross-repo by default. The GraphifyLoader tracks per-repo staleness via `graph_meta` keys like `last_loaded_mtime:3`.
 
-### 2.2 MCP tools (12) — server name `stropha_rag`
+### 2.2 MCP tools (13) — server name `stropha_rag`
 
 | Tool | Purpose | Graph required |
 |---|---|---|
@@ -126,7 +126,7 @@ retrieval_features:
 
 # LLM inference backend
 inference:
-  backend: null                 # "mlx", "ollama", "deepseek", or null for auto-detect
+  backend: null                 # "mlx", "ollama", "deepseek", "anthropic", or null for auto-detect
   mlx_model: mlx-community/Qwen2.5-Coder-1.5B-Instruct-4bit
   ollama_model: qwen2.5-coder:1.5b
   ollama_host: http://localhost:11434  # Also reads OLLAMA_HOST env
@@ -135,6 +135,15 @@ inference:
   # set `backend: deepseek` explicitly to use it.
   deepseek_model: deepseek-chat       # or deepseek-reasoner
   deepseek_base_url: https://api.deepseek.com/v1  # also reads DEEPSEEK_BASE_URL env
+  # Anthropic (cloud, opt-in — requires ANTHROPIC_API_KEY env var).
+  # Same local-first invariant: never auto-selected. Set `backend: anthropic` explicitly.
+  # Default model claude-haiku-4-5 is fast + cheap (good for per-chunk enrichment).
+  anthropic_model: claude-haiku-4-5   # or claude-sonnet-4-5, claude-opus-4-7
+  anthropic_base_url: https://api.anthropic.com/v1
+  anthropic_version: "2023-06-01"     # Anthropic-Version header (pinned to last GA)
+  # Indexing-time throughput controls (Phase 5):
+  enricher_concurrency: 1             # in-flight LLM requests (ThreadPool, default 1=serial)
+  enricher_batch_size: 1              # chunks packed per LLM call (default 1=per-chunk; only `contextual` enricher implements batching)
 
 # Graph integration
 graph:
@@ -153,6 +162,8 @@ graph:
 | `OLLAMA_HOST` | `http://localhost:11434` | Ollama daemon (kept for ecosystem compat) |
 | `DEEPSEEK_API_KEY` | unset | Required when `inference.backend: deepseek` |
 | `DEEPSEEK_BASE_URL` | `https://api.deepseek.com/v1` | Override for proxies / self-hosted gateways |
+| `ANTHROPIC_API_KEY` | unset | Required when `inference.backend: anthropic` |
+| `ANTHROPIC_BASE_URL` | `https://api.anthropic.com/v1` | Override for proxies / self-hosted gateways |
 | `STROPHA_GRAPHIFY_OUT` | `<repo>/graphify-out` | Override path to graphify output |
 | `STROPHA_HOOK_SKIP=1` | unset | Bypass the post-commit hook |
 | `STROPHA_HOOK_TIMEOUT` | `600` | Hook bg-process wall-clock (seconds) |
@@ -378,7 +389,15 @@ Pipeline-adapters Phase 5 (in progress, local-only focus):
 - [x] `walker/nested-git` — discovers nested `.git/` directories under
       an umbrella root for monorepos / vendored deps. Output rebased to
       the umbrella root. 13 walker tests.
-- [ ] `enricher/anthropic`, `enricher/openai` (cloud — skipped per local-only directive).
+- [x] `inference/anthropic_backend` — Anthropic Messages API backend.
+      Opt-in (never auto-selected per CLAUDE.md §3.6). Used transparently
+      by the existing `contextual` enricher / HyDE / query rewrite when
+      `inference.backend: anthropic` is set. Default model
+      `claude-haiku-4-5` (fast + cheap for per-chunk enrichment).
+      34 mocked tests cover success, multi-block responses, 4xx vs 5xx
+      retry policy, exponential backoff, malformed JSON, x-api-key
+      header, and graceful fallback when ANTHROPIC_API_KEY is missing.
+- [ ] `enricher/openai` (cloud — skipped per local-only directive).
 - [ ] Storage variants (`qdrant`, `pgvector`, `lancedb`).
 - [ ] Retrieval `hybrid-rrf-rerank` (Voyage rerank-2.5 — cloud, skipped).
 
@@ -450,8 +469,44 @@ Incremental indexing (Phase A/B/C):
       chunk_id + FTS5 rows. Zero re-embed cost for renames.
 - [x] **GraphifyLoader diff-load** — deltas only, not full DELETE+INSERT.
 
-**Total suite: 383 tests, all green. 5 enrichers, 4 retrieval streams,
-4 walkers, 3 embedders, 11 MCP tools, 8 CLI commands.**
+Anthropic 429 / batched enrichment (rate-limit hardening):
+- [x] **Fix 1 — 429 retry with retry-after** —
+      `AnthropicBackend.generate` no longer treats HTTP 429 as permanent.
+      Reads the `retry-after` header (RFC 7231 seconds form), capped at
+      60s to defeat misconfigured proxies. Falls back to exponential
+      backoff when the header is absent. Other 4xx (401, 400, …) remain
+      permanent. The previous TODO comment that admitted "treating it
+      as permanent" is gone. Reference:
+      `src/stropha/inference/anthropic_backend.py::generate`.
+- [x] **Fix 2 — failed enrichments don't poison the cache** —
+      `ContextualEnricher.enrich_with_status(chunk, ctx) -> tuple[str,
+      bool]` returns `success=False` when the LLM call comes back empty.
+      Helper
+      `stropha.stages.enricher.enrich_with_status(enricher, chunk, ctx)`
+      dispatches to the override when present, defaults to `True` for
+      legacy enrichers (noop, hierarchical, graph-aware) which never
+      fail. `Pipeline._enrich_chunks` returns `list[tuple[str, bool]]`;
+      the call site skips `Storage.put_enrichment` when success=False,
+      so the chunk is re-attempted on the next index run instead of
+      being cached as "already enriched". New stat counter
+      `RepoStats.chunks_enriched_failed`.
+- [x] **Fix 3 — batched enrichment** —
+      `ContextualEnricher.enrich_batch(chunks, contexts)` packs N chunks
+      into a single Messages API call by asking the model to return a
+      JSON array of descriptions (one per chunk, ID-matched). Tolerates
+      markdown fences, trailing commas, partial responses, and
+      hallucinated extra IDs — every failure mode falls back to
+      per-chunk `(content, False)` so Fix 2's cache-skip logic keeps
+      retries on the table. Combines with `enricher_concurrency`: N
+      parallel batches of M chunks = N×M chunks per round-trip cycle.
+      Knobs: `inference.enricher_batch_size: int = 1` (YAML) /
+      `--batch-size N` (CLI). The pipeline auto-falls back to per-chunk
+      dispatch for enrichers without `enrich_batch` (noop, hierarchical,
+      ollama, mlx, graph-aware).
+
+**Total suite: 920 tests, all green. 5 enrichers, 4 retrieval streams,
+4 walkers, 3 embedders, 4 inference backends (mlx, ollama, deepseek, anthropic),
+12 MCP tools, 8 CLI commands.**
 
 ### Exit criteria status
 
@@ -461,7 +516,7 @@ Incremental indexing (Phase A/B/C):
 
 ### Pending work (curated, local-only)
 
-> Cloud-only items (Voyage rerank-2.5, anthropic / openai enrichers, qdrant / pgvector, Web UI, OAuth) are explicitly deferred per the local-only directive.
+> Cloud-only items (Voyage rerank-2.5, openai backend, qdrant / pgvector, Web UI, OAuth) are explicitly deferred per the local-only directive. **Anthropic** is shipped as an opt-in inference backend (see Phase 5 above) — usable transparently by the existing `contextual` enricher when `inference.backend: anthropic` is set.
 
 #### Retrieval Quality Roadmap (State-of-the-Art)
 
@@ -662,7 +717,7 @@ Every adapter writes `(embedding_model, embedding_dim)` into each chunk row. Swi
 ## Testing
 
 ```bash
-uv run pytest -q                 # 429 unit tests, ~5s
+uv run pytest -q                 # 920 unit tests, ~16s
 uv run pytest -m e2e             # end-to-end (skipped by default; needs fixture)
 uv run pytest --collect-only -q  # full inventory by test id
 
