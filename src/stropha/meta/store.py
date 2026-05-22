@@ -374,6 +374,41 @@ class ArtifactStore:
             ) from exc
         log.info("artifactstore.scores", id=candidate_id, fields=sorted(scores))
 
+    def write_gate_result(
+        self,
+        candidate_id: str,
+        result: dict[str, Any] | Any,
+    ) -> None:
+        """Persist a pytest-gate outcome under ``candidates/<id>/gate.json``.
+
+        WIN-197 (Phase 5 code search). ``result`` is either a plain
+        JSON-serialisable dict or any object with a ``to_dict()`` method
+        (the :class:`stropha.meta.gate.GateResult` dataclass). The store
+        does not import the gate module — duck-typed to keep the
+        dependency direction loop → gate, not the reverse.
+        """
+        cand_dir = self._require_dir(candidate_id)
+        payload = (
+            result.to_dict()
+            if hasattr(result, "to_dict")
+            else dict(result)
+        )
+        try:
+            (cand_dir / "gate.json").write_text(
+                json.dumps(payload, indent=2, sort_keys=True),
+                encoding="utf-8",
+            )
+        except (OSError, TypeError) as exc:
+            raise ArtifactStoreError(
+                f"failed to write gate result for {candidate_id!r}: {exc}"
+            ) from exc
+        log.info(
+            "artifactstore.gate",
+            id=candidate_id,
+            passed=payload.get("passed"),
+            skipped=payload.get("skipped"),
+        )
+
     # ------------------------------------------------------------------ #
     # Reads                                                              #
     # ------------------------------------------------------------------ #

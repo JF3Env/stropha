@@ -56,6 +56,13 @@ ProposerFn = Callable[
 # Evaluator signature: takes a config dict and returns a ScoreCard.
 EvaluatorFn = Callable[[dict[str, Any]], ScoreCard]
 
+# Gate signature (WIN-197). Takes the candidate's on-disk directory and
+# returns an object that exposes ``passed: bool`` and optionally a
+# ``to_dict()`` method for persistence. The loop never imports the gate
+# implementation directly — duck-typed so a future alternative gate
+# (e.g. ``mypy`` gate, ``ruff`` gate) plugs in without a code change here.
+GateFn = Callable[[Path], Any]
+
 
 @dataclass
 class LoopResult:
@@ -92,6 +99,7 @@ def run_loop(
     wall_clock_s: float | None = None,
     max_iterations: int | None = None,
     on_iteration: Callable[[int, CandidateRecord, ScoreCard], None] | None = None,
+    gate: GateFn | None = None,
 ) -> LoopResult:
     """Run Algorithm 1 against ``proposer`` + ``evaluator``.
 
@@ -109,6 +117,16 @@ def run_loop(
         on_iteration: optional hook called after every successful
             evaluation. Used by the CLI ``stropha meta run`` to update
             a live progress display.
+        gate: optional pre-scoring gate (WIN-197). When provided, the
+            loop calls ``gate(candidate_dir)`` after
+            ``store.register_candidate`` and before the evaluator. If
+            the returned object's ``.passed`` attribute is False, the
+            candidate is rejected (no ScoreCard, no archive entry) and
+            the loop continues with the next iteration. The gate
+            result is persisted under ``<candidate>/gate.json``. The
+            ``stropha.meta.gate.PytestGate`` is the canonical
+            implementation but any callable matching :data:`GateFn`
+            works.
 
     Returns the :class:`LoopResult` with the final archive + Pareto
     frontier + the reason iteration stopped.
@@ -136,6 +154,7 @@ def run_loop(
                 config=seed_cfg, store=store,
                 evaluator=evaluator, parent=None,
                 label=f"seed-{seed_idx}",
+                gate=gate,
             )
         except LoopError as exc:
             errors.append(f"seed {seed_idx}: {exc}")
@@ -169,6 +188,7 @@ def run_loop(
                 evaluator=evaluator,
                 parent=archive[-1][0].id if archive else None,
                 label=f"iter-{len(archive)}",
+                gate=gate,
             )
         except KeyboardInterrupt:
             return _result(archive, start, "interrupted", errors)
@@ -206,14 +226,47 @@ def _evaluate_and_persist(
     evaluator: EvaluatorFn,
     parent: str | None,
     label: str,
+    gate: GateFn | None = None,
 ) -> tuple[CandidateRecord, ScoreCard]:
-    """Register ``config`` in the store, evaluate it, write the scores back."""
+    """Register ``config`` in the store, optionally gate, evaluate, persist.
+
+    The gate (WIN-197) runs after registration so any ``code_artifacts``
+    on the candidate's disk are visible to the pytest subprocess, but
+    before scoring so an evaluator that loads the candidate's adapters
+    never sees a broken module. A gate failure raises :class:`LoopError`
+    and writes ``gate.json`` for inspection; ``scores.json`` stays empty
+    so the candidate sorts to the bottom of any fitness ranking.
+    """
     try:
         record = store.register_candidate(
             config=config, parent=parent, label=label,
         )
     except Exception as exc:
         raise LoopError(f"failed to register candidate: {exc}") from exc
+
+    if gate is not None and record.base_dir is not None:
+        try:
+            gate_result = gate(record.base_dir)
+        except Exception as exc:
+            raise LoopError(
+                f"gate raised for candidate {record.id}: {exc}"
+            ) from exc
+        try:
+            store.write_gate_result(record.id, gate_result)
+        except Exception as exc:
+            # A failure to persist the gate result is logged but not
+            # fatal — the gate's verdict is already in memory and the
+            # loop should still honour it.
+            log.warning(
+                "loop.gate_persist_failed",
+                id=record.id,
+                error=str(exc),
+            )
+        if not getattr(gate_result, "passed", False):
+            raise LoopError(
+                f"candidate {record.id} rejected by pytest gate"
+            )
+
     try:
         card = evaluator(config)
     except Exception as exc:
@@ -261,6 +314,7 @@ def _result(
 
 __all__ = [
     "EvaluatorFn",
+    "GateFn",
     "LoopError",
     "LoopResult",
     "ProposerFn",

@@ -38,8 +38,15 @@ from .frontier import (
     HoldoutEvaluatorFn,
     evaluate_frontier_on_holdout,
 )
+from .gate import (
+    DEFAULT_PYTEST_ARGS,
+    DEFAULT_TIMEOUT_S,
+    GateError,
+    GateResult,
+    PytestGate,
+)
 from .index_cache import CacheEntry, IndexCache, IndexCacheError
-from .loop import EvaluatorFn, LoopError, LoopResult, ProposerFn, run_loop
+from .loop import EvaluatorFn, GateFn, LoopError, LoopResult, ProposerFn, run_loop
 from .outcome import (
     TIER_SCORE,
     LabelingContext,
@@ -78,6 +85,8 @@ from .trace import TraceRecord, TraceRecorder
 
 __all__ = [
     "DEFAULT_MANIFEST",
+    "DEFAULT_PYTEST_ARGS",
+    "DEFAULT_TIMEOUT_S",
     "DEFAULT_TRACE_MAX_AGE_DAYS",
     "DIMENSION_SIGNS",
     "TIER_SCORE",
@@ -95,6 +104,9 @@ __all__ = [
     "FrontierEntry",
     "FrontierReport",
     "FrontierTracker",
+    "GateError",
+    "GateFn",
+    "GateResult",
     "HoldoutEvaluatorFn",
     "IndexCache",
     "IndexCacheError",
@@ -103,6 +115,7 @@ __all__ = [
     "LoopResult",
     "ProposerFn",
     "PrunePlan",
+    "PytestGate",
     "ScoreCard",
     "SearchSpace",
     "SearchSpaceError",
