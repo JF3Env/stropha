@@ -13,13 +13,31 @@ This package is built up phase-by-phase per the RFC:
 
 from __future__ import annotations
 
+from .outcome import (
+    TIER_SCORE,
+    LabelingContext,
+    Tier,
+    TierLabel,
+    aggregate_score,
+    label_hit,
+    label_hits,
+    tier_summary,
+)
 from .store import ArtifactStore, ArtifactStoreError, CandidateRecord
 from .trace import TraceRecord, TraceRecorder
 
 __all__ = [
+    "TIER_SCORE",
     "ArtifactStore",
     "ArtifactStoreError",
     "CandidateRecord",
+    "LabelingContext",
+    "Tier",
+    "TierLabel",
     "TraceRecord",
     "TraceRecorder",
+    "aggregate_score",
+    "label_hit",
+    "label_hits",
+    "tier_summary",
 ]
