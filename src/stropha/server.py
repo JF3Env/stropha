@@ -2598,6 +2598,80 @@ def assemble_context(
     )
 
 
+# ---- execute investigation DAG (WIN-233, EPIC 1.10 #24) --------------------
+
+
+@mcp.tool(
+    title="Execute investigation route server-side",
+    description=(
+        "WIN-233 — build an investigation plan and EXECUTE it "
+        "server-side, returning the distilled bundle in one call. "
+        "Where ``plan_investigation`` returns a recipe the agent "
+        "walks one step at a time, ``execute_investigation`` saves "
+        "the round-trips: stropha runs search → callers → tests → "
+        "rationale internally, packs the union under a budget, and "
+        "returns the same ``AssembleContextResponse`` shape as "
+        "``assemble_context``. Use for 'tell me about X' tasks "
+        "where you'd otherwise chain N MCP calls."
+    ),
+)
+@traced("execute_investigation")
+def execute_investigation(
+    task: str,
+    context_budget: int = 4000,
+    top_k: int = 5,
+    include_callers: bool = True,
+    include_tests: bool = True,
+    include_rationale: bool = True,
+    *,
+    ctx: Context,
+) -> AssembleContextResponse:
+    """Plan + execute an investigation in one server-side call."""
+    from .retrieval.dag import execute_plan
+    from .retrieval.investigation import plan_investigation as _plan
+
+    app = _ctx(ctx)
+    if context_budget <= 0:
+        return AssembleContextResponse(
+            task=task,
+            bundle="",
+            sections=[],
+            total_tokens=0,
+            budget_tokens=0,
+        )
+    plan = _plan(
+        task,
+        search_engine=app.search_engine,
+        storage=app.storage,
+        top_k=top_k,
+        include_callers=include_callers,
+        include_tests=include_tests,
+        include_rationale=include_rationale,
+    )
+    result = execute_plan(
+        plan,
+        search_engine=app.search_engine,
+        storage=app.storage,
+        context_budget=context_budget,
+    )
+    return AssembleContextResponse(
+        task=result.task,
+        bundle=result.bundle,
+        sections=[
+            AssembleSectionResponse(
+                key=sec.key,
+                title=sec.title,
+                hits=[_to_result(h) for h in sec.hits],
+            )
+            for sec in result.sections
+        ],
+        total_tokens=result.total_tokens,
+        budget_tokens=result.budget_tokens,
+        spilled_count=result.spilled_count,
+        truncated_oversize=result.truncated_oversize,
+    )
+
+
 def _pipeline_snapshot(app: AppContext) -> dict:
     """Introspect every built pipeline stage into a JSON-safe dict.
 
