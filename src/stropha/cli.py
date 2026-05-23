@@ -2448,5 +2448,127 @@ def meta_snapshot_cmd(
     console.print(f"[green]Snapshot:[/green] {snap.sha} → {snap.path}")
 
 
+# ---- memory consolidation (WIN-226, EPIC 1.9 #18) --------------------------
+
+
+memory_app = typer.Typer(
+    name="memory",
+    help="Inspect and consolidate stropha's session / project memory.",
+    no_args_is_help=True,
+)
+app.add_typer(memory_app, name="memory")
+
+
+@memory_app.command("consolidate")
+def memory_consolidate_cmd(
+    repo: Path = typer.Option(
+        None, "--repo",
+        help="Target repo (defaults to STROPHA_TARGET_REPO).",
+    ),
+    min_episodes: int = typer.Option(
+        3, "--min-episodes",
+        help="Skip the pass when fewer than N episodes exist.",
+    ),
+    min_count: int = typer.Option(
+        2, "--min-count",
+        help="Minimum co-touch count for a neighbour to qualify.",
+    ),
+    top_n: int = typer.Option(
+        5, "--top-n",
+        help="Cap on neighbours per candidate (per category).",
+    ),
+    prune_after_days: int = typer.Option(
+        90, "--prune-after-days",
+        help="Delete episodes older than N days. 0 to disable pruning.",
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run",
+        help="Show what would be written + pruned, don't mutate.",
+    ),
+) -> None:
+    """Compact episodic memory → project_memory (WIN-226).
+
+    Mines recent episodes for high-frequency co-occurrence patterns,
+    writes them as ``kind="co-touched"`` project_memory entries, and
+    (optionally) prunes old episodes. Idempotent — running it
+    repeatedly upserts the same entries with the latest counts.
+
+    Recommended cron: weekly. The pass is fast (O(episodes_scanned ×
+    distinct_keys)) on the corpora we target.
+    """
+    from .meta.consolidation import apply_consolidation, plan_consolidation
+    from .pipeline import build_stages, load_pipeline_config
+
+    cfg = _load_config()
+    if repo is None:
+        repo = cfg.target_repo or Path.cwd()
+    repo = repo.expanduser().resolve()
+
+    # Resolve the repo's row id via the existing storage path.
+    from .ingest.git_meta import detect
+
+    identity = detect(repo)
+    resolved = load_pipeline_config()
+    built = build_stages(resolved)
+    with built.storage:  # type: ignore[union-attr]
+        repo_id = built.storage.lookup_repo_id(identity.normalized_key)  # type: ignore[union-attr]
+        if repo_id is None:
+            console.print(
+                f"[red]No indexed repo for[/red] {repo}.\n"
+                "Run `stropha index` first to register the repo."
+            )
+            raise typer.Exit(code=1)
+
+        prune_arg: int | None = (
+            prune_after_days if prune_after_days > 0 else None
+        )
+        plan = plan_consolidation(
+            built.storage,  # type: ignore[arg-type]
+            repo_id=repo_id,
+            min_episodes=min_episodes,
+            min_count=min_count,
+            top_n=top_n,
+            prune_after_days=prune_arg,
+        )
+
+        if not plan.candidates and plan.episodes_to_prune == 0:
+            console.print(
+                "[yellow]No consolidation candidates and nothing to "
+                "prune.[/yellow]"
+            )
+            return
+
+        # Render the plan.
+        console.print(
+            f"[bold]Consolidation plan for {identity.normalized_key}:[/bold]"
+        )
+        console.print(
+            f"  • {len(plan.candidates)} co-touched fact(s) to write."
+        )
+        if plan.prune_cutoff_iso is not None:
+            console.print(
+                f"  • {plan.episodes_to_prune} episode(s) older than "
+                f"{prune_after_days} day(s) to prune."
+            )
+        if plan.candidates:
+            sample = plan.candidates[:5]
+            console.print("[dim]Sample candidates:[/dim]")
+            for c in sample:
+                preview = c.render_value()
+                if len(preview) > 120:
+                    preview = preview[:117] + "..."
+                console.print(f"  - [cyan]{c.key}[/cyan]: {preview}")
+
+        if dry_run:
+            console.print("[yellow]Dry run — no changes written.[/yellow]")
+            return
+
+        result = apply_consolidation(built.storage, plan)  # type: ignore[arg-type]
+        console.print(
+            f"[green]Wrote[/green] {result['written']} fact(s); "
+            f"[green]pruned[/green] {result['pruned']} episode(s)."
+        )
+
+
 if __name__ == "__main__":
     app()
