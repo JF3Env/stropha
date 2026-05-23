@@ -3273,6 +3273,147 @@ def apply_task_recipe(
     )
 
 
+# ---- verify_claim (WIN-244) ------------------------------------------------
+
+
+class VerdictResponse(BaseModel):
+    """Outcome of a ``verify_claim`` call."""
+
+    raw_text: str = Field(description="Echo of the claim as received.")
+    parsed: bool = Field(
+        description=(
+            "Whether the claim matched one of the supported "
+            "predicates (calls / called by / uses / references / "
+            "implements / is a <kind> / is in <file> / has tests)."
+        ),
+    )
+    subject: str = Field(default="")
+    predicate: str = Field(default="")
+    object: str = Field(default="")
+    verified: bool | None = Field(
+        default=None,
+        description=(
+            "Tri-state: True (graph confirms) / False (graph "
+            "contradicts) / null (graph unavailable, unknown "
+            "predicate, or subject not resolvable)."
+        ),
+    )
+    reason: str = Field(default="")
+    evidence: list[dict] = Field(
+        default_factory=list,
+        description=(
+            "Supporting graph nodes when verified is True; relevant "
+            "context when verified is False."
+        ),
+    )
+    alternatives: list[dict] = Field(
+        default_factory=list,
+        description=(
+            "When verified is False, the actual edges from the "
+            "subject so the agent can correct its mental model."
+        ),
+    )
+
+
+@mcp.tool(
+    title="Verify a claim against the graph",
+    description=(
+        "WIN-244 — sanity-check natural-language assertions like "
+        "'FooClass calls BarService' against the graphify mirror. "
+        "Supported predicates: calls, called by, uses / references, "
+        "implements, is a <kind>, is in <file>, has tests. Returns "
+        "tri-state verdict (True / False / null) with evidence and, "
+        "when False, the actual edges so the agent can correct its "
+        "model without re-querying. Never raises."
+    ),
+)
+@traced("verify_claim")
+def verify_claim_tool(
+    claim: str,
+    *,
+    ctx: Context,
+) -> VerdictResponse:
+    """Parse + verify a claim against the graph."""
+    from .retrieval.verify import (
+        parse_claim,
+        verify_claim as _verify,
+    )
+    from .retrieval.graph import (
+        find_callers as _find_callers,
+        find_related as _find_related,
+        find_tests_for as _find_tests_for,
+        resolve_symbol_to_node,
+    )
+
+    app = _ctx(ctx)
+    parsed = parse_claim(claim)
+    if parsed is None:
+        return VerdictResponse(
+            raw_text=claim, parsed=False, verified=None,
+            reason=(
+                "Claim did not match any supported predicate. "
+                "Try 'X calls Y', 'X is a class', 'X is in src/foo.py', "
+                "'X has tests'."
+            ),
+        )
+
+    if not graph_loaded(app.storage):
+        return VerdictResponse(
+            raw_text=parsed.raw_text, parsed=True,
+            subject=parsed.subject, predicate=parsed.predicate,
+            object=parsed.object or "",
+            verified=None,
+            reason=(
+                "graphify mirror is not loaded — cannot verify "
+                "structural claims. Run `graphify .` and re-index."
+            ),
+        )
+
+    # Bind the graph readers as callables.
+    def _callers(symbol: str) -> dict:
+        return _find_callers(app.storage, symbol)
+
+    def _related(symbol: str, relations: list[str] | None) -> dict:
+        return _find_related(
+            app.storage, symbol,
+            relations=tuple(relations) if relations else None,
+        )
+
+    def _tests(symbol: str) -> dict:
+        return _find_tests_for(app.storage, symbol)
+
+    def _resolve(symbol: str) -> dict | None:
+        node_id = resolve_symbol_to_node(app.storage, symbol)
+        if node_id is None:
+            return None
+        # Re-use _fetch_node_rows + _hydrate_node from graph.py.
+        from .retrieval.graph import _fetch_node_rows, _hydrate_node
+        rows = _fetch_node_rows(app.storage, [node_id])
+        if node_id not in rows:
+            return None
+        return _hydrate_node(app.storage, rows[node_id]).as_dict()
+
+    verdict = _verify(
+        parsed,
+        callers_fn=_callers,
+        related_fn=_related,
+        tests_fn=_tests,
+        resolve_fn=_resolve,
+    )
+
+    return VerdictResponse(
+        raw_text=verdict.claim.raw_text,
+        parsed=True,
+        subject=verdict.claim.subject,
+        predicate=verdict.claim.predicate,
+        object=verdict.claim.object or "",
+        verified=verdict.verified,
+        reason=verdict.reason,
+        evidence=list(verdict.evidence),
+        alternatives=list(verdict.alternatives),
+    )
+
+
 # ---- entry point -----------------------------------------------------------
 
 def main() -> None:
