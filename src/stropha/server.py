@@ -28,7 +28,7 @@ import os
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from mcp.server.fastmcp import Context, FastMCP
 from pydantic import BaseModel, Field
@@ -86,6 +86,10 @@ class AppContext:
     ``session_id`` (WIN-160) is rotated on every ``mcp.startup`` — one uuid4
     per process, recorded on every trace entry so the Meta-Harness outcome
     labeler can detect engagement between correlated calls (tier T4).
+
+    ``seen_chunk_ids`` (WIN-217) tracks which chunks have been served to
+    the agent in this session, enabling session-scoped dedup on subsequent
+    searches. Reset via ``reset_dedup`` MCP tool.
     """
 
     config: Config
@@ -96,6 +100,7 @@ class AppContext:
     session_id: str = ""
     trace_recorder: object = None  # TraceRecorder | None; typed loose to avoid import cycles
     bad_result_store: object = None  # BadResultStore | None — produces the T6 signal for the labeler
+    seen_chunk_ids: set[str] = field(default_factory=set)
 
 
 @asynccontextmanager
@@ -503,6 +508,7 @@ def search_code(
     compress: bool = False,
     card_level: str = "full",
     relevance_decay: bool = False,
+    dedup: bool = False,
     *,
     ctx: Context,
 ) -> SearchResponse:
@@ -541,6 +547,11 @@ def search_code(
             at "line". Allocates tokens to the most-relevant spans
             instead of spreading them evenly. Overrides card_level when
             both are set.
+        dedup: WIN-217 — when True, filter out hits already returned in
+            this MCP session. Saves tokens on iterative refinement
+            queries that would otherwise re-deliver the same spans. Use
+            ``reset_dedup`` to clear the session's seen-set when you
+            want a fresh slate.
     """
     import os
 
@@ -585,6 +596,18 @@ def search_code(
             kind=kind,
             exclude_tests=exclude_tests,
         )
+
+    # WIN-217: session-scoped dedup. Filter out chunks we've already
+    # served to this agent's session, then accumulate the survivors
+    # into the seen set so subsequent calls skip them too. The
+    # ``seen_chunk_ids`` set lives on AppContext and is the MVP backing
+    # store; EPIC 1.9 (WIN-221) will swap in the persistent Schema v8
+    # sessions table without touching this call site.
+    dedup_filtered = 0
+    if dedup and hits:
+        before = len(hits)
+        hits = [h for h in hits if h.chunk_id not in app.seen_chunk_ids]
+        dedup_filtered = before - len(hits)
 
     # Compute facets before truncating (on filtered results)
     facets: FacetCounts | None = None
@@ -665,6 +688,19 @@ def search_code(
         # Defensive: never fail a search response on a stats-tracking bug.
         log.debug("search.savings.track_failed", exc_info=True)
 
+    # WIN-217: After every filter/pack pass, accumulate the final
+    # response's chunk_ids into the session's seen set so subsequent
+    # `dedup=True` calls skip them. We only record when the caller
+    # opted in to dedup — opting out should be transparent.
+    if dedup and hits:
+        app.seen_chunk_ids.update(h.chunk_id for h in hits)
+        log.info(
+            "mcp.search_code.dedup",
+            filtered_before_pack=dedup_filtered,
+            served=len(hits),
+            session_seen_total=len(app.seen_chunk_ids),
+        )
+
     return SearchResponse(
         results=[_to_result(h) for h in hits],
         total_candidates=len(hits),
@@ -673,6 +709,38 @@ def search_code(
         spilled_count=spilled_count,
         truncated_oversize=truncated_oversize,
     )
+
+
+# ---- reset_dedup (WIN-217) -------------------------------------------------
+
+
+class ResetDedupResponse(BaseModel):
+    """Outcome of clearing the session's seen-set."""
+
+    cleared: int = Field(
+        description="Number of chunk_ids removed from the seen set.",
+    )
+
+
+@mcp.tool(
+    title="Reset session dedup",
+    description=(
+        "WIN-217 — clear the session's seen-chunk-ids set. Use this when "
+        "the agent has finished one logical task and wants a fresh slate "
+        "for the next retrieval round, OR when an iterative search keeps "
+        "returning empty because everything got dedup'd away. The set "
+        "lives in memory only for this MCP process; restarting the "
+        "server already clears it. Returns the count of ids dropped."
+    ),
+)
+@traced("reset_dedup")
+def reset_dedup(*, ctx: Context) -> ResetDedupResponse:
+    """Drop every chunk_id from the session's seen-set."""
+    app = _ctx(ctx)
+    count = len(app.seen_chunk_ids)
+    app.seen_chunk_ids.clear()
+    log.info("mcp.reset_dedup", cleared=count, session_id=app.session_id)
+    return ResetDedupResponse(cleared=count)
 
 
 # ---- smart search (query routing) ------------------------------------------
