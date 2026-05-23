@@ -47,7 +47,7 @@ log = get_logger(__name__)
 #     `graph_edges` tables to allow multiple repos with their own graphify
 #     graphs to share a single stropha index. Node IDs are prefixed with
 #     repo_id to avoid collisions across repos.
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 
 def _serialize_vector(vec: list[float]) -> bytes:
@@ -182,6 +182,10 @@ def _row_to_episode(row: Any) -> Any:
         touched_symbols=symbols,
         created_at=row["created_at"],
         updated_at=row["updated_at"],
+        provenance_commit=(
+            row["provenance_commit"]
+            if "provenance_commit" in row.keys() else None
+        ),
     )
 
 
@@ -637,6 +641,18 @@ class Storage:
             CREATE INDEX IF NOT EXISTS idx_sessions_updated_at
                 ON sessions(updated_at);
             """
+        )
+
+        # v11: provenance_commit on memory tables (WIN-228). Records
+        # the git HEAD SHA at the moment the entry was written so the
+        # staleness check can diff against HEAD at recall time. Both
+        # ``project_memory`` and ``episodes`` get the column —
+        # forward-only ALTER, idempotent.
+        self._add_column_if_missing(
+            "project_memory", "provenance_commit", "TEXT"
+        )
+        self._add_column_if_missing(
+            "episodes", "provenance_commit", "TEXT"
         )
 
         cur.execute(
@@ -1806,6 +1822,7 @@ class Storage:
         value: str,
         source: str | None = None,
         expires_at: str | None = None,
+        provenance_commit: str | None = None,
     ) -> "ProjectMemoryRecord":
         """Upsert a project-memory entry. Idempotent.
 
@@ -1841,9 +1858,13 @@ class Storage:
             cur.execute(
                 """INSERT INTO project_memory (
                        repo_id, kind, key, value, source,
-                       created_at, updated_at, expires_at
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                (repo_id, kind, key, value, source, now, now, expires_at),
+                       created_at, updated_at, expires_at,
+                       provenance_commit
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    repo_id, kind, key, value, source, now, now,
+                    expires_at, provenance_commit,
+                ),
             )
             row_id = int(cur.lastrowid or 0)
             created_at = now
@@ -1851,9 +1872,12 @@ class Storage:
             cur.execute(
                 """UPDATE project_memory
                        SET value = ?, source = ?, updated_at = ?,
-                           expires_at = ?
+                           expires_at = ?, provenance_commit = ?
                      WHERE id = ?""",
-                (value, source, now, expires_at, existing["id"]),
+                (
+                    value, source, now, expires_at,
+                    provenance_commit, existing["id"],
+                ),
             )
             row_id = int(existing["id"])
             created_at = existing["created_at"]
@@ -1861,7 +1885,7 @@ class Storage:
         return ProjectMemoryRecord(
             id=row_id, repo_id=repo_id, kind=kind, key=key, value=value,
             source=source, created_at=created_at, updated_at=now,
-            expires_at=expires_at,
+            expires_at=expires_at, provenance_commit=provenance_commit,
         )
 
     def recall(
@@ -1903,7 +1927,8 @@ class Storage:
         where = " AND ".join(clauses)
         rows = self._conn.execute(
             f"""SELECT id, repo_id, kind, key, value, source,
-                       created_at, updated_at, expires_at
+                       created_at, updated_at, expires_at,
+                       provenance_commit
                FROM project_memory
                WHERE {where}
                ORDER BY updated_at DESC LIMIT ?""",
@@ -1920,6 +1945,10 @@ class Storage:
                 created_at=r["created_at"],
                 updated_at=r["updated_at"],
                 expires_at=r["expires_at"],
+                provenance_commit=(
+                    r["provenance_commit"]
+                    if "provenance_commit" in r.keys() else None
+                ),
             )
             for r in rows
         ]
@@ -1946,12 +1975,16 @@ class Storage:
         session_id: str | None = None,
         touched_files: list[str] | None = None,
         touched_symbols: list[str] | None = None,
+        provenance_commit: str | None = None,
     ) -> "EpisodeRecord":
         """Insert one episodic-memory row. Always creates a new row;
         episodes are append-only by design (the timeline matters).
 
         ``touched_files`` / ``touched_symbols`` are deduplicated +
         sorted before persistence so the JSON shape is canonical.
+        ``provenance_commit`` (WIN-228) records the git HEAD SHA at
+        the moment the episode was logged so the staleness check
+        can diff against the current HEAD.
         """
         from ..models import EpisodeRecord
 
@@ -1962,12 +1995,12 @@ class Storage:
             """INSERT INTO episodes (
                    repo_id, session_id, title, summary,
                    touched_files, touched_symbols,
-                   created_at, updated_at
-               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                   created_at, updated_at, provenance_commit
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 repo_id, session_id, title, summary,
                 json.dumps(files_norm), json.dumps(symbols_norm),
-                now, now,
+                now, now, provenance_commit,
             ),
         )
         self._conn.commit()
@@ -1981,6 +2014,7 @@ class Storage:
             touched_symbols=symbols_norm,
             created_at=now,
             updated_at=now,
+            provenance_commit=provenance_commit,
         )
 
     def recall_episodes(
@@ -2017,7 +2051,7 @@ class Storage:
         rows = self._conn.execute(
             f"""SELECT id, repo_id, session_id, title, summary,
                        touched_files, touched_symbols,
-                       created_at, updated_at
+                       created_at, updated_at, provenance_commit
                FROM episodes
                WHERE {where}
                ORDER BY created_at DESC LIMIT ?""",

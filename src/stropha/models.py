@@ -223,6 +223,13 @@ class EpisodeRecord(BaseModel):
     touched_symbols: list[str] = Field(default_factory=list)
     created_at: str
     updated_at: str
+    provenance_commit: str | None = Field(
+        default=None,
+        description=(
+            "Git HEAD SHA when the episode was recorded (WIN-228). "
+            "Lets the staleness check diff against the current HEAD."
+        ),
+    )
 
 
 class ProjectMemoryRecord(BaseModel):
@@ -248,3 +255,10 @@ class ProjectMemoryRecord(BaseModel):
     created_at: str
     updated_at: str
     expires_at: str | None = None
+    provenance_commit: str | None = Field(
+        default=None,
+        description=(
+            "Git HEAD SHA at the time the entry was last upserted "
+            "(WIN-228). Drives the staleness check."
+        ),
+    )

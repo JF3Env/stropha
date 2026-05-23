@@ -26,8 +26,10 @@ from stropha.storage.sqlite import SCHEMA_VERSION, Storage
 
 
 class TestSchemaMigration:
-    def test_schema_version_is_ten(self) -> None:
-        assert SCHEMA_VERSION == 10
+    def test_schema_version_at_least_ten(self) -> None:
+        """v10 introduced the episodes table. Forward-compatible pin
+        so future schema bumps don't churn this guard."""
+        assert SCHEMA_VERSION >= 10
 
     def test_episodes_table_created(self, tmp_path: Path) -> None:
         with Storage(tmp_path / "v10.db", embedding_dim=4) as s:

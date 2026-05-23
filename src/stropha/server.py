@@ -1384,6 +1384,20 @@ def _resolve_target_repo_id(app: AppContext) -> int | None:
     return app.storage.lookup_repo_id(identity.normalized_key)
 
 
+def _current_head_commit(app: AppContext) -> str | None:
+    """WIN-228 — fetch the target_repo's HEAD SHA for provenance.
+
+    Returns ``None`` on any git failure or when no target_repo is
+    configured. The memory write succeeds either way; provenance is
+    a hint, not a contract.
+    """
+    if app.config.target_repo is None:
+        return None
+    from .meta.provenance import current_head_commit
+
+    return current_head_commit(app.config.target_repo)
+
+
 class MemoryEntry(BaseModel):
     """One ``project_memory`` row exposed to MCP clients."""
 
@@ -1394,6 +1408,13 @@ class MemoryEntry(BaseModel):
     created_at: str
     updated_at: str
     expires_at: str | None = None
+    provenance_commit: str | None = Field(
+        default=None,
+        description=(
+            "Git HEAD SHA at the time the entry was last upserted "
+            "(WIN-228). Drives the check_staleness tool."
+        ),
+    )
 
 
 class RememberResponse(BaseModel):
@@ -1438,6 +1459,7 @@ def _entry_from_record(rec) -> MemoryEntry:  # type: ignore[no-untyped-def]
         created_at=rec.created_at,
         updated_at=rec.updated_at,
         expires_at=rec.expires_at,
+        provenance_commit=getattr(rec, "provenance_commit", None),
     )
 
 
@@ -1484,6 +1506,7 @@ def remember(
         value=value,
         source=app.session_id or None,
         expires_at=expires_at,
+        provenance_commit=_current_head_commit(app),
     )
     return RememberResponse(ok=True, entry=_entry_from_record(rec))
 
@@ -1557,6 +1580,97 @@ def forget(kind: str, key: str, *, ctx: Context) -> ForgetResponse:
         return ForgetResponse(removed=False, kind=kind, key=key)
     removed = app.storage.forget(repo_id=repo_id, kind=kind, key=key)
     return ForgetResponse(removed=removed, kind=kind, key=key)
+
+
+# ---- staleness check (WIN-228, EPIC 1.9 #20) -------------------------------
+
+
+class StalenessResponse(BaseModel):
+    """Result of a ``check_staleness`` call."""
+
+    found: bool = Field(
+        description=(
+            "True when the requested memory entry exists. False means "
+            "no entry under that (kind, key) — caller should treat as "
+            "missing, not stale."
+        ),
+    )
+    stale: bool | None = Field(
+        default=None,
+        description=(
+            "True when files changed between the recorded commit and "
+            "HEAD intersect the memory's anchor. False when nothing "
+            "changed. None means we couldn't decide (missing "
+            "provenance, git failure, detached HEAD)."
+        ),
+    )
+    since_commit: str | None = None
+    current_commit: str | None = None
+    changed_files: list[str] = Field(default_factory=list)
+    reason: str | None = Field(
+        default=None,
+        description=(
+            "When stale is None, the textual reason for the unknown "
+            "verdict (no provenance, git failure, etc.)."
+        ),
+    )
+
+
+@mcp.tool(
+    title="Check memory staleness",
+    description=(
+        "WIN-228 — diff a memory entry's recorded git SHA against the "
+        "current HEAD to detect drift. Use this before acting on a "
+        "recalled memory: if the project_memory entry was written "
+        "two months and 500 commits ago, the value the agent is "
+        "about to follow may be obsolete. Returns ``stale=True`` "
+        "when changed files intersect the memory's anchor; "
+        "``stale=None`` when we couldn't decide (no provenance "
+        "recorded, git failure)."
+    ),
+)
+@traced("check_staleness")
+def check_staleness(
+    kind: str,
+    key: str,
+    *,
+    ctx: Context,
+    anchor_files: list[str] | None = None,
+) -> StalenessResponse:
+    """Determine if the named ``project_memory`` entry is stale."""
+    from .meta.provenance import staleness_signal
+
+    app = _ctx(ctx)
+    repo_id = _resolve_target_repo_id(app)
+    if repo_id is None:
+        return StalenessResponse(
+            found=False,
+            reason="no indexed repo for target_repo",
+        )
+    rows = app.storage.recall(repo_id=repo_id, kind=kind, key=key, limit=1)
+    if not rows:
+        return StalenessResponse(found=False, reason="entry not found")
+    entry = rows[0]
+    if app.config.target_repo is None:
+        return StalenessResponse(
+            found=True,
+            stale=None,
+            since_commit=entry.provenance_commit,
+            reason="no target_repo configured",
+        )
+    signal = staleness_signal(
+        app.config.target_repo,
+        since_commit=entry.provenance_commit,
+        anchor_files=anchor_files,
+    )
+    return StalenessResponse(
+        found=True,
+        stale=signal.stale,
+        since_commit=signal.since_commit,
+        current_commit=signal.current_commit,
+        changed_files=signal.changed_files,
+        reason=signal.reason,
+    )
 
 
 # ---- bootstrap (WIN-227, EPIC 1.9 #19) -------------------------------------
@@ -1645,6 +1759,13 @@ class EpisodeEntry(BaseModel):
     touched_symbols: list[str] = Field(default_factory=list)
     created_at: str
     updated_at: str
+    provenance_commit: str | None = Field(
+        default=None,
+        description=(
+            "Git HEAD SHA at the time the episode was recorded "
+            "(WIN-228). Drives the check_staleness tool."
+        ),
+    )
 
 
 class RecordEpisodeResponse(BaseModel):
@@ -1681,6 +1802,7 @@ def _episode_to_entry(rec) -> EpisodeEntry:  # type: ignore[no-untyped-def]
         touched_symbols=rec.touched_symbols,
         created_at=rec.created_at,
         updated_at=rec.updated_at,
+        provenance_commit=getattr(rec, "provenance_commit", None),
     )
 
 
@@ -1723,6 +1845,7 @@ def record_episode(
         summary=summary,
         touched_files=touched_files or [],
         touched_symbols=touched_symbols or [],
+        provenance_commit=_current_head_commit(app),
     )
     return RecordEpisodeResponse(ok=True, entry=_episode_to_entry(rec))
 
