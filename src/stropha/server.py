@@ -4096,6 +4096,95 @@ def spec_consistency_tool(
     )
 
 
+# ---- contract_tests (WIN-251) ----------------------------------------------
+
+
+class ContractTestEntry(BaseModel):
+    path: str
+    symbol: str = ""
+    signals: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Heuristic signals that flagged this as a contract "
+            "test: 'path' (path token match), 'symbol' (symbol "
+            "name match), 'tag' (annotation list contained "
+            "'contract'). Empty for non-contract tests."
+        ),
+    )
+
+
+class ContractTestsResponse(BaseModel):
+    """Outcome of ``contract_tests_tool``."""
+
+    target_symbol: str
+    contract_tests: list[ContractTestEntry] = Field(default_factory=list)
+    other_tests: list[ContractTestEntry] = Field(default_factory=list)
+    signal_counts: dict[str, int] = Field(default_factory=dict)
+    notes: list[str] = Field(default_factory=list)
+    graph_loaded: bool = Field(
+        description=(
+            "False when the graphify mirror is unavailable — every "
+            "section will be empty."
+        ),
+    )
+
+
+@mcp.tool(
+    title="Surface contract tests for a symbol",
+    description=(
+        "WIN-251 — partition the tests for a symbol into contract "
+        "tests (public-behaviour guarantees) and other tests "
+        "(implementation-internal). Contract tests are flagged by "
+        "any of three signals: path pattern (/contracts/, "
+        "_spec.py, Spec.java, …), symbol name (contract, interface, "
+        "api, behavior), or tag/annotation. The agent uses this to "
+        "see WHICH tests must keep passing for the public surface "
+        "to stay intact."
+    ),
+)
+@traced("contract_tests")
+def contract_tests_tool(
+    symbol: str,
+    *,
+    ctx: Context,
+) -> ContractTestsResponse:
+    """Surface contract tests for ``symbol``."""
+    from .retrieval.contract_tests import surface_contract_tests
+    from .retrieval.graph import find_tests_for as _find_tests_for
+
+    app = _ctx(ctx)
+    graph_ok = graph_loaded(app.storage)
+    if not graph_ok:
+        return ContractTestsResponse(
+            target_symbol=symbol,
+            graph_loaded=False,
+            notes=["graph_loaded=False"],
+        )
+
+    def _tests(s: str) -> dict:
+        return _find_tests_for(app.storage, s)
+
+    report = surface_contract_tests(symbol, tests_fn=_tests)
+    return ContractTestsResponse(
+        target_symbol=report.target_symbol,
+        contract_tests=[
+            ContractTestEntry(
+                path=t.path, symbol=t.symbol, signals=list(t.signals),
+            )
+            for t in report.contract_tests
+        ],
+        other_tests=[
+            ContractTestEntry(
+                path=t.path, symbol=t.symbol, signals=list(t.signals),
+            )
+            for t in report.other_tests
+        ],
+        signal_counts=dict(report.signal_counts),
+        notes=list(report.notes),
+        graph_loaded=True,
+    )
+
+
 # ---- entry point -----------------------------------------------------------
 
 def main() -> None:
