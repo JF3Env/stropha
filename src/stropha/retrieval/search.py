@@ -36,6 +36,7 @@ class SearchEngine:
         decompose: bool | None = None,
         context_budget: int | None = None,
         compress: bool = False,
+        conversation_context: str | None = None,
     ) -> list[SearchHit]:
         """Three-stream hybrid retrieval, fused with RRF.
 
@@ -67,6 +68,15 @@ class SearchEngine:
         lines, a small context window, and drops boilerplate. Applied
         BEFORE budget packing so the budget reflects the compressed
         cost — caller gets more relevant code per token spent.
+
+        Conversation-aware retrieval (WIN-224):
+        When ``conversation_context`` is non-empty, the dense lane's
+        query embedding is computed against a concatenation of the
+        current query + the context string (typically the last N
+        agent queries from the session). BM25 + symbol lanes keep the
+        literal query so identifier matches stay intact. Lets queries
+        like "tests for it" carry the implicit "it" from earlier
+        turns into the dense semantic match.
         """
         if not query.strip():
             return []
@@ -108,6 +118,7 @@ class SearchEngine:
 
         single = self._search_single(
             query, top_k=top_k, candidate_k=candidate_k, rrf_k=rrf_k,
+            conversation_context=conversation_context,
         )
         compressed = self._maybe_compress(single, query, compress)
         return self._maybe_pack(compressed, context_budget)
@@ -167,6 +178,7 @@ class SearchEngine:
         *,
         candidate_k: int = CANDIDATE_K,
         rrf_k: int = DEFAULT_K,
+        conversation_context: str | None = None,
     ) -> list[SearchHit]:
         """Single-query hybrid search (internal)."""
         # HyDE — only the dense embedding sees the hypothetical doc; BM25
@@ -178,6 +190,19 @@ class SearchEngine:
         if dense_query is not query:
             log.info("search.hyde_rewrite", original_len=len(query),
                      rewritten_len=len(dense_query))
+        # WIN-224: blend recent-conversation context into the dense
+        # embedding ONLY — BM25 / symbol lanes keep the literal query
+        # so identifier matches stay clean. The context is appended
+        # after a "Recent:" separator so the embedder treats it as
+        # related-but-secondary signal.
+        if conversation_context and conversation_context.strip():
+            dense_query = (
+                f"{dense_query}\n\nRecent conversation: {conversation_context.strip()}"
+            )
+            log.info(
+                "search.conversation_aware",
+                context_chars=len(conversation_context),
+            )
         query_vec = self._embedder.embed_query(dense_query)
         dense_hits = self._storage.search_dense(query_vec, k=candidate_k)
         sparse_hits = self._storage.search_bm25(query, k=candidate_k)

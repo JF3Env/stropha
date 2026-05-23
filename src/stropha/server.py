@@ -28,6 +28,7 @@ import os
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from collections import deque
 from dataclasses import dataclass, field
 
 from mcp.server.fastmcp import Context, FastMCP
@@ -101,6 +102,11 @@ class AppContext:
     Schema-v8 ``sessions`` row is resumed across server restarts so
     seen + pinned sets survive process boundaries. When unset, each
     process gets a fresh ephemeral session.
+
+    ``recent_queries`` (WIN-224) — ring buffer of the last N
+    ``search_code`` queries. Used when the agent passes
+    ``conversation_aware=True`` to bias retrieval toward the current
+    conversation thread instead of treating each query as amnesic.
     """
 
     config: Config
@@ -114,6 +120,9 @@ class AppContext:
     seen_chunk_ids: set[str] = field(default_factory=set)
     pinned_chunk_ids: set[str] = field(default_factory=set)
     client_id: str | None = None
+    recent_queries: deque[str] = field(
+        default_factory=lambda: deque(maxlen=5)
+    )
 
 
 @asynccontextmanager
@@ -598,6 +607,7 @@ def search_code(
     card_level: str = "full",
     relevance_decay: bool = False,
     dedup: bool = False,
+    conversation_aware: bool = False,
     *,
     ctx: Context,
 ) -> SearchResponse:
@@ -641,6 +651,13 @@ def search_code(
             queries that would otherwise re-deliver the same spans. Use
             ``reset_dedup`` to clear the session's seen-set when you
             want a fresh slate.
+        conversation_aware: WIN-224 — when True, bias the dense
+            semantic retrieval toward the recent conversation thread
+            by appending the last few queries as additional context
+            to the embedder. BM25 and symbol lanes keep the literal
+            query so identifier matches stay clean. Lets follow-up
+            queries like "tests for it" carry implicit references
+            from earlier turns into the dense match.
     """
     import os
 
@@ -658,13 +675,28 @@ def search_code(
     has_filters = any([language, path_prefix, kind, exclude_tests])
     fetch_k = top_k * 3 if has_filters else top_k
 
+    # WIN-224: build the conversation context BEFORE the search so the
+    # SearchEngine can blend it into the dense embedding. The current
+    # query is NOT included in the context (it goes directly to the
+    # engine), only the prior turns. We add the current query to the
+    # ring buffer AFTER the search so the next call sees this query
+    # as part of its context window.
+    conversation_context: str | None = None
+    if conversation_aware and app.recent_queries:
+        # Join the last N queries with " | " separators so the
+        # embedder sees them as related-but-secondary signal.
+        conversation_context = " | ".join(app.recent_queries)
+
     try:
         # Handle remote git URL search
         if repo_url and is_git_url(repo_url):
             log.info("mcp.search_code.remote", repo_url=repo_url, refresh=refresh)
             hits = search_git_url(query, repo_url, top_k=fetch_k, refresh=refresh)
         else:
-            hits = app.search_engine.search(query, top_k=fetch_k)
+            hits = app.search_engine.search(
+                query, top_k=fetch_k,
+                conversation_context=conversation_context,
+            )
     except StrophaError as exc:
         log.warning("mcp.search_code.error", error=str(exc))
         return SearchResponse(results=[], total_candidates=0, query=query, facets=None)
@@ -799,6 +831,14 @@ def search_code(
     except Exception:
         # Defensive: never fail a search response on a stats-tracking bug.
         log.debug("search.savings.track_failed", exc_info=True)
+
+    # WIN-224: record the current query into the ring buffer so the
+    # NEXT conversation-aware call can see it as context. We append
+    # unconditionally (regardless of ``conversation_aware``) so the
+    # operator who toggles the flag on mid-session immediately gets
+    # useful context; the deque's maxlen caps memory growth.
+    if query and query.strip():
+        app.recent_queries.append(query.strip())
 
     # WIN-217: After every filter/pack pass, accumulate the final
     # response's chunk_ids into the session's seen set so subsequent
