@@ -3119,6 +3119,160 @@ def suggest_next_tool_mcp(
     )
 
 
+# ---- named task recipes (WIN-240) -----------------------------------------
+
+
+class RecipeStepEntry(BaseModel):
+    """One materialised step of a recipe.
+
+    ``args`` are placeholder-substituted and ready to forward to the
+    named tool. ``budget_tokens`` is derived from the step's
+    declared ``budget_share`` × the recipe's effective budget.
+    """
+
+    tool: str = Field(description="Name of the MCP tool to call.")
+    args: dict = Field(
+        default_factory=dict,
+        description="Ready-to-forward keyword arguments.",
+    )
+    reason: str = Field(description="Why this step is in the recipe.")
+    budget_tokens: int = Field(
+        description="Suggested token allowance for this step.",
+    )
+
+
+class RecipeSummary(BaseModel):
+    """Lightweight recipe summary returned by ``list_task_recipes``."""
+
+    name: str
+    description: str
+    placeholders: list[str]
+    step_count: int
+    default_budget: int
+
+
+class ListRecipesResponse(BaseModel):
+    recipes: list[RecipeSummary]
+
+
+class ApplyRecipeResponse(BaseModel):
+    name: str = Field(description="Recipe name (echoes the request).")
+    found: bool = Field(
+        description="False when ``name`` is not a registered recipe.",
+    )
+    steps: list[RecipeStepEntry] = Field(
+        default_factory=list,
+        description="Materialised steps with placeholders resolved.",
+    )
+    missing_placeholders: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Placeholders the recipe references but the caller didn't "
+            "supply. Empty when every slot was filled."
+        ),
+    )
+    budget_tokens: int = Field(
+        default=0,
+        description="Effective budget used (recipe default or override).",
+    )
+
+
+@mcp.tool(
+    title="List named task recipes",
+    description=(
+        "WIN-240 — enumerate the built-in workflow templates. Each "
+        "recipe captures a common task pattern (bug-fix, add-feature, "
+        "review, rename-symbol, understand-file) as an ordered "
+        "sequence of stropha tool invocations with placeholder args. "
+        "Pair with apply_task_recipe to materialise concrete steps."
+    ),
+)
+@traced("list_task_recipes")
+def list_task_recipes(*, ctx: Context) -> ListRecipesResponse:
+    """Return every registered recipe with metadata only (no steps)."""
+    from .retrieval.recipes import list_recipes
+
+    _ = _ctx(ctx)  # signature parity with the rest of the surface
+    return ListRecipesResponse(
+        recipes=[
+            RecipeSummary(
+                name=r.name,
+                description=r.description,
+                placeholders=list(r.placeholders),
+                step_count=len(r.steps),
+                default_budget=r.default_budget,
+            )
+            for r in list_recipes()
+        ],
+    )
+
+
+@mcp.tool(
+    title="Apply a named task recipe",
+    description=(
+        "WIN-240 — materialise a recipe with the caller's context. "
+        "Returns a list of concrete tool invocations (with args + "
+        "reason + budget) ready to execute one-by-one or hand to "
+        "execute_plan for server-side DAG execution. Missing "
+        "placeholders are surfaced in ``missing_placeholders`` "
+        "rather than failing the call — caller decides whether to "
+        "fill them and retry."
+    ),
+)
+@traced("apply_task_recipe")
+def apply_task_recipe(
+    name: str,
+    context: dict | None = None,
+    budget_tokens: int | None = None,
+    *,
+    ctx: Context,
+) -> ApplyRecipeResponse:
+    """Look up a recipe and substitute placeholders against ``context``."""
+    from .retrieval.recipes import (
+        apply_recipe,
+        get_recipe,
+        required_placeholders,
+    )
+
+    _ = _ctx(ctx)
+    recipe = get_recipe(name)
+    if recipe is None:
+        return ApplyRecipeResponse(
+            name=name,
+            found=False,
+            steps=[],
+            missing_placeholders=[],
+            budget_tokens=0,
+        )
+
+    context = dict(context or {})
+    missing = sorted(required_placeholders(recipe) - set(context.keys()))
+
+    invocations = apply_recipe(
+        recipe, context, budget_tokens=budget_tokens, strict=False,
+    )
+    effective_budget = (
+        recipe.default_budget if budget_tokens is None
+        else max(0, int(budget_tokens))
+    )
+
+    return ApplyRecipeResponse(
+        name=recipe.name,
+        found=True,
+        steps=[
+            RecipeStepEntry(
+                tool=inv.tool,
+                args=inv.args,
+                reason=inv.reason,
+                budget_tokens=inv.budget_tokens,
+            )
+            for inv in invocations
+        ],
+        missing_placeholders=missing,
+        budget_tokens=effective_budget,
+    )
+
+
 # ---- entry point -----------------------------------------------------------
 
 def main() -> None:
