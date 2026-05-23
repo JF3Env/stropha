@@ -41,7 +41,7 @@ All migrations are forward-only and idempotent (`_add_column_if_missing` + `CREA
 
 **Multi-repo graphify support (v7)**: Multiple repos with their own `graphify-out/graph.json` can share a single stropha index. Node IDs are prefixed with `{repo_id}:` to avoid collisions (e.g., repo_id=3, node "FooClass" becomes "3:FooClass"). Graph tools (find_callers, find_related, etc.) work cross-repo by default. The GraphifyLoader tracks per-repo staleness via `graph_meta` keys like `last_loaded_mtime:3`.
 
-### 2.2 MCP tools (16) — server name `stropha_rag`
+### 2.2 MCP tools (20) — server name `stropha_rag`
 
 | Tool | Purpose | Graph required |
 |---|---|---|
@@ -61,6 +61,10 @@ All migrations are forward-only and idempotent (`_add_column_if_missing` + `CREA
 | `assemble_context` | One-shot context bundle (WIN-209). Hybrid search + optional caller/test graph extensions, packed under a token budget, rendered as a ready-to-paste markdown bundle | no |
 | `expand_chunk` | Just-in-time dereference (WIN-216): resolve a single chunk_id to its full SearchResult, optionally re-rendered at line/paragraph level | no |
 | `expand_chunks` | Batch variant of `expand_chunk` — dereference many chunk_ids in one call (missing ids surface with `found=False`, never partial-fails) | no |
+| `reset_dedup` | Clear the session's seen-chunk-ids set (WIN-217). Use when iterative dedup keeps returning empty or when the agent moves to a new task. | no |
+| `pin_chunks` | Pin chunk_ids so subsequent searches always include them at the top of results (WIN-218). Pinning wins over dedup. | no |
+| `unpin_chunks` | Remove chunk_ids from the session's pin set. Silently ignores ids that weren't pinned. | no |
+| `list_pins` | Return the current pin set with each chunk's metadata; missing chunks surface as `found=False`. | no |
 
 Graph-gated tools return `{"graph_loaded": false, "message": …}` when the mirror is empty — never silent empty list.
 

@@ -90,6 +90,11 @@ class AppContext:
     ``seen_chunk_ids`` (WIN-217) tracks which chunks have been served to
     the agent in this session, enabling session-scoped dedup on subsequent
     searches. Reset via ``reset_dedup`` MCP tool.
+
+    ``pinned_chunk_ids`` (WIN-218) is the inverse: chunks the agent
+    explicitly wants kept across retrievals. Pinning wins over dedup
+    (pinned chunks are NEVER filtered out). Mutated via ``pin_chunks``
+    / ``unpin_chunks`` MCP tools.
     """
 
     config: Config
@@ -101,6 +106,7 @@ class AppContext:
     trace_recorder: object = None  # TraceRecorder | None; typed loose to avoid import cycles
     bad_result_store: object = None  # BadResultStore | None — produces the T6 signal for the labeler
     seen_chunk_ids: set[str] = field(default_factory=set)
+    pinned_chunk_ids: set[str] = field(default_factory=set)
 
 
 @asynccontextmanager
@@ -603,11 +609,34 @@ def search_code(
     # ``seen_chunk_ids`` set lives on AppContext and is the MVP backing
     # store; EPIC 1.9 (WIN-221) will swap in the persistent Schema v8
     # sessions table without touching this call site.
+    #
+    # WIN-218 interaction: pinned chunk_ids are EXEMPT from dedup.
+    # The agent's pin signal is strictly stronger than "skip
+    # already-seen" — a pinned chunk should still be visible even
+    # after it was served once.
     dedup_filtered = 0
     if dedup and hits:
         before = len(hits)
-        hits = [h for h in hits if h.chunk_id not in app.seen_chunk_ids]
+        hits = [
+            h for h in hits
+            if h.chunk_id in app.pinned_chunk_ids
+            or h.chunk_id not in app.seen_chunk_ids
+        ]
         dedup_filtered = before - len(hits)
+
+    # WIN-218: Prepend pinned chunks at the top of the result list.
+    # Resolves each pin via Storage.lookup_by_chunk_id (WIN-216) and
+    # splices into the head of ``hits``, deduped by chunk_id so a
+    # search result that's also pinned doesn't appear twice. Pinning
+    # is always-on (no opt-in flag) — once the agent has pinned, the
+    # signal applies until unpinned.
+    if app.pinned_chunk_ids:
+        from .retrieval.pinning import prepend_pins, resolve_pins
+
+        resolved = resolve_pins(app.storage, app.pinned_chunk_ids)
+        pinned_hits = [r.hit for r in resolved if r.found and r.hit is not None]
+        if pinned_hits:
+            hits = prepend_pins(pinned_hits, hits)
 
     # Compute facets before truncating (on filtered results)
     facets: FacetCounts | None = None
@@ -692,13 +721,24 @@ def search_code(
     # response's chunk_ids into the session's seen set so subsequent
     # `dedup=True` calls skip them. We only record when the caller
     # opted in to dedup — opting out should be transparent.
+    #
+    # WIN-218 interaction: pinned chunks are NOT added to the seen
+    # set. They appear in results because of the explicit pin, not
+    # because the agent organically asked for them — treating them
+    # as "seen" would make a future unpin + dedup'd search drop
+    # them, which is the opposite of what the agent wants.
     if dedup and hits:
-        app.seen_chunk_ids.update(h.chunk_id for h in hits)
+        new_seen = {
+            h.chunk_id for h in hits
+            if h.chunk_id not in app.pinned_chunk_ids
+        }
+        app.seen_chunk_ids.update(new_seen)
         log.info(
             "mcp.search_code.dedup",
             filtered_before_pack=dedup_filtered,
             served=len(hits),
             session_seen_total=len(app.seen_chunk_ids),
+            pinned=len(app.pinned_chunk_ids),
         )
 
     return SearchResponse(
@@ -741,6 +781,149 @@ def reset_dedup(*, ctx: Context) -> ResetDedupResponse:
     app.seen_chunk_ids.clear()
     log.info("mcp.reset_dedup", cleared=count, session_id=app.session_id)
     return ResetDedupResponse(cleared=count)
+
+
+# ---- pin_chunks / unpin_chunks / list_pins (WIN-218) ------------------------
+
+
+class PinResponse(BaseModel):
+    """Outcome of a pin/unpin mutation."""
+
+    pinned: list[str] = Field(
+        description="Chunk ids currently pinned after this operation.",
+    )
+    added: int = Field(
+        default=0,
+        description="How many ids the call added to the pin set.",
+    )
+    removed: int = Field(
+        default=0,
+        description="How many ids the call removed from the pin set.",
+    )
+
+
+class PinListEntry(BaseModel):
+    """One entry in the ``list_pins`` response."""
+
+    chunk_id: str
+    found: bool = Field(
+        description=(
+            "True when the pinned id resolved to a stored chunk. "
+            "False usually means the index was rebuilt since the "
+            "pin was set."
+        ),
+    )
+    result: SearchResult | None = Field(
+        default=None,
+        description="Resolved chunk metadata when found=True.",
+    )
+
+
+class ListPinsResponse(BaseModel):
+    """Response payload for ``list_pins``."""
+
+    entries: list[PinListEntry]
+    found_count: int
+    missing_count: int
+
+
+@mcp.tool(
+    title="Pin chunks to session working set",
+    description=(
+        "WIN-218 — pin one or more chunk_ids so subsequent search_code "
+        "calls always include them at the top of the result list. Use "
+        "for the inverse of reset_dedup: when the agent has determined "
+        "a working set and wants those chunks to stay visible across "
+        "queries without re-issuing the search. Pinning wins over "
+        "dedup (WIN-217): pinned chunks are NEVER filtered out, even "
+        "after they've been served. Idempotent — pinning the same id "
+        "twice is a no-op."
+    ),
+)
+@traced("pin_chunks")
+def pin_chunks(chunk_ids: list[str], *, ctx: Context) -> PinResponse:
+    """Add ``chunk_ids`` to the session's pin set."""
+    app = _ctx(ctx)
+    before = len(app.pinned_chunk_ids)
+    app.pinned_chunk_ids.update(chunk_ids)
+    added = len(app.pinned_chunk_ids) - before
+    log.info(
+        "mcp.pin_chunks",
+        added=added,
+        total=len(app.pinned_chunk_ids),
+        session_id=app.session_id,
+    )
+    return PinResponse(
+        pinned=sorted(app.pinned_chunk_ids),
+        added=added,
+    )
+
+
+@mcp.tool(
+    title="Unpin chunks",
+    description=(
+        "WIN-218 — remove one or more chunk_ids from the session's pin "
+        "set. Use when the working set has shifted: the chunks that "
+        "mattered last turn are no longer relevant. Ids that weren't "
+        "in the set are silently ignored — the response surfaces the "
+        "actual removal count."
+    ),
+)
+@traced("unpin_chunks")
+def unpin_chunks(chunk_ids: list[str], *, ctx: Context) -> PinResponse:
+    """Drop ``chunk_ids`` from the session's pin set."""
+    app = _ctx(ctx)
+    before = len(app.pinned_chunk_ids)
+    app.pinned_chunk_ids.difference_update(chunk_ids)
+    removed = before - len(app.pinned_chunk_ids)
+    log.info(
+        "mcp.unpin_chunks",
+        removed=removed,
+        total=len(app.pinned_chunk_ids),
+        session_id=app.session_id,
+    )
+    return PinResponse(
+        pinned=sorted(app.pinned_chunk_ids),
+        removed=removed,
+    )
+
+
+@mcp.tool(
+    title="List pinned chunks",
+    description=(
+        "WIN-218 — return the current pin set with each chunk's metadata "
+        "(path, line range, symbol). Missing ids (chunks deleted after "
+        "they were pinned) appear with found=False so the agent can "
+        "decide whether to unpin them."
+    ),
+)
+@traced("list_pins")
+def list_pins(*, ctx: Context) -> ListPinsResponse:
+    """Resolve every pinned chunk_id into a structured response."""
+    from .retrieval.pinning import resolve_pins
+
+    app = _ctx(ctx)
+    resolved = resolve_pins(app.storage, app.pinned_chunk_ids)
+    entries: list[PinListEntry] = []
+    found = 0
+    for r in resolved:
+        if r.found and r.hit is not None:
+            entries.append(
+                PinListEntry(
+                    chunk_id=r.chunk_id, found=True,
+                    result=_to_result(r.hit),
+                )
+            )
+            found += 1
+        else:
+            entries.append(
+                PinListEntry(chunk_id=r.chunk_id, found=False, result=None)
+            )
+    return ListPinsResponse(
+        entries=entries,
+        found_count=found,
+        missing_count=len(entries) - found,
+    )
 
 
 # ---- smart search (query routing) ------------------------------------------
