@@ -1520,6 +1520,7 @@ def assemble_context(
     top_k: int = 10,
     include_callers: bool = False,
     include_tests: bool = False,
+    include_rationale: bool = False,
     diff_scope: bool = False,
     diff_ref_a: str | None = None,
     diff_ref_b: str | None = None,
@@ -1542,6 +1543,11 @@ def assemble_context(
             for each primary hit. Costs graph queries; off by default.
         include_tests: when True, also pull tests-that-cover for each
             primary hit. Costs graph queries; off by default.
+        include_rationale: WIN-219 — when True, also pull
+            ``rationale_for`` graph edges (docs / ADRs that explain
+            each primary symbol) and pack them into a "Rationale"
+            section. Lets the agent see code + tests + docs in ONE
+            deduplicated bundle instead of 3 disjoint payloads.
         diff_scope: WIN-211 — when True, filter the primary results
             to only chunks in files touched by the current git diff.
             Use for PR-review workflows where the global top-K is too
@@ -1574,6 +1580,7 @@ def assemble_context(
         top_k=top_k,
         include_callers=include_callers,
         include_tests=include_tests,
+        include_rationale=include_rationale,
         storage=app.storage,
         diff_scope=diff_scope,
         diff_repo=diff_repo,

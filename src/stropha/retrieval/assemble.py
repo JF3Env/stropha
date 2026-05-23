@@ -54,12 +54,15 @@ log = get_logger(__name__)
 # is (section key, human-readable header). The agent reads top-down so
 # primary hits come first; near-misses sit RIGHT after primary so the
 # agent immediately sees "and these LOOK related but are deprecated";
-# graph extensions follow.
+# graph extensions follow. ``rationale`` is the docs/ADR layer
+# (WIN-219) — read after the code so the agent first sees WHAT the
+# code does, then WHY it exists.
 _SECTION_ORDER: tuple[tuple[str, str], ...] = (
     ("primary", "Primary code"),
     ("near_misses", "Near-misses — do NOT confuse with the answer"),
     ("callers", "Callers"),
     ("tests", "Tests"),
+    ("rationale", "Rationale — why this code exists"),
 )
 
 
@@ -163,6 +166,54 @@ def _dedupe_in_order(seen: set[str], hits: Iterable[SearchHit]) -> list[SearchHi
     return fresh
 
 
+def _rationale_node_to_hit(node: dict[str, Any]) -> SearchHit | None:
+    """Convert a ``find_rationale`` graph node dict into a SearchHit.
+
+    Rationale nodes (docs / ADRs) live in the graph mirror, not in
+    the chunks table — they may or may not match an indexed chunk
+    via ``chunk_rel_path``. We synthesise a SearchHit-shaped object
+    so the bundle's downstream layers (pinning, dedup, packing,
+    rendering) treat it like any other span.
+
+    Returns ``None`` when the node lacks even a label — the agent
+    can't act on a span with no identity, so we drop it.
+    """
+    label = node.get("label") or ""
+    if not label:
+        return None
+    node_id = node.get("node_id") or label
+    rel_path = (
+        node.get("chunk_rel_path")
+        or node.get("source_file")
+        or "<rationale>"
+    )
+    start_line = int(node.get("chunk_start_line") or 1)
+    end_line = int(node.get("chunk_end_line") or start_line)
+    snippet = node.get("chunk_snippet") or label
+    # graphify nodes carry a "kind" like "doc" / "adr" / "rationale";
+    # default to "rationale" when missing so the bundle's per-hit
+    # header shows the provenance even on partial data.
+    kind = node.get("kind") or "rationale"
+    edge = node.get("edge") or {}
+    confidence = edge.get("confidence_score")
+    streams = (
+        {"rationale": float(confidence)} if confidence is not None else None
+    )
+    return SearchHit(
+        chunk_id=f"rationale:{node_id}",
+        rel_path=rel_path,
+        start_line=start_line,
+        end_line=end_line,
+        score=float(confidence or 1.0),
+        rank=0,
+        snippet=snippet,
+        language="markdown",
+        kind=kind,
+        symbol=label,
+        streams=streams,
+    )
+
+
 def assemble_context(
     task: str,
     *,
@@ -171,6 +222,7 @@ def assemble_context(
     top_k: int = 10,
     include_callers: bool = False,
     include_tests: bool = False,
+    include_rationale: bool = False,
     storage: Any = None,
     diff_scope: bool = False,
     diff_repo: Any = None,
@@ -194,9 +246,17 @@ def assemble_context(
         include_tests: when True, also fetch tests-that-cover for each
             primary hit (via :func:`stropha.retrieval.graph.find_tests_for`)
             and pack them into a "Tests" section.
+        include_rationale: WIN-219 — when True, also fetch
+            ``rationale_for`` graph edges for each primary symbol
+            (via :func:`stropha.retrieval.graph.find_rationale`) and
+            pack the resulting docs/ADRs into a "Rationale" section.
+            Cross-source fusion — agent gets code + tests + docs in
+            ONE deduplicated working set instead of 3 disjoint
+            payloads.
         storage: storage handle for the graph helpers. Required when
-            ``include_callers`` or ``include_tests`` is True; ignored
-            otherwise. Same handle the SearchEngine was built with.
+            ``include_callers``, ``include_tests``, or
+            ``include_rationale`` is True; ignored otherwise. Same
+            handle the SearchEngine was built with.
         diff_scope: WIN-211 — when True, filter the primary search
             results to only chunks whose ``rel_path`` is in the
             current git diff at ``diff_repo``. Use this for PR
@@ -319,6 +379,35 @@ def assemble_context(
             normalised = [h for h in extras if isinstance(h, SearchHit)]
             test_hits.extend(_dedupe_in_order(seen_chunk_ids, normalised))
 
+    # WIN-219 — fold rationale nodes (docs / ADRs that explain each
+    # primary symbol) into a synthetic SearchHit list. Same dedup +
+    # budget pack pipeline; the rendering layer treats them like any
+    # other section.
+    rationale_hits: list[SearchHit] = []
+    if include_rationale and storage is not None:
+        from .graph import find_rationale as _find_rationale
+
+        for hit in primary_unique:
+            if not hit.symbol:
+                continue
+            try:
+                resp = _find_rationale(storage, hit.symbol, limit=5)
+            except Exception as exc:
+                log.warning(
+                    "assemble.find_rationale_failed",
+                    symbol=hit.symbol, error=str(exc),
+                )
+                continue
+            entries = resp.get("rationale") or []
+            converted = [
+                synth
+                for synth in (_rationale_node_to_hit(n) for n in entries)
+                if synth is not None
+            ]
+            rationale_hits.extend(
+                _dedupe_in_order(seen_chunk_ids, converted)
+            )
+
     # Filter near-misses out of seen_chunk_ids' positive side too —
     # near-miss chunk_ids are already tracked by the dedupe pass via
     # primary_hits, so we don't need to do anything extra. Future
@@ -328,11 +417,16 @@ def assemble_context(
 
     # 3. Single budget pack across the union — primary first (highest
     #    score signal), near-misses next (still high score, just
-    #    flagged), then extensions. The packer's monotonic stop
-    #    means once we overflow we don't sneak smaller hits in from
-    #    later sections — score order wins.
+    #    flagged), then extensions, then rationale (docs/ADRs sit
+    #    after the code so the agent reads "what" before "why").
+    #    The packer's monotonic stop means once we overflow we don't
+    #    sneak smaller hits in from later sections — score order wins.
     ordered_union: list[SearchHit] = (
-        primary_unique + near_miss_hits + caller_hits + test_hits
+        primary_unique
+        + near_miss_hits
+        + caller_hits
+        + test_hits
+        + rationale_hits
     )
     pack = pack_to_budget(ordered_union, context_budget)
     truncated = pack.truncated
@@ -344,6 +438,7 @@ def assemble_context(
     near_misses_packed = [h for h in near_miss_hits if id(h) in packed_set]
     callers_packed = [h for h in caller_hits if id(h) in packed_set]
     tests_packed = [h for h in test_hits if id(h) in packed_set]
+    rationale_packed = [h for h in rationale_hits if id(h) in packed_set]
 
     sections = [
         AssembleSection(key="primary", title=_SECTION_ORDER[0][1],
@@ -354,6 +449,8 @@ def assemble_context(
                         hits=callers_packed),
         AssembleSection(key="tests", title=_SECTION_ORDER[3][1],
                         hits=tests_packed),
+        AssembleSection(key="rationale", title=_SECTION_ORDER[4][1],
+                        hits=rationale_packed),
     ]
     bundle = _render_bundle(task, sections)
     # The packer's total_tokens is the sum of snippet costs; the rendered
@@ -366,6 +463,7 @@ def assemble_context(
         near_misses=len(near_misses_packed),
         callers=len(callers_packed),
         tests=len(tests_packed),
+        rationale=len(rationale_packed),
         budget=context_budget,
         total_tokens=pack.total_tokens,
         spilled=spilled,

@@ -146,7 +146,9 @@ class TestAssembleHappyPath:
         # Primary section header DOES appear.
         assert "## Primary code" in result.bundle
 
-    def test_section_order_primary_near_misses_callers_tests(self) -> None:
+    def test_section_order_primary_near_misses_callers_tests_rationale(
+        self,
+    ) -> None:
         result = assemble_context(
             "task",
             search_engine=_engine([]),
@@ -155,9 +157,13 @@ class TestAssembleHappyPath:
         # Order is fixed regardless of which sections are populated.
         # WIN-215 inserts near_misses between primary and callers so
         # the agent sees "real answer + the deprecated lookalikes
-        # right next to it" before reading caller context.
+        # right next to it" before reading caller context. WIN-219
+        # appends rationale (docs/ADRs) at the end — agent reads
+        # "what" before "why".
         keys = [s.key for s in result.sections]
-        assert keys == ["primary", "near_misses", "callers", "tests"]
+        assert keys == [
+            "primary", "near_misses", "callers", "tests", "rationale",
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -308,6 +314,231 @@ class TestGraphExtensions:
                 context_budget=4000,
             )
         mock_tests.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# include_rationale (WIN-219)
+# ---------------------------------------------------------------------------
+
+
+class TestRationaleSection:
+    """Cross-source fusion (WIN-219): assemble_context can pull
+    ``rationale_for`` graph edges and pack the docs/ADRs into a
+    dedicated section, deduped against the primary search results."""
+
+    def test_include_rationale_adds_rationale_section(self) -> None:
+        primary = _hit("def auth(): pass", chunk_id="c1", symbol="auth")
+        with patch(
+            "stropha.retrieval.graph.find_rationale",
+            return_value={
+                "symbol": "auth",
+                "resolved_node": "auth",
+                "rationale": [
+                    {
+                        "node_id": "adr-0042",
+                        "label": "ADR-0042: JWT auth decision",
+                        "kind": "adr",
+                        "source_file": "docs/adr/0042.md",
+                        "edge": {"confidence_score": 0.92},
+                    },
+                ],
+            },
+        ):
+            result = assemble_context(
+                "task",
+                search_engine=_engine([primary]),
+                storage=MagicMock(),
+                include_rationale=True,
+                context_budget=4000,
+            )
+        rationale = next(s for s in result.sections if s.key == "rationale")
+        assert len(rationale.hits) == 1
+        assert "ADR-0042" in rationale.hits[0].symbol
+        # Rationale section header rendered.
+        assert "Rationale" in result.bundle
+
+    def test_rationale_without_storage_silently_skips(self) -> None:
+        primary = _hit("def auth(): pass", chunk_id="c1", symbol="auth")
+        result = assemble_context(
+            "task",
+            search_engine=_engine([primary]),
+            storage=None,
+            include_rationale=True,
+            context_budget=4000,
+        )
+        rationale = next(s for s in result.sections if s.key == "rationale")
+        assert rationale.hits == []
+
+    def test_rationale_skipped_when_primary_has_no_symbol(self) -> None:
+        primary = _hit("contents", chunk_id="c1", symbol=None)
+        with patch(
+            "stropha.retrieval.graph.find_rationale", return_value={}
+        ) as mock_rat:
+            assemble_context(
+                "task",
+                search_engine=_engine([primary]),
+                storage=MagicMock(),
+                include_rationale=True,
+                context_budget=4000,
+            )
+        # No symbol → no call (continue branch).
+        mock_rat.assert_not_called()
+
+    def test_find_rationale_exception_caught(self) -> None:
+        """find_rationale failure must NOT crash the agent's call —
+        same defensive contract as find_callers / find_tests_for."""
+        primary = _hit("def auth(): pass", chunk_id="c1", symbol="auth")
+        with patch(
+            "stropha.retrieval.graph.find_rationale",
+            side_effect=RuntimeError("graph not loaded"),
+        ):
+            result = assemble_context(
+                "task",
+                search_engine=_engine([primary]),
+                storage=MagicMock(),
+                include_rationale=True,
+                context_budget=4000,
+            )
+        rationale = next(s for s in result.sections if s.key == "rationale")
+        assert rationale.hits == []
+
+    def test_rationale_node_without_label_dropped(self) -> None:
+        """A node without a ``label`` field can't be acted on by the
+        agent (no identity). ``_rationale_node_to_hit`` returns None
+        and the entry is silently dropped."""
+        primary = _hit("def auth(): pass", chunk_id="c1", symbol="auth")
+        with patch(
+            "stropha.retrieval.graph.find_rationale",
+            return_value={
+                "symbol": "auth",
+                "rationale": [
+                    {"node_id": "no-label", "kind": "doc"},  # missing label
+                    {"node_id": "good", "label": "Real ADR", "kind": "adr"},
+                ],
+            },
+        ):
+            result = assemble_context(
+                "task",
+                search_engine=_engine([primary]),
+                storage=MagicMock(),
+                include_rationale=True,
+                context_budget=4000,
+            )
+        rationale = next(s for s in result.sections if s.key == "rationale")
+        # Only the labelled entry survives.
+        assert len(rationale.hits) == 1
+        assert rationale.hits[0].symbol == "Real ADR"
+
+    def test_rationale_node_with_confidence_populates_provenance(
+        self,
+    ) -> None:
+        """A rationale node's edge confidence_score becomes the
+        synthetic hit's ``streams`` map under the ``rationale`` key —
+        WIN-214 provenance picks this up automatically."""
+        primary = _hit("def auth(): pass", chunk_id="c1", symbol="auth")
+        with patch(
+            "stropha.retrieval.graph.find_rationale",
+            return_value={
+                "symbol": "auth",
+                "rationale": [
+                    {
+                        "node_id": "adr",
+                        "label": "ADR",
+                        "kind": "adr",
+                        "edge": {"confidence_score": 0.87},
+                    },
+                ],
+            },
+        ):
+            result = assemble_context(
+                "task",
+                search_engine=_engine([primary]),
+                storage=MagicMock(),
+                include_rationale=True,
+                context_budget=4000,
+            )
+        rationale = next(s for s in result.sections if s.key == "rationale")
+        assert rationale.hits[0].streams == {"rationale": 0.87}
+
+    def test_rationale_uses_chunk_path_when_available(self) -> None:
+        """When the graph node was matched to a stropha chunk, use the
+        chunk_rel_path; otherwise fall back to source_file; otherwise
+        the ``<rationale>`` sentinel."""
+        primary = _hit("def auth(): pass", chunk_id="c1", symbol="auth")
+        with patch(
+            "stropha.retrieval.graph.find_rationale",
+            return_value={
+                "symbol": "auth",
+                "rationale": [
+                    {
+                        "node_id": "with-chunk",
+                        "label": "With chunk path",
+                        "chunk_rel_path": "docs/adr/0042.md",
+                        "chunk_start_line": 10,
+                        "chunk_end_line": 20,
+                    },
+                    {
+                        "node_id": "with-source-only",
+                        "label": "Source only",
+                        "source_file": "docs/foo.md",
+                    },
+                    {
+                        "node_id": "no-path",
+                        "label": "Bare label",
+                    },
+                ],
+            },
+        ):
+            result = assemble_context(
+                "task",
+                search_engine=_engine([primary]),
+                storage=MagicMock(),
+                include_rationale=True,
+                context_budget=4000,
+            )
+        rationale = next(s for s in result.sections if s.key == "rationale")
+        paths = [h.rel_path for h in rationale.hits]
+        assert "docs/adr/0042.md" in paths
+        assert "docs/foo.md" in paths
+        assert "<rationale>" in paths
+
+
+# ---------------------------------------------------------------------------
+# Rationale conversion helper (unit-level)
+# ---------------------------------------------------------------------------
+
+
+class TestRationaleNodeToHit:
+    def test_unlabeled_node_returns_none(self) -> None:
+        from stropha.retrieval.assemble import _rationale_node_to_hit
+
+        assert _rationale_node_to_hit({"node_id": "x"}) is None
+        assert _rationale_node_to_hit({}) is None
+
+    def test_labeled_node_returns_searchhit_synth(self) -> None:
+        from stropha.retrieval.assemble import _rationale_node_to_hit
+
+        out = _rationale_node_to_hit({
+            "node_id": "n1",
+            "label": "Foo doc",
+            "kind": "doc",
+            "source_file": "docs/foo.md",
+        })
+        assert out is not None
+        assert out.chunk_id == "rationale:n1"
+        assert out.symbol == "Foo doc"
+        assert out.kind == "doc"
+        assert out.rel_path == "docs/foo.md"
+        assert out.language == "markdown"
+
+    def test_missing_kind_defaults_to_rationale(self) -> None:
+        from stropha.retrieval.assemble import _rationale_node_to_hit
+
+        out = _rationale_node_to_hit({
+            "node_id": "n1", "label": "X",
+        })
+        assert out is not None
+        assert out.kind == "rationale"
 
 
 # ---------------------------------------------------------------------------
