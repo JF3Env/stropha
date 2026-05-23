@@ -3742,6 +3742,110 @@ def assert_snippet_freshness_tool(
     )
 
 
+# ---- test_impact (WIN-248) -------------------------------------------------
+
+
+class ImpactedTestEntry(BaseModel):
+    path: str
+    symbol: str = ""
+    via: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Routes through which this test was reached: 'direct' "
+            "for find_tests_for matches, or the caller symbol name "
+            "for indirect hits."
+        ),
+    )
+
+
+class TestImpactResponse(BaseModel):
+    """Outcome of ``test_impact_tool``."""
+
+    changed_symbols: list[str] = Field(default_factory=list)
+    tests: list[ImpactedTestEntry] = Field(default_factory=list)
+    per_symbol: dict[str, int] = Field(
+        default_factory=dict,
+        description="Per-symbol count of tests unique to that change.",
+    )
+    notes: list[str] = Field(default_factory=list)
+    run_command: str = Field(
+        default="",
+        description=(
+            "One-line invocation that runs exactly the impacted "
+            "tests. Empty when no tests were identified."
+        ),
+    )
+    graph_loaded: bool = Field(
+        description=(
+            "False when the graphify mirror is unavailable — every "
+            "section will be empty."
+        ),
+    )
+
+
+@mcp.tool(
+    title="Test-impact analysis",
+    description=(
+        "WIN-248 — given the changed symbols, compute the minimal "
+        "test set that should run. Direct tests via find_tests_for "
+        "plus (when transitive_depth>=1) tests covering immediate "
+        "callers. Returns a ready-to-paste run_command (pytest "
+        "by default; pass runner='go test' / 'npm test' for other "
+        "ecosystems). Never raises."
+    ),
+)
+@traced("test_impact")
+def test_impact_tool(
+    symbols: list[str],
+    transitive_depth: int = 1,
+    runner: str = "pytest",
+    *,
+    ctx: Context,
+) -> TestImpactResponse:
+    """Compute the impacted test set for the changed symbols."""
+    from .retrieval.test_impact import analyse_test_impact
+    from .retrieval.graph import (
+        find_callers as _find_callers,
+        find_tests_for as _find_tests_for,
+    )
+
+    app = _ctx(ctx)
+    graph_ok = graph_loaded(app.storage)
+    if not graph_ok:
+        return TestImpactResponse(
+            changed_symbols=[s.strip() for s in symbols if s and s.strip()],
+            graph_loaded=False,
+            run_command="",
+            notes=["graph_loaded=False"],
+        )
+
+    def _tests(symbol: str) -> dict:
+        return _find_tests_for(app.storage, symbol)
+
+    def _callers(symbol: str) -> dict:
+        return _find_callers(app.storage, symbol)
+
+    report = analyse_test_impact(
+        symbols,
+        tests_fn=_tests,
+        callers_fn=_callers,
+        transitive_depth=max(0, int(transitive_depth)),
+        runner=str(runner) if runner else "pytest",
+    )
+
+    return TestImpactResponse(
+        changed_symbols=report.changed_symbols,
+        tests=[
+            ImpactedTestEntry(path=t.path, symbol=t.symbol, via=list(t.via))
+            for t in report.tests
+        ],
+        per_symbol=dict(report.per_symbol),
+        notes=list(report.notes),
+        run_command=report.run_command,
+        graph_loaded=True,
+    )
+
+
 # ---- entry point -----------------------------------------------------------
 
 def main() -> None:
