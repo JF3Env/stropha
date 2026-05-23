@@ -40,6 +40,7 @@ The original development target is the sibling **Mimoria** repository at `../mim
 | v9 | `project_memory` table (id, repo_id FK, kind, key, value, source, created_at, updated_at, expires_at) + UNIQUE(repo_id,kind,key) | EPIC 1.9 WIN-222 — per-repo long-term notes; agent curates decisions / constraints / anchor facts that survive sessions and process restarts. |
 | v10 | `episodes` table (id, repo_id FK, session_id, title, summary, touched_files JSON, touched_symbols JSON, created_at, updated_at) | EPIC 1.9 WIN-225 — append-only timeline of agent tasks; backs `record_episode` / `recall_episodes` / `co_occurrence` MCP tools so the agent can ask "what do I usually touch alongside X?". |
 | v11 | `project_memory.provenance_commit` + `episodes.provenance_commit` columns | EPIC 1.9 WIN-228 — records git HEAD SHA at write time. Backs the `check_staleness` MCP tool: diffs the recorded SHA against current HEAD so the agent can detect when a memory is obsolete. |
+| v12 | `sessions.scratchpad TEXT NOT NULL DEFAULT ''` column | EPIC 1.9 WIN-229 — durable per-session free-form notes; backs the `scratchpad_*` MCP tools (read / write / append / clear). Survives MCP-server restarts via the same write-through path as seen_chunk_ids / pinned_chunk_ids. |
 
 All migrations are forward-only and idempotent (`_add_column_if_missing` + `CREATE TABLE IF NOT EXISTS`). Legacy NULL `enricher_id` is treated as `'noop'` so v1/v2 dbs upgrade without full re-embed.
 

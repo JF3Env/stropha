@@ -198,6 +198,14 @@ class SessionRecord(BaseModel):
             "follow-on column additions."
         ),
     )
+    scratchpad: str = Field(
+        default="",
+        description=(
+            "Durable free-form working notes for the current task "
+            "(WIN-229). Survives MCP-server restarts via the "
+            "Schema-v12 ``sessions.scratchpad`` column."
+        ),
+    )
 
 
 class EpisodeRecord(BaseModel):

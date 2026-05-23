@@ -107,6 +107,11 @@ class AppContext:
     ``search_code`` queries. Used when the agent passes
     ``conversation_aware=True`` to bias retrieval toward the current
     conversation thread instead of treating each query as amnesic.
+
+    ``scratchpad`` (WIN-229) — durable free-form working notes that
+    survive MCP-server restarts via the Schema-v12
+    ``sessions.scratchpad`` column. Mutated via the
+    ``scratchpad_*`` MCP tools.
     """
 
     config: Config
@@ -123,6 +128,7 @@ class AppContext:
     recent_queries: deque[str] = field(
         default_factory=lambda: deque(maxlen=5)
     )
+    scratchpad: str = ""
 
 
 @asynccontextmanager
@@ -217,6 +223,7 @@ async def _lifespan(app: FastMCP) -> AsyncIterator[AppContext]:
             prior = prior_sessions[0]
             seen_chunk_ids = set(prior.seen_chunk_ids)
             pinned_chunk_ids = set(prior.pinned_chunk_ids)
+            prior_scratchpad = prior.scratchpad or ""
             # Reuse the same session_id so cross-restart correlation
             # via the trace recorder stays cheap.
             session_id = prior.session_id
@@ -226,22 +233,29 @@ async def _lifespan(app: FastMCP) -> AsyncIterator[AppContext]:
                 client_id=client_id,
                 seen=len(seen_chunk_ids),
                 pinned=len(pinned_chunk_ids),
+                scratchpad_chars=len(prior_scratchpad),
             )
+        else:
+            prior_scratchpad = ""
+    else:
+        prior_scratchpad = ""
 
+    app_ctx = AppContext(
+        config=cfg,
+        storage=storage,
+        embedder=embedder,
+        search_engine=engine,
+        built=built,
+        session_id=session_id,
+        trace_recorder=trace_recorder,
+        bad_result_store=bad_result_store,
+        seen_chunk_ids=seen_chunk_ids,
+        pinned_chunk_ids=pinned_chunk_ids,
+        client_id=client_id,
+        scratchpad=prior_scratchpad,
+    )
     try:
-        yield AppContext(
-            config=cfg,
-            storage=storage,
-            embedder=embedder,
-            search_engine=engine,
-            built=built,
-            session_id=session_id,
-            trace_recorder=trace_recorder,
-            bad_result_store=bad_result_store,
-            seen_chunk_ids=seen_chunk_ids,
-            pinned_chunk_ids=pinned_chunk_ids,
-            client_id=client_id,
-        )
+        yield app_ctx
     finally:
         if watcher is not None:
             watcher.stop()
@@ -253,12 +267,16 @@ async def _lifespan(app: FastMCP) -> AsyncIterator[AppContext]:
         # WIN-221: persist the final session state so the next process
         # picks up where we left off. We do this in ``finally`` so an
         # exception during the MCP yield doesn't lose the working set.
+        # WIN-229 extends this to flush the scratchpad too — we read
+        # from the LIVE app_ctx (not the startup-time prior_scratchpad)
+        # so in-flight mutations during the session land on disk.
         try:
             storage.upsert_session(
                 session_id=session_id,
                 client_id=client_id,
-                seen_chunk_ids=seen_chunk_ids,
-                pinned_chunk_ids=pinned_chunk_ids,
+                seen_chunk_ids=app_ctx.seen_chunk_ids,
+                pinned_chunk_ids=app_ctx.pinned_chunk_ids,
+                scratchpad=app_ctx.scratchpad,
             )
         except Exception as exc:  # noqa: BLE001 — defensive shutdown
             log.warning("mcp.sessions.persist_failed", error=str(exc))
@@ -502,6 +520,7 @@ def _persist_session_state(app: AppContext) -> None:
             client_id=app.client_id,
             seen_chunk_ids=app.seen_chunk_ids,
             pinned_chunk_ids=app.pinned_chunk_ids,
+            scratchpad=app.scratchpad,
         )
     except Exception as exc:  # noqa: BLE001 — defensive
         log.warning(
@@ -1580,6 +1599,109 @@ def forget(kind: str, key: str, *, ctx: Context) -> ForgetResponse:
         return ForgetResponse(removed=False, kind=kind, key=key)
     removed = app.storage.forget(repo_id=repo_id, kind=kind, key=key)
     return ForgetResponse(removed=removed, kind=kind, key=key)
+
+
+# ---- scratchpad (WIN-229, EPIC 1.9 #21) ------------------------------------
+
+
+class ScratchpadResponse(BaseModel):
+    """Outcome of any scratchpad mutation. Returns the full
+    post-mutation content so the agent can verify the write."""
+
+    content: str
+    char_count: int
+
+
+@mcp.tool(
+    title="Read scratchpad",
+    description=(
+        "WIN-229 — read the durable per-session scratchpad: a "
+        "persistent place for working notes about the current task. "
+        "Survives MCP-server restarts when STROPHA_CLIENT_ID is set "
+        "(via the Schema-v12 sessions.scratchpad column). Use to "
+        "stash decisions, intermediate findings, file paths to revisit, "
+        "etc. — anything that should outlive a single turn but isn't "
+        "yet a stable project_memory fact."
+    ),
+)
+@traced("scratchpad_read")
+def scratchpad_read(*, ctx: Context) -> ScratchpadResponse:
+    """Return the current scratchpad content."""
+    app = _ctx(ctx)
+    return ScratchpadResponse(
+        content=app.scratchpad,
+        char_count=len(app.scratchpad),
+    )
+
+
+@mcp.tool(
+    title="Write scratchpad",
+    description=(
+        "WIN-229 — REPLACE the scratchpad content entirely. Use when "
+        "the agent is rewriting its notes from scratch (e.g. starting "
+        "a new task). For incremental notes, use scratchpad_append. "
+        "Persisted to disk via the same write-through path as "
+        "WIN-217 dedup + WIN-218 pins (gated on STROPHA_CLIENT_ID)."
+    ),
+)
+@traced("scratchpad_write")
+def scratchpad_write(content: str, *, ctx: Context) -> ScratchpadResponse:
+    """Overwrite the scratchpad with ``content``."""
+    app = _ctx(ctx)
+    app.scratchpad = content
+    _persist_session_state(app)
+    return ScratchpadResponse(
+        content=app.scratchpad,
+        char_count=len(app.scratchpad),
+    )
+
+
+@mcp.tool(
+    title="Append to scratchpad",
+    description=(
+        "WIN-229 — append ``text`` to the existing scratchpad. Adds a "
+        "newline separator if the existing content doesn't end with "
+        "one. Idiomatic for the agent's running 'what I learned this "
+        "turn' notes."
+    ),
+)
+@traced("scratchpad_append")
+def scratchpad_append(text: str, *, ctx: Context) -> ScratchpadResponse:
+    """Append ``text`` to the scratchpad with newline normalisation."""
+    app = _ctx(ctx)
+    if not text:
+        # Don't dirty the persistence path for a no-op call.
+        return ScratchpadResponse(
+            content=app.scratchpad,
+            char_count=len(app.scratchpad),
+        )
+    if app.scratchpad and not app.scratchpad.endswith("\n"):
+        app.scratchpad = app.scratchpad + "\n" + text
+    else:
+        app.scratchpad = app.scratchpad + text
+    _persist_session_state(app)
+    return ScratchpadResponse(
+        content=app.scratchpad,
+        char_count=len(app.scratchpad),
+    )
+
+
+@mcp.tool(
+    title="Clear scratchpad",
+    description=(
+        "WIN-229 — wipe the scratchpad. Returns the empty content "
+        "so the agent can verify the clear succeeded. The next "
+        "session resume (same STROPHA_CLIENT_ID) starts with an "
+        "empty pad."
+    ),
+)
+@traced("scratchpad_clear")
+def scratchpad_clear(*, ctx: Context) -> ScratchpadResponse:
+    """Empty the scratchpad."""
+    app = _ctx(ctx)
+    app.scratchpad = ""
+    _persist_session_state(app)
+    return ScratchpadResponse(content="", char_count=0)
 
 
 # ---- staleness check (WIN-228, EPIC 1.9 #20) -------------------------------

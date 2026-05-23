@@ -47,7 +47,7 @@ log = get_logger(__name__)
 #     `graph_edges` tables to allow multiple repos with their own graphify
 #     graphs to share a single stropha index. Node IDs are prefixed with
 #     repo_id to avoid collisions across repos.
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 
 def _serialize_vector(vec: list[float]) -> bytes:
@@ -653,6 +653,15 @@ class Storage:
         )
         self._add_column_if_missing(
             "episodes", "provenance_commit", "TEXT"
+        )
+
+        # v12: scratchpad column on sessions (WIN-229). Durable
+        # free-form text the agent uses as working notes for the
+        # current task. Survives MCP-server restarts via the same
+        # write-through path as seen_chunk_ids / pinned_chunk_ids.
+        # Default empty string so existing v8+ rows upgrade cleanly.
+        self._add_column_if_missing(
+            "sessions", "scratchpad", "TEXT NOT NULL DEFAULT ''"
         )
 
         cur.execute(
@@ -1621,7 +1630,7 @@ class Storage:
 
         row = self._conn.execute(
             """SELECT session_id, client_id, created_at, updated_at,
-                      seen_chunk_ids, pinned_chunk_ids, meta
+                      seen_chunk_ids, pinned_chunk_ids, meta, scratchpad
                FROM sessions WHERE session_id = ?""",
             (session_id,),
         ).fetchone()
@@ -1640,6 +1649,10 @@ class Storage:
                 session_id=session_id,
             )
             seen, pinned, meta = set(), set(), {}
+        scratchpad = (
+            row["scratchpad"] or ""
+            if "scratchpad" in row.keys() else ""
+        )
         return SessionRecord(
             session_id=row["session_id"],
             client_id=row["client_id"],
@@ -1648,6 +1661,7 @@ class Storage:
             seen_chunk_ids=seen,
             pinned_chunk_ids=pinned,
             meta=meta,
+            scratchpad=scratchpad,
         )
 
     def upsert_session(
@@ -1658,6 +1672,7 @@ class Storage:
         seen_chunk_ids: set[str] | None = None,
         pinned_chunk_ids: set[str] | None = None,
         meta: dict[str, Any] | None = None,
+        scratchpad: str | None = None,
     ) -> "SessionRecord":
         """Insert or update a session row. Idempotent.
 
@@ -1675,21 +1690,25 @@ class Storage:
         now = datetime.now(UTC).isoformat()
         cur = self._conn.cursor()
         existing = cur.execute(
-            "SELECT created_at, client_id FROM sessions WHERE session_id = ?",
+            "SELECT created_at, client_id, scratchpad FROM sessions WHERE session_id = ?",
             (session_id,),
         ).fetchone()
         seen_json = json.dumps(sorted(seen_chunk_ids or set()))
         pinned_json = json.dumps(sorted(pinned_chunk_ids or set()))
         meta_json = json.dumps(meta or {}, sort_keys=True)
+        # WIN-229: preserve scratchpad on update when caller passes
+        # None (the common case — most upserts only touch the chunk
+        # sets). Pass an empty string explicitly to clear.
         if existing is None:
+            scratchpad_resolved = scratchpad or ""
             cur.execute(
                 """INSERT INTO sessions (
                        session_id, client_id, created_at, updated_at,
-                       seen_chunk_ids, pinned_chunk_ids, meta
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                       seen_chunk_ids, pinned_chunk_ids, meta, scratchpad
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id, client_id, now, now,
-                    seen_json, pinned_json, meta_json,
+                    seen_json, pinned_json, meta_json, scratchpad_resolved,
                 ),
             )
             created_at = now
@@ -1700,15 +1719,19 @@ class Storage:
             resolved_client_id = (
                 client_id if client_id is not None else existing["client_id"]
             )
+            scratchpad_resolved = (
+                scratchpad if scratchpad is not None
+                else (existing["scratchpad"] or "")
+            )
             cur.execute(
                 """UPDATE sessions
                        SET client_id = ?, updated_at = ?,
                            seen_chunk_ids = ?, pinned_chunk_ids = ?,
-                           meta = ?
+                           meta = ?, scratchpad = ?
                      WHERE session_id = ?""",
                 (
                     resolved_client_id, now, seen_json, pinned_json,
-                    meta_json, session_id,
+                    meta_json, scratchpad_resolved, session_id,
                 ),
             )
             created_at = existing["created_at"]
@@ -1721,6 +1744,7 @@ class Storage:
             seen_chunk_ids=set(seen_chunk_ids or set()),
             pinned_chunk_ids=set(pinned_chunk_ids or set()),
             meta=dict(meta or {}),
+            scratchpad=scratchpad_resolved,
         )
 
     def delete_session(self, session_id: str) -> bool:
@@ -1746,14 +1770,14 @@ class Storage:
         if client_id is None:
             rows = self._conn.execute(
                 """SELECT session_id, client_id, created_at, updated_at,
-                          seen_chunk_ids, pinned_chunk_ids, meta
+                          seen_chunk_ids, pinned_chunk_ids, meta, scratchpad
                    FROM sessions ORDER BY updated_at DESC LIMIT ?""",
                 (limit,),
             ).fetchall()
         else:
             rows = self._conn.execute(
                 """SELECT session_id, client_id, created_at, updated_at,
-                          seen_chunk_ids, pinned_chunk_ids, meta
+                          seen_chunk_ids, pinned_chunk_ids, meta, scratchpad
                    FROM sessions
                    WHERE client_id = ?
                    ORDER BY updated_at DESC LIMIT ?""",
@@ -1771,6 +1795,10 @@ class Storage:
                     session_id=row["session_id"],
                 )
                 seen, pinned, meta = set(), set(), {}
+            scratchpad = (
+                row["scratchpad"] or ""
+                if "scratchpad" in row.keys() else ""
+            )
             out.append(
                 SessionRecord(
                     session_id=row["session_id"],
@@ -1780,6 +1808,7 @@ class Storage:
                     seen_chunk_ids=seen,
                     pinned_chunk_ids=pinned,
                     meta=meta,
+                    scratchpad=scratchpad,
                 )
             )
         return out

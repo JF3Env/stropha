@@ -307,6 +307,11 @@ class TestSessionPersistenceWriteThrough:
         app.storage = storage
         app.seen_chunk_ids = set()
         app.pinned_chunk_ids = set()
+        # WIN-229: scratchpad field on AppContext means
+        # ``_persist_session_state`` reads it now. Without an explicit
+        # string, the MagicMock attribute would be a MagicMock object
+        # that SQLite can't bind.
+        app.scratchpad = ""
         return app
 
     def test_persist_skipped_when_no_client_id(self, storage: Storage) -> None:
