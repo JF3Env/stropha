@@ -282,6 +282,20 @@ class SearchResult(BaseModel):
         default=None,
         description="Source repository identity (URL, branch, HEAD).",
     )
+    # WIN-214 — per-hit provenance. Tells the agent WHICH retrieval
+    # streams contributed to this hit so it can self-audit context.
+    # e.g. {"dense": 0.0164, "sparse": 0.0162} means dense + sparse
+    # both surfaced the chunk via RRF; a symbol-only hit would have
+    # {"symbol": <score>} and signal a literal-match.
+    streams: dict[str, float] | None = Field(
+        default=None,
+        description=(
+            "WIN-214: per-stream RRF contributions when the hit came "
+            "from a fused retrieval. Keys: dense | sparse | symbol | "
+            "graph-vec. None for single-stream short-circuit hits "
+            "where no fusion happened."
+        ),
+    )
 
 
 class FacetCounts(BaseModel):
@@ -416,6 +430,9 @@ def _to_result(hit) -> SearchResult:  # type: ignore[no-untyped-def]
         snippet=hit.snippet,
         chunk_id=hit.chunk_id,
         repo=repo,
+        # WIN-214: pass through per-stream RRF contributions so the
+        # agent can self-audit which retrieval lanes contributed.
+        streams=hit.streams,
     )
 
 

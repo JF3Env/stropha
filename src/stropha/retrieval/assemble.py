@@ -97,10 +97,13 @@ def _format_span(hit: SearchHit) -> str:
 
         ### {rel_path}:{start_line}-{end_line} — {symbol or kind}
 
-    Followed by a fenced code block tagged with the chunk's language
-    when known. The language tag lets the agent's syntax highlighter
-    pick the right grammar.
+    Followed by an optional ``> provenance: ...`` line (WIN-214) when
+    the hit carries a ``streams`` map, then a fenced code block tagged
+    with the chunk's language when known. The provenance line lets the
+    agent self-audit which retrieval streams contributed to the hit.
     """
+    from .provenance import hit_provenance_line
+
     symbol = hit.symbol or hit.kind or "code"
     repo_hint = ""
     if hit.repo and hit.repo.normalized_key:
@@ -111,8 +114,13 @@ def _format_span(hit: SearchHit) -> str:
     header = (
         f"### {hit.rel_path}:{hit.start_line}-{hit.end_line} — {symbol}"
     )
+    provenance = hit_provenance_line(hit)
     fence_lang = (hit.language or "").lower()
     body = hit.snippet or ""
+    if provenance:
+        return (
+            f"{header}{repo_hint}\n{provenance}\n```{fence_lang}\n{body}\n```"
+        )
     return f"{header}{repo_hint}\n```{fence_lang}\n{body}\n```"
 
 
