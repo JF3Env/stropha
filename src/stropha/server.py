@@ -4185,6 +4185,152 @@ def contract_tests_tool(
     )
 
 
+# ---- working_set (WIN-253) -------------------------------------------------
+
+
+class WorkingSetEntryModel(BaseModel):
+    chunk_id: str
+    path: str = ""
+    symbol: str = ""
+    kind: str = ""
+    start_line: int = 0
+    end_line: int = 0
+    snippet: str = ""
+    role: str = Field(description="'pinned' or 'recent'.")
+    tokens: int = 0
+
+
+class WorkingSetResponse(BaseModel):
+    """Outcome of ``working_set_tool`` / ``working_set_resource``."""
+
+    session_id: str
+    entries: list[WorkingSetEntryModel] = Field(default_factory=list)
+    total_tokens: int = 0
+    budget_tokens: int = 0
+    pinned_count: int = 0
+    recent_count: int = 0
+    dropped_count: int = Field(
+        default=0,
+        description="Recent chunks dropped because the budget was tight.",
+    )
+    markdown: str = Field(
+        default="",
+        description="Rendered markdown bundle suitable for an LLM prompt.",
+    )
+    notes: list[str] = Field(default_factory=list)
+
+
+@mcp.tool(
+    title="Build the current working set",
+    description=(
+        "WIN-253 — assemble the session's working set (pinned + "
+        "recent chunks) into a markdown bundle ready to plug into "
+        "the next LLM prompt. Pinned chunks are always included; "
+        "recent chunks are packed under budget_tokens. Defaults to "
+        "the current session; pass session_id to query another."
+    ),
+)
+@traced("working_set")
+def working_set_tool(
+    session_id: str = "",
+    budget_tokens: int = 4000,
+    max_recent: int = 20,
+    *,
+    ctx: Context,
+) -> WorkingSetResponse:
+    """Assemble the working set for the current (or given) session."""
+    from .retrieval.working_set import build_working_set
+
+    app = _ctx(ctx)
+    sid = (session_id or "").strip() or app.session_id
+
+    if session_id:
+        # Pull pinned + seen from the sessions table via SessionRecord.
+        pinned = []
+        seen = []
+        try:
+            record = app.storage.get_session(session_id)
+        except Exception:
+            record = None
+        if record is not None:
+            pinned = list(record.pinned_chunk_ids)
+            seen = list(record.seen_chunk_ids)
+    else:
+        pinned = list(app.pinned_chunk_ids)
+        seen = list(app.seen_chunk_ids)
+
+    def _lookup(cid: str):
+        try:
+            return app.storage.lookup_by_chunk_id(cid)
+        except Exception:
+            return None
+
+    ws = build_working_set(
+        pinned, seen,
+        lookup_fn=_lookup,
+        session_id=sid,
+        budget_tokens=max(0, int(budget_tokens)),
+        max_recent=max(0, int(max_recent)),
+    )
+
+    return WorkingSetResponse(
+        session_id=ws.session_id,
+        entries=[
+            WorkingSetEntryModel(
+                chunk_id=e.chunk_id, path=e.path, symbol=e.symbol,
+                kind=e.kind, start_line=e.start_line, end_line=e.end_line,
+                snippet=e.snippet, role=e.role, tokens=e.tokens,
+            )
+            for e in ws.entries
+        ],
+        total_tokens=ws.total_tokens,
+        budget_tokens=ws.budget_tokens,
+        pinned_count=ws.pinned_count,
+        recent_count=ws.recent_count,
+        dropped_count=ws.dropped_count,
+        markdown=ws.markdown,
+        notes=list(ws.notes),
+    )
+
+
+@mcp.resource("stropha://working-set")
+def working_set_resource() -> str:
+    """Resource view of the most-recently-updated session's working
+    set, rendered as markdown.
+
+    FastMCP resources can't read the AppContext, so this opens its
+    own Storage handle (same pattern as ``index_stats_resource``)
+    and pulls the latest session row from the v8 ``sessions``
+    table. Returns a plain markdown string suitable for the
+    ``contents`` field of an MCP resource response.
+    """
+    from .retrieval.working_set import build_working_set
+
+    resolved = load_pipeline_config()
+    built = build_stages(resolved)
+    with built.storage as storage:
+        try:
+            record = storage.get_latest_session()
+        except Exception:
+            record = None
+        if record is None:
+            return "# Working set\n\n_no session state yet._\n"
+
+        def _lookup(cid: str):
+            try:
+                return storage.lookup_by_chunk_id(cid)
+            except Exception:
+                return None
+
+        ws = build_working_set(
+            list(record.pinned_chunk_ids),
+            list(record.seen_chunk_ids),
+            lookup_fn=_lookup,
+            session_id=record.session_id,
+        )
+    return ws.markdown
+
+
 # ---- entry point -----------------------------------------------------------
 
 def main() -> None:

@@ -1701,6 +1701,23 @@ class Storage:
             scratchpad=scratchpad,
         )
 
+    def get_latest_session(self) -> "SessionRecord | None":
+        """Return the most-recently-updated session row, or ``None``
+        when the table is empty.
+
+        Backs WIN-253's ``stropha://working-set`` resource — that
+        FastMCP resource can't access the lifespan AppContext, so
+        we surface the freshest session row from the v8 ``sessions``
+        table instead.
+        """
+        row = self._conn.execute(
+            """SELECT session_id FROM sessions
+               ORDER BY updated_at DESC LIMIT 1"""
+        ).fetchone()
+        if row is None:
+            return None
+        return self.get_session(row["session_id"])
+
     def upsert_session(
         self,
         session_id: str,
