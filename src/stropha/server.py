@@ -484,6 +484,7 @@ def search_code(
     refresh: bool = False,
     context_budget: int | None = None,
     compress: bool = False,
+    card_level: str = "full",
     *,
     ctx: Context,
 ) -> SearchResponse:
@@ -512,6 +513,11 @@ def search_code(
             the query, a small surrounding context window, and an
             ``# ... (N lines elided)`` marker for skipped blocks. Doubles
             useful-signal-per-token without losing recall.
+        card_level: Disclosure level for each hit's snippet (WIN-212).
+            One of "line" (path:lines symbol [kind]), "paragraph"
+            (signature + docstring), or "full" (default, classic).
+            Lower levels make scanning a result set cheaper; the agent
+            can expand specific hits via get_symbol once it has triaged.
     """
     import os
 
@@ -578,6 +584,20 @@ def search_code(
         from .retrieval.compression import compress_hits
 
         hits = compress_hits(hits, query)
+
+    # WIN-212: Apply card-level rendering BEFORE packing so the budget
+    # reflects the smaller per-hit cost. "full" is a no-op pass-through.
+    if card_level != "full" and hits:
+        from .retrieval.cards import ALLOWED_LEVELS, apply_level_to_snippets
+
+        if card_level not in ALLOWED_LEVELS:
+            log.warning(
+                "mcp.search_code.bad_card_level",
+                level=card_level, allowed=list(ALLOWED_LEVELS),
+            )
+        else:
+            # type narrowed by the membership check above
+            hits = apply_level_to_snippets(hits, card_level)  # type: ignore[arg-type]
 
     # WIN-208: Greedy-pack to ``context_budget`` AFTER top_k truncation.
     # Done at the MCP layer (not inside SearchEngine.search) so the
