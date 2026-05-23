@@ -3666,6 +3666,82 @@ def blast_radius_tool(
     )
 
 
+# ---- assert_snippet_freshness (WIN-247) -----------------------------------
+
+
+class FreshnessResponse(BaseModel):
+    """Outcome of ``assert_snippet_freshness_tool``."""
+
+    chunk_id: str
+    fresh: bool | None = Field(
+        description=(
+            "Tri-state: True (chunk present + content matches) / "
+            "False (chunk vanished or content drifted) / null "
+            "(lookup raised — undetermined)."
+        ),
+    )
+    reason: str = Field(default="")
+    current_snippet: str | None = Field(
+        default=None,
+        description=(
+            "Current snippet from the index. Null when the chunk "
+            "vanished; populated on both True and False verdicts so "
+            "the agent can re-quote without another search."
+        ),
+    )
+    expected_snippet: str = Field(default="")
+    drift_details: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Up to 5 diff lines (``-Lxx``/``+Lxx``/``~Lxx``) on a "
+            "False verdict so the agent can spot the drift inline."
+        ),
+    )
+
+
+@mcp.tool(
+    title="Assert a cached snippet is still fresh",
+    description=(
+        "WIN-247 — vet a snippet the agent cached against the live "
+        "index. Pass the chunk_id + the snippet text the agent "
+        "remembers; the response tells you whether the chunk still "
+        "exists and whether its content has drifted. Defensive — "
+        "lookup exceptions surface as fresh=null with a reason. "
+        "Use strict=true for byte-exact comparison; default is "
+        "whitespace-normalised."
+    ),
+)
+@traced("assert_snippet_freshness")
+def assert_snippet_freshness_tool(
+    chunk_id: str,
+    expected_snippet: str,
+    strict: bool = False,
+    *,
+    ctx: Context,
+) -> FreshnessResponse:
+    """Verify a cached snippet against the live index."""
+    from .retrieval.freshness import assert_snippet_freshness
+
+    app = _ctx(ctx)
+
+    def _lookup(cid: str):
+        return app.storage.lookup_by_chunk_id(cid)
+
+    verdict = assert_snippet_freshness(
+        chunk_id, expected_snippet,
+        lookup_fn=_lookup,
+        strict=bool(strict),
+    )
+    return FreshnessResponse(
+        chunk_id=verdict.chunk_id,
+        fresh=verdict.fresh,
+        reason=verdict.reason,
+        current_snippet=verdict.current_snippet,
+        expected_snippet=verdict.expected_snippet,
+        drift_details=list(verdict.drift_details),
+    )
+
+
 # ---- entry point -----------------------------------------------------------
 
 def main() -> None:
