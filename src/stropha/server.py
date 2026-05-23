@@ -1009,6 +1009,133 @@ def report_bad_result(
     }
 
 
+# ---- assemble_context (WIN-209) --------------------------------------------
+
+
+class AssembleSectionResponse(BaseModel):
+    """One section of an ``assemble_context`` response."""
+
+    key: str = Field(description="Section identifier: primary, callers, tests.")
+    title: str = Field(description="Human-readable section header.")
+    hits: list[SearchResult] = Field(default_factory=list)
+
+
+class AssembleContextResponse(BaseModel):
+    """One-shot context bundle ready for the agent to paste."""
+
+    task: str
+    bundle: str = Field(
+        description=(
+            "Markdown-formatted context bundle: file:line:symbol headers + "
+            "fenced code blocks per span, grouped by provenance "
+            "(primary / callers / tests). Ready to paste into a follow-up "
+            "reasoning step."
+        ),
+    )
+    sections: list[AssembleSectionResponse] = Field(default_factory=list)
+    total_tokens: int = Field(
+        description="Estimated tokens consumed by the packed snippets.",
+    )
+    budget_tokens: int = Field(
+        description="The token budget the caller passed.",
+    )
+    spilled_count: int = Field(
+        default=0,
+        description=(
+            "Number of relevant hits that fell off the tail because the "
+            "budget was tight. 0 means everything fit."
+        ),
+    )
+    truncated_oversize: bool = Field(
+        default=False,
+        description=(
+            "True when the single top hit exceeds the budget and was "
+            "included anyway as an escape hatch."
+        ),
+    )
+
+
+@mcp.tool(
+    title="Assemble context bundle",
+    description=(
+        "ONE-SHOT context retrieval (WIN-209). Given a natural-language "
+        "task, runs hybrid search + optional graph extensions (callers, "
+        "tests), greedy-packs the results under context_budget tokens, "
+        "and returns a ready-to-paste markdown bundle. Use this when "
+        "you would otherwise chain search_code → find_callers → "
+        "find_tests_for — assemble_context collapses those turns into "
+        "a single call. Returned ``bundle`` is markdown with file:line "
+        "headers + fenced code blocks; ``sections`` is the structured "
+        "view if you'd rather work in JSON."
+    ),
+)
+@traced("assemble_context")
+def assemble_context(
+    task: str,
+    context_budget: int = 4000,
+    top_k: int = 10,
+    include_callers: bool = False,
+    include_tests: bool = False,
+    *,
+    ctx: Context,
+) -> AssembleContextResponse:
+    """Run the WIN-209 assembly pipeline and return a packed bundle.
+
+    Args:
+        task: natural-language task description ("how does mastery
+            decay work in FSRS").
+        context_budget: total token budget across all sections. Must
+            be positive. Defaults to 4000 — generous for most agent
+            context windows; tighten when you need room for the
+            agent's own reasoning afterward.
+        top_k: candidate count fetched from the primary search before
+            packing. Higher means more candidates to choose from but
+            potentially more spilled at packing time.
+        include_callers: when True, also pull up-the-graph callers
+            for each primary hit. Costs graph queries; off by default.
+        include_tests: when True, also pull tests-that-cover for each
+            primary hit. Costs graph queries; off by default.
+    """
+    from .retrieval.assemble import assemble_context as _assemble
+
+    app = _ctx(ctx)
+    if context_budget <= 0:
+        # Pydantic field can't enforce min in MCP schema reliably; do
+        # the check in code so the agent gets a clean error message.
+        return AssembleContextResponse(
+            task=task,
+            bundle="",
+            sections=[],
+            total_tokens=0,
+            budget_tokens=0,
+        )
+    result = _assemble(
+        task,
+        search_engine=app.search_engine,
+        context_budget=context_budget,
+        top_k=top_k,
+        include_callers=include_callers,
+        include_tests=include_tests,
+        storage=app.storage,
+    )
+    return AssembleContextResponse(
+        task=result.task,
+        bundle=result.bundle,
+        sections=[
+            AssembleSectionResponse(
+                key=sec.key,
+                title=sec.title,
+                hits=[_to_result(h) for h in sec.hits],
+            )
+            for sec in result.sections
+        ],
+        total_tokens=result.total_tokens,
+        budget_tokens=result.budget_tokens,
+        spilled_count=result.spilled_count,
+        truncated_oversize=result.truncated_oversize,
+    )
+
+
 def _pipeline_snapshot(app: AppContext) -> dict:
     """Introspect every built pipeline stage into a JSON-safe dict.
 
