@@ -57,6 +57,13 @@ from .outcome import (
     label_hits,
     tier_summary,
 )
+from .promote import (
+    PromotionError,
+    PromotionPlan,
+    apply_plan,
+    build_plan,
+    render_summary,
+)
 from .prune import (
     DEFAULT_TRACE_MAX_AGE_DAYS,
     PrunePlan,
@@ -122,6 +129,8 @@ __all__ = [
     "LabelingContext",
     "LoopError",
     "LoopResult",
+    "PromotionError",
+    "PromotionPlan",
     "ProposerFn",
     "PrunePlan",
     "PytestGate",
@@ -138,6 +147,8 @@ __all__ = [
     "TraceRecord",
     "TraceRecorder",
     "aggregate_score",
+    "apply_plan",
+    "build_plan",
     "build_scorecard",
     "create_snapshot",
     "discover_gaps",
@@ -152,6 +163,7 @@ __all__ = [
     "outcome_score_decomposition",
     "prune",
     "prune_snapshots",
+    "render_summary",
     "resolve_bad_chunks",
     "resolve_sha",
     "run_loop",

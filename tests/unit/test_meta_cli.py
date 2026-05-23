@@ -182,6 +182,13 @@ class TestMetaReport:
 
 
 class TestMetaPromote:
+    """``stropha meta promote`` is diff-only by default (WIN-202).
+
+    Promotion preserves human gating: the harness prints a unified diff
+    and exits unless ``--apply`` is passed. Auto-apply would surprise
+    the operator and could destroy keys outside the search space.
+    """
+
     def test_unknown_candidate_exits_nonzero(self, tmp_path: Path) -> None:
         meta = _make_meta(tmp_path)
         result = CliRunner().invoke(
@@ -191,24 +198,12 @@ class TestMetaPromote:
         )
         assert result.exit_code == 1
 
-    def test_dry_run_does_not_write(self, tmp_path: Path) -> None:
-        meta = _make_meta(tmp_path)
-        # Pick a real candidate id.
-        rec = ArtifactStore(meta).list_candidates()[0]
-        result = CliRunner().invoke(
-            app,
-            ["meta", "promote", rec.id,
-             "--meta-dir", str(meta), "--dry-run"],
-        )
-        assert result.exit_code == 0
-        assert "DRY RUN" in result.output
-
-    def test_real_promote_writes_stropha_yaml(
+    def test_default_emits_diff_does_not_write(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """No flag → unified diff is printed, no file is created."""
         meta = _make_meta(tmp_path)
         rec = ArtifactStore(meta).list_candidates()[0]
-        # Run inside a temp cwd so we don't clobber the real stropha.yaml.
         target_cwd = tmp_path / "cwd"
         target_cwd.mkdir()
         monkeypatch.chdir(target_cwd)
@@ -216,9 +211,118 @@ class TestMetaPromote:
             app,
             ["meta", "promote", rec.id, "--meta-dir", str(meta)],
         )
+        assert result.exit_code == 0, result.output
+        # Diff header markers — unified diff always emits these for an
+        # add-from-empty (the cwd has no stropha.yaml).
+        assert "+++" in result.output or "---" in result.output
+        # No file was created.
+        assert not (target_cwd / "stropha.yaml").exists()
+        # Footer reminds the operator how to commit the change.
+        assert "--apply" in result.output
+
+    def test_dry_run_still_works_as_back_compat_alias(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``--dry-run`` is deprecated but kept for back-compat with the
+        WIN-193 CLI. It behaves like the new default (diff-only) and
+        emits a deprecation banner."""
+        meta = _make_meta(tmp_path)
+        rec = ArtifactStore(meta).list_candidates()[0]
+        target_cwd = tmp_path / "cwd"
+        target_cwd.mkdir()
+        monkeypatch.chdir(target_cwd)
+        result = CliRunner().invoke(
+            app,
+            ["meta", "promote", rec.id,
+             "--meta-dir", str(meta), "--dry-run"],
+        )
+        assert result.exit_code == 0
+        assert "--dry-run is deprecated" in result.output
+        # Still does not write.
+        assert not (target_cwd / "stropha.yaml").exists()
+
+    def test_apply_writes_stropha_yaml(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``--apply`` is the explicit opt-in that writes stropha.yaml."""
+        meta = _make_meta(tmp_path)
+        rec = ArtifactStore(meta).list_candidates()[0]
+        target_cwd = tmp_path / "cwd"
+        target_cwd.mkdir()
+        monkeypatch.chdir(target_cwd)
+        result = CliRunner().invoke(
+            app,
+            ["meta", "promote", rec.id, "--meta-dir", str(meta),
+             "--apply"],
+        )
         assert result.exit_code == 0
         assert (target_cwd / "stropha.yaml").is_file()
         assert "Promoted" in result.output
+
+    def test_noop_when_candidate_matches_current(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """If the current stropha.yaml is already identical to the
+        candidate, the CLI surfaces the no-op and exits 0 — no diff,
+        no rewrite."""
+        meta = _make_meta(tmp_path)
+        rec = ArtifactStore(meta).list_candidates()[0]
+        target_cwd = tmp_path / "cwd"
+        target_cwd.mkdir()
+        monkeypatch.chdir(target_cwd)
+        # Seed the cwd with the candidate's own config first.
+        import yaml as _yaml
+
+        (target_cwd / "stropha.yaml").write_text(
+            _yaml.safe_dump(rec.config, sort_keys=True, default_flow_style=False),
+            encoding="utf-8",
+        )
+        result = CliRunner().invoke(
+            app,
+            ["meta", "promote", rec.id, "--meta-dir", str(meta)],
+        )
+        assert result.exit_code == 0
+        assert "No changes" in result.output
+
+    def test_apply_to_explicit_target_path(
+        self, tmp_path: Path
+    ) -> None:
+        """The ``--target`` option overrides ./stropha.yaml so promotion
+        can land in a sibling project or a snapshot directory."""
+        meta = _make_meta(tmp_path)
+        rec = ArtifactStore(meta).list_candidates()[0]
+        elsewhere = tmp_path / "elsewhere" / "stropha.yaml"
+        result = CliRunner().invoke(
+            app,
+            ["meta", "promote", rec.id, "--meta-dir", str(meta),
+             "--target", str(elsewhere), "--apply"],
+        )
+        assert result.exit_code == 0
+        assert elsewhere.is_file()
+
+    def test_malformed_target_yaml_exits_nonzero(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A broken ``stropha.yaml`` must not be silently overwritten —
+        the CLI errors out so the operator can investigate."""
+        meta = _make_meta(tmp_path)
+        rec = ArtifactStore(meta).list_candidates()[0]
+        target_cwd = tmp_path / "cwd"
+        target_cwd.mkdir()
+        monkeypatch.chdir(target_cwd)
+        # Plant invalid YAML (mismatched braces).
+        (target_cwd / "stropha.yaml").write_text(
+            "this is: { not valid: ]]]", encoding="utf-8"
+        )
+        result = CliRunner().invoke(
+            app,
+            ["meta", "promote", rec.id, "--meta-dir", str(meta)],
+        )
+        assert result.exit_code == 1
+        # Normalize whitespace — Rich console wraps long paths across
+        # multiple lines, but the phrase itself stays intact.
+        normalized = " ".join(result.output.split())
+        assert "not valid YAML" in normalized
 
 
 # ---------------------------------------------------------------------------

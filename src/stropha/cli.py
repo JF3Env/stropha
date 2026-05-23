@@ -2074,16 +2074,44 @@ def meta_report_cmd(
 def meta_promote_cmd(
     candidate_id: str = typer.Argument(..., help="Candidate id to promote."),
     meta_dir: Path = typer.Option(None, "--meta-dir"),
-    dry_run: bool = typer.Option(False, "--dry-run",
-                                  help="Show the candidate's config but do NOT write stropha.yaml."),
+    apply: bool = typer.Option(
+        False,
+        "--apply",
+        help=(
+            "Write the candidate config to stropha.yaml. Without this "
+            "flag, promote prints the unified diff and exits — human "
+            "gating is preserved (WIN-202)."
+        ),
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help=(
+            "Deprecated alias for the default diff-only behaviour. "
+            "Kept for back-compat; emits a banner when used."
+        ),
+    ),
+    target: Path = typer.Option(
+        None,
+        "--target",
+        help=(
+            "Path to the YAML file to compare / write against. Defaults "
+            "to ./stropha.yaml in the current working directory."
+        ),
+    ),
 ) -> None:
-    """Promote a candidate's config to the production ``stropha.yaml``.
+    """Plan promotion of a Meta-Harness candidate to ``stropha.yaml``.
 
-    Writes the chosen candidate's ``config.yaml`` to the cwd's
-    ``stropha.yaml`` (overwriting it). The operator should review the
-    diff before committing.
+    Default behaviour (no ``--apply``) is **diff-only**: the unified diff
+    between the current ``stropha.yaml`` (if any) and the candidate's
+    config is printed to stdout. The operator can pipe the diff into
+    ``git apply`` or copy-paste it for review — promotion stays
+    human-gated.
+
+    Pass ``--apply`` to overwrite ``stropha.yaml`` with the candidate
+    config. The write is atomic (temp file + replace).
     """
-    from .meta import ArtifactStore
+    from .meta import ArtifactStore, PromotionError, apply_plan, build_plan
 
     if meta_dir is None:
         meta_dir = _meta_dir_default()
@@ -2095,15 +2123,53 @@ def meta_promote_cmd(
         console.print(f"[red]Cannot read candidate {candidate_id}:[/red] {exc}")
         raise typer.Exit(code=1) from exc
 
-    target = Path.cwd() / "stropha.yaml"
+    if target is None:
+        target = Path.cwd() / "stropha.yaml"
+    target = target.expanduser().resolve()
+
+    try:
+        plan = build_plan(rec, target)
+    except PromotionError as exc:
+        console.print(f"[red]Cannot plan promotion:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
     if dry_run:
-        console.print(f"[yellow]DRY RUN[/yellow] — would write to {target}")
-        import yaml as _yaml  # type: ignore[import-untyped]
-        console.print(_yaml.safe_dump(rec.config, sort_keys=True))
+        console.print(
+            "[yellow]--dry-run is deprecated[/yellow] — diff-only is now "
+            "the default. Pass --apply to write."
+        )
+
+    if plan.is_noop:
+        console.print(
+            f"[yellow]No changes[/yellow] — candidate {candidate_id} "
+            f"matches current {target}."
+        )
         return
-    import yaml as _yaml  # type: ignore[import-untyped]
-    target.write_text(_yaml.safe_dump(rec.config, sort_keys=True))
-    console.print(f"[green]Promoted[/green] {candidate_id} → {target}")
+
+    if not apply:
+        # Diff-only mode (default) — print the unified diff and exit.
+        if plan.current_config is None:
+            console.print(
+                f"[cyan]New file[/cyan] — {target} does not exist; "
+                f"diff shows the full candidate config as additions."
+            )
+        else:
+            console.print(
+                f"[cyan]Diff[/cyan] — candidate {candidate_id} vs {target}"
+            )
+        # Print the raw diff (no rich markup so it can be piped to git
+        # apply / copy-pasted into a review comment).
+        typer.echo(plan.diff_text, nl=False)
+        console.print(
+            f"\n[dim]Run with --apply to write to {target}.[/dim]"
+        )
+        return
+
+    # Apply path — opt-in only.
+    apply_plan(plan)
+    console.print(
+        f"[green]Promoted[/green] {candidate_id} → {target}"
+    )
 
 
 @meta_app.command("trace")
