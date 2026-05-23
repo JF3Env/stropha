@@ -485,6 +485,7 @@ def search_code(
     context_budget: int | None = None,
     compress: bool = False,
     card_level: str = "full",
+    relevance_decay: bool = False,
     *,
     ctx: Context,
 ) -> SearchResponse:
@@ -518,6 +519,11 @@ def search_code(
             (signature + docstring), or "full" (default, classic).
             Lower levels make scanning a result set cheaper; the agent
             can expand specific hits via get_symbol once it has triaged.
+        relevance_decay: WIN-213 — when True, apply per-rank card-level
+            decay: top hit at "full", ranks 1-2 at "paragraph", ranks 3+
+            at "line". Allocates tokens to the most-relevant spans
+            instead of spreading them evenly. Overrides card_level when
+            both are set.
     """
     import os
 
@@ -585,9 +591,17 @@ def search_code(
 
         hits = compress_hits(hits, query)
 
+    # WIN-213: Relevance decay (per-rank card schedule) wins over
+    # card_level when both are set — the agent explicitly asked for
+    # graduated detail per rank, which is more specific than a single
+    # uniform level.
+    if relevance_decay and hits:
+        from .retrieval.cards import apply_relevance_decay
+
+        hits = apply_relevance_decay(hits)
     # WIN-212: Apply card-level rendering BEFORE packing so the budget
     # reflects the smaller per-hit cost. "full" is a no-op pass-through.
-    if card_level != "full" and hits:
+    elif card_level != "full" and hits:
         from .retrieval.cards import ALLOWED_LEVELS, apply_level_to_snippets
 
         if card_level not in ALLOWED_LEVELS:

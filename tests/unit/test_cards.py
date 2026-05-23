@@ -13,8 +13,10 @@ import pytest
 from stropha.models import SearchHit
 from stropha.retrieval.cards import (
     ALLOWED_LEVELS,
+    DecaySchedule,
     ResultCard,
     apply_level_to_snippets,
+    apply_relevance_decay,
     make_cards,
     render_card,
 )
@@ -301,8 +303,164 @@ class TestPublicSurface:
     def test_import_resolves(self) -> None:
         from stropha.retrieval.cards import (  # noqa: F401
             ALLOWED_LEVELS,
+            DecaySchedule,
             ResultCard,
             apply_level_to_snippets,
+            apply_relevance_decay,
             make_cards,
             render_card,
         )
+
+
+# ---------------------------------------------------------------------------
+# DecaySchedule + apply_relevance_decay (WIN-213)
+# ---------------------------------------------------------------------------
+
+
+class TestDecaySchedule:
+    def test_default_schedule(self) -> None:
+        s = DecaySchedule()
+        assert s.full_through == 1
+        assert s.paragraph_through == 3
+        # Default boundaries.
+        assert s.level_for(0) == "full"
+        assert s.level_for(1) == "paragraph"
+        assert s.level_for(2) == "paragraph"
+        assert s.level_for(3) == "line"
+        assert s.level_for(100) == "line"
+
+    def test_custom_schedule_boundaries(self) -> None:
+        s = DecaySchedule(full_through=2, paragraph_through=5)
+        assert s.level_for(0) == "full"
+        assert s.level_for(1) == "full"
+        assert s.level_for(2) == "paragraph"
+        assert s.level_for(4) == "paragraph"
+        assert s.level_for(5) == "line"
+
+    def test_schedule_dataclass_immutable(self) -> None:
+        s = DecaySchedule()
+        with pytest.raises((AttributeError, TypeError)):
+            s.full_through = 5  # type: ignore[misc]
+
+    def test_aggressive_schedule_full_zero(self) -> None:
+        """``full_through=0`` makes EVERY hit paragraph-or-line —
+        nothing rendered at full. Useful for very tight budgets."""
+        s = DecaySchedule(full_through=0, paragraph_through=3)
+        assert s.level_for(0) == "paragraph"
+        assert s.level_for(2) == "paragraph"
+        assert s.level_for(3) == "line"
+
+
+class TestApplyRelevanceDecay:
+    def _make_ranked_hits(self, count: int) -> list[SearchHit]:
+        out: list[SearchHit] = []
+        for rank in range(count):
+            out.append(
+                _hit(
+                    "\n".join([
+                        "def my_function():",
+                        '    """The docstring."""',
+                        "    a = 1",
+                        "    b = 2",
+                        "    return a + b",
+                    ]),
+                    chunk_id=f"c{rank}",
+                )
+            )
+        # Patch ranks since _hit always sets rank=0.
+        return [
+            h.model_copy(update={"rank": i, "symbol": f"sym_{i}"})
+            for i, h in enumerate(out)
+        ]
+
+    def test_default_schedule_applies(self) -> None:
+        hits = self._make_ranked_hits(5)
+        out = apply_relevance_decay(hits)
+        # Top hit gets full content.
+        assert "a = 1" in out[0].snippet
+        # Ranks 1-2 get paragraph (signature + docstring).
+        assert "def my_function" in out[1].snippet
+        assert "a = 1" not in out[1].snippet
+        # Ranks 3+ get line card.
+        assert out[3].snippet.startswith("src/foo.py:")
+        assert "def my_function" not in out[3].snippet
+
+    def test_custom_schedule_respected(self) -> None:
+        hits = self._make_ranked_hits(5)
+        out = apply_relevance_decay(
+            hits, DecaySchedule(full_through=2, paragraph_through=4),
+        )
+        # Ranks 0-1 full.
+        assert "a = 1" in out[0].snippet
+        assert "a = 1" in out[1].snippet
+        # Ranks 2-3 paragraph.
+        assert "def my_function" in out[2].snippet
+        assert "a = 1" not in out[2].snippet
+        # Rank 4 line.
+        assert out[4].snippet.startswith("src/foo.py:")
+
+    def test_empty_hits(self) -> None:
+        assert apply_relevance_decay([]) == []
+
+    def test_preserves_other_fields(self) -> None:
+        hits = self._make_ranked_hits(3)
+        out = apply_relevance_decay(hits)
+        for orig, decayed in zip(hits, out):
+            assert decayed.chunk_id == orig.chunk_id
+            assert decayed.rank == orig.rank
+            assert decayed.score == orig.score
+
+    def test_does_not_mutate_input(self) -> None:
+        hits = self._make_ranked_hits(3)
+        originals = [h.snippet for h in hits]
+        apply_relevance_decay(hits)
+        for h, orig in zip(hits, originals):
+            assert h.snippet == orig  # immutable, untouched
+
+    def test_handles_stub_with_writable_snippet(self) -> None:
+        class Stub:
+            def __init__(self, rank: int) -> None:
+                self.rank = rank
+                self.snippet = "def f():\n    return 1\n"
+                self.rel_path = "x.py"
+                self.start_line = 1
+                self.end_line = 2
+                self.symbol = "f"
+                self.kind = "function"
+
+        stub = Stub(rank=5)
+        out = apply_relevance_decay([stub])
+        # Rank 5 → line card.
+        assert stub.snippet.startswith("x.py:1-2")
+        assert out[0] is stub
+
+    def test_handles_frozen_stub(self) -> None:
+        """Defensive: read-only ``snippet`` attribute on the stub —
+        append unchanged, no crash."""
+
+        class Frozen:
+            __slots__ = ("_s", "_r")
+
+            def __init__(self, snippet: str, rank: int) -> None:
+                self._s = snippet
+                self._r = rank
+
+            @property
+            def snippet(self) -> str:
+                return self._s
+
+            @property
+            def rank(self) -> int:
+                return self._r
+
+            rel_path = "f.py"
+            start_line = 1
+            end_line = 1
+            symbol = "f"
+            kind = "function"
+
+        f = Frozen("def f(): pass", rank=0)
+        out = apply_relevance_decay([f])
+        # Length preserved; original untouched.
+        assert len(out) == 1
+        assert f.snippet == "def f(): pass"

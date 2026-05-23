@@ -189,11 +189,81 @@ def apply_level_to_snippets(
     return out
 
 
+@dataclass(frozen=True)
+class DecaySchedule:
+    """Per-rank card-level schedule for WIN-213 relevance decay.
+
+    The schedule answers: "given a rank, what level should the hit
+    render at?". Defaults assume top_k≤10 and target the typical
+    triage workflow:
+
+    - Ranks ``0 .. full_through-1``      → ``full`` (the agent will
+      almost certainly read these).
+    - Ranks ``full_through .. paragraph_through-1`` → ``paragraph``
+      (likely scanned for signature + docstring).
+    - Ranks ``paragraph_through ..``     → ``line`` (the agent only
+      needs to know the span exists).
+
+    A monotonic boundary keeps the schedule predictable: higher rank
+    can never get MORE detail than a lower rank.
+    """
+
+    full_through: int = 1
+    """Number of top hits rendered at ``full``. Default 1 = top hit only."""
+    paragraph_through: int = 3
+    """Cumulative number of top hits rendered at ``paragraph`` or better.
+    Default 3 = ranks 0, 1, 2 get full+paragraph; rank 3+ get line."""
+
+    def level_for(self, rank: int) -> "CardLevel":
+        """Return the card level for the given rank."""
+        if rank < self.full_through:
+            return "full"
+        if rank < self.paragraph_through:
+            return "paragraph"
+        return "line"
+
+
+def apply_relevance_decay(
+    hits: list[SearchHit],
+    schedule: DecaySchedule | None = None,
+) -> list[SearchHit]:
+    """Apply WIN-213 relevance decay: a per-rank card-level schedule.
+
+    Replaces each hit's ``snippet`` with the card text at the level
+    chosen by ``schedule.level_for(hit.rank)``. Pydantic ``SearchHit``
+    is immutable; ``model_copy`` swaps the snippet.
+
+    The decay schedule defaults to ``DecaySchedule()`` (full=1,
+    paragraph=3). Callers can pass a custom schedule for tighter or
+    looser triage windows.
+    """
+    if not hits:
+        return []
+    sched = schedule or DecaySchedule()
+    out: list[SearchHit] = []
+    for hit in hits:
+        # ``rank`` on SearchHit is 0-indexed; the schedule reads
+        # ``0`` as "the top hit".
+        level = sched.level_for(int(hit.rank))
+        new_snippet = render_card(hit, level)
+        if hasattr(hit, "model_copy"):
+            out.append(hit.model_copy(update={"snippet": new_snippet}))
+        else:
+            try:
+                hit.snippet = new_snippet
+            except AttributeError:
+                pass
+            out.append(hit)
+    return out
+
+
 __all__ = [
     "ALLOWED_LEVELS",
     "CardLevel",
+    "DecaySchedule",
     "ResultCard",
     "apply_level_to_snippets",
+    "apply_relevance_decay",
     "make_cards",
     "render_card",
 ]
