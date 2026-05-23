@@ -415,6 +415,37 @@ class TestStoreCodeArtifacts:
                 cand_id, {"foo/bar.py": VALID_SOURCE},
             )
 
+    def test_store_handles_unresolved_temp_dir(self) -> None:
+        """Regression for the macOS /var → /private/var symlink case.
+
+        pytest's ``tmp_path`` fixture returns a pre-resolved path, which
+        masked a latent bug in ``_write_code_artifacts`` where the
+        canonical ``target.resolve()`` was compared against the
+        un-resolved ``cand_dir`` via ``relative_to``. End-to-end
+        validation against ``tempfile.TemporaryDirectory()`` (which
+        does NOT pre-resolve) blew up. This test reproduces the
+        unresolved-path call shape so the regression is locked in.
+        """
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            # Critical: do NOT call ``.resolve()`` on the base path.
+            store = ArtifactStore(Path(td) / "meta")
+            record = store.register_candidate(
+                config={
+                    CODE_ARTIFACTS_KEY: {
+                        "adapters/enricher/regression.py": VALID_SOURCE,
+                    },
+                },
+            )
+            # The materialised file must be reachable from the resolved
+            # path (which is where the writer actually put it).
+            resolved_target = (
+                record.base_dir.resolve()  # type: ignore[union-attr]
+                / "adapters" / "enricher" / "regression.py"
+            )
+            assert resolved_target.is_file()
+
     def test_store_blocks_symlink_escape(self, tmp_path: Path) -> None:
         """Symlink hardening: a planted symlink that escapes the
         candidate's adapters/ root is caught by the resolved-path

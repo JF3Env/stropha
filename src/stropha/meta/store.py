@@ -327,7 +327,14 @@ class ArtifactStore:
         so a partially-written candidate cannot be left on disk.
         """
         cand_dir = self.candidates_dir / candidate_id
-        adapters_root = (cand_dir / "adapters").resolve()
+        # Resolve once up front so EVERY downstream comparison happens
+        # against the canonical (symlink-followed) path. On macOS
+        # /var/folders → /private/var/folders, so an un-resolved
+        # ``cand_dir`` vs a ``.resolve()``d target compared via
+        # ``relative_to`` would raise ValueError. Resolving both ends
+        # avoids that footgun.
+        cand_dir_resolved = cand_dir.resolve()
+        adapters_root = (cand_dir_resolved / "adapters")
         adapters_root.mkdir(parents=True, exist_ok=True)
         for rel_path, source in artifacts.items():
             _validate_artifact_rel_path(rel_path)
@@ -335,7 +342,7 @@ class ArtifactStore:
                 raise ArtifactStoreError(
                     f"artifact path {rel_path!r} must start with 'adapters/'"
                 )
-            target = (cand_dir / rel_path).resolve()
+            target = (cand_dir_resolved / rel_path).resolve()
             try:
                 target.relative_to(adapters_root)
             except ValueError as exc:
@@ -352,7 +359,7 @@ class ArtifactStore:
             log.info(
                 "artifactstore.code_artifact",
                 id=candidate_id,
-                path=str(target.relative_to(cand_dir)),
+                path=str(target.relative_to(cand_dir_resolved)),
                 bytes=len(source),
             )
 
