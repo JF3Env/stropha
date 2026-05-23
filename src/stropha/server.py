@@ -3846,6 +3846,131 @@ def test_impact_tool(
     )
 
 
+# ---- audit_citations (WIN-249) --------------------------------------------
+
+
+class CitationEntry(BaseModel):
+    fragment: str
+    kind: str = Field(
+        description="One of 'chunk_id', 'file_line', 'unknown'.",
+    )
+    chunk_id: str = ""
+    path: str = ""
+    start_line: int = 0
+    end_line: int = 0
+    resolved: bool | None = Field(
+        default=None,
+        description=(
+            "Tri-state: True (lookup succeeded) / False (lookup "
+            "failed) / null (unknown kind — never looked up)."
+        ),
+    )
+    reason: str = ""
+
+
+class ClaimAuditEntry(BaseModel):
+    sentence: str
+    citations: list[CitationEntry]
+    valid_count: int
+
+
+class CitationAuditResponse(BaseModel):
+    """Outcome of ``audit_citations_tool``."""
+
+    claims: list[ClaimAuditEntry]
+    total_claims: int = Field(description="Total sentences extracted.")
+    cited_claims: int = Field(
+        description="Sentences carrying at least one citation token.",
+    )
+    uncited_claims: int = Field(
+        description="Sentences with no citation at all.",
+    )
+    broken_citations: list[str] = Field(
+        default_factory=list,
+        description="Citation fragments that failed to resolve.",
+    )
+    notes: list[str] = Field(default_factory=list)
+
+
+@mcp.tool(
+    title="Audit a response for verifiable citations",
+    description=(
+        "WIN-249 — vet a piece of agent output for citation hygiene. "
+        "Splits the text into sentences, extracts [chunk_id] / "
+        "[file:line] / [file:start-end] citation tokens, and "
+        "resolves each against the index. Returns per-sentence "
+        "verdicts plus aggregate counts (cited / uncited / broken). "
+        "Use to prevent 'vibes' assertions from shipping."
+    ),
+)
+@traced("audit_citations")
+def audit_citations_tool(
+    text: str,
+    *,
+    ctx: Context,
+) -> CitationAuditResponse:
+    """Audit the agent's text for verifiable citations."""
+    from .retrieval.citation import (
+        Citation,
+        audit_citations as _audit,
+    )
+
+    app = _ctx(ctx)
+
+    def _lookup(cit: Citation) -> bool:
+        if cit.kind == "chunk_id":
+            try:
+                hit = app.storage.lookup_by_chunk_id(cit.chunk_id)
+            except Exception:
+                return False
+            return hit is not None
+        if cit.kind == "file_line":
+            # Resolve via the indexed chunks that touch the file +
+            # whose line range overlaps the citation's range.
+            try:
+                hits = app.storage.lookup_by_symbol(cit.path, limit=20)
+            except Exception:
+                return False
+            for hit in hits or []:
+                if getattr(hit, "rel_path", "") == cit.path:
+                    s = int(getattr(hit, "start_line", 0) or 0)
+                    e = int(getattr(hit, "end_line", 0) or 0)
+                    if s <= cit.end_line and e >= cit.start_line:
+                        return True
+            return False
+        return False
+
+    report = _audit(text, lookup_fn=_lookup)
+
+    return CitationAuditResponse(
+        claims=[
+            ClaimAuditEntry(
+                sentence=c.sentence,
+                citations=[
+                    CitationEntry(
+                        fragment=cit.fragment,
+                        kind=cit.kind,
+                        chunk_id=cit.chunk_id,
+                        path=cit.path,
+                        start_line=cit.start_line,
+                        end_line=cit.end_line,
+                        resolved=cit.resolved,
+                        reason=cit.reason,
+                    )
+                    for cit in c.citations
+                ],
+                valid_count=c.valid_count,
+            )
+            for c in report.claims
+        ],
+        total_claims=report.total_claims,
+        cited_claims=report.cited_claims,
+        uncited_claims=report.uncited_claims,
+        broken_citations=list(report.broken_citations),
+        notes=list(report.notes),
+    )
+
+
 # ---- entry point -----------------------------------------------------------
 
 def main() -> None:
