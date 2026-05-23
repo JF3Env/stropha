@@ -1080,7 +1080,9 @@ class AssembleContextResponse(BaseModel):
         "find_tests_for — assemble_context collapses those turns into "
         "a single call. Returned ``bundle`` is markdown with file:line "
         "headers + fenced code blocks; ``sections`` is the structured "
-        "view if you'd rather work in JSON."
+        "view if you'd rather work in JSON. Set diff_scope=True for "
+        "PR-review workflows: results are filtered to chunks in the "
+        "current git diff (WIN-211)."
     ),
 )
 @traced("assemble_context")
@@ -1090,6 +1092,9 @@ def assemble_context(
     top_k: int = 10,
     include_callers: bool = False,
     include_tests: bool = False,
+    diff_scope: bool = False,
+    diff_ref_a: str | None = None,
+    diff_ref_b: str | None = None,
     *,
     ctx: Context,
 ) -> AssembleContextResponse:
@@ -1109,6 +1114,12 @@ def assemble_context(
             for each primary hit. Costs graph queries; off by default.
         include_tests: when True, also pull tests-that-cover for each
             primary hit. Costs graph queries; off by default.
+        diff_scope: WIN-211 — when True, filter the primary results
+            to only chunks in files touched by the current git diff.
+            Use for PR-review workflows where the global top-K is too
+            noisy. Diff is computed against the configured target_repo.
+        diff_ref_a: starting git ref. None = working tree diff.
+        diff_ref_b: ending git ref. None + diff_ref_a set = HEAD.
     """
     from .retrieval.assemble import assemble_context as _assemble
 
@@ -1123,6 +1134,11 @@ def assemble_context(
             total_tokens=0,
             budget_tokens=0,
         )
+    # When diff_scope is requested, the target repo for the diff is
+    # the configured ``target_repo`` so the agent doesn't have to
+    # remember the path. The library function falls back gracefully
+    # when the repo is missing or git fails.
+    diff_repo = app.config.target_repo if diff_scope else None
     result = _assemble(
         task,
         search_engine=app.search_engine,
@@ -1131,6 +1147,10 @@ def assemble_context(
         include_callers=include_callers,
         include_tests=include_tests,
         storage=app.storage,
+        diff_scope=diff_scope,
+        diff_repo=diff_repo,
+        diff_ref_a=diff_ref_a,
+        diff_ref_b=diff_ref_b,
     )
     return AssembleContextResponse(
         task=result.task,

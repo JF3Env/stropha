@@ -161,6 +161,10 @@ def assemble_context(
     include_callers: bool = False,
     include_tests: bool = False,
     storage: Any = None,
+    diff_scope: bool = False,
+    diff_repo: Any = None,
+    diff_ref_a: str | None = None,
+    diff_ref_b: str | None = None,
 ) -> AssembleContextResult:
     """One-shot assembly: search → optional graph extensions → pack → render.
 
@@ -182,6 +186,16 @@ def assemble_context(
         storage: storage handle for the graph helpers. Required when
             ``include_callers`` or ``include_tests`` is True; ignored
             otherwise. Same handle the SearchEngine was built with.
+        diff_scope: WIN-211 — when True, filter the primary search
+            results to only chunks whose ``rel_path`` is in the
+            current git diff at ``diff_repo``. Use this for PR
+            review workflows where the global top-K is too noisy.
+        diff_repo: path to the git repository to compute the diff
+            against. Required when ``diff_scope=True``.
+        diff_ref_a: starting git ref for the diff. ``None`` = working
+            tree (uncommitted + staged) diff against HEAD.
+        diff_ref_b: ending git ref. Defaults to ``HEAD`` when
+            ``diff_ref_a`` is set.
 
     Returns:
         :class:`AssembleContextResult` with the rendered bundle and the
@@ -196,9 +210,46 @@ def assemble_context(
     # 1. Primary search (re-using SearchEngine, including its WIN-208
     #    packing path) with a generous candidate pool — we'll pack
     #    again at the bundle level so the budget covers extensions too.
+    #    Diff-scoping (WIN-211) over-samples top_k so post-filtering
+    #    against the diff doesn't leave an empty list.
+    primary_search_k = top_k
+    if diff_scope:
+        primary_search_k = max(top_k * 5, 30)
     primary_hits: list[SearchHit] = list(
-        search_engine.search(task, top_k=top_k)
+        search_engine.search(task, top_k=primary_search_k)
     )
+
+    if diff_scope:
+        # Filter to only files in the diff. On failure (git missing,
+        # not a repo, bad ref) we log + fall back to the unfiltered
+        # list rather than crashing — diff-scope is a refinement,
+        # not a hard requirement of the agent's call.
+        if diff_repo is None:
+            log.warning(
+                "assemble.diff_scope_no_repo",
+                message="diff_scope=True requires diff_repo; ignoring scope",
+            )
+        else:
+            from .diff_scope import DiffScopeError, diff_paths, filter_hits_to_diff
+
+            try:
+                paths = diff_paths(
+                    diff_repo, ref_a=diff_ref_a, ref_b=diff_ref_b,
+                )
+            except DiffScopeError as exc:
+                log.warning(
+                    "assemble.diff_scope_failed",
+                    repo=str(diff_repo), error=str(exc),
+                )
+            else:
+                filtered = filter_hits_to_diff(primary_hits, paths)
+                log.info(
+                    "assemble.diff_scope_applied",
+                    diff_files=len(paths),
+                    before=len(primary_hits),
+                    after=len(filtered),
+                )
+                primary_hits = filtered[:top_k]
 
     seen_chunk_ids: set[str] = set()
     primary_unique = _dedupe_in_order(seen_chunk_ids, primary_hits)
