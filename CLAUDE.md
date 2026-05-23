@@ -43,7 +43,7 @@ All migrations are forward-only and idempotent (`_add_column_if_missing` + `CREA
 
 **Multi-repo graphify support (v7)**: Multiple repos with their own `graphify-out/graph.json` can share a single stropha index. Node IDs are prefixed with `{repo_id}:` to avoid collisions (e.g., repo_id=3, node "FooClass" becomes "3:FooClass"). Graph tools (find_callers, find_related, etc.) work cross-repo by default. The GraphifyLoader tracks per-repo staleness via `graph_meta` keys like `last_loaded_mtime:3`.
 
-### 2.2 MCP tools (20) — server name `stropha_rag`
+### 2.2 MCP tools (23) — server name `stropha_rag`
 
 | Tool | Purpose | Graph required |
 |---|---|---|
@@ -67,6 +67,9 @@ All migrations are forward-only and idempotent (`_add_column_if_missing` + `CREA
 | `pin_chunks` | Pin chunk_ids so subsequent searches always include them at the top of results (WIN-218). Pinning wins over dedup. | no |
 | `unpin_chunks` | Remove chunk_ids from the session's pin set. Silently ignores ids that weren't pinned. | no |
 | `list_pins` | Return the current pin set with each chunk's metadata; missing chunks surface as `found=False`. | no |
+| `remember` | Write a long-term per-repo note (WIN-223). (kind, key) UPSERTs in place; agent picks the kind bucket. Survives sessions and MCP restarts. | no |
+| `recall` | Read long-term per-repo notes (WIN-223). Optional kind / key filters; expired entries hidden by default. | no |
+| `forget` | Delete a single project_memory entry by (kind, key). Returns `removed=False` silently for unknown entries. | no |
 
 Graph-gated tools return `{"graph_loaded": false, "message": …}` when the mirror is empty — never silent empty list.
 

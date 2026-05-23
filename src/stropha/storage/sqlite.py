@@ -1721,6 +1721,21 @@ class Storage:
 
     # ----- project memory (v9, WIN-222) -----
 
+    def lookup_repo_id(self, normalized_key: str) -> int | None:
+        """Resolve a ``normalized_key`` to its ``repos.id``.
+
+        Used by WIN-223 (MCP remember/recall tools) to translate the
+        configured ``target_repo`` into the FK the project_memory
+        table requires. Returns ``None`` when the repo has never
+        been indexed (no row yet) — caller should index first or
+        use a different repo.
+        """
+        row = self._conn.execute(
+            "SELECT id FROM repos WHERE normalized_key = ?",
+            (normalized_key,),
+        ).fetchone()
+        return int(row["id"]) if row is not None else None
+
     def remember(
         self,
         *,

@@ -1319,6 +1319,206 @@ def _graph_unavailable() -> dict:
     }
 
 
+# ---- remember / recall / forget (WIN-223, EPIC 1.9 #15) ---------------------
+
+
+def _resolve_target_repo_id(app: AppContext) -> int | None:
+    """Resolve the configured target repo's ``repos.id`` for memory tools.
+
+    Project memory is repo-scoped (Schema v9 FK). We derive the
+    repo_id by detecting the target_repo's normalized_key and looking
+    it up. Returns ``None`` when the repo has never been indexed
+    (no row to anchor against).
+    """
+    from .ingest.git_meta import detect as _detect_repo
+
+    if app.config.target_repo is None:
+        return None
+    try:
+        identity = _detect_repo(app.config.target_repo)
+    except Exception as exc:  # noqa: BLE001 — defensive
+        log.warning(
+            "mcp.memory.detect_repo_failed", error=str(exc),
+        )
+        return None
+    return app.storage.lookup_repo_id(identity.normalized_key)
+
+
+class MemoryEntry(BaseModel):
+    """One ``project_memory`` row exposed to MCP clients."""
+
+    kind: str
+    key: str
+    value: str
+    source: str | None = None
+    created_at: str
+    updated_at: str
+    expires_at: str | None = None
+
+
+class RememberResponse(BaseModel):
+    """Outcome of a ``remember`` call."""
+
+    ok: bool
+    entry: MemoryEntry | None = None
+    error: str | None = Field(
+        default=None,
+        description=(
+            "Populated when ok=False — typically 'no indexed repo' "
+            "when the agent calls remember before any index pass has "
+            "registered the target repo."
+        ),
+    )
+
+
+class RecallResponse(BaseModel):
+    """Outcome of a ``recall`` call."""
+
+    entries: list[MemoryEntry]
+    repo: str | None = Field(
+        default=None,
+        description="normalized_key of the repo the entries belong to.",
+    )
+
+
+class ForgetResponse(BaseModel):
+    """Outcome of a ``forget`` call."""
+
+    removed: bool
+    kind: str
+    key: str
+
+
+def _entry_from_record(rec) -> MemoryEntry:  # type: ignore[no-untyped-def]
+    return MemoryEntry(
+        kind=rec.kind,
+        key=rec.key,
+        value=rec.value,
+        source=rec.source,
+        created_at=rec.created_at,
+        updated_at=rec.updated_at,
+        expires_at=rec.expires_at,
+    )
+
+
+@mcp.tool(
+    title="Remember a project-scoped fact",
+    description=(
+        "WIN-223 — write a long-term note about THIS repo so you "
+        "don't have to re-explain it on the next session. "
+        "Anchor facts that survive across MCP-server restarts: design "
+        "decisions ('FSRS scheduler is authoritative'), constraints "
+        "('legacy auth module is on the deprecation list'), runbooks "
+        "('Java tests run via ./gradlew test --tests'), conventions, "
+        "glossary entries — agent picks the ``kind`` bucket. "
+        "(kind, key) within a repo is the UPSERT identity: re-issuing "
+        "remember() with the same (kind, key) updates the existing "
+        "entry, it doesn't duplicate. Use forget() to remove an entry "
+        "and recall() to fetch."
+    ),
+)
+@traced("remember")
+def remember(
+    kind: str,
+    key: str,
+    value: str,
+    *,
+    ctx: Context,
+    expires_at: str | None = None,
+) -> RememberResponse:
+    """Upsert a project-memory entry for the configured target repo."""
+    app = _ctx(ctx)
+    repo_id = _resolve_target_repo_id(app)
+    if repo_id is None:
+        return RememberResponse(
+            ok=False,
+            error=(
+                "no indexed repo for target_repo — run `stropha index` "
+                "first so the memory entry has a repo to anchor against"
+            ),
+        )
+    rec = app.storage.remember(
+        repo_id=repo_id,
+        kind=kind,
+        key=key,
+        value=value,
+        source=app.session_id or None,
+        expires_at=expires_at,
+    )
+    return RememberResponse(ok=True, entry=_entry_from_record(rec))
+
+
+@mcp.tool(
+    title="Recall project-scoped facts",
+    description=(
+        "WIN-223 — read long-term notes about THIS repo that the agent "
+        "(or a previous session) curated via remember(). Filter by "
+        "``kind`` to fetch a single category (e.g. all decisions), "
+        "and/or by ``key`` for a specific entry. No filters returns "
+        "the most-recently updated entries across every kind, capped "
+        "by ``limit``. Expired entries are hidden by default; pass "
+        "include_expired=True for audit."
+    ),
+)
+@traced("recall")
+def recall(
+    *,
+    ctx: Context,
+    kind: str | None = None,
+    key: str | None = None,
+    limit: int = 50,
+    include_expired: bool = False,
+) -> RecallResponse:
+    """Fetch project-memory entries for the configured target repo."""
+    app = _ctx(ctx)
+    repo_id = _resolve_target_repo_id(app)
+    if repo_id is None:
+        return RecallResponse(entries=[], repo=None)
+    rows = app.storage.recall(
+        repo_id=repo_id,
+        kind=kind,
+        key=key,
+        limit=max(1, min(limit, 200)),
+        include_expired=include_expired,
+    )
+    # Best-effort surface of the repo's normalized_key so the agent
+    # can confirm "this is the right project".
+    repo_key: str | None = None
+    if rows:
+        try:
+            row = app.storage._conn.execute(
+                "SELECT normalized_key FROM repos WHERE id = ?",
+                (repo_id,),
+            ).fetchone()
+            repo_key = row["normalized_key"] if row else None
+        except Exception:
+            repo_key = None
+    return RecallResponse(
+        entries=[_entry_from_record(r) for r in rows],
+        repo=repo_key,
+    )
+
+
+@mcp.tool(
+    title="Forget a project-scoped fact",
+    description=(
+        "WIN-223 — delete a single project_memory entry by (kind, key). "
+        "Returns ``removed=False`` silently when the entry didn't "
+        "exist; never raises. Pair with recall() to inspect the set "
+        "before pruning."
+    ),
+)
+@traced("forget")
+def forget(kind: str, key: str, *, ctx: Context) -> ForgetResponse:
+    """Delete one project-memory entry."""
+    app = _ctx(ctx)
+    repo_id = _resolve_target_repo_id(app)
+    if repo_id is None:
+        return ForgetResponse(removed=False, kind=kind, key=key)
+    removed = app.storage.forget(repo_id=repo_id, kind=kind, key=key)
+    return ForgetResponse(removed=removed, kind=kind, key=key)
+
+
 @mcp.tool(
     title="Find callers of a symbol",
     description=(
