@@ -146,15 +146,18 @@ class TestAssembleHappyPath:
         # Primary section header DOES appear.
         assert "## Primary code" in result.bundle
 
-    def test_section_order_primary_callers_tests(self) -> None:
+    def test_section_order_primary_near_misses_callers_tests(self) -> None:
         result = assemble_context(
             "task",
             search_engine=_engine([]),
             context_budget=4000,
         )
         # Order is fixed regardless of which sections are populated.
+        # WIN-215 inserts near_misses between primary and callers so
+        # the agent sees "real answer + the deprecated lookalikes
+        # right next to it" before reading caller context.
         keys = [s.key for s in result.sections]
-        assert keys == ["primary", "callers", "tests"]
+        assert keys == ["primary", "near_misses", "callers", "tests"]
 
 
 # ---------------------------------------------------------------------------

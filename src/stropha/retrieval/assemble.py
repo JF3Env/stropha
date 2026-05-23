@@ -52,9 +52,12 @@ log = get_logger(__name__)
 
 # Sections appear in this order inside the rendered bundle. Each entry
 # is (section key, human-readable header). The agent reads top-down so
-# primary hits come first; graph extensions follow.
+# primary hits come first; near-misses sit RIGHT after primary so the
+# agent immediately sees "and these LOOK related but are deprecated";
+# graph extensions follow.
 _SECTION_ORDER: tuple[tuple[str, str], ...] = (
     ("primary", "Primary code"),
+    ("near_misses", "Near-misses — do NOT confuse with the answer"),
     ("callers", "Callers"),
     ("tests", "Tests"),
 )
@@ -259,6 +262,15 @@ def assemble_context(
                 )
                 primary_hits = filtered[:top_k]
 
+    # WIN-215 — split primary hits into "real answer" + "near-miss"
+    # so the bundle can render them under separate headers. Done
+    # AFTER diff_scope so the partition reflects the final candidate
+    # set the agent is going to see.
+    from .antiretrieval import partition_hits
+
+    primary_hits, near_miss_hits = partition_hits(primary_hits)
+    near_miss_hits = list(near_miss_hits)
+
     seen_chunk_ids: set[str] = set()
     primary_unique = _dedupe_in_order(seen_chunk_ids, primary_hits)
 
@@ -307,11 +319,21 @@ def assemble_context(
             normalised = [h for h in extras if isinstance(h, SearchHit)]
             test_hits.extend(_dedupe_in_order(seen_chunk_ids, normalised))
 
+    # Filter near-misses out of seen_chunk_ids' positive side too —
+    # near-miss chunk_ids are already tracked by the dedupe pass via
+    # primary_hits, so we don't need to do anything extra. Future
+    # graph extensions might surface a near-miss as a "caller" — the
+    # dedupe keeps us from rendering it twice.
+    seen_chunk_ids.update(h.chunk_id for h in near_miss_hits)
+
     # 3. Single budget pack across the union — primary first (highest
-    #    score signal), then extensions. The packer's monotonic stop
+    #    score signal), near-misses next (still high score, just
+    #    flagged), then extensions. The packer's monotonic stop
     #    means once we overflow we don't sneak smaller hits in from
     #    later sections — score order wins.
-    ordered_union: list[SearchHit] = primary_unique + caller_hits + test_hits
+    ordered_union: list[SearchHit] = (
+        primary_unique + near_miss_hits + caller_hits + test_hits
+    )
     pack = pack_to_budget(ordered_union, context_budget)
     truncated = pack.truncated
     spilled = len(pack.spilled)
@@ -319,15 +341,18 @@ def assemble_context(
     # 4. Re-partition packed hits back into sections (preserving order).
     packed_set = {id(h) for h in pack.packed}
     primary_packed = [h for h in primary_unique if id(h) in packed_set]
+    near_misses_packed = [h for h in near_miss_hits if id(h) in packed_set]
     callers_packed = [h for h in caller_hits if id(h) in packed_set]
     tests_packed = [h for h in test_hits if id(h) in packed_set]
 
     sections = [
         AssembleSection(key="primary", title=_SECTION_ORDER[0][1],
                         hits=primary_packed),
-        AssembleSection(key="callers", title=_SECTION_ORDER[1][1],
+        AssembleSection(key="near_misses", title=_SECTION_ORDER[1][1],
+                        hits=near_misses_packed),
+        AssembleSection(key="callers", title=_SECTION_ORDER[2][1],
                         hits=callers_packed),
-        AssembleSection(key="tests", title=_SECTION_ORDER[2][1],
+        AssembleSection(key="tests", title=_SECTION_ORDER[3][1],
                         hits=tests_packed),
     ]
     bundle = _render_bundle(task, sections)
@@ -338,6 +363,7 @@ def assemble_context(
         "assemble.done",
         task=task[:80],
         primary=len(primary_packed),
+        near_misses=len(near_misses_packed),
         callers=len(callers_packed),
         tests=len(tests_packed),
         budget=context_budget,
