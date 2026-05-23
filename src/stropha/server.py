@@ -3531,6 +3531,141 @@ def check_symbols_tool(
     )
 
 
+# ---- blast_radius (WIN-246) ------------------------------------------------
+
+
+class PerSymbolCounts(BaseModel):
+    callers: int = 0
+    tests: int = 0
+    related: int = 0
+    rationale: int = 0
+
+
+class BlastRadiusResponse(BaseModel):
+    """Aggregated blast-radius report from ``blast_radius_tool``."""
+
+    changed_symbols: list[str] = Field(
+        default_factory=list,
+        description="Echo of the input symbols after dedup + trim.",
+    )
+    callers: list[dict] = Field(
+        default_factory=list,
+        description="Union of callers across the changed symbols.",
+    )
+    tests: list[dict] = Field(
+        default_factory=list,
+        description="Union of tests that exercise the changed symbols.",
+    )
+    related: list[dict] = Field(
+        default_factory=list,
+        description="Union of symbols related via the graph.",
+    )
+    rationale: list[dict] = Field(
+        default_factory=list,
+        description=(
+            "Union of rationale nodes (docs/ADRs). Empty when the "
+            "graph carries no rationale_for edges yet."
+        ),
+    )
+    per_symbol: dict[str, PerSymbolCounts] = Field(
+        default_factory=dict,
+        description=(
+            "Per-symbol counts (callers / tests / related / "
+            "rationale) so the agent can triage which change has "
+            "the largest blast radius."
+        ),
+    )
+    notes: list[str] = Field(default_factory=list)
+    summary: str = Field(
+        default="",
+        description="One-line summary suitable for a commit message.",
+    )
+    graph_loaded: bool = Field(
+        description=(
+            "False when the graphify mirror is unavailable — every "
+            "section will be empty."
+        ),
+    )
+
+
+@mcp.tool(
+    title="Post-edit blast-radius report",
+    description=(
+        "WIN-246 — given the symbols you just edited, return every "
+        "caller / test / related symbol / rationale node that may be "
+        "affected, deduplicated across the input list. Use AFTER an "
+        "edit to know what else needs verification. Composes the "
+        "existing find_callers / find_tests_for / find_related / "
+        "find_rationale graph readers under one call."
+    ),
+)
+@traced("blast_radius")
+def blast_radius_tool(
+    symbols: list[str],
+    *,
+    ctx: Context,
+) -> BlastRadiusResponse:
+    """Build a blast-radius report for the changed symbols."""
+    from .retrieval.blast_radius import compute_blast_radius
+    from .retrieval.graph import (
+        find_callers as _find_callers,
+        find_related as _find_related,
+        find_rationale as _find_rationale,
+        find_tests_for as _find_tests_for,
+    )
+
+    app = _ctx(ctx)
+    graph_ok = graph_loaded(app.storage)
+    if not graph_ok:
+        return BlastRadiusResponse(
+            changed_symbols=[s.strip() for s in symbols if s and s.strip()],
+            graph_loaded=False,
+            summary=(
+                "graphify mirror not loaded — cannot compute blast "
+                "radius. Run `graphify .` and re-index."
+            ),
+            notes=["graph_loaded=False"],
+        )
+
+    def _callers(symbol: str) -> dict:
+        return _find_callers(app.storage, symbol)
+
+    def _tests(symbol: str) -> dict:
+        return _find_tests_for(app.storage, symbol)
+
+    def _related(symbol: str) -> dict:
+        return _find_related(app.storage, symbol)
+
+    rationale_fn = None
+    if has_rationale_edges(app.storage):
+        def _rationale(symbol: str) -> dict:
+            return _find_rationale(app.storage, symbol)
+        rationale_fn = _rationale
+
+    report = compute_blast_radius(
+        symbols,
+        callers_fn=_callers,
+        tests_fn=_tests,
+        related_fn=_related,
+        rationale_fn=rationale_fn,
+    )
+
+    return BlastRadiusResponse(
+        changed_symbols=report.changed_symbols,
+        callers=report.callers,
+        tests=report.tests,
+        related=report.related,
+        rationale=report.rationale,
+        per_symbol={
+            sym: PerSymbolCounts(**counts)
+            for sym, counts in report.per_symbol.items()
+        },
+        notes=report.notes,
+        summary=report.summary,
+        graph_loaded=True,
+    )
+
+
 # ---- entry point -----------------------------------------------------------
 
 def main() -> None:
