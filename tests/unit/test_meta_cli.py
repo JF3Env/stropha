@@ -166,14 +166,186 @@ class TestMetaReport:
         assert "v2" in result.output
 
     def test_json_output(self, tmp_path: Path) -> None:
+        """JSON output is now an object with candidates + baseline +
+        alerts (WIN-204). The legacy list-only schema was replaced when
+        regression-alert tracking landed."""
         meta = _make_meta(tmp_path)
         result = CliRunner().invoke(
             app, ["meta", "report", "--meta-dir", str(meta), "--json"]
         )
         assert result.exit_code == 0
         payload = json.loads(result.output)
-        assert isinstance(payload, list)
-        assert len(payload) >= 1
+        assert isinstance(payload, dict)
+        assert "candidates" in payload
+        assert "baseline" in payload
+        assert "alerts" in payload
+        assert isinstance(payload["candidates"], list)
+        assert len(payload["candidates"]) >= 1
+        # No baseline yet → alerts is empty + baseline is null.
+        assert payload["baseline"] is None
+        assert payload["alerts"] == []
+
+    def test_no_baseline_hint_in_output(self, tmp_path: Path) -> None:
+        """When the operator has never promoted, the report nudges
+        them toward `meta promote` to start tracking regressions."""
+        meta = _make_meta(tmp_path)
+        result = CliRunner().invoke(
+            app, ["meta", "report", "--meta-dir", str(meta)]
+        )
+        assert result.exit_code == 0
+        assert "No baseline recorded" in result.output
+
+
+# ---------------------------------------------------------------------------
+# stropha meta report — regression alerts (WIN-204)
+# ---------------------------------------------------------------------------
+
+
+class TestMetaReportBaseline:
+    """Regression-alert behaviour of ``stropha meta report``.
+
+    After a candidate is promoted via ``--apply``, a baseline record
+    lives alongside the meta dir. Subsequent `meta report` runs surface
+    every other candidate whose fitness beats the live baseline so the
+    operator can decide whether to promote again.
+    """
+
+    def _promote(
+        self, meta: Path, cwd: Path, candidate_id: str
+    ) -> None:
+        """Convenience: run `meta promote --apply` against a temp cwd."""
+        import os
+
+        prev = Path.cwd()
+        os.chdir(cwd)
+        try:
+            result = CliRunner().invoke(
+                app,
+                ["meta", "promote", candidate_id,
+                 "--meta-dir", str(meta), "--apply"],
+            )
+            assert result.exit_code == 0, result.output
+        finally:
+            os.chdir(prev)
+
+    def test_apply_writes_baseline_record(self, tmp_path: Path) -> None:
+        """`meta promote --apply` persists the baseline next to the
+        meta dir so the next report can compare against it."""
+        meta = _make_meta(tmp_path)
+        target_cwd = tmp_path / "cwd"
+        target_cwd.mkdir()
+        # Pick the lowest-fitness candidate (v0) so subsequent ones
+        # in the archive will read as regressions.
+        recs = ArtifactStore(meta).list_candidates()
+        target = next(r for r in recs if r.label == "v0")
+        self._promote(meta, target_cwd, target.id)
+        assert (meta / "baseline.json").is_file()
+
+    def test_report_flags_candidates_above_baseline(
+        self, tmp_path: Path
+    ) -> None:
+        """Promote the worst candidate → every better candidate in the
+        archive should appear in the regression alerts section."""
+        meta = _make_meta(tmp_path)
+        target_cwd = tmp_path / "cwd"
+        target_cwd.mkdir()
+        recs = ArtifactStore(meta).list_candidates()
+        worst = next(r for r in recs if r.label == "v0")
+        self._promote(meta, target_cwd, worst.id)
+
+        result = CliRunner().invoke(
+            app, ["meta", "report", "--meta-dir", str(meta)]
+        )
+        assert result.exit_code == 0, result.output
+        assert "Regression alerts" in result.output
+        # The top candidates v1/v2/v3 all have higher fitness than v0.
+        assert "v2" in result.output
+
+    def test_report_no_regressions_when_baseline_is_best(
+        self, tmp_path: Path
+    ) -> None:
+        """Promote the BEST candidate → no candidates beat it → the
+        report shows the all-clear message. We pick the highest-fitness
+        record via list_candidates(sort_by='fitness') so the assertion
+        is robust against the _make_meta fixture's scoring scheme
+        (latency_ms dominates the mean so the highest-latency candidate
+        is paradoxically 'best')."""
+        meta = _make_meta(tmp_path)
+        target_cwd = tmp_path / "cwd"
+        target_cwd.mkdir()
+        best = ArtifactStore(meta).list_candidates(sort_by="fitness")[0]
+        self._promote(meta, target_cwd, best.id)
+
+        result = CliRunner().invoke(
+            app, ["meta", "report", "--meta-dir", str(meta)]
+        )
+        assert result.exit_code == 0
+        assert "No regressions" in result.output
+
+    def test_report_json_includes_baseline_and_alerts(
+        self, tmp_path: Path
+    ) -> None:
+        meta = _make_meta(tmp_path)
+        target_cwd = tmp_path / "cwd"
+        target_cwd.mkdir()
+        recs = ArtifactStore(meta).list_candidates()
+        worst = next(r for r in recs if r.label == "v0")
+        self._promote(meta, target_cwd, worst.id)
+
+        result = CliRunner().invoke(
+            app,
+            ["meta", "report", "--meta-dir", str(meta), "--json"],
+        )
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["baseline"] is not None
+        assert payload["baseline"]["candidate_id"] == worst.id
+        assert len(payload["alerts"]) >= 1
+        # Each alert carries id + delta + fitness.
+        sample = payload["alerts"][0]
+        assert "id" in sample and "delta" in sample
+        assert sample["delta"] > 0
+
+    def test_regression_threshold_suppresses_small_deltas(
+        self, tmp_path: Path
+    ) -> None:
+        """A high ``--regression-threshold`` should filter out
+        slight-improvement candidates so the alert section stays
+        focused on meaningful gains."""
+        meta = _make_meta(tmp_path)
+        target_cwd = tmp_path / "cwd"
+        target_cwd.mkdir()
+        recs = ArtifactStore(meta).list_candidates()
+        # Promote v1 (mid-fitness) so v2 is the only candidate that
+        # beats it. Threshold is set above the delta v2→v1 to suppress
+        # everything.
+        mid = next(r for r in recs if r.label == "v1")
+        self._promote(meta, target_cwd, mid.id)
+
+        result = CliRunner().invoke(
+            app,
+            ["meta", "report", "--meta-dir", str(meta),
+             "--regression-threshold", "1000.0"],
+        )
+        assert result.exit_code == 0
+        assert "No regressions" in result.output
+
+    def test_malformed_baseline_surfaces_error_does_not_crash(
+        self, tmp_path: Path
+    ) -> None:
+        """A hand-edited baseline.json with invalid JSON must surface
+        the error in red but still print the candidate table — never
+        crash the operator's report run."""
+        meta = _make_meta(tmp_path)
+        (meta / "baseline.json").write_text(
+            "{{{ not valid json", encoding="utf-8"
+        )
+        result = CliRunner().invoke(
+            app, ["meta", "report", "--meta-dir", str(meta)]
+        )
+        # Exits 0 — the report is still useful.
+        assert result.exit_code == 0
+        assert "Baseline read failed" in result.output
 
 
 # ---------------------------------------------------------------------------

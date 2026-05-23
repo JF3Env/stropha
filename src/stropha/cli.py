@@ -2064,9 +2064,30 @@ def meta_report_cmd(
     sort_by: str = typer.Option("fitness", "--sort-by",
                                  help="created_at | id | fitness | <score_key>"),
     json_out: bool = typer.Option(False, "--json"),
+    regression_threshold: float = typer.Option(
+        0.0, "--regression-threshold",
+        help=(
+            "Minimum positive fitness delta vs the live baseline that "
+            "qualifies as a 'beats baseline' alert (WIN-204). Default 0 "
+            "catches every strict improvement; raise to suppress noise."
+        ),
+    ),
 ) -> None:
-    """List the top candidates by fitness with their score breakdown."""
-    from .meta import ArtifactStore
+    """List the top candidates by fitness with their score breakdown.
+
+    When a baseline has been recorded (via ``meta promote --apply``),
+    the report also flags every candidate that beats the live
+    ``stropha.yaml`` on fitness — the regression-alert section that
+    answers "is the bandit finding something better than what I just
+    promoted?".
+    """
+    from .meta import (
+        ArtifactStore,
+        BaselineError,
+        compare_candidates,
+        read_baseline,
+        regressions,
+    )
 
     if meta_dir is None:
         meta_dir = _meta_dir_default()
@@ -2077,29 +2098,114 @@ def meta_report_cmd(
     store = ArtifactStore(meta_dir)
     candidates = store.list_candidates(limit=limit, sort_by=sort_by)
 
+    # Load the live baseline (if any) and pre-compute comparisons so
+    # both JSON and table outputs see the same data.
+    try:
+        baseline = read_baseline(meta_dir)
+    except BaselineError as exc:
+        console.print(f"[red]Baseline read failed:[/red] {exc}")
+        baseline = None
+    comparisons = (
+        compare_candidates(candidates, baseline) if baseline else []
+    )
+    delta_by_id = {c.candidate.id: c for c in comparisons}
+    alerts = regressions(comparisons, threshold=regression_threshold)
+
     if json_out:
         import json as _json
-        console.print_json(_json.dumps([c.to_dict() if hasattr(c, "to_dict") else {
-            "id": c.id, "label": c.label, "scores": c.scores,
-            "fitness": c.fitness(),
-        } for c in candidates]))
+        payload: dict[str, Any] = {
+            "candidates": [
+                c.to_dict() if hasattr(c, "to_dict") else {
+                    "id": c.id, "label": c.label, "scores": c.scores,
+                    "fitness": c.fitness(),
+                }
+                for c in candidates
+            ],
+            "baseline": baseline.to_dict() if baseline else None,
+            "alerts": [
+                {
+                    "id": a.candidate.id,
+                    "label": a.candidate.label,
+                    "fitness": a.candidate_fitness,
+                    "delta": a.delta,
+                }
+                for a in alerts
+            ],
+        }
+        console.print_json(_json.dumps(payload))
         return
 
-    table = Table(title=f"Top {limit} candidates ({sort_by})")
+    table_title = f"Top {limit} candidates ({sort_by})"
+    if baseline is not None:
+        table_title += f" — baseline: {baseline.candidate_id}"
+    table = Table(title=table_title)
     table.add_column("ID", style="cyan")
     table.add_column("Label")
     table.add_column("Fitness", justify="right")
     table.add_column("Quality", justify="right")
     table.add_column("Latency_ms", justify="right")
+    if baseline is not None:
+        table.add_column("Δ vs baseline", justify="right")
     for c in candidates:
-        table.add_row(
+        row = [
             c.id,
             c.label or "—",
             f"{c.fitness():+.4f}",
             f"{c.scores.get('quality', 0):.3f}" if c.scores else "—",
             f"{c.scores.get('latency_ms', 0):.1f}" if c.scores else "—",
-        )
+        ]
+        if baseline is not None:
+            cmp = delta_by_id.get(c.id)
+            if cmp is None:
+                row.append("—")
+            elif cmp.is_baseline:
+                row.append("[dim]live[/dim]")
+            elif cmp.delta > regression_threshold:
+                row.append(f"[green]{cmp.delta:+.4f}[/green]")
+            elif cmp.delta < -regression_threshold:
+                row.append(f"[red]{cmp.delta:+.4f}[/red]")
+            else:
+                row.append(f"{cmp.delta:+.4f}")
+        table.add_row(*row)
     console.print(table)
+
+    if baseline is None:
+        console.print(
+            "[dim]No baseline recorded — run "
+            "`stropha meta promote <id> --apply` to start tracking "
+            "regressions.[/dim]"
+        )
+        return
+
+    if alerts:
+        alert_table = Table(
+            title=(
+                f"[bold yellow]⚠ Regression alerts[/bold yellow] — "
+                f"{len(alerts)} candidate(s) beat baseline by "
+                f"> {regression_threshold:.4f}"
+            ),
+        )
+        alert_table.add_column("ID", style="cyan")
+        alert_table.add_column("Label")
+        alert_table.add_column("Δ vs baseline", justify="right",
+                               style="green")
+        alert_table.add_column("Candidate fitness", justify="right")
+        alert_table.add_column("Baseline fitness", justify="right")
+        for a in alerts:
+            alert_table.add_row(
+                a.candidate.id,
+                a.candidate.label or "—",
+                f"{a.delta:+.4f}",
+                f"{a.candidate_fitness:+.4f}",
+                f"{a.baseline_fitness:+.4f}",
+            )
+        console.print(alert_table)
+    else:
+        console.print(
+            f"[green]✓ No regressions[/green] — baseline "
+            f"{baseline.candidate_id} still leads "
+            f"(top fitness vs baseline within {regression_threshold:.4f})."
+        )
 
 
 @meta_app.command("promote")
@@ -2199,9 +2305,25 @@ def meta_promote_cmd(
 
     # Apply path — opt-in only.
     apply_plan(plan)
+    # Record the promotion as the new baseline so subsequent `meta
+    # report` runs surface candidates that beat the live config
+    # (WIN-204). The baseline lives next to the meta dir as a
+    # side-car JSON; existing prior records are atomically replaced.
+    from .meta import write_baseline
+
+    baseline = write_baseline(meta_dir, candidate=rec)
     console.print(
         f"[green]Promoted[/green] {candidate_id} → {target}"
     )
+    if baseline.fitness is not None:
+        console.print(
+            f"[dim]Baseline recorded (fitness {baseline.fitness:+.4f}, "
+            f"promoted_at {baseline.promoted_at}).[/dim]"
+        )
+    else:
+        console.print(
+            "[dim]Baseline recorded (no fitness — candidate had no scores).[/dim]"
+        )
 
 
 @meta_app.command("trace")

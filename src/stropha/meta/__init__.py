@@ -13,6 +13,16 @@ This package is built up phase-by-phase per the RFC:
 
 from __future__ import annotations
 
+from .baseline import (
+    BASELINE_FILENAME,
+    BaselineError,
+    BaselineRecord,
+    Comparison,
+    compare_candidates,
+    read_baseline,
+    regressions,
+    write_baseline,
+)
 from .evaluator import (
     EvaluatorError,
     evaluate_candidate,
@@ -108,10 +118,14 @@ __all__ = [
     "TIER_SCORE",
     "ArtifactStore",
     "ArtifactStoreError",
+    "BASELINE_FILENAME",
     "BadResult",
     "BadResultStore",
+    "BaselineError",
+    "BaselineRecord",
     "CacheEntry",
     "CandidateRecord",
+    "Comparison",
     "Constraint",
     "Dimension",
     "EvaluatorError",
@@ -150,6 +164,7 @@ __all__ = [
     "apply_plan",
     "build_plan",
     "build_scorecard",
+    "compare_candidates",
     "create_snapshot",
     "discover_gaps",
     "disk_usage",
@@ -163,10 +178,13 @@ __all__ = [
     "outcome_score_decomposition",
     "prune",
     "prune_snapshots",
+    "read_baseline",
+    "regressions",
     "render_summary",
     "resolve_bad_chunks",
     "resolve_sha",
     "run_loop",
     "scorecard_pareto_frontier",
     "tier_summary",
+    "write_baseline",
 ]
