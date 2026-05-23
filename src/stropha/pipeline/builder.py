@@ -22,6 +22,7 @@ from ..stages.chunker import ChunkerStage
 from ..stages.embedder import EmbedderStage
 from ..stages.enricher import EnricherStage
 from ..stages.retrieval import RetrievalStage
+from ..stages.router import RouterStage
 from ..stages.storage import StorageStage
 from ..stages.walker import WalkerStage
 from .registry import lookup_adapter
@@ -33,8 +34,11 @@ log = get_logger(__name__)
 class BuiltStages:
     """Set of constructed adapters returned by :func:`build_stages`.
 
-    All 6 stages are adapter-aware after Phase 3. The Pipeline / CLI
-    consumes this dataclass directly — never reaches into the registry.
+    Six core stages cover index + retrieval. ``router`` (WIN-234) is
+    optional — a query-time router for smart_search dispatch that
+    defaults to the pattern-based adapter when the config doesn't
+    declare one. Pipeline / CLI consume this dataclass directly —
+    never reaches into the registry.
     """
 
     walker: WalkerStage
@@ -44,6 +48,7 @@ class BuiltStages:
     storage: StorageStage
     retrieval: RetrievalStage
     resolved: dict[str, Any]
+    router: RouterStage | None = None
 
     def indexing_hash(self) -> str:
         """Stable hash of the four adapters that determine index contents.
@@ -162,6 +167,38 @@ def build_stages(
             adapter_id=retrieval.adapter_id,
         )
 
+    # WIN-234: router is an optional, query-time stage. Default to
+    # the pattern-based adapter when the config doesn't declare one
+    # so existing pre-WIN-234 stropha.yaml files keep working.
+    router: RouterStage | None = None
+    router_section = resolved_config.get("router") or {}
+    router_name = router_section.get("adapter") or "pattern"
+    try:
+        router_cls = lookup_adapter("router", router_name)
+    except Exception as exc:  # noqa: BLE001 — adapter may not exist
+        log.warning(
+            "pipeline.router.unavailable",
+            adapter=router_name, error=str(exc),
+        )
+        router_cls = None
+    if router_cls is not None:
+        try:
+            router_cfg = router_cls.Config(**(router_section.get("config") or {}))
+        except Exception as exc:
+            raise ConfigError(
+                f"Invalid config for pipeline.router adapter={router_name!r}: {exc}"
+            ) from exc
+        try:
+            router = router_cls(router_cfg)
+        except TypeError:
+            router = router_cls()
+        log.info(
+            "pipeline.adapter.built",
+            stage="router",
+            adapter=router_name,
+            adapter_id=getattr(router, "adapter_id", "?"),
+        )
+
     return BuiltStages(
         walker=walker,
         chunker=chunker,
@@ -170,6 +207,7 @@ def build_stages(
         storage=storage,  # type: ignore[arg-type]
         retrieval=retrieval,  # type: ignore[arg-type]
         resolved=resolved_config,
+        router=router,
     )
 
 

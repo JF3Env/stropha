@@ -1125,6 +1125,10 @@ def smart_search_tool(
     top_k = max(1, min(top_k, 30))
     
     try:
+        # WIN-234: pass the configured router stage so the dispatch
+        # uses the operator's chosen policy. Falls back to the
+        # legacy ``route_query`` when no router was built.
+        configured_router = getattr(app.built, "router", None)
         result = smart_search(
             query,
             app.storage,
@@ -1132,6 +1136,7 @@ def smart_search_tool(
             top_k=top_k,
             use_router=True,
             use_llm_router=use_llm_router,
+            router=configured_router,
         )
         return SmartSearchResponse(
             results=[_to_result(h) for h in result.hits],

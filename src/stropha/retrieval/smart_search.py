@@ -46,16 +46,17 @@ def smart_search(
     top_k: int = 10,
     use_router: bool = True,
     use_llm_router: bool | None = None,
+    router: Any = None,
 ) -> SmartSearchResult:
     """Unified search with automatic query routing.
-    
+
     Routes queries to the appropriate tool:
     - "what calls X" → find_callers
     - "tests for X" → find_tests_for
     - "what relates to X" → find_related
     - "trace feature X" → trace_feature
     - Everything else → hybrid search
-    
+
     Args:
         query: The search query.
         storage: Storage instance.
@@ -64,17 +65,20 @@ def smart_search(
         use_router: Whether to use query routing. If False, always uses
                     hybrid search.
         use_llm_router: Whether to use LLM for ambiguous queries.
-    
+        router: Optional :class:`RouterStage` (WIN-234) instance to
+            classify the query. When provided, ``use_llm_router`` is
+            ignored (the router's own config dictates LLM use). When
+            ``None`` (the default), falls back to the legacy
+            :func:`route_query` helper.
+
     Returns:
         SmartSearchResult with hits, routing info, and tool used.
     """
     from . import graph
     from .search import SearchEngine
-    
+
     # Route the query
-    if use_router:
-        routed = route_query(query, use_llm=use_llm_router)
-    else:
+    if not use_router:
         routed = RoutedQuery(
             intent=QueryIntent.SEARCH_CODE,
             symbol=None,
@@ -82,6 +86,32 @@ def smart_search(
             confidence=1.0,
             reason="routing disabled",
         )
+    elif router is not None and hasattr(router, "route"):
+        # WIN-234: a Stage-shaped router was injected. Use its
+        # adapter-specific policy + degrade gracefully on any
+        # internal failure.
+        try:
+            routed = router.route(query)
+        except Exception as exc:  # noqa: BLE001 — defensive
+            log.warning(
+                "smart_search.router_failed",
+                error=str(exc),
+                adapter=getattr(router, "adapter_name", "?"),
+            )
+            routed = RoutedQuery(
+                intent=QueryIntent.SEARCH_CODE,
+                symbol=None,
+                original_query=query,
+                confidence=0.1,
+                reason=(
+                    f"router '{getattr(router, 'adapter_name', '?')}' "
+                    f"raised: {exc!r} — falling back to SEARCH_CODE"
+                ),
+            )
+    else:
+        # Legacy direct call into route_query. Preserved for tests
+        # and any caller that doesn't yet thread a router through.
+        routed = route_query(query, use_llm=use_llm_router)
     
     # Check if graph is required and available
     if is_graph_intent(routed.intent):
