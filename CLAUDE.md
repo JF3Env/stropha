@@ -9,7 +9,7 @@ Operational guide for LLM coding agents (Claude Code, OpenCode, etc.) working on
 3. **Use the RAG before reading files.** The MCP tools `mcp_Stropha_search_code`, `mcp_Stropha_get_symbol`, `mcp_Stropha_get_file_outline` answer 90% of "where is X?" questions cheaper than a `Read`.
 4. **The hook auto-refreshes on commit.** `.git/hooks/post-commit` v=3 runs `graphify update` → `stropha index` in detached background after every commit. Do NOT manually run `stropha index` unless you are debugging the hook itself. Logs: `~/.cache/stropha-hook.log`.
 5. **Before editing code, check §3 invariants.** Drift detection, schema migration discipline, and the local-only policy are non-negotiable.
-6. **After editing code:** `uv run pytest -q` MUST stay green (920 tests at last bump). The hook regenerates the graph; you don't have to.
+6. **After editing code:** `uv run pytest -q` MUST stay green (1457 tests at last bump). The hook regenerates the graph; you don't have to.
 
 For the public pitch + install instructions, see `README.md`. For design rationale, see the specs in `docs/architecture/`.
 
@@ -183,9 +183,9 @@ graph:
 
 Cross-repo hooks (v=3, v=4) bake `PROJECT_DIR_DEFAULT` / `INDEX_PATH_DEFAULT` / `LOG_DEFAULT` directly into the generated script — see `stropha hook install --help`. Env vars still override. Hook v=4 uses `--incremental` for git-diff aware ingestion.
 
-### 2.6 Test inventory (1142 unit tests, ~17s)
+### 2.6 Test inventory (1457 unit tests, ~22s)
 
-Per file: highlights — `test_anthropic_backend` 38 (was 34, +4 retry-after / 429 tests) · `test_contextual_enricher` 30 (was 19, +11 batch / status tests) · `test_pipeline_parallel_enrich` 16 (was 8, +8 batch / status tests) · `test_savings` 22 (was 17, +5 WIN-158 wiring) · `test_trace_recorder` 32 (NEW, WIN-159) · `test_traced_decorator` 35 (NEW, WIN-160) · `test_search_streams` 5 (NEW, WIN-160 stream attribution) · `test_artifact_store` 55 (NEW, WIN-161) · `test_outcome_labeling` 56 (NEW, WIN-162) · `test_feedback` 26 (NEW, WIN-163). Other files unchanged from the 806-test baseline.
+Per file: highlights — `test_anthropic_backend` 38 (was 34, +4 retry-after / 429 tests) · `test_contextual_enricher` 31 (was 19, +12 batch / status / truncation-tolerance tests) · `test_pipeline_parallel_enrich` 16 (was 8, +8 batch / status tests) · `test_savings` 22 (was 17, +5 WIN-158 wiring) · `test_trace_recorder` 32 (NEW, WIN-159) · `test_traced_decorator` 35 (NEW, WIN-160) · `test_search_streams` 5 (NEW, WIN-160 stream attribution) · `test_artifact_store` 55 (NEW, WIN-161) · `test_outcome_labeling` 56 (NEW, WIN-162) · `test_feedback` 26 (NEW, WIN-163). Other files unchanged from the prior baseline.
 
 ## 3. Key invariants (do NOT break)
 
@@ -494,17 +494,25 @@ Anthropic 429 / batched enrichment (rate-limit hardening):
       `ContextualEnricher.enrich_batch(chunks, contexts)` packs N chunks
       into a single Messages API call by asking the model to return a
       JSON array of descriptions (one per chunk, ID-matched). Tolerates
-      markdown fences, trailing commas, partial responses, and
-      hallucinated extra IDs — every failure mode falls back to
-      per-chunk `(content, False)` so Fix 2's cache-skip logic keeps
-      retries on the table. Combines with `enricher_concurrency`: N
-      parallel batches of M chunks = N×M chunks per round-trip cycle.
+      markdown fences, trailing commas, partial responses,
+      hallucinated extra IDs, **and truncated arrays** (the response was
+      cut off mid-string by ``max_tokens`` — observed in the wild against
+      DeepSeek with batch_size=10). The truncation-tolerant pass takes
+      everything from the opening ``[`` to the last complete ``}``,
+      synthesises a closing ``]``, and parses — recovering N-1 entries
+      when the model ran out of tokens on the last one. Every failure
+      mode falls back to per-chunk `(content, False)` so Fix 2's
+      cache-skip logic keeps retries on the table. Combines with
+      `enricher_concurrency`: N parallel batches of M chunks = N×M chunks
+      per round-trip cycle. Batched ``max_tokens`` budget is
+      ``(per_chunk_tokens + 32) × N + 256`` to absorb DeepSeek's verbose
+      preamble + code-fence wrappers without hitting the truncation path.
       Knobs: `inference.enricher_batch_size: int = 1` (YAML) /
       `--batch-size N` (CLI). The pipeline auto-falls back to per-chunk
       dispatch for enrichers without `enrich_batch` (noop, hierarchical,
       ollama, mlx, graph-aware).
 
-**Total suite: 920 tests, all green. 5 enrichers, 4 retrieval streams,
+**Total suite: 1457 tests, all green. 5 enrichers, 4 retrieval streams,
 4 walkers, 3 embedders, 4 inference backends (mlx, ollama, deepseek, anthropic),
 12 MCP tools, 8 CLI commands.**
 
@@ -706,7 +714,7 @@ This design ensures:
 
 Three adapters behind `EmbedderStage` (`stropha.stages.embedder.EmbedderStage`):
 
-1. **`voyage`** (`adapters/embedder/voyage.py`) — Voyage `voyage-code-3` @ 512 dims (Matryoshka). Preferred. Activates when `VOYAGE_API_KEY` is set. SOTA for code per system spec §4.1. Cloud only.
+1. **`voyage`** (`adapters/embedder/voyage.py`) — Voyage `voyage-4-large` @ 512 dims (Matryoshka) by default; `voyage-code-3` remains available as a code-SOTA opt-in (system spec §4.1). Activates when `VOYAGE_API_KEY` is set. Cloud only. **Token-aware sub-batching**: respects Voyage's 120K-tokens-per-batch ceiling by splitting incoming pipeline batches into sub-batches sized against `max_tokens_per_batch` (default 96K) using a `chars_per_token` heuristic (default 3.5). Both knobs are intentionally absent from `adapter_id` — they shape requests, not vectors, so toggling them never triggers re-embed.
 2. **`local`** (`adapters/embedder/local.py`) — fastembed (ONNX). Default model `mixedbread-ai/mxbai-embed-large-v1` @ 1024 dims. Top open-source English MTEB at this scale, ONNX-stable on macOS aarch64. Zero cost, zero network after the first download. Configurable via the adapter config's `model:` field or the legacy `STROPHA_LOCAL_EMBED_MODEL` env alias.
 3. **`bge-m3`** (`adapters/embedder/bge_m3.py`) — Pre-configured local fastembed pinned to `BAAI/bge-m3` (multilingual). Subclass of `LocalEmbedder` with `adapter_name="bge-m3"` so the drift detector treats it as a distinct adapter even when the underlying model overlaps with `local`'s config.
 
@@ -717,7 +725,7 @@ Every adapter writes `(embedding_model, embedding_dim)` into each chunk row. Swi
 ## Testing
 
 ```bash
-uv run pytest -q                 # 920 unit tests, ~16s
+uv run pytest -q                 # 1457 unit tests, ~22s
 uv run pytest -m e2e             # end-to-end (skipped by default; needs fixture)
 uv run pytest --collect-only -q  # full inventory by test id
 
