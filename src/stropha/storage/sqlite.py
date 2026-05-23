@@ -8,6 +8,7 @@ not a schema migration.
 
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 import struct
@@ -46,7 +47,7 @@ log = get_logger(__name__)
 #     `graph_edges` tables to allow multiple repos with their own graphify
 #     graphs to share a single stropha index. Node IDs are prefixed with
 #     repo_id to avoid collisions across repos.
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 
 def _serialize_vector(vec: list[float]) -> bytes:
@@ -489,6 +490,50 @@ class Storage:
         )
         cur.execute(
             "CREATE INDEX IF NOT EXISTS idx_graph_edges_repo ON graph_edges(repo_id);"
+        )
+
+        # v8: sessions table — KEYSTONE for EPIC 1.9 statefulness work
+        # (WIN-221). Persists per-session state (seen_chunk_ids,
+        # pinned_chunk_ids) across MCP-server restarts so the agent's
+        # working set survives process boundaries. Future stories in the
+        # epic will add columns for project memory (WIN-222), episodic
+        # task memory (WIN-225), scratchpad (WIN-229), etc. — every new
+        # piece is an _add_column_if_missing on this same table or a
+        # foreign-key relation to it.
+        #
+        # ``session_id`` is the same uuid4 the MCP server already
+        # generates per process (WIN-160), so cross-session correlation
+        # via the trace recorder stays cheap.
+        # ``client_id`` is optional — the client can pass a stable id
+        # (hostname, IDE identity, project path) so the same workspace
+        # rejoins its prior session across restarts. When None the row
+        # is process-unique.
+        # ``seen_chunk_ids`` / ``pinned_chunk_ids`` are JSON arrays.
+        # SQLite has no native set type; JSON keeps the on-disk shape
+        # human-readable and trivially exportable. Sets fit in the
+        # 1 MB row default; if a session ever exceeds that, the
+        # behaviour falls back to "lose history" which is degraded
+        # but never crashes (WIN-228 TTL will handle the long-term
+        # cleanup).
+        # ``meta`` is a catchall JSON blob for forward-compat. Future
+        # stories can lean on it before deciding whether a feature
+        # deserves its own column.
+        cur.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS sessions (
+                session_id        TEXT PRIMARY KEY,
+                client_id         TEXT,
+                created_at        TEXT NOT NULL,
+                updated_at        TEXT NOT NULL,
+                seen_chunk_ids    TEXT NOT NULL DEFAULT '[]',
+                pinned_chunk_ids  TEXT NOT NULL DEFAULT '[]',
+                meta              TEXT NOT NULL DEFAULT '{}'
+            );
+            CREATE INDEX IF NOT EXISTS idx_sessions_client_id
+                ON sessions(client_id);
+            CREATE INDEX IF NOT EXISTS idx_sessions_updated_at
+                ON sessions(updated_at);
+            """
         )
 
         cur.execute(
@@ -1442,6 +1487,195 @@ class Storage:
         ]
 
     # ----- structured lookups (used by MCP tools) -----
+
+    # ----- sessions (v8) -----
+
+    def get_session(self, session_id: str) -> "SessionRecord | None":
+        """Load a session row by id. Returns ``None`` when unknown.
+
+        WIN-221 / EPIC 1.9: this is the read side of the sessions
+        table. ``upsert_session`` is the write side; together they
+        persist the WIN-217 seen-set + WIN-218 pin-set so the agent's
+        working state survives MCP-server restarts.
+        """
+        from ..models import SessionRecord
+
+        row = self._conn.execute(
+            """SELECT session_id, client_id, created_at, updated_at,
+                      seen_chunk_ids, pinned_chunk_ids, meta
+               FROM sessions WHERE session_id = ?""",
+            (session_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            seen = set(json.loads(row["seen_chunk_ids"] or "[]"))
+            pinned = set(json.loads(row["pinned_chunk_ids"] or "[]"))
+            meta = json.loads(row["meta"] or "{}")
+        except (json.JSONDecodeError, TypeError):
+            # Corrupted row → log + treat as empty state instead of
+            # crashing the MCP server. The next upsert will rewrite
+            # the JSON with valid content.
+            log.warning(
+                "sessions.corrupted_row",
+                session_id=session_id,
+            )
+            seen, pinned, meta = set(), set(), {}
+        return SessionRecord(
+            session_id=row["session_id"],
+            client_id=row["client_id"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+            seen_chunk_ids=seen,
+            pinned_chunk_ids=pinned,
+            meta=meta,
+        )
+
+    def upsert_session(
+        self,
+        session_id: str,
+        *,
+        client_id: str | None = None,
+        seen_chunk_ids: set[str] | None = None,
+        pinned_chunk_ids: set[str] | None = None,
+        meta: dict[str, Any] | None = None,
+    ) -> "SessionRecord":
+        """Insert or update a session row. Idempotent.
+
+        First call creates the row with ``created_at = updated_at =
+        now``. Subsequent calls bump ``updated_at`` and overwrite the
+        sets / meta dict. ``client_id`` once set is preserved across
+        calls (passing ``None`` does NOT clear it — callers must pass
+        an empty string explicitly if they want to wipe).
+
+        Returns the canonical :class:`SessionRecord` after the write
+        so callers can use the post-upsert timestamps directly.
+        """
+        from ..models import SessionRecord
+
+        now = datetime.now(UTC).isoformat()
+        cur = self._conn.cursor()
+        existing = cur.execute(
+            "SELECT created_at, client_id FROM sessions WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        seen_json = json.dumps(sorted(seen_chunk_ids or set()))
+        pinned_json = json.dumps(sorted(pinned_chunk_ids or set()))
+        meta_json = json.dumps(meta or {}, sort_keys=True)
+        if existing is None:
+            cur.execute(
+                """INSERT INTO sessions (
+                       session_id, client_id, created_at, updated_at,
+                       seen_chunk_ids, pinned_chunk_ids, meta
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    session_id, client_id, now, now,
+                    seen_json, pinned_json, meta_json,
+                ),
+            )
+            created_at = now
+            resolved_client_id = client_id
+        else:
+            # Preserve client_id when caller passes None (most common
+            # case — the agent only updates the state sets).
+            resolved_client_id = (
+                client_id if client_id is not None else existing["client_id"]
+            )
+            cur.execute(
+                """UPDATE sessions
+                       SET client_id = ?, updated_at = ?,
+                           seen_chunk_ids = ?, pinned_chunk_ids = ?,
+                           meta = ?
+                     WHERE session_id = ?""",
+                (
+                    resolved_client_id, now, seen_json, pinned_json,
+                    meta_json, session_id,
+                ),
+            )
+            created_at = existing["created_at"]
+        self._conn.commit()
+        return SessionRecord(
+            session_id=session_id,
+            client_id=resolved_client_id,
+            created_at=created_at,
+            updated_at=now,
+            seen_chunk_ids=set(seen_chunk_ids or set()),
+            pinned_chunk_ids=set(pinned_chunk_ids or set()),
+            meta=dict(meta or {}),
+        )
+
+    def delete_session(self, session_id: str) -> bool:
+        """Remove a session row. Returns ``True`` on delete, ``False``
+        when the row didn't exist (caller's no-op signal)."""
+        cur = self._conn.execute(
+            "DELETE FROM sessions WHERE session_id = ?", (session_id,)
+        )
+        self._conn.commit()
+        return cur.rowcount > 0
+
+    def list_sessions(
+        self, *, client_id: str | None = None, limit: int = 50,
+    ) -> list["SessionRecord"]:
+        """Enumerate sessions, optionally filtered by ``client_id``.
+
+        Used by WIN-228 (TTL cleanup) + WIN-222 (cross-session memory).
+        Sorted by ``updated_at`` descending so "the most recent session
+        for this client" is row zero.
+        """
+        from ..models import SessionRecord
+
+        if client_id is None:
+            rows = self._conn.execute(
+                """SELECT session_id, client_id, created_at, updated_at,
+                          seen_chunk_ids, pinned_chunk_ids, meta
+                   FROM sessions ORDER BY updated_at DESC LIMIT ?""",
+                (limit,),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                """SELECT session_id, client_id, created_at, updated_at,
+                          seen_chunk_ids, pinned_chunk_ids, meta
+                   FROM sessions
+                   WHERE client_id = ?
+                   ORDER BY updated_at DESC LIMIT ?""",
+                (client_id, limit),
+            ).fetchall()
+        out: list[SessionRecord] = []
+        for row in rows:
+            try:
+                seen = set(json.loads(row["seen_chunk_ids"] or "[]"))
+                pinned = set(json.loads(row["pinned_chunk_ids"] or "[]"))
+                meta = json.loads(row["meta"] or "{}")
+            except (json.JSONDecodeError, TypeError):
+                log.warning(
+                    "sessions.corrupted_row",
+                    session_id=row["session_id"],
+                )
+                seen, pinned, meta = set(), set(), {}
+            out.append(
+                SessionRecord(
+                    session_id=row["session_id"],
+                    client_id=row["client_id"],
+                    created_at=row["created_at"],
+                    updated_at=row["updated_at"],
+                    seen_chunk_ids=seen,
+                    pinned_chunk_ids=pinned,
+                    meta=meta,
+                )
+            )
+        return out
+
+    def prune_sessions(self, *, older_than_iso: str) -> int:
+        """Delete sessions whose ``updated_at`` is older than the cutoff.
+
+        WIN-228 hooks here for TTL cleanup. Returns the number of rows
+        removed.
+        """
+        cur = self._conn.execute(
+            "DELETE FROM sessions WHERE updated_at < ?", (older_than_iso,)
+        )
+        self._conn.commit()
+        return int(cur.rowcount or 0)
 
     def lookup_by_chunk_id(self, chunk_id: str) -> SearchHit | None:
         """Dereference a chunk_id to a fully-formed SearchHit.

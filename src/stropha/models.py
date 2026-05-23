@@ -162,3 +162,39 @@ class RepoStats(BaseModel):
     files: int
     chunks: int
     last_indexed_at: str | None
+
+
+class SessionRecord(BaseModel):
+    """One row of the schema v8 ``sessions`` table (WIN-221, EPIC 1.9).
+
+    Persists per-session agent state across MCP-server restarts. The
+    initial columns cover WIN-217 (seen_chunk_ids) and WIN-218
+    (pinned_chunk_ids); future stories in the epic extend the row
+    via :meth:`Storage._add_column_if_missing` without breaking
+    existing readers.
+
+    JSON-encoded set fields live as ``frozenset[str]`` in memory so
+    callers can use the usual ``in`` / ``add`` / ``update`` patterns;
+    serialisation back to JSON happens at the Storage layer.
+    """
+
+    session_id: str
+    client_id: str | None = None
+    created_at: str
+    updated_at: str
+    seen_chunk_ids: set[str] = Field(
+        default_factory=set,
+        description="Chunks already served — drives WIN-217 dedup.",
+    )
+    pinned_chunk_ids: set[str] = Field(
+        default_factory=set,
+        description="Chunks the agent pinned — drives WIN-218 prepend.",
+    )
+    meta: dict[str, "object"] = Field(
+        default_factory=dict,
+        description=(
+            "Catchall for future EPIC-1.9 stories (project memory, "
+            "episodic memory, scratchpad). Forward-compatible with "
+            "follow-on column additions."
+        ),
+    )

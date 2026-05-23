@@ -95,6 +95,12 @@ class AppContext:
     explicitly wants kept across retrievals. Pinning wins over dedup
     (pinned chunks are NEVER filtered out). Mutated via ``pin_chunks``
     / ``unpin_chunks`` MCP tools.
+
+    ``client_id`` (WIN-221) — optional stable identifier the MCP
+    client provides via ``STROPHA_CLIENT_ID``. When set, the
+    Schema-v8 ``sessions`` row is resumed across server restarts so
+    seen + pinned sets survive process boundaries. When unset, each
+    process gets a fresh ephemeral session.
     """
 
     config: Config
@@ -107,6 +113,7 @@ class AppContext:
     bad_result_store: object = None  # BadResultStore | None — produces the T6 signal for the labeler
     seen_chunk_ids: set[str] = field(default_factory=set)
     pinned_chunk_ids: set[str] = field(default_factory=set)
+    client_id: str | None = None
 
 
 @asynccontextmanager
@@ -182,6 +189,36 @@ async def _lifespan(app: FastMCP) -> AsyncIterator[AppContext]:
         )
         watcher.start()
 
+    # WIN-221 / EPIC 1.9: load the prior session row if a client_id is
+    # configured and a matching session exists. Otherwise the in-
+    # memory sets start empty and the row is created lazily on the
+    # first persistent mutation.
+    seen_chunk_ids: set[str] = set()
+    pinned_chunk_ids: set[str] = set()
+    client_id = os.environ.get("STROPHA_CLIENT_ID")
+    if client_id:
+        try:
+            prior_sessions = storage.list_sessions(
+                client_id=client_id, limit=1,
+            )
+        except Exception as exc:  # noqa: BLE001 — defensive
+            log.warning("mcp.sessions.list_failed", error=str(exc))
+            prior_sessions = []
+        if prior_sessions:
+            prior = prior_sessions[0]
+            seen_chunk_ids = set(prior.seen_chunk_ids)
+            pinned_chunk_ids = set(prior.pinned_chunk_ids)
+            # Reuse the same session_id so cross-restart correlation
+            # via the trace recorder stays cheap.
+            session_id = prior.session_id
+            log.info(
+                "mcp.sessions.resumed",
+                session_id=session_id,
+                client_id=client_id,
+                seen=len(seen_chunk_ids),
+                pinned=len(pinned_chunk_ids),
+            )
+
     try:
         yield AppContext(
             config=cfg,
@@ -192,6 +229,9 @@ async def _lifespan(app: FastMCP) -> AsyncIterator[AppContext]:
             session_id=session_id,
             trace_recorder=trace_recorder,
             bad_result_store=bad_result_store,
+            seen_chunk_ids=seen_chunk_ids,
+            pinned_chunk_ids=pinned_chunk_ids,
+            client_id=client_id,
         )
     finally:
         if watcher is not None:
@@ -201,6 +241,18 @@ async def _lifespan(app: FastMCP) -> AsyncIterator[AppContext]:
                 trace_recorder.close()  # type: ignore[attr-defined]
             except Exception as exc:  # noqa: BLE001 — defensive shutdown
                 log.warning("mcp.trace_recorder.close_failed", error=str(exc))
+        # WIN-221: persist the final session state so the next process
+        # picks up where we left off. We do this in ``finally`` so an
+        # exception during the MCP yield doesn't lose the working set.
+        try:
+            storage.upsert_session(
+                session_id=session_id,
+                client_id=client_id,
+                seen_chunk_ids=seen_chunk_ids,
+                pinned_chunk_ids=pinned_chunk_ids,
+            )
+        except Exception as exc:  # noqa: BLE001 — defensive shutdown
+            log.warning("mcp.sessions.persist_failed", error=str(exc))
         log.info("mcp.shutdown", session_id=session_id)
         storage.close()
 
@@ -417,6 +469,37 @@ def _ctx(mcp_ctx: Context) -> AppContext:
     if app.session_id:
         structlog.contextvars.bind_contextvars(session_id=app.session_id)
     return app
+
+
+def _persist_session_state(app: AppContext) -> None:
+    """Write-through the current AppContext session state to storage.
+
+    WIN-221 / EPIC 1.9 — every mutation of ``seen_chunk_ids`` or
+    ``pinned_chunk_ids`` calls here so a process crash never loses
+    more than the last call's worth of state. The persistence is
+    GATED on ``client_id`` being set: without a stable identifier
+    we can't rejoin the row across restarts, so paying the write
+    cost serves no purpose.
+
+    Defensive: a write failure (read-only fs, disk full, …) is
+    logged but does not propagate — the agent's MCP call must
+    succeed even when persistence is degraded.
+    """
+    if not app.client_id:
+        return
+    try:
+        app.storage.upsert_session(
+            session_id=app.session_id,
+            client_id=app.client_id,
+            seen_chunk_ids=app.seen_chunk_ids,
+            pinned_chunk_ids=app.pinned_chunk_ids,
+        )
+    except Exception as exc:  # noqa: BLE001 — defensive
+        log.warning(
+            "mcp.sessions.persist_failed",
+            session_id=app.session_id,
+            error=str(exc),
+        )
 
 
 def _to_result(hit) -> SearchResult:  # type: ignore[no-untyped-def]
@@ -732,7 +815,12 @@ def search_code(
             h.chunk_id for h in hits
             if h.chunk_id not in app.pinned_chunk_ids
         }
-        app.seen_chunk_ids.update(new_seen)
+        if new_seen:
+            app.seen_chunk_ids.update(new_seen)
+            # WIN-221: persist to Schema-v8 sessions row when the
+            # agent supplied a stable client_id. Without one, the
+            # session is ephemeral and persistence would be noise.
+            _persist_session_state(app)
         log.info(
             "mcp.search_code.dedup",
             filtered_before_pack=dedup_filtered,
@@ -779,6 +867,7 @@ def reset_dedup(*, ctx: Context) -> ResetDedupResponse:
     app = _ctx(ctx)
     count = len(app.seen_chunk_ids)
     app.seen_chunk_ids.clear()
+    _persist_session_state(app)
     log.info("mcp.reset_dedup", cleared=count, session_id=app.session_id)
     return ResetDedupResponse(cleared=count)
 
@@ -847,6 +936,8 @@ def pin_chunks(chunk_ids: list[str], *, ctx: Context) -> PinResponse:
     before = len(app.pinned_chunk_ids)
     app.pinned_chunk_ids.update(chunk_ids)
     added = len(app.pinned_chunk_ids) - before
+    if added:
+        _persist_session_state(app)
     log.info(
         "mcp.pin_chunks",
         added=added,
@@ -876,6 +967,8 @@ def unpin_chunks(chunk_ids: list[str], *, ctx: Context) -> PinResponse:
     before = len(app.pinned_chunk_ids)
     app.pinned_chunk_ids.difference_update(chunk_ids)
     removed = before - len(app.pinned_chunk_ids)
+    if removed:
+        _persist_session_state(app)
     log.info(
         "mcp.unpin_chunks",
         removed=removed,
