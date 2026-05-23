@@ -1443,6 +1443,45 @@ class Storage:
 
     # ----- structured lookups (used by MCP tools) -----
 
+    def lookup_by_chunk_id(self, chunk_id: str) -> SearchHit | None:
+        """Dereference a chunk_id to a fully-formed SearchHit.
+
+        Used by ``expand_chunk`` / ``expand_chunks`` (WIN-216) to
+        resolve a lightweight handle into a renderable hit. Returns
+        ``None`` when the id is unknown (most likely cause: the
+        index was rebuilt since the id was issued, so the agent
+        should treat this as a stale-handle signal rather than a
+        retrieval error).
+
+        Same column projection as :func:`lookup_by_symbol` so the
+        returned hit has the full ``repo``/``snippet``/etc. payload
+        every other retrieval path produces.
+        """
+        row = self._conn.execute(
+            f"""
+            SELECT {_REPO_JOIN_COLUMNS}
+            FROM chunks c
+            LEFT JOIN repos r ON r.id = c.repo_id
+            WHERE c.chunk_id = ?
+            """,
+            (chunk_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return SearchHit(
+            rank=0,
+            score=1.0,
+            rel_path=row["rel_path"],
+            language=row["language"],
+            kind=row["kind"],
+            symbol=row["symbol"],
+            start_line=int(row["start_line"]),
+            end_line=int(row["end_line"]),
+            snippet=_snippet(row["content"]),
+            chunk_id=row["chunk_id"],
+            repo=_repo_from_row(row),
+        )
+
     def lookup_by_symbol(self, symbol: str, limit: int = 10) -> list[SearchHit]:
         """Exact + suffix match on symbol column. Used by `get_symbol`.
 

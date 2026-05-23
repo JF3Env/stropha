@@ -832,6 +832,132 @@ def get_file_outline(path: str, *, ctx: Context) -> list[OutlineEntry]:
     ]
 
 
+# ---- expand_chunk(s) — just-in-time dereferencing (WIN-216) ----------------
+
+
+class ExpandChunkResponse(BaseModel):
+    """Single ``expand_chunk`` payload: either the resolved hit, or
+    a not-found marker."""
+
+    chunk_id: str
+    found: bool = Field(
+        description="True when the chunk_id resolved to a stored chunk.",
+    )
+    result: SearchResult | None = Field(
+        default=None,
+        description="The resolved chunk as a SearchResult, or null when missing.",
+    )
+
+
+@mcp.tool(
+    title="Expand chunk by id (just-in-time dereference)",
+    description=(
+        "WIN-216 — dereference a lightweight chunk handle into the full "
+        "SearchResult. Use this after a search_code(card_level='line') or "
+        "an assemble_context bundle: the agent gets cheap handles first, "
+        "then expands only the chunks it actually needs. Mirrors Claude "
+        "Code's file-on-demand pattern. Returns ``found=False`` when the "
+        "chunk_id is unknown (e.g. the index was rebuilt and the id is "
+        "stale) — never raises."
+    ),
+)
+@traced("expand_chunk")
+def expand_chunk(
+    chunk_id: str,
+    card_level: str = "full",
+    *,
+    ctx: Context,
+) -> ExpandChunkResponse:
+    """Dereference a chunk_id into a SearchResult.
+
+    Args:
+        chunk_id: the opaque id returned by ``search_code``,
+            ``get_symbol``, ``get_file_outline``, or the
+            ``assemble_context`` bundle.
+        card_level: optional level to render at — "line",
+            "paragraph", or "full" (default). Lets the agent ask
+            for just a paragraph when it only needs the signature.
+
+    Returns:
+        :class:`ExpandChunkResponse` with ``found`` and (when found)
+        the rendered :class:`SearchResult`.
+    """
+    from .retrieval.cards import ALLOWED_LEVELS, apply_level_to_snippets
+
+    app = _ctx(ctx)
+    # Storage.get_chunk_by_id returns the raw chunk dict; we convert it
+    # to a SearchHit-shaped dict via the same path lookup_by_symbol uses.
+    hit = app.storage.lookup_by_chunk_id(chunk_id)
+    if hit is None:
+        return ExpandChunkResponse(chunk_id=chunk_id, found=False, result=None)
+    if card_level != "full" and card_level in ALLOWED_LEVELS:
+        hits = apply_level_to_snippets([hit], card_level)  # type: ignore[arg-type]
+        hit = hits[0]
+    return ExpandChunkResponse(
+        chunk_id=chunk_id,
+        found=True,
+        result=_to_result(hit),
+    )
+
+
+class ExpandChunksResponse(BaseModel):
+    """Batch ``expand_chunks`` payload."""
+
+    results: list[ExpandChunkResponse]
+    found_count: int = Field(
+        description="How many chunk_ids resolved successfully.",
+    )
+    missing_count: int = Field(
+        description="How many chunk_ids could not be resolved.",
+    )
+
+
+@mcp.tool(
+    title="Expand chunks (batched)",
+    description=(
+        "WIN-216 batch variant of expand_chunk. Pass a list of chunk_ids "
+        "to dereference them in one MCP call. Useful when assemble_context "
+        "returned a bundle of line-card handles and the agent decided to "
+        "expand several at once. Missing chunk_ids appear in the response "
+        "with found=False; the call never partially fails."
+    ),
+)
+@traced("expand_chunks")
+def expand_chunks(
+    chunk_ids: list[str],
+    card_level: str = "full",
+    *,
+    ctx: Context,
+) -> ExpandChunksResponse:
+    """Batch dereference. Returns a parallel list — one response per id."""
+    from .retrieval.cards import ALLOWED_LEVELS, apply_level_to_snippets
+
+    app = _ctx(ctx)
+    results: list[ExpandChunkResponse] = []
+    found = 0
+    for cid in chunk_ids:
+        hit = app.storage.lookup_by_chunk_id(cid)
+        if hit is None:
+            results.append(
+                ExpandChunkResponse(chunk_id=cid, found=False, result=None)
+            )
+            continue
+        if card_level != "full" and card_level in ALLOWED_LEVELS:
+            hits = apply_level_to_snippets([hit], card_level)  # type: ignore[arg-type]
+            hit = hits[0]
+        results.append(
+            ExpandChunkResponse(
+                chunk_id=cid, found=True, result=_to_result(hit),
+            )
+        )
+        found += 1
+    return ExpandChunksResponse(
+        results=results,
+        found_count=found,
+        missing_count=len(chunk_ids) - found,
+    )
+
+
 # ---- graph tools (RFC §5 — Trilha A 1.5b) ----------------------------------
 # Always registered for tool-discovery stability. When the graphify mirror
 # tables are empty (no `graphify-out/graph.json` ever loaded), the tools
