@@ -4331,6 +4331,123 @@ def working_set_resource() -> str:
     return ws.markdown
 
 
+# ---- recipe prompts (WIN-254) ---------------------------------------------
+
+
+def _render_recipe_prompt(recipe_name: str, context: dict) -> str:
+    """Apply the named recipe + render a user-facing prompt body.
+
+    Used by the per-recipe ``@mcp.prompt`` registrations. Each
+    prompt fills in the recipe's placeholders from the caller's
+    arguments and returns a single user-role message that lists
+    the steps with their tool / args / reason / suggested budget.
+    """
+    from .retrieval.recipes import apply_recipe, get_recipe
+
+    recipe = get_recipe(recipe_name)
+    if recipe is None:
+        return (
+            f"Unknown recipe {recipe_name!r}. "
+            "List recipes via list_task_recipes."
+        )
+
+    invocations = apply_recipe(recipe, context, strict=False)
+    lines = [
+        f"# Task recipe: **{recipe.name}**",
+        "",
+        recipe.description,
+        "",
+        "## Steps",
+        "",
+    ]
+    for idx, inv in enumerate(invocations, start=1):
+        args_str = ", ".join(f"{k}={v!r}" for k, v in inv.args.items())
+        lines.append(f"{idx}. **{inv.tool}**({args_str})")
+        lines.append(f"   - _why_: {inv.reason}")
+        lines.append(f"   - _budget_: {inv.budget_tokens} tokens")
+        lines.append("")
+    lines.append("Run each step with the suggested args; surface")
+    lines.append("``working_set_tool`` between steps for a fresh view.")
+    return "\n".join(lines)
+
+
+@mcp.prompt(
+    name="bug-fix",
+    title="Bug-fix workflow",
+    description=(
+        "Walk the canonical bug-fix recipe (find the failure site, "
+        "map the file, gather tests + callers + rationale)."
+    ),
+)
+def bug_fix_prompt(symptom: str, file: str, symbol: str) -> str:
+    """WIN-254 — render the bug-fix recipe with the caller's args."""
+    return _render_recipe_prompt(
+        "bug-fix",
+        {"symptom": symptom, "file": file, "symbol": symbol},
+    )
+
+
+@mcp.prompt(
+    name="add-feature",
+    title="Add-feature workflow",
+    description=(
+        "Walk the canonical add-feature recipe (bootstrap, find the "
+        "integration point, sibling patterns, tests, rationale)."
+    ),
+)
+def add_feature_prompt(feature_query: str, anchor_symbol: str) -> str:
+    """WIN-254 — render the add-feature recipe."""
+    return _render_recipe_prompt(
+        "add-feature",
+        {"feature_query": feature_query, "anchor_symbol": anchor_symbol},
+    )
+
+
+@mcp.prompt(
+    name="review",
+    title="Code review workflow",
+    description=(
+        "Walk the canonical review recipe (outline + callers + tests "
+        "+ rationale of the changed file/symbol)."
+    ),
+)
+def review_prompt(changed_file: str, changed_symbol: str) -> str:
+    """WIN-254 — render the review recipe."""
+    return _render_recipe_prompt(
+        "review",
+        {"changed_file": changed_file, "changed_symbol": changed_symbol},
+    )
+
+
+@mcp.prompt(
+    name="rename-symbol",
+    title="Rename-symbol workflow",
+    description=(
+        "Walk the canonical rename-symbol recipe (definition, "
+        "callers, tests — the audit needed before renaming)."
+    ),
+)
+def rename_symbol_prompt(symbol: str) -> str:
+    """WIN-254 — render the rename-symbol recipe."""
+    return _render_recipe_prompt("rename-symbol", {"symbol": symbol})
+
+
+@mcp.prompt(
+    name="understand-file",
+    title="Understand-file workflow",
+    description=(
+        "Walk the canonical understand-file recipe (outline, "
+        "references, related symbols, rationale)."
+    ),
+)
+def understand_file_prompt(file: str, primary_symbol: str) -> str:
+    """WIN-254 — render the understand-file recipe."""
+    return _render_recipe_prompt(
+        "understand-file",
+        {"file": file, "primary_symbol": primary_symbol},
+    )
+
+
 # ---- entry point -----------------------------------------------------------
 
 def main() -> None:
