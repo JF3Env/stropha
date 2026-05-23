@@ -3006,6 +3006,119 @@ def index_stats_resource() -> StatsPayload:
     return StatsPayload(**info)
 
 
+# ---- suggest_next_tool (WIN-238) ------------------------------------------
+
+
+class SuggestionEntry(BaseModel):
+    """A single suggested next-tool invocation.
+
+    ``args`` is the keyword payload the agent should pass to the
+    target tool. ``confidence`` is a soft score in ``[0, 1]`` — higher
+    means stropha is more sure this is the right next move.
+    """
+
+    tool: str = Field(description="Name of the MCP tool to call next.")
+    args: dict = Field(
+        default_factory=dict,
+        description="Keyword arguments ready to forward to the target tool.",
+    )
+    reason: str = Field(description="Why this tool was suggested.")
+    confidence: float = Field(
+        description="Soft score in [0, 1]; higher means more certain.",
+    )
+
+
+class SuggestNextResponse(BaseModel):
+    """Response from :func:`suggest_next_tool_mcp`."""
+
+    query: str = Field(default="", description="Echo of the input query.")
+    suggestions: list[SuggestionEntry] = Field(
+        default_factory=list,
+        description="Suggestions sorted by confidence DESC.",
+    )
+    based_on_hits: int = Field(
+        description=(
+            "How many recent hits the heuristics inspected. 0 means "
+            "the response is based purely on the query shape (e.g. "
+            "the agent hasn't searched yet)."
+        ),
+    )
+    graph_loaded: bool = Field(
+        description=(
+            "Whether the graphify mirror is present. False suppresses "
+            "graph-only suggestions like find_callers."
+        ),
+    )
+
+
+@mcp.tool(
+    title="Suggest the next MCP tool to call",
+    description=(
+        "WIN-238 — meta-guidance for the agent's loop. Given the most "
+        "recent query + chunk_ids, return a ranked list of next-tool "
+        "actions ('find_callers on FooClass', 'get_file_outline on "
+        "x.py', etc.) with confidence scores. Pure heuristics, no LLM "
+        "call. When chunk_ids is omitted, uses the session's seen "
+        "chunk_ids (last 10). Never raises — empty list when no "
+        "actionable signal."
+    ),
+)
+@traced("suggest_next_tool")
+def suggest_next_tool_mcp(
+    query: str = "",
+    chunk_ids: list[str] | None = None,
+    max_suggestions: int = 5,
+    *,
+    ctx: Context,
+) -> SuggestNextResponse:
+    """Return ranked next-tool suggestions for the agent."""
+    from .retrieval.suggest_next import suggest_next_tool as _suggest
+
+    app = _ctx(ctx)
+    max_suggestions = max(1, min(int(max_suggestions), 20))
+
+    # Resolve which chunks to inspect: explicit list wins; otherwise
+    # fall back to the most recent ones the agent has seen.
+    if chunk_ids:
+        ids = list(chunk_ids)
+    else:
+        ids = list(app.seen_chunk_ids)[-10:]
+
+    hits: list = []
+    for cid in ids:
+        try:
+            hit = app.storage.lookup_by_chunk_id(cid)
+        except Exception:  # pragma: no cover - defensive
+            hit = None
+        if hit is not None:
+            hits.append(hit)
+
+    has_graph = graph_loaded(app.storage)
+    has_rationale = has_rationale_edges(app.storage) if has_graph else False
+
+    raw = _suggest(
+        query, hits,
+        has_graph=has_graph,
+        has_rationale=has_rationale,
+        max_suggestions=max_suggestions,
+    )
+
+    return SuggestNextResponse(
+        query=query,
+        suggestions=[
+            SuggestionEntry(
+                tool=s.tool,
+                args=dict(s.args),
+                reason=s.reason,
+                confidence=s.confidence,
+            )
+            for s in raw
+        ],
+        based_on_hits=len(hits),
+        graph_loaded=has_graph,
+    )
+
+
 # ---- entry point -----------------------------------------------------------
 
 def main() -> None:
