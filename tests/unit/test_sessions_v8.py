@@ -31,9 +31,11 @@ from stropha.storage.sqlite import SCHEMA_VERSION, Storage
 
 
 class TestSchemaMigration:
-    def test_schema_version_is_eight(self) -> None:
-        """v8 lands the sessions table (KEYSTONE for EPIC 1.9)."""
-        assert SCHEMA_VERSION == 8
+    def test_schema_version_at_least_eight(self) -> None:
+        """v8 introduced the sessions table (KEYSTONE for EPIC 1.9).
+        Forward-compatible pin — future bumps stay valid as long as
+        the sessions contract this file guards is intact."""
+        assert SCHEMA_VERSION >= 8
 
     def test_sessions_table_created_on_fresh_db(self, tmp_path: Path) -> None:
         db = tmp_path / "fresh.db"
@@ -60,7 +62,8 @@ class TestSchemaMigration:
             row = s._conn.execute(
                 "SELECT value FROM meta WHERE key='schema_version'"
             ).fetchone()
-            assert int(row["value"]) == 8
+            # Forward-compatible — future bumps remain valid.
+            assert int(row["value"]) >= 8
 
     def test_idempotent_reopen(self, tmp_path: Path) -> None:
         """Re-opening the DB must not error or duplicate the table."""

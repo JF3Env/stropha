@@ -47,7 +47,7 @@ log = get_logger(__name__)
 #     `graph_edges` tables to allow multiple repos with their own graphify
 #     graphs to share a single stropha index. Node IDs are prefixed with
 #     repo_id to avoid collisions across repos.
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 
 def _serialize_vector(vec: list[float]) -> bytes:
@@ -490,6 +490,48 @@ class Storage:
         )
         cur.execute(
             "CREATE INDEX IF NOT EXISTS idx_graph_edges_repo ON graph_edges(repo_id);"
+        )
+
+        # v9: project_memory table — long-term per-repo notes (WIN-222).
+        # Agents curate decisions / constraints / anchor facts here so
+        # they don't have to re-explain "the FSRS scheduler is
+        # authoritative" on every session. Distinct from the sessions
+        # table because project memory is REPO-scoped (survives
+        # sessions, even survives the agent identity) while sessions
+        # scope to one MCP-server lifetime.
+        #
+        # ``kind`` is a free-form bucket the agent picks (decision /
+        # constraint / fact / convention / glossary / TBD). Keeping it
+        # free-form rather than an ENUM means future categories don't
+        # need a schema bump.
+        # ``key`` + ``kind`` + ``repo_id`` together form the natural
+        # UPSERT key — the agent writes ``remember("decision", "fsrs-
+        # authoritative", "...")`` and the same key in a follow-up
+        # call updates the existing row.
+        # ``source`` records which session_id curated the entry, for
+        # provenance + future blame.
+        # ``expires_at`` is the WIN-228 TTL hook — None = forever.
+        cur.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS project_memory (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                repo_id     INTEGER NOT NULL REFERENCES repos(id),
+                kind        TEXT NOT NULL,
+                key         TEXT NOT NULL,
+                value       TEXT NOT NULL,
+                source      TEXT,
+                created_at  TEXT NOT NULL,
+                updated_at  TEXT NOT NULL,
+                expires_at  TEXT,
+                UNIQUE (repo_id, kind, key)
+            );
+            CREATE INDEX IF NOT EXISTS idx_project_memory_repo
+                ON project_memory(repo_id);
+            CREATE INDEX IF NOT EXISTS idx_project_memory_repo_kind
+                ON project_memory(repo_id, kind);
+            CREATE INDEX IF NOT EXISTS idx_project_memory_expires
+                ON project_memory(expires_at);
+            """
         )
 
         # v8: sessions table — KEYSTONE for EPIC 1.9 statefulness work
@@ -1673,6 +1715,192 @@ class Storage:
         """
         cur = self._conn.execute(
             "DELETE FROM sessions WHERE updated_at < ?", (older_than_iso,)
+        )
+        self._conn.commit()
+        return int(cur.rowcount or 0)
+
+    # ----- project memory (v9, WIN-222) -----
+
+    def remember(
+        self,
+        *,
+        repo_id: int,
+        kind: str,
+        key: str,
+        value: str,
+        source: str | None = None,
+        expires_at: str | None = None,
+    ) -> "ProjectMemoryRecord":
+        """Upsert a project-memory entry. Idempotent.
+
+        Args:
+            repo_id: foreign key to ``repos.id``. Project memory is
+                always scoped to a repo so cross-repo leakage is
+                impossible.
+            kind: free-form bucket (``"decision"`` / ``"constraint"``
+                / ``"fact"`` / ``"convention"`` / agent's choice).
+            key: stable short identifier within ``(repo_id, kind)``.
+                Re-using the key updates the existing row.
+            value: the actual note (markdown allowed). No length cap
+                — SQLite TEXT handles arbitrary length, the agent's
+                context window is the real limit.
+            source: optional session_id provenance (WIN-160 / WIN-221).
+            expires_at: optional ISO timestamp after which the entry
+                is considered stale. ``None`` = perpetual.
+
+        Returns:
+            The :class:`ProjectMemoryRecord` after the upsert with the
+            authoritative timestamps populated.
+        """
+        from ..models import ProjectMemoryRecord
+
+        now = datetime.now(UTC).isoformat()
+        cur = self._conn.cursor()
+        existing = cur.execute(
+            """SELECT id, created_at FROM project_memory
+               WHERE repo_id = ? AND kind = ? AND key = ?""",
+            (repo_id, kind, key),
+        ).fetchone()
+        if existing is None:
+            cur.execute(
+                """INSERT INTO project_memory (
+                       repo_id, kind, key, value, source,
+                       created_at, updated_at, expires_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (repo_id, kind, key, value, source, now, now, expires_at),
+            )
+            row_id = int(cur.lastrowid or 0)
+            created_at = now
+        else:
+            cur.execute(
+                """UPDATE project_memory
+                       SET value = ?, source = ?, updated_at = ?,
+                           expires_at = ?
+                     WHERE id = ?""",
+                (value, source, now, expires_at, existing["id"]),
+            )
+            row_id = int(existing["id"])
+            created_at = existing["created_at"]
+        self._conn.commit()
+        return ProjectMemoryRecord(
+            id=row_id, repo_id=repo_id, kind=kind, key=key, value=value,
+            source=source, created_at=created_at, updated_at=now,
+            expires_at=expires_at,
+        )
+
+    def recall(
+        self,
+        *,
+        repo_id: int,
+        kind: str | None = None,
+        key: str | None = None,
+        limit: int = 50,
+        include_expired: bool = False,
+    ) -> list["ProjectMemoryRecord"]:
+        """Fetch project-memory entries for a repo.
+
+        Filter cascade: ``repo_id`` (required) → ``kind`` (optional) →
+        ``key`` (optional). When both ``kind`` and ``key`` are set,
+        the unique constraint returns at most one row.
+
+        ``include_expired=True`` returns entries whose ``expires_at``
+        is in the past — useful for debugging / audit; the default
+        treats them as gone.
+
+        Sorted by ``updated_at`` DESC so the freshest memory shows
+        first.
+        """
+        from ..models import ProjectMemoryRecord
+
+        clauses = ["repo_id = ?"]
+        params: list[Any] = [repo_id]
+        if kind is not None:
+            clauses.append("kind = ?")
+            params.append(kind)
+        if key is not None:
+            clauses.append("key = ?")
+            params.append(key)
+        if not include_expired:
+            clauses.append("(expires_at IS NULL OR expires_at > ?)")
+            params.append(datetime.now(UTC).isoformat())
+        params.append(limit)
+        where = " AND ".join(clauses)
+        rows = self._conn.execute(
+            f"""SELECT id, repo_id, kind, key, value, source,
+                       created_at, updated_at, expires_at
+               FROM project_memory
+               WHERE {where}
+               ORDER BY updated_at DESC LIMIT ?""",
+            tuple(params),
+        ).fetchall()
+        return [
+            ProjectMemoryRecord(
+                id=int(r["id"]),
+                repo_id=int(r["repo_id"]),
+                kind=r["kind"],
+                key=r["key"],
+                value=r["value"],
+                source=r["source"],
+                created_at=r["created_at"],
+                updated_at=r["updated_at"],
+                expires_at=r["expires_at"],
+            )
+            for r in rows
+        ]
+
+    def forget(self, *, repo_id: int, kind: str, key: str) -> bool:
+        """Delete a single project-memory entry. Returns ``True`` on
+        delete, ``False`` when the row didn't exist."""
+        cur = self._conn.execute(
+            """DELETE FROM project_memory
+               WHERE repo_id = ? AND kind = ? AND key = ?""",
+            (repo_id, kind, key),
+        )
+        self._conn.commit()
+        return bool(cur.rowcount or 0)
+
+    def prune_project_memory(
+        self,
+        *,
+        repo_id: int | None = None,
+        older_than_iso: str | None = None,
+        expired_only: bool = False,
+    ) -> int:
+        """Delete project-memory entries by filter. Returns count
+        removed.
+
+        Args:
+            repo_id: when set, only entries for this repo are touched.
+            older_than_iso: when set, only entries whose ``updated_at``
+                is older than this ISO timestamp are removed.
+            expired_only: when True, only entries whose ``expires_at``
+                is in the past are removed (overrides
+                ``older_than_iso``). WIN-228 hooks here for TTL.
+
+        All filters compose with AND. ``prune_project_memory()`` with
+        no args is a no-op — explicit confirmation needed to wipe
+        the table.
+        """
+        clauses: list[str] = []
+        params: list[Any] = []
+        if repo_id is not None:
+            clauses.append("repo_id = ?")
+            params.append(repo_id)
+        if expired_only:
+            clauses.append(
+                "(expires_at IS NOT NULL AND expires_at <= ?)"
+            )
+            params.append(datetime.now(UTC).isoformat())
+        elif older_than_iso is not None:
+            clauses.append("updated_at < ?")
+            params.append(older_than_iso)
+        if not clauses:
+            # Refuse to wipe everything implicitly — explicit
+            # repo_id=... is required.
+            return 0
+        where = " AND ".join(clauses)
+        cur = self._conn.execute(
+            f"DELETE FROM project_memory WHERE {where}", tuple(params)
         )
         self._conn.commit()
         return int(cur.rowcount or 0)

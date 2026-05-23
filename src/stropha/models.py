@@ -198,3 +198,28 @@ class SessionRecord(BaseModel):
             "follow-on column additions."
         ),
     )
+
+
+class ProjectMemoryRecord(BaseModel):
+    """One ``project_memory`` row (Schema v9, WIN-222).
+
+    Per-repo long-term notes the agent curates so it doesn't have to
+    re-explain anchor facts every session. ``key`` + ``kind`` +
+    ``repo_id`` together form the natural UPSERT key, so the agent
+    can write ``remember("decision", "fsrs-authoritative", "...")``
+    and a follow-up call with the same key updates the existing
+    row.
+
+    ``expires_at`` is the TTL hook (WIN-228); ``None`` means
+    perpetual.
+    """
+
+    id: int | None = None
+    repo_id: int
+    kind: str
+    key: str
+    value: str
+    source: str | None = None
+    created_at: str
+    updated_at: str
+    expires_at: str | None = None
