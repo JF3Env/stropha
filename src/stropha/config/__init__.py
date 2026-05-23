@@ -105,7 +105,7 @@ _ENV_REGISTRY: tuple[_EnvVar, ...] = (
         "mixedbread-ai/mxbai-embed-large-v1",
         "Local fastembed model id",
     ),
-    _EnvVar("STROPHA_VOYAGE_EMBED_MODEL", "embedder", "voyage-code-3", "Voyage embedder model id"),
+    _EnvVar("STROPHA_VOYAGE_EMBED_MODEL", "embedder", "voyage-4-large", "Voyage embedder model id"),
     _EnvVar("STROPHA_VOYAGE_EMBED_DIM", "embedder", "512", "Voyage embedding dim (Matryoshka)"),
     _EnvVar("VOYAGE_API_KEY", "embedder", None, "Voyage AI API key", secret=True),
     # --- inference backends -------------------------------------------------
@@ -437,7 +437,7 @@ def _parse_secrets() -> SecretsConfig:
 
 def _parse_embedder() -> EmbedderConfig:
     return EmbedderConfig(
-        voyage_model=os.environ.get("STROPHA_VOYAGE_EMBED_MODEL", "voyage-code-3"),
+        voyage_model=os.environ.get("STROPHA_VOYAGE_EMBED_MODEL", "voyage-4-large"),
         voyage_dim=_int(os.environ.get("STROPHA_VOYAGE_EMBED_DIM"), 512),
         local_model=os.environ.get(
             "STROPHA_LOCAL_EMBED_MODEL", "mixedbread-ai/mxbai-embed-large-v1"

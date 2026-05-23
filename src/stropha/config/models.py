@@ -200,7 +200,7 @@ class SecretsConfig:
 class EmbedderConfig:
     """Embedder model selection (YAML: ``embedder``)."""
 
-    voyage_model: str = "voyage-code-3"
+    voyage_model: str = "voyage-4-large"
     voyage_dim: int = 512
     local_model: str = "mixedbread-ai/mxbai-embed-large-v1"
 
