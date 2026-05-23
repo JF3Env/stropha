@@ -475,13 +475,16 @@ def index(
 
     # Print the consolidated config summary right before the index loop starts.
     # Resolve enricher concurrency + batch size: CLI flag wins over YAML.
+    # For batch_size, the YAML path is:
+    #   per-backend override (e.g. ``deepseek_batch_size``) > global
+    #   ``enricher_batch_size``. The CLI flag overrides both.
     effective_concurrency = (
         concurrency if concurrency is not None
         else cfg.inference.enricher_concurrency
     )
     effective_batch_size = (
         batch_size if batch_size is not None
-        else cfg.inference.enricher_batch_size
+        else cfg.inference.effective_batch_size()
     )
 
     # Everything resolved above (target repos, adapter ids from build_stages,
@@ -806,7 +809,7 @@ def init(
                             config = json.loads(config_path.read_text())
                             servers = config.get(client.key, {})
                             if "stropha_rag" in servers:
-                                console.print(f"    [dim]Already configured (use --force to overwrite)[/dim]")
+                                console.print("    [dim]Already configured (use --force to overwrite)[/dim]")
                                 continue
                         except Exception:
                             pass

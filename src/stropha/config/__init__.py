@@ -290,6 +290,23 @@ def _int(val: Any, default: int) -> int:
         return default
 
 
+def _int_optional(val: Any) -> int | None:
+    """Parse an optional integer YAML field.
+
+    Returns ``None`` when the key is absent or unparseable — sentinel that
+    callers (e.g. ``InferenceConfig.effective_batch_size``) interpret as
+    "fall back to the related global default".
+    """
+    if val is None:
+        return None
+    if isinstance(val, int) and not isinstance(val, bool):
+        return val
+    try:
+        return int(val)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
 def _float(val: Any, default: float) -> float:
     if val is None:
         return default
@@ -406,6 +423,13 @@ def _parse_inference(raw: dict[str, Any]) -> InferenceConfig:
         anthropic_version=str(raw.get("anthropic_version", "2023-06-01")),
         enricher_concurrency=_int(raw.get("enricher_concurrency"), 1),
         enricher_batch_size=_int(raw.get("enricher_batch_size"), 1),
+        # Per-backend batch-size overrides. Default None means "use the
+        # global enricher_batch_size". Set when a specific backend needs
+        # a tighter cap (e.g. DeepSeek truncates at batch_size>5).
+        deepseek_batch_size=_int_optional(raw.get("deepseek_batch_size")),
+        anthropic_batch_size=_int_optional(raw.get("anthropic_batch_size")),
+        ollama_batch_size=_int_optional(raw.get("ollama_batch_size")),
+        mlx_batch_size=_int_optional(raw.get("mlx_batch_size")),
     )
 
 

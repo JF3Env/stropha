@@ -236,3 +236,139 @@ class TestGenerate:
             generate("prompt", backend="ollama")
 
             mock_get.assert_called_with(prefer="ollama")
+
+
+# --------------------------------------------------------------------------- #
+#                       InferenceConfig.effective_batch_size                  #
+# --------------------------------------------------------------------------- #
+
+
+class TestEffectiveBatchSize:
+    """``InferenceConfig.effective_batch_size`` picks the per-backend
+    override when one is set; otherwise falls back to the global
+    ``enricher_batch_size``."""
+
+    def test_no_overrides_returns_global(self):
+        from stropha.config.models import InferenceConfig
+
+        cfg = InferenceConfig(backend="deepseek", enricher_batch_size=10)
+        assert cfg.effective_batch_size() == 10
+
+    def test_deepseek_override_wins_over_global(self):
+        from stropha.config.models import InferenceConfig
+
+        cfg = InferenceConfig(
+            backend="deepseek",
+            enricher_batch_size=10,
+            deepseek_batch_size=5,
+        )
+        assert cfg.effective_batch_size() == 5
+
+    def test_anthropic_override_ignored_when_backend_is_deepseek(self):
+        """Overrides are per-backend — anthropic_batch_size doesn't affect
+        a DeepSeek run."""
+        from stropha.config.models import InferenceConfig
+
+        cfg = InferenceConfig(
+            backend="deepseek",
+            enricher_batch_size=10,
+            anthropic_batch_size=3,  # set but for the wrong backend
+        )
+        assert cfg.effective_batch_size() == 10
+
+    def test_each_backend_resolves_its_own_override(self):
+        from stropha.config.models import InferenceConfig
+
+        for backend, field, expected in [
+            ("deepseek", "deepseek_batch_size", 5),
+            ("anthropic", "anthropic_batch_size", 7),
+            ("ollama", "ollama_batch_size", 2),
+            ("mlx", "mlx_batch_size", 3),
+        ]:
+            cfg = InferenceConfig(
+                backend=backend,
+                enricher_batch_size=99,
+                **{field: expected},
+            )
+            assert cfg.effective_batch_size() == expected, (
+                f"backend={backend} expected override={expected} from {field}"
+            )
+
+    def test_unknown_backend_falls_back_to_global(self):
+        from stropha.config.models import InferenceConfig
+
+        cfg = InferenceConfig(
+            backend="some-future-backend",
+            enricher_batch_size=4,
+            deepseek_batch_size=99,
+        )
+        assert cfg.effective_batch_size() == 4
+
+    def test_none_backend_uses_global(self):
+        """``backend=None`` means auto-detect — no per-backend override
+        applies until the auto-selection resolves to a concrete backend."""
+        from stropha.config.models import InferenceConfig
+
+        cfg = InferenceConfig(
+            backend=None,
+            enricher_batch_size=6,
+            deepseek_batch_size=2,
+        )
+        assert cfg.effective_batch_size() == 6
+
+
+class TestPerBackendBatchSizeYAMLParsing:
+    """YAML keys ``deepseek_batch_size`` / ``anthropic_batch_size`` /
+    ``ollama_batch_size`` / ``mlx_batch_size`` flow through ``_parse_inference``."""
+
+    def test_deepseek_batch_size_parsed_from_yaml(self, tmp_path, monkeypatch):
+        import stropha.config as cfg_mod
+
+        (tmp_path / "stropha.yaml").write_text(
+            "inference:\n"
+            "  backend: deepseek\n"
+            "  enricher_batch_size: 10\n"
+            "  deepseek_batch_size: 5\n"
+        )
+        monkeypatch.chdir(tmp_path)
+        # Force a fresh load.
+        cfg_mod.reset_config()
+        cfg = cfg_mod.load_config()
+
+        assert cfg.inference.enricher_batch_size == 10
+        assert cfg.inference.deepseek_batch_size == 5
+        assert cfg.inference.effective_batch_size() == 5
+
+    def test_absent_per_backend_override_stays_none(self, tmp_path, monkeypatch):
+        import stropha.config as cfg_mod
+
+        (tmp_path / "stropha.yaml").write_text(
+            "inference:\n"
+            "  backend: deepseek\n"
+            "  enricher_batch_size: 10\n"
+        )
+        monkeypatch.chdir(tmp_path)
+        cfg_mod.reset_config()
+        cfg = cfg_mod.load_config()
+
+        assert cfg.inference.deepseek_batch_size is None
+        assert cfg.inference.effective_batch_size() == 10
+
+    def test_invalid_per_backend_value_falls_back_to_none(
+        self, tmp_path, monkeypatch
+    ):
+        """A non-integer value parses to None → uses global enricher_batch_size."""
+        import stropha.config as cfg_mod
+
+        (tmp_path / "stropha.yaml").write_text(
+            "inference:\n"
+            "  backend: deepseek\n"
+            "  enricher_batch_size: 8\n"
+            "  deepseek_batch_size: not-a-number\n"
+        )
+        monkeypatch.chdir(tmp_path)
+        cfg_mod.reset_config()
+        cfg = cfg_mod.load_config()
+
+        assert cfg.inference.deepseek_batch_size is None
+        assert cfg.inference.effective_batch_size() == 8

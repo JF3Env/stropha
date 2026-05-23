@@ -122,8 +122,40 @@ class InferenceConfig:
     # per request). Other enrichers (noop, hierarchical, …) ignore this
     # knob and stay per-chunk.
     # Suggested: 1 for local backends (mlx, ollama — single GPU); 10 for
-    # cloud (Anthropic, DeepSeek, OpenAI).
+    # cloud (Anthropic, OpenAI); 5 for DeepSeek (verbose, prone to truncating
+    # responses at higher batch sizes — see deepseek_batch_size below).
     enricher_batch_size: int = 1
+    # Per-backend batch-size overrides. ``None`` = use ``enricher_batch_size``.
+    # Set when a specific backend needs a tighter batch than the global
+    # default — typically because the model is verbose and runs over the
+    # response max_tokens budget at higher batch sizes, truncating the
+    # JSON array mid-string. Observed in the wild: deepseek-chat starts
+    # losing entries above batch_size=5; claude-haiku-4-5 handles 10 fine.
+    deepseek_batch_size: int | None = None
+    anthropic_batch_size: int | None = None
+    ollama_batch_size: int | None = None
+    mlx_batch_size: int | None = None
+
+    def effective_batch_size(self) -> int:
+        """Resolve the batch size for the currently-selected backend.
+
+        Precedence:
+          1. Per-backend override (``<backend>_batch_size``) when set.
+          2. ``enricher_batch_size`` (global default).
+
+        Used by the CLI to pass the right value into the Pipeline. The
+        CLI ``--batch-size`` flag still wins above both (handled in
+        ``cli.py``).
+        """
+        override = {
+            "deepseek": self.deepseek_batch_size,
+            "anthropic": self.anthropic_batch_size,
+            "ollama": self.ollama_batch_size,
+            "mlx": self.mlx_batch_size,
+        }.get(self.backend or "")
+        if override is not None:
+            return override
+        return self.enricher_batch_size
 
 
 # ---------------------------------------------------------------------------

@@ -86,18 +86,22 @@ Output: ONLY the description, starting with "This...". No code, no preamble, no 
 _CONTEXT_PREFIX = "[Context: {description}]\n\n"
 
 _BATCH_PROMPT_HEADER = """\
-Write dense 2-3 sentence semantic descriptions for the {n} code chunks below.
+For each of the {n} code chunks below, write ONE short semantic description.
 
-OUTPUT FORMAT — STRICT JSON ONLY:
-A JSON array of objects with exactly two keys: "id" (integer matching the
-CHUNK number) and "description" (string, starts with "This"). Example:
+HARD LIMITS — non-negotiable:
+- MAXIMUM {max_chars} characters per description. Never longer.
+- Exactly ONE sentence per description. No follow-ups, no elaboration.
+- One entry per chunk, in input order, IDs 1..{n}.
 
+OUTPUT FORMAT — STRICT JSON ONLY, no markdown:
 [{{"id":1,"description":"This..."}},{{"id":2,"description":"This..."}}]
 
-Rules:
-- One entry per chunk, in order, IDs 1..{n}.
-- Each description covers what the code does, where it fits, and related concepts.
-- No code, no markdown, no preamble, no code fences. JSON ONLY.
+Each description starts with "This" and names: (a) what the code does
+in one phrase, (b) the module/layer where it sits. Skip "related concepts",
+skip examples, skip elaboration.
+
+DO NOT wrap the output in ```json fences. DO NOT write any prose before
+or after the array. The response MUST start with [ and end with ].
 
 """
 
@@ -112,10 +116,27 @@ Language: {language}
 
 """
 
-# Token allowance per chunk on top of the structured-JSON envelope.
-# ``max_tokens`` is multiplied by batch size + this constant so the model
-# has enough budget for N descriptions plus the JSON wrapping.
-_BATCH_ENVELOPE_TOKENS = 64
+# Per-entry JSON envelope overhead in tokens. Each batched response entry
+# has the shape ``{"id":N,"description":"..."}`` — id field, key labels,
+# quoting, comma separator. Add this to the per-chunk description budget
+# when computing the batched max_tokens.
+_BATCH_PER_ENTRY_ENVELOPE_TOKENS = 32
+
+# Fixed overhead per batched call for the surrounding array brackets,
+# optional markdown code fence the model sometimes adds, and a small
+# safety margin for verbose backends (DeepSeek tends to add ``` ```json
+# ... ``` `` wrappers and short prose preambles, e.g. "Sure, here you go:").
+_BATCH_FIXED_ENVELOPE_TOKENS = 256
+
+# Hard per-description character cap shown to the model in the batched
+# prompt. Defends against verbose backends (DeepSeek-chat) that burn the
+# entire batched ``max_tokens`` budget on a single description when given
+# a generous cap. 300 chars ≈ 75 tokens — comfortably below the per-entry
+# token slice even at batch_size=10. Post-processing still truncates to
+# ``max_description_chars`` so per-call quality stays consistent with the
+# non-batched path; this cap is the *upstream* signal to the model to
+# pace itself across N entries.
+_BATCH_PROMPT_HARD_CAP = 300
 
 
 class ContextualEnricherConfig(BaseModel):
@@ -277,9 +298,17 @@ class ContextualEnricher(EnricherStage):
             return [self.enrich_with_status(chunks[0], contexts[0])]
 
         prompt = self._build_batch_prompt(chunks)
-        # Token budget: per-chunk allowance + JSON envelope overhead.
+        # Token budget for the batched response:
+        #   N × (per-chunk description budget + per-entry JSON envelope)
+        #   + fixed wrapper overhead (array brackets, optional code fence,
+        #     short LLM preamble that verbose backends like DeepSeek add)
+        # Without enough headroom the model truncates mid-string and the
+        # parser only salvages prefix entries — every extra token here is
+        # cheap insurance against partial responses.
         max_tokens = (
-            self._config.max_tokens * len(chunks) + _BATCH_ENVELOPE_TOKENS
+            (self._config.max_tokens + _BATCH_PER_ENTRY_ENVELOPE_TOKENS)
+            * len(chunks)
+            + _BATCH_FIXED_ENVELOPE_TOKENS
         )
 
         from ...inference import generate as _generate
@@ -292,13 +321,16 @@ class ContextualEnricher(EnricherStage):
 
         if not raw:
             # LLM failed entirely (rate limit, timeout, missing key) —
-            # fail every chunk so the pipeline retries next run.
+            # fall back to per-chunk enrichment in the same run so the
+            # caller doesn't see a zero-success batch. The per-chunk path
+            # may also fail (true outage), but each chunk gets a fresh
+            # request budget instead of sharing the truncated one.
             log.warning(
                 "contextual.enrich_batch_failed",
                 reason="empty response",
                 batch_size=len(chunks),
             )
-            return [(c.content, False) for c in chunks]
+            return self._fallback_per_chunk(chunks, contexts)
 
         descriptions_by_id = self._parse_batch_response(raw, len(chunks))
         if not descriptions_by_id:
@@ -308,7 +340,7 @@ class ContextualEnricher(EnricherStage):
                 batch_size=len(chunks),
                 preview=raw[:200],
             )
-            return [(c.content, False) for c in chunks]
+            return self._fallback_per_chunk(chunks, contexts)
 
         results: list[tuple[str, bool]] = []
         for idx, chunk in enumerate(chunks):
@@ -322,11 +354,51 @@ class ContextualEnricher(EnricherStage):
             results.append((f"{prefix}{chunk.content}", True))
         return results
 
+    def _fallback_per_chunk(
+        self,
+        chunks: Sequence[Chunk],
+        contexts: Sequence[StageContext],
+    ) -> list[tuple[str, bool]]:
+        """Per-chunk enrichment fallback for catastrophic batch failures.
+
+        Called when ``enrich_batch`` recovered zero entries from the LLM
+        response (empty body, truncated mid-first-entry, or unparseable
+        output). Each chunk gets its own request — slower than a successful
+        batch, but each chunk has a fresh ``max_tokens`` budget so a single
+        verbose description can no longer poison the whole group.
+
+        Chunks that still fail get the standard ``(content, False)`` tuple
+        from ``enrich_with_status``; Fix 2's cache-skip path takes over from
+        there. Logs at info level so the cost is visible in ``stropha cost``.
+        """
+        log.info(
+            "contextual.enrich_batch_fallback_per_chunk",
+            batch_size=len(chunks),
+        )
+        return [
+            self.enrich_with_status(chunk, ctx)
+            for chunk, ctx in zip(chunks, contexts, strict=True)
+        ]
+
     # ----- internals --------------------------------------------------------
 
     def _build_batch_prompt(self, chunks: Sequence[Chunk]) -> str:
-        """Render the structured-JSON batch prompt for N chunks."""
-        parts = [_BATCH_PROMPT_HEADER.format(n=len(chunks))]
+        """Render the structured-JSON batch prompt for N chunks.
+
+        The per-description character cap exposed to the model is the
+        smaller of ``max_description_chars`` and ``_BATCH_PROMPT_HARD_CAP``
+        — the latter exists because verbose backends (DeepSeek-chat) burn
+        the entire batched ``max_tokens`` budget on one description when
+        the cap is generous. Anchoring the model at ~300 chars keeps every
+        description well inside its per-entry token slice and stops entry 1
+        from consuming the whole batch budget.
+        """
+        per_desc_cap = min(
+            self._config.max_description_chars, _BATCH_PROMPT_HARD_CAP
+        )
+        parts = [
+            _BATCH_PROMPT_HEADER.format(n=len(chunks), max_chars=per_desc_cap)
+        ]
         for idx, chunk in enumerate(chunks, start=1):
             content = chunk.content[: self._config.max_content_chars]
             parts.append(
@@ -340,29 +412,63 @@ class ContextualEnricher(EnricherStage):
             )
         return "".join(parts)
 
-    @staticmethod
-    def _parse_batch_response(raw: str, expected: int) -> dict[int, str]:
+    @classmethod
+    def _parse_batch_response(cls, raw: str, expected: int) -> dict[int, str]:
         """Parse the LLM's JSON array into ``{id: description}``.
 
-        Tolerates common output drift: markdown code fences, leading
-        prose, trailing prose. Returns an empty dict when no array can
-        be recovered — caller treats that as "whole batch failed".
+        Tolerates common output drift:
+
+        - Markdown code fences (```` ```json ```` or plain ```` ``` ````).
+        - Leading / trailing prose.
+        - Trailing commas (common LLM tic — repaired before parse).
+        - **Truncated arrays**: when the response runs out of tokens
+          mid-string, the closing ``]`` is missing. We salvage every
+          complete ``{...}`` entry we can find by taking everything up
+          to the last closed ``}`` and synthesising the array close.
+
+        Returns an empty dict only when not a single entry could be
+        recovered. Partial recoveries (7 out of 10) come back with the
+        7 entries; the caller marks the missing chunks as failed.
         """
         if not raw:
             return {}
-        # Strip markdown code fences if present.
         text = raw.strip()
-        # Slice from the first '[' to the last ']'. JSON parsers reject
-        # surrounding prose, but the array body itself usually parses.
         first = text.find("[")
-        last = text.rfind("]")
-        if first == -1 or last == -1 or last <= first:
+        if first == -1:
             return {}
-        candidate = text[first : last + 1]
+
+        # Pass 1 — strict: standard ``[...]`` array.
+        last = text.rfind("]")
+        if last > first:
+            result = cls._try_parse_array(text[first : last + 1], expected)
+            if result:
+                return result
+
+        # Pass 2 — truncation-tolerant: the response was cut off mid-string
+        # by ``max_tokens``. Take everything from the opening ``[`` to the
+        # last complete ``}`` and append a closing ``]`` so json.loads has
+        # a well-formed array. Anything after the last ``}`` is necessarily
+        # a partial entry — discard it.
+        last_brace_close = text.rfind("}")
+        if last_brace_close > first:
+            candidate = text[first : last_brace_close + 1] + "]"
+            result = cls._try_parse_array(candidate, expected)
+            if result:
+                return result
+
+        return {}
+
+    @staticmethod
+    def _try_parse_array(candidate: str, expected: int) -> dict[int, str]:
+        """Parse a candidate JSON array string into ``{id: description}``.
+
+        Attempts strict parse first, then a trailing-comma repair, then
+        gives up. Filters out malformed / out-of-range entries silently —
+        hallucinated extras and wrong-typed fields are dropped.
+        """
         try:
             arr = json.loads(candidate)
         except json.JSONDecodeError:
-            # One retry: try to repair trailing commas (common LLM tic).
             repaired = re.sub(r",\s*([}\]])", r"\1", candidate)
             try:
                 arr = json.loads(repaired)
