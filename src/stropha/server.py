@@ -3971,6 +3971,131 @@ def audit_citations_tool(
     )
 
 
+# ---- spec_consistency (WIN-250) -------------------------------------------
+
+
+class SpecInvariantEntry(BaseModel):
+    text: str
+    spec_file: str
+    line: int
+    keyword: str
+    severity: str = Field(description="HIGH / MEDIUM / LOW.")
+
+
+class SpecConflictEntry(BaseModel):
+    invariant: SpecInvariantEntry
+    matched: str = Field(
+        description="The changed symbol / file the invariant mentions.",
+    )
+    severity: str
+    reason: str
+
+
+class SpecConsistencyResponse(BaseModel):
+    """Outcome of ``spec_consistency_tool``."""
+
+    invariants_found: int
+    conflicts: list[SpecConflictEntry] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+    spec_files_scanned: list[str] = Field(default_factory=list)
+
+
+def _default_spec_loader(repo_root: str) -> dict[str, str]:
+    """Walk the canonical spec locations under ``repo_root``.
+
+    Reads ``CLAUDE.md`` + every ``*.md`` under
+    ``docs/architecture/`` if present. Skips on any I/O error so
+    the tool stays defensive.
+    """
+    from pathlib import Path
+
+    out: dict[str, str] = {}
+    root = Path(repo_root)
+    candidates = [root / "CLAUDE.md", root / "AGENTS.md"]
+    arch_dir = root / "docs" / "architecture"
+    if arch_dir.is_dir():
+        for path in sorted(arch_dir.glob("*.md")):
+            candidates.append(path)
+    for path in candidates:
+        if not path.is_file():
+            continue
+        try:
+            out[str(path.relative_to(root))] = path.read_text(
+                encoding="utf-8", errors="replace",
+            )
+        except OSError:
+            continue
+    return out
+
+
+@mcp.tool(
+    title="Spec-consistency check",
+    description=(
+        "WIN-250 — cross-reference planned changes against documented "
+        "invariants (CLAUDE.md, AGENTS.md, docs/architecture/*.md). "
+        "Flags every spec sentence carrying MUST / NEVER / "
+        "forward-only / etc. that mentions a changed symbol or file. "
+        "Helps avoid silently violating an undocumented contract. "
+        "Severity: HIGH (MUST/NEVER) / MEDIUM (should/avoid) / "
+        "LOW (note)."
+    ),
+)
+@traced("spec_consistency")
+def spec_consistency_tool(
+    changed_symbols: list[str],
+    changed_files: list[str] | None = None,
+    *,
+    ctx: Context,
+) -> SpecConsistencyResponse:
+    """Check the changes against documented invariants."""
+    from .retrieval.spec_consistency import check_spec_consistency
+
+    app = _ctx(ctx)
+    # Use the first registered repo's local path as the spec root.
+    try:
+        repos = app.storage.stats().get("repos") or []
+    except Exception:
+        repos = []
+    repo_root = ""
+    for r in repos:
+        path = r.get("local_path") or r.get("path") or ""
+        if path:
+            repo_root = path
+            break
+
+    def _loader() -> dict[str, str]:
+        if not repo_root:
+            return {}
+        return _default_spec_loader(repo_root)
+
+    report = check_spec_consistency(
+        changed_symbols,
+        changed_files or [],
+        spec_loader=_loader,
+    )
+
+    return SpecConsistencyResponse(
+        invariants_found=report.invariants_found,
+        conflicts=[
+            SpecConflictEntry(
+                invariant=SpecInvariantEntry(
+                    text=c.invariant.text,
+                    spec_file=c.invariant.spec_file,
+                    line=c.invariant.line,
+                    keyword=c.invariant.keyword,
+                    severity=c.invariant.severity,
+                ),
+                matched=c.matched,
+                severity=c.severity,
+                reason=c.reason,
+            )
+            for c in report.conflicts
+        ],
+        notes=list(report.notes),
+        spec_files_scanned=list(report.spec_files_scanned),
+    )
+
+
 # ---- entry point -----------------------------------------------------------
 
 def main() -> None:
