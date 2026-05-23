@@ -1559,6 +1559,78 @@ def forget(kind: str, key: str, *, ctx: Context) -> ForgetResponse:
     return ForgetResponse(removed=removed, kind=kind, key=key)
 
 
+# ---- bootstrap (WIN-227, EPIC 1.9 #19) -------------------------------------
+
+
+class DetectedStackEntry(BaseModel):
+    """One stack from the bootstrap snapshot exposed to MCP clients."""
+
+    name: str
+    language: str
+    build_command: str | None = None
+    test_command: str | None = None
+    run_command: str | None = None
+    matched_markers: list[str] = Field(default_factory=list)
+
+
+class BootstrapResponse(BaseModel):
+    """Bootstrap payload — warm-start view of the target repo."""
+
+    repo_path: str
+    stacks: list[DetectedStackEntry] = Field(default_factory=list)
+    entry_points: dict[str, list[str]] = Field(default_factory=dict)
+    has_git: bool = False
+    has_tests_dir: bool = False
+    has_docs_dir: bool = False
+    has_graphify_out: bool = False
+
+
+@mcp.tool(
+    title="Bootstrap repo environment",
+    description=(
+        "WIN-227 — return a warm-start snapshot of THIS repo: detected "
+        "language stacks (Python / Node / Rust / Go / Java / .NET / "
+        "Ruby), idiomatic build / test / run commands per stack, "
+        "entry-point hints (README, main module, docs roots), and "
+        "presence of common directories (tests/, docs/, graphify-out/). "
+        "Use this on session open instead of burning 2-4 turns "
+        "rediscovering the project basics (paper: TerminalBench-2)."
+    ),
+)
+@traced("bootstrap_environment")
+def bootstrap_environment(*, ctx: Context) -> BootstrapResponse:
+    """Detect language / build / test / entry-point hints for the
+    configured ``target_repo``."""
+    from pathlib import Path as _Path
+
+    from .retrieval.bootstrap import detect_bootstrap
+
+    app = _ctx(ctx)
+    target = app.config.target_repo
+    if target is None:
+        target = _Path.cwd()
+    snapshot = detect_bootstrap(_Path(target))
+    return BootstrapResponse(
+        repo_path=snapshot.repo_path,
+        stacks=[
+            DetectedStackEntry(
+                name=s.name,
+                language=s.language,
+                build_command=s.build_command,
+                test_command=s.test_command,
+                run_command=s.run_command,
+                matched_markers=list(s.matched_markers),
+            )
+            for s in snapshot.stacks
+        ],
+        entry_points=snapshot.entry_points,
+        has_git=snapshot.has_git,
+        has_tests_dir=snapshot.has_tests_dir,
+        has_docs_dir=snapshot.has_docs_dir,
+        has_graphify_out=snapshot.has_graphify_out,
+    )
+
+
 # ---- episodic memory (WIN-225, EPIC 1.9 #17) -------------------------------
 
 
