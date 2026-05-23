@@ -483,6 +483,7 @@ def search_code(
     repo_url: str | None = None,
     refresh: bool = False,
     context_budget: int | None = None,
+    compress: bool = False,
     *,
     ctx: Context,
 ) -> SearchResponse:
@@ -506,6 +507,11 @@ def search_code(
             estimated tokens. May return fewer than top_k hits; the truncated
             tail is reported via the ``spilled_count`` field. Pass when your
             context window is tight; omit for the classic top_k behaviour.
+        compress: Extractive compression (WIN-210). When True, each hit's
+            snippet is rewritten to keep only the signature, lines matching
+            the query, a small surrounding context window, and an
+            ``# ... (N lines elided)`` marker for skipped blocks. Doubles
+            useful-signal-per-token without losing recall.
     """
     import os
 
@@ -564,6 +570,14 @@ def search_code(
 
     # Truncate to requested top_k
     hits = hits[:top_k]
+
+    # WIN-210: Extractive compression of each hit's snippet — keep
+    # the signature, matched lines, small context window. Applied
+    # BEFORE budget packing so the budget reflects compressed cost.
+    if compress and hits:
+        from .retrieval.compression import compress_hits
+
+        hits = compress_hits(hits, query)
 
     # WIN-208: Greedy-pack to ``context_budget`` AFTER top_k truncation.
     # Done at the MCP layer (not inside SearchEngine.search) so the

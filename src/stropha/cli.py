@@ -632,6 +632,15 @@ def search(
             "hits; surfaces the dropped tail count for visibility."
         ),
     ),
+    compress: bool = typer.Option(
+        False, "--compress",
+        help=(
+            "Extractive compression (WIN-210): keep each hit's "
+            "signature + matched lines + small context window, drop "
+            "boilerplate. Doubles useful-signal-per-token. Combine "
+            "with --context-budget for max throughput."
+        ),
+    ),
 ) -> None:
     """Hybrid retrieval (dense + BM25 + symbol-token fused via RRF).
 
@@ -681,6 +690,15 @@ def search(
                 exclude_tests=exclude_tests,
             )
             hits = hits[:top_k]
+
+        # WIN-210: Extractive compression — applied BEFORE budget
+        # packing so the budget reflects compressed cost. The compressor
+        # rewrites snippet in place; the displayed table picks up the
+        # changes automatically.
+        if compress and hits:
+            from .retrieval.compression import compress_hits
+
+            hits = compress_hits(hits, query)
 
         # WIN-208: token-budget packing — applied AFTER filtering + top_k
         # truncation so the budget controls the final response, not the

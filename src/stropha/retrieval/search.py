@@ -35,6 +35,7 @@ class SearchEngine:
         rrf_k: int = DEFAULT_K,
         decompose: bool | None = None,
         context_budget: int | None = None,
+        compress: bool = False,
     ) -> list[SearchHit]:
         """Three-stream hybrid retrieval, fused with RRF.
 
@@ -59,6 +60,13 @@ class SearchEngine:
         sees something rather than nothing. ``top_k`` still bounds the
         upper end of what's considered for packing; the packed result may
         contain fewer items.
+
+        Extractive compression (WIN-210):
+        When ``compress=True``, each hit's ``snippet`` is replaced with
+        an extractive compression that keeps the signature, matched
+        lines, a small context window, and drops boilerplate. Applied
+        BEFORE budget packing so the budget reflects the compressed
+        cost — caller gets more relevant code per token spent.
         """
         if not query.strip():
             return []
@@ -94,13 +102,36 @@ class SearchEngine:
                     fused = rrf_fuse(*all_hits, k=rrf_k, top_k=top_k)
                     from .recursive import merge_hits
                     merged = merge_hits(fused, self._storage)
-                    return self._maybe_pack(merged, context_budget)
+                    compressed = self._maybe_compress(merged, query, compress)
+                    return self._maybe_pack(compressed, context_budget)
                 return []
 
         single = self._search_single(
             query, top_k=top_k, candidate_k=candidate_k, rrf_k=rrf_k,
         )
-        return self._maybe_pack(single, context_budget)
+        compressed = self._maybe_compress(single, query, compress)
+        return self._maybe_pack(compressed, context_budget)
+
+    def _maybe_compress(
+        self,
+        hits: list[SearchHit],
+        query: str,
+        compress: bool,
+    ) -> list[SearchHit]:
+        """Apply extractive compression when requested.
+
+        Compression replaces ``hit.snippet`` with a shrunken version
+        keeping signature + matched lines + small context window.
+        Applied BEFORE budget packing so the budget reflects the
+        compressed cost; compressing AFTER packing would defeat the
+        purpose (would have already paid the token cost of dropped
+        spans).
+        """
+        if not compress or not hits:
+            return hits
+        from .compression import compress_hits
+
+        return compress_hits(hits, query)
 
     def _maybe_pack(
         self,
