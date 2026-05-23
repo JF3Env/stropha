@@ -24,8 +24,10 @@ from stropha.storage.sqlite import SCHEMA_VERSION, Storage
 
 
 class TestSchemaMigration:
-    def test_schema_version_is_nine(self) -> None:
-        assert SCHEMA_VERSION == 9
+    def test_schema_version_at_least_nine(self) -> None:
+        """v9 added project_memory; future bumps preserve the
+        contract this file guards."""
+        assert SCHEMA_VERSION >= 9
 
     def test_project_memory_table_created(self, tmp_path: Path) -> None:
         with Storage(tmp_path / "v9.db", embedding_dim=4) as s:

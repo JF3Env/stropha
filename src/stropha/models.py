@@ -200,6 +200,31 @@ class SessionRecord(BaseModel):
     )
 
 
+class EpisodeRecord(BaseModel):
+    """One ``episodes`` row (Schema v10, WIN-225).
+
+    Captures a per-session task summary plus the files/symbols the
+    agent touched. Co-occurrence queries at recall time answer
+    "the last time I touched FSRS I also updated migration" by
+    scanning past episodes and ranking what was usually touched
+    alongside a given file/symbol.
+
+    Distinct from :class:`ProjectMemoryRecord` (timeline vs. facts).
+    ``touched_files`` / ``touched_symbols`` are persisted as JSON
+    arrays — sets are deduped at the Storage layer.
+    """
+
+    id: int | None = None
+    repo_id: int
+    session_id: str | None = None
+    title: str
+    summary: str = ""
+    touched_files: list[str] = Field(default_factory=list)
+    touched_symbols: list[str] = Field(default_factory=list)
+    created_at: str
+    updated_at: str
+
+
 class ProjectMemoryRecord(BaseModel):
     """One ``project_memory`` row (Schema v9, WIN-222).
 

@@ -38,6 +38,7 @@ The original development target is the sibling **Mimoria** repository at `../mim
 | v7 | `graph_nodes.repo_id` + `graph_edges.repo_id` | multi-repo graphify support (distributed monorepo architecture) |
 | v8 | `sessions` table (session_id, client_id, created_at, updated_at, seen_chunk_ids JSON, pinned_chunk_ids JSON, meta JSON) | EPIC 1.9 KEYSTONE — persistent per-session state (WIN-217 dedup + WIN-218 pins survive MCP restarts). |
 | v9 | `project_memory` table (id, repo_id FK, kind, key, value, source, created_at, updated_at, expires_at) + UNIQUE(repo_id,kind,key) | EPIC 1.9 WIN-222 — per-repo long-term notes; agent curates decisions / constraints / anchor facts that survive sessions and process restarts. |
+| v10 | `episodes` table (id, repo_id FK, session_id, title, summary, touched_files JSON, touched_symbols JSON, created_at, updated_at) | EPIC 1.9 WIN-225 — append-only timeline of agent tasks; backs `record_episode` / `recall_episodes` / `co_occurrence` MCP tools so the agent can ask "what do I usually touch alongside X?". |
 
 All migrations are forward-only and idempotent (`_add_column_if_missing` + `CREATE TABLE IF NOT EXISTS`). Legacy NULL `enricher_id` is treated as `'noop'` so v1/v2 dbs upgrade without full re-embed.
 

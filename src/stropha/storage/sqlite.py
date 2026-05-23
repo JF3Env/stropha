@@ -47,7 +47,7 @@ log = get_logger(__name__)
 #     `graph_edges` tables to allow multiple repos with their own graphify
 #     graphs to share a single stropha index. Node IDs are prefixed with
 #     repo_id to avoid collisions across repos.
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 
 def _serialize_vector(vec: list[float]) -> bytes:
@@ -155,6 +155,34 @@ def _fts_text(content: str, rel_path: str, symbol: str | None) -> str:
 
 def _snippet(content: str, limit: int = 480) -> str:
     return content[:limit].rstrip() + ("…" if len(content) > limit else "")
+
+
+def _row_to_episode(row: Any) -> Any:
+    """Map an ``episodes`` SQLite row to an ``EpisodeRecord``.
+
+    Module-level helper colocated with the other row mappers. JSON
+    columns fall back to empty lists when the stored value is
+    corrupted — same defensive contract as ``sessions``.
+    """
+    from ..models import EpisodeRecord
+
+    try:
+        files = list(json.loads(row["touched_files"] or "[]"))
+        symbols = list(json.loads(row["touched_symbols"] or "[]"))
+    except (json.JSONDecodeError, TypeError):
+        log.warning("episodes.corrupted_row", episode_id=row["id"])
+        files, symbols = [], []
+    return EpisodeRecord(
+        id=int(row["id"]),
+        repo_id=int(row["repo_id"]),
+        session_id=row["session_id"],
+        title=row["title"],
+        summary=row["summary"] or "",
+        touched_files=files,
+        touched_symbols=symbols,
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
 
 
 def _repo_from_row(row: Any) -> RepoRef | None:
@@ -490,6 +518,39 @@ class Storage:
         )
         cur.execute(
             "CREATE INDEX IF NOT EXISTS idx_graph_edges_repo ON graph_edges(repo_id);"
+        )
+
+        # v10: episodes table — episodic task memory (WIN-225).
+        # Captures "the last time I worked on FSRS I also touched the
+        # migration" by logging an episode summary + the files/symbols
+        # the agent touched. Sister of project_memory (v9):
+        # - project_memory: stable facts ("FSRS is authoritative")
+        # - episodes: timeline events ("on 2026-05-23 I added a
+        #   late-chunking adapter and touched files X, Y, Z")
+        # Both scoped to a repo via repo_id FK.
+        #
+        # ``touched_files`` / ``touched_symbols`` are JSON arrays so
+        # the schema stays trivially exportable. Co-occurrence queries
+        # at recall time scan the JSON via LIKE (small N — episodes
+        # rarely exceed a few hundred per repo).
+        cur.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS episodes (
+                id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                repo_id           INTEGER NOT NULL REFERENCES repos(id),
+                session_id        TEXT,
+                title             TEXT NOT NULL,
+                summary           TEXT NOT NULL DEFAULT '',
+                touched_files     TEXT NOT NULL DEFAULT '[]',
+                touched_symbols   TEXT NOT NULL DEFAULT '[]',
+                created_at        TEXT NOT NULL,
+                updated_at        TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_episodes_repo_created
+                ON episodes(repo_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_episodes_session
+                ON episodes(session_id);
+            """
         )
 
         # v9: project_memory table — long-term per-repo notes (WIN-222).
@@ -1870,6 +1931,179 @@ class Storage:
             """DELETE FROM project_memory
                WHERE repo_id = ? AND kind = ? AND key = ?""",
             (repo_id, kind, key),
+        )
+        self._conn.commit()
+        return bool(cur.rowcount or 0)
+
+    # ----- episodic memory (v10, WIN-225) -----
+
+    def record_episode(
+        self,
+        *,
+        repo_id: int,
+        title: str,
+        summary: str = "",
+        session_id: str | None = None,
+        touched_files: list[str] | None = None,
+        touched_symbols: list[str] | None = None,
+    ) -> "EpisodeRecord":
+        """Insert one episodic-memory row. Always creates a new row;
+        episodes are append-only by design (the timeline matters).
+
+        ``touched_files`` / ``touched_symbols`` are deduplicated +
+        sorted before persistence so the JSON shape is canonical.
+        """
+        from ..models import EpisodeRecord
+
+        now = datetime.now(UTC).isoformat()
+        files_norm = sorted(set(touched_files or []))
+        symbols_norm = sorted(set(touched_symbols or []))
+        cur = self._conn.execute(
+            """INSERT INTO episodes (
+                   repo_id, session_id, title, summary,
+                   touched_files, touched_symbols,
+                   created_at, updated_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                repo_id, session_id, title, summary,
+                json.dumps(files_norm), json.dumps(symbols_norm),
+                now, now,
+            ),
+        )
+        self._conn.commit()
+        return EpisodeRecord(
+            id=int(cur.lastrowid or 0),
+            repo_id=repo_id,
+            session_id=session_id,
+            title=title,
+            summary=summary,
+            touched_files=files_norm,
+            touched_symbols=symbols_norm,
+            created_at=now,
+            updated_at=now,
+        )
+
+    def recall_episodes(
+        self,
+        *,
+        repo_id: int,
+        query: str | None = None,
+        limit: int = 10,
+        since_iso: str | None = None,
+    ) -> list["EpisodeRecord"]:
+        """Fetch episodes for a repo, optionally filtered.
+
+        ``query`` is matched against ``title`` and ``summary`` via
+        case-insensitive LIKE. None = return the most-recent episodes
+        unfiltered.
+
+        ``since_iso`` filters to episodes created on/after the given
+        ISO timestamp — useful for "what did I do this week?".
+
+        Sorted by ``created_at`` DESC so the freshest episode is row 0.
+        """
+        from ..models import EpisodeRecord
+
+        clauses = ["repo_id = ?"]
+        params: list[Any] = [repo_id]
+        if query:
+            clauses.append("(title LIKE ? OR summary LIKE ?)")
+            params.extend([f"%{query}%", f"%{query}%"])
+        if since_iso is not None:
+            clauses.append("created_at >= ?")
+            params.append(since_iso)
+        params.append(max(1, min(limit, 200)))
+        where = " AND ".join(clauses)
+        rows = self._conn.execute(
+            f"""SELECT id, repo_id, session_id, title, summary,
+                       touched_files, touched_symbols,
+                       created_at, updated_at
+               FROM episodes
+               WHERE {where}
+               ORDER BY created_at DESC LIMIT ?""",
+            tuple(params),
+        ).fetchall()
+        return [_row_to_episode(r) for r in rows]
+
+    def episode_co_occurrence(
+        self,
+        *,
+        repo_id: int,
+        key: str,
+        in_files: bool = True,
+        in_symbols: bool = True,
+        limit: int = 10,
+    ) -> dict[str, dict[str, int]]:
+        """Answer "what do I usually touch alongside ``key``?".
+
+        Scans every episode that touched ``key`` (file path OR
+        symbol, depending on the flags) and counts how often other
+        files / symbols co-appeared. Returns:
+
+            {
+                "files":   {"path/a.py": 3, "path/b.py": 2, ...},
+                "symbols": {"FooBar.do": 4, ...},
+            }
+
+        Counts are sorted descending; both dicts are capped at
+        ``limit`` entries. The ``key`` itself is excluded from the
+        result (the agent already knows about it).
+
+        Implementation: LIKE-based scan over the JSON arrays. Fine
+        for the corpora we target (≤500 episodes per repo); a future
+        story can normalise into a join table if it grows.
+        """
+        if not key:
+            return {"files": {}, "symbols": {}}
+        like = f"%{json.dumps(key)[1:-1]}%"  # quote-escaped substring
+
+        clauses = ["repo_id = ?"]
+        params: list[Any] = [repo_id]
+        match_clauses: list[str] = []
+        if in_files:
+            match_clauses.append("touched_files LIKE ?")
+            params.append(like)
+        if in_symbols:
+            match_clauses.append("touched_symbols LIKE ?")
+            params.append(like)
+        if match_clauses:
+            clauses.append(f"({' OR '.join(match_clauses)})")
+        where = " AND ".join(clauses)
+        rows = self._conn.execute(
+            f"""SELECT touched_files, touched_symbols
+               FROM episodes
+               WHERE {where}""",
+            tuple(params),
+        ).fetchall()
+        from collections import Counter
+
+        file_counter: Counter[str] = Counter()
+        sym_counter: Counter[str] = Counter()
+        for r in rows:
+            try:
+                files = json.loads(r["touched_files"] or "[]")
+                syms = json.loads(r["touched_symbols"] or "[]")
+            except (json.JSONDecodeError, TypeError):
+                continue
+            # Confirm the LIKE hit actually means key is present —
+            # JSON escaping might cause false positives.
+            if key not in files and key not in syms:
+                continue
+            for f in files:
+                if f != key:
+                    file_counter[f] += 1
+            for s in syms:
+                if s != key:
+                    sym_counter[s] += 1
+        return {
+            "files": dict(file_counter.most_common(max(1, limit))),
+            "symbols": dict(sym_counter.most_common(max(1, limit))),
+        }
+
+    def forget_episode(self, *, episode_id: int) -> bool:
+        """Delete one episode by id. Returns True / False (existed)."""
+        cur = self._conn.execute(
+            "DELETE FROM episodes WHERE id = ?", (episode_id,)
         )
         self._conn.commit()
         return bool(cur.rowcount or 0)

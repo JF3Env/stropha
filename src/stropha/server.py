@@ -1559,6 +1559,198 @@ def forget(kind: str, key: str, *, ctx: Context) -> ForgetResponse:
     return ForgetResponse(removed=removed, kind=kind, key=key)
 
 
+# ---- episodic memory (WIN-225, EPIC 1.9 #17) -------------------------------
+
+
+class EpisodeEntry(BaseModel):
+    """One ``episodes`` row exposed to MCP clients."""
+
+    id: int
+    title: str
+    summary: str = ""
+    session_id: str | None = None
+    touched_files: list[str] = Field(default_factory=list)
+    touched_symbols: list[str] = Field(default_factory=list)
+    created_at: str
+    updated_at: str
+
+
+class RecordEpisodeResponse(BaseModel):
+    """Outcome of a ``record_episode`` call."""
+
+    ok: bool
+    entry: EpisodeEntry | None = None
+    error: str | None = None
+
+
+class RecallEpisodesResponse(BaseModel):
+    """Outcome of a ``recall_episodes`` call."""
+
+    entries: list[EpisodeEntry]
+    repo: str | None = None
+
+
+class CoOccurrenceResponse(BaseModel):
+    """Outcome of an ``episode_co_occurrence`` call."""
+
+    key: str
+    files: dict[str, int] = Field(default_factory=dict)
+    symbols: dict[str, int] = Field(default_factory=dict)
+    repo: str | None = None
+
+
+def _episode_to_entry(rec) -> EpisodeEntry:  # type: ignore[no-untyped-def]
+    return EpisodeEntry(
+        id=rec.id,
+        title=rec.title,
+        summary=rec.summary,
+        session_id=rec.session_id,
+        touched_files=rec.touched_files,
+        touched_symbols=rec.touched_symbols,
+        created_at=rec.created_at,
+        updated_at=rec.updated_at,
+    )
+
+
+@mcp.tool(
+    title="Record a task episode",
+    description=(
+        "WIN-225 — log an episodic-memory entry capturing what the "
+        "agent just worked on. Pass a short ``title``, an optional "
+        "``summary``, and the ``touched_files`` / ``touched_symbols`` "
+        "that were edited or read. Episodes are append-only by design "
+        "(the timeline matters); use ``forget_episode`` to delete one. "
+        "Pair with ``recall_episodes`` for free-text search and "
+        "``co_occurrence`` for 'what do I usually touch alongside X?'."
+    ),
+)
+@traced("record_episode")
+def record_episode(
+    title: str,
+    summary: str = "",
+    touched_files: list[str] | None = None,
+    touched_symbols: list[str] | None = None,
+    *,
+    ctx: Context,
+) -> RecordEpisodeResponse:
+    """Record a single episodic-memory row for the target repo."""
+    app = _ctx(ctx)
+    repo_id = _resolve_target_repo_id(app)
+    if repo_id is None:
+        return RecordEpisodeResponse(
+            ok=False,
+            error=(
+                "no indexed repo for target_repo — run `stropha index` "
+                "first so the episode has a repo to anchor against"
+            ),
+        )
+    rec = app.storage.record_episode(
+        repo_id=repo_id,
+        session_id=app.session_id or None,
+        title=title,
+        summary=summary,
+        touched_files=touched_files or [],
+        touched_symbols=touched_symbols or [],
+    )
+    return RecordEpisodeResponse(ok=True, entry=_episode_to_entry(rec))
+
+
+@mcp.tool(
+    title="Recall task episodes",
+    description=(
+        "WIN-225 — fetch past episodes for THIS repo. Pass ``query`` "
+        "to filter by free-text match in title/summary (case-"
+        "insensitive substring); omit it for the most-recent episodes "
+        "across all topics. ``since`` (ISO timestamp) filters to "
+        "episodes created on/after that time, useful for 'what did I "
+        "do this week?'. ``limit`` clamps at 200."
+    ),
+)
+@traced("recall_episodes")
+def recall_episodes(
+    query: str | None = None,
+    limit: int = 10,
+    *,
+    ctx: Context,
+    since: str | None = None,
+) -> RecallEpisodesResponse:
+    """Search past episodes by free-text + optional time window."""
+    app = _ctx(ctx)
+    repo_id = _resolve_target_repo_id(app)
+    if repo_id is None:
+        return RecallEpisodesResponse(entries=[], repo=None)
+    rows = app.storage.recall_episodes(
+        repo_id=repo_id,
+        query=query,
+        limit=max(1, min(limit, 200)),
+        since_iso=since,
+    )
+    repo_key: str | None = None
+    if rows:
+        try:
+            r = app.storage._conn.execute(
+                "SELECT normalized_key FROM repos WHERE id = ?",
+                (repo_id,),
+            ).fetchone()
+            repo_key = r["normalized_key"] if r else None
+        except Exception:
+            repo_key = None
+    return RecallEpisodesResponse(
+        entries=[_episode_to_entry(r) for r in rows],
+        repo=repo_key,
+    )
+
+
+@mcp.tool(
+    title="Episode co-occurrence",
+    description=(
+        "WIN-225 — answer 'what do I usually touch alongside ``key``?'. "
+        "Scans every episode that touched ``key`` (file path OR symbol) "
+        "and ranks the other files / symbols by how often they "
+        "co-appeared. Returns two dicts (``files``, ``symbols``) sorted "
+        "descending by frequency. Use after picking up an old task: "
+        "co_occurrence('src/fsrs/calculator.py') tells you which "
+        "migrations / tests / docs the agent usually touched in the "
+        "same session."
+    ),
+)
+@traced("co_occurrence")
+def co_occurrence(
+    key: str,
+    *,
+    ctx: Context,
+    limit: int = 10,
+    in_files: bool = True,
+    in_symbols: bool = True,
+) -> CoOccurrenceResponse:
+    """Rank co-touched files / symbols for the given key."""
+    app = _ctx(ctx)
+    repo_id = _resolve_target_repo_id(app)
+    if repo_id is None:
+        return CoOccurrenceResponse(key=key, files={}, symbols={}, repo=None)
+    result = app.storage.episode_co_occurrence(
+        repo_id=repo_id,
+        key=key,
+        in_files=in_files,
+        in_symbols=in_symbols,
+        limit=max(1, min(limit, 200)),
+    )
+    repo_key: str | None = None
+    try:
+        r = app.storage._conn.execute(
+            "SELECT normalized_key FROM repos WHERE id = ?", (repo_id,),
+        ).fetchone()
+        repo_key = r["normalized_key"] if r else None
+    except Exception:
+        repo_key = None
+    return CoOccurrenceResponse(
+        key=key,
+        files=result.get("files", {}),
+        symbols=result.get("symbols", {}),
+        repo=repo_key,
+    )
+
+
 @mcp.tool(
     title="Find callers of a symbol",
     description=(
