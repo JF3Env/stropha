@@ -3414,6 +3414,123 @@ def verify_claim_tool(
     )
 
 
+# ---- check_symbols (WIN-245) -----------------------------------------------
+
+
+class SymbolCheckEntry(BaseModel):
+    """Per-symbol outcome from ``check_symbols``."""
+
+    symbol: str = Field(description="Echo of the input name.")
+    exists: bool = Field(
+        description=(
+            "True when the index has at least one chunk whose "
+            "``symbol`` column matches (exact / suffix / "
+            "case-insensitive)."
+        ),
+    )
+    suggestions: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Near-miss symbol names — only populated when "
+            "``exists=False``. Sorted by a length-delta proxy for "
+            "edit distance."
+        ),
+    )
+    reason: str = Field(
+        default="",
+        description="Human-readable explanation of the verdict.",
+    )
+
+
+class HallucinationGuardResponse(BaseModel):
+    """Full report from a ``check_symbols`` call."""
+
+    checks: list[SymbolCheckEntry]
+    present_count: int = Field(
+        description="How many input symbols resolved in the index.",
+    )
+    missing_count: int = Field(
+        description=(
+            "How many input symbols failed to resolve — these are "
+            "the suspected hallucinations."
+        ),
+    )
+    notes: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Cross-cutting notes (e.g., skipped-empty-symbol, "
+            "callable exceptions). Surface in addition to the "
+            "per-symbol verdicts."
+        ),
+    )
+
+
+@mcp.tool(
+    title="Guard against hallucinated symbols",
+    description=(
+        "WIN-245 — vet a batch of symbol names against the index "
+        "BEFORE the agent commits them to code. Each symbol gets a "
+        "verdict (exists/missing) plus near-miss suggestions on "
+        "misses, so the agent can pick the correct name without a "
+        "second search. Defensive: callable exceptions become notes, "
+        "never propagate; empty / duplicate names skipped."
+    ),
+)
+@traced("check_symbols")
+def check_symbols_tool(
+    symbols: list[str],
+    max_suggestions: int = 5,
+    *,
+    ctx: Context,
+) -> HallucinationGuardResponse:
+    """Run the hallucination guard against the live index."""
+    from .retrieval.hallucination_guard import check_symbols as _check
+
+    app = _ctx(ctx)
+    max_suggestions = max(1, min(int(max_suggestions), 20))
+
+    def _exists(name: str) -> bool:
+        hits = app.storage.lookup_by_symbol(name, limit=1)
+        # Exact / suffix matches return at least one hit; substring-
+        # only matches still count as "exists" for the guard.
+        return bool(hits)
+
+    def _similar(name: str) -> list[str]:
+        # Pull up to 20 substring matches; the primitive ranks + caps.
+        try:
+            hits = app.storage.lookup_by_symbol(name, limit=20)
+        except Exception:
+            return []
+        out: list[str] = []
+        for hit in hits:
+            sym = getattr(hit, "symbol", None)
+            if sym and sym not in out:
+                out.append(str(sym))
+        return out
+
+    report = _check(
+        symbols,
+        exists_fn=_exists,
+        similar_fn=_similar,
+        max_suggestions=max_suggestions,
+    )
+
+    return HallucinationGuardResponse(
+        checks=[
+            SymbolCheckEntry(
+                symbol=c.symbol,
+                exists=c.exists,
+                suggestions=list(c.suggestions),
+                reason=c.reason,
+            )
+            for c in report.checks
+        ],
+        present_count=report.present_count,
+        missing_count=report.missing_count,
+        notes=list(report.notes),
+    )
+
+
 # ---- entry point -----------------------------------------------------------
 
 def main() -> None:
