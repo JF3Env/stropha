@@ -311,6 +311,23 @@ class SearchResponse(BaseModel):
         default=None,
         description="Facet counts when include_facets=True. Shows distribution by language, kind, repo.",
     )
+    # WIN-208 — token-budget packing observability. Populated only when
+    # the caller passed ``context_budget``; left at defaults otherwise so
+    # the legacy response shape is unchanged.
+    spilled_count: int = Field(
+        default=0,
+        description=(
+            "WIN-208: number of hits that fell off the tail because "
+            "context_budget was tight. 0 when no packing was requested."
+        ),
+    )
+    truncated_oversize: bool = Field(
+        default=False,
+        description=(
+            "WIN-208: True when the single top hit exceeds context_budget "
+            "and was returned anyway (escape hatch to avoid empty result)."
+        ),
+    )
 
 
 class OutlineEntry(BaseModel):
@@ -465,6 +482,7 @@ def search_code(
     recursive: bool = False,
     repo_url: str | None = None,
     refresh: bool = False,
+    context_budget: int | None = None,
     *,
     ctx: Context,
 ) -> SearchResponse:
@@ -483,11 +501,16 @@ def search_code(
         repo_url: Optional git URL to search (e.g., https://github.com/org/repo).
                   The repo is cloned and indexed on first access, then cached.
         refresh: If True with repo_url, re-clone and re-index the remote repository.
+        context_budget: Optional token budget for result packing (WIN-208). When
+            set, results are greedily packed in score order up to this many
+            estimated tokens. May return fewer than top_k hits; the truncated
+            tail is reported via the ``spilled_count`` field. Pass when your
+            context window is tight; omit for the classic top_k behaviour.
     """
     import os
-    
+
     from .tools.git_url import is_git_url, search_git_url
-    
+
     app = _ctx(ctx)
     top_k = max(1, min(top_k, 30))
 
@@ -542,6 +565,30 @@ def search_code(
     # Truncate to requested top_k
     hits = hits[:top_k]
 
+    # WIN-208: Greedy-pack to ``context_budget`` AFTER top_k truncation.
+    # Done at the MCP layer (not inside SearchEngine.search) so the
+    # facet computation above sees the full top_k slice — facet counts
+    # describe what was *available* before packing, not what survived.
+    # The CLI search wires the budget via the engine's own packing path
+    # since it doesn't compute facets.
+    spilled_count = 0
+    truncated_oversize = False
+    if context_budget is not None and context_budget > 0:
+        from .retrieval.packing import pack_to_budget
+
+        pack = pack_to_budget(hits, context_budget)
+        hits = pack.packed
+        spilled_count = len(pack.spilled)
+        truncated_oversize = pack.truncated
+        log.info(
+            "mcp.search_code.packed",
+            budget=context_budget,
+            total_tokens=pack.total_tokens,
+            packed=len(hits),
+            spilled=spilled_count,
+            truncated=truncated_oversize,
+        )
+
     # WIN-158: Track token savings so `stropha cost` can report on RAG value.
     # The producer at retrieval/savings.py emits a `search.served` structlog
     # event which the consumer at cost.py:211 already aggregates. Wrapped in
@@ -558,6 +605,8 @@ def search_code(
         total_candidates=len(hits),
         query=query,
         facets=facets,
+        spilled_count=spilled_count,
+        truncated_oversize=truncated_oversize,
     )
 
 

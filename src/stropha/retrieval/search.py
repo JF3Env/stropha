@@ -34,6 +34,7 @@ class SearchEngine:
         candidate_k: int = CANDIDATE_K,
         rrf_k: int = DEFAULT_K,
         decompose: bool | None = None,
+        context_budget: int | None = None,
     ) -> list[SearchHit]:
         """Three-stream hybrid retrieval, fused with RRF.
 
@@ -43,22 +44,32 @@ class SearchEngine:
         - symbol — direct match on the `symbol` column for identifier tokens
                    in the query (spec §6.3.5 query routing).
         Empty streams are dropped before fusion.
-        
+
         Query decomposition (optional):
         When enabled (decompose=True or STROPHA_QUERY_DECOMPOSITION_ENABLED=1),
         compound queries like "how does X work and what calls Y" are split
         into atomic sub-queries, searched separately, and fused via RRF.
+
+        Token-budget packing (WIN-208):
+        When ``context_budget`` is set, the score-ranked output is greedy-
+        packed up to that token budget (using ``estimate_content_tokens``)
+        and the truncated tail is dropped. The returned list never exceeds
+        the budget — except in the single-first-hit-oversize escape path,
+        where the top hit is returned alone even if oversize so the caller
+        sees something rather than nothing. ``top_k`` still bounds the
+        upper end of what's considered for packing; the packed result may
+        contain fewer items.
         """
         if not query.strip():
             return []
-        
+
         # Check for query decomposition
         if decompose is None:
             decompose = os.environ.get("STROPHA_QUERY_DECOMPOSITION_ENABLED", "0") == "1"
-        
+
         if decompose:
             from .query_decomposition import decompose_query
-            
+
             result = decompose_query(query)
             if len(result.sub_queries) > 1:
                 log.info(
@@ -77,15 +88,46 @@ class SearchEngine:
                         rrf_k=rrf_k,
                     )
                     all_hits.append(sub_hits)
-                
+
                 # Fuse all sub-query results via RRF
                 if all_hits:
                     fused = rrf_fuse(*all_hits, k=rrf_k, top_k=top_k)
                     from .recursive import merge_hits
-                    return merge_hits(fused, self._storage)
+                    merged = merge_hits(fused, self._storage)
+                    return self._maybe_pack(merged, context_budget)
                 return []
-        
-        return self._search_single(query, top_k=top_k, candidate_k=candidate_k, rrf_k=rrf_k)
+
+        single = self._search_single(
+            query, top_k=top_k, candidate_k=candidate_k, rrf_k=rrf_k,
+        )
+        return self._maybe_pack(single, context_budget)
+
+    def _maybe_pack(
+        self,
+        hits: list[SearchHit],
+        context_budget: int | None,
+    ) -> list[SearchHit]:
+        """Apply token-budget packing if a budget was supplied.
+
+        Packing happens AFTER recursive merge so the budget applies
+        to the final (possibly merged + expanded) hit list, not to
+        raw RRF output. Side-effect-free pure pass-through when
+        ``context_budget`` is None or non-positive.
+        """
+        if context_budget is None or context_budget <= 0:
+            return hits
+        from .packing import pack_to_budget
+
+        result = pack_to_budget(hits, context_budget)
+        log.info(
+            "search.packed",
+            budget=result.budget_tokens,
+            total_tokens=result.total_tokens,
+            packed=len(result.packed),
+            spilled=len(result.spilled),
+            truncated=result.truncated,
+        )
+        return result.packed
 
     def _search_single(
         self,

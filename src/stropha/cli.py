@@ -623,29 +623,41 @@ def search(
         "--no-tests",
         help="Exclude test files from results.",
     ),
+    context_budget: int | None = typer.Option(
+        None, "--context-budget",
+        help=(
+            "Token budget for result packing (WIN-208). When set, "
+            "results are greedy-packed in score order up to this "
+            "many estimated tokens. May return fewer than --top-k "
+            "hits; surfaces the dropped tail count for visibility."
+        ),
+    ),
 ) -> None:
     """Hybrid retrieval (dense + BM25 + symbol-token fused via RRF).
-    
+
     Search local repos:
         stropha search "how does auth work"
         stropha search "auth" --language python --no-tests
-    
+        stropha search "auth" --context-budget 2000   # pack to 2K tokens
+
     Search remote repos via git URL:
         stropha search "auth" https://github.com/org/repo
         stropha search "auth" https://github.com/org/repo --refresh
     """
     import os
-    
+
     from .tools.git_url import is_git_url, search_git_url
-    
+
     # Set env var to enable recursive retrieval for this search
     if recursive:
         os.environ["STROPHA_RECURSIVE_RETRIEVAL"] = "1"
-    
+
     # Fetch more candidates when filtering
     has_filters = any([language, path_prefix, exclude_tests])
     fetch_k = top_k * 3 if has_filters else top_k
-    
+
+    spilled_count = 0
+    truncated_oversize = False
     try:
         # Handle git URL search
         if repo_url and is_git_url(repo_url):
@@ -659,7 +671,7 @@ def search(
             built = build_stages(resolved)
             with built.storage:  # type: ignore[union-attr]
                 hits = built.retrieval.search(query, top_k=fetch_k)
-        
+
         # Apply filters
         if has_filters:
             hits = _apply_cli_filters(
@@ -669,6 +681,20 @@ def search(
                 exclude_tests=exclude_tests,
             )
             hits = hits[:top_k]
+
+        # WIN-208: token-budget packing — applied AFTER filtering + top_k
+        # truncation so the budget controls the final response, not the
+        # intermediate candidate set. Engine-level packing in
+        # SearchEngine.search is the same logic; we invoke pack_to_budget
+        # directly here to keep the CLI path linear and surface the
+        # spilled count for the operator's table.
+        if context_budget is not None and context_budget > 0:
+            from .retrieval.packing import pack_to_budget
+
+            pack = pack_to_budget(hits, context_budget)
+            hits = pack.packed
+            spilled_count = len(pack.spilled)
+            truncated_oversize = pack.truncated
     except StrophaError as exc:
         console.print(f"[red]Search failed:[/red] {exc}")
         raise typer.Exit(code=1) from exc
@@ -681,7 +707,10 @@ def search(
         console.print("[yellow]No results.[/yellow]")
         return
 
-    table = Table(title=f"Top {len(hits)} for {query!r}", show_lines=False)
+    table_title = f"Top {len(hits)} for {query!r}"
+    if context_budget is not None:
+        table_title += f" (budget {context_budget} tokens)"
+    table = Table(title=table_title, show_lines=False)
     table.add_column("#", justify="right", style="cyan", no_wrap=True)
     table.add_column("Score", justify="right")
     table.add_column("Repo", overflow="fold", style="dim")
@@ -706,6 +735,20 @@ def search(
             h.snippet.replace("\n", " ⏎ ")[:140],
         )
     console.print(table)
+    # WIN-208 packing visibility — surfaces the dropped tail and the
+    # single-first-hit-oversize escape so the operator knows when the
+    # budget is tight.
+    if spilled_count > 0:
+        console.print(
+            f"[dim]Packed {len(hits)} hits; {spilled_count} more dropped to "
+            f"fit the {context_budget}-token budget.[/dim]"
+        )
+    if truncated_oversize:
+        console.print(
+            f"[yellow]⚠ Top hit alone exceeds the {context_budget}-token "
+            f"budget — returned anyway. Raise --context-budget for more "
+            f"results.[/yellow]"
+        )
 
 
 @app.command()
