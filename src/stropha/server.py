@@ -1601,6 +1601,75 @@ def forget(kind: str, key: str, *, ctx: Context) -> ForgetResponse:
     return ForgetResponse(removed=removed, kind=kind, key=key)
 
 
+# ---- investigation planning (WIN-232, EPIC 1.10 #23) -----------------------
+
+
+class InvestigationStepEntry(BaseModel):
+    """One step in a returned investigation plan."""
+
+    order: int
+    tool: str
+    purpose: str
+    args: dict = Field(default_factory=dict)
+
+
+class InvestigationPlanResponse(BaseModel):
+    """Outcome of ``plan_investigation`` — a ready-to-execute recipe."""
+
+    task: str
+    steps: list[InvestigationStepEntry] = Field(default_factory=list)
+    primary_symbols: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+@mcp.tool(
+    title="Plan investigation route",
+    description=(
+        "WIN-232 — decompose ``task`` into an ORDERED route over the "
+        "graph: entry points → callers (deps) → tests (contract) → "
+        "rationale (design docs). Returns a recipe of MCP tool calls "
+        "the agent executes in order. The planner does NOT run the "
+        "steps itself — it returns a plan; you stay in control of "
+        "cost / benefit per step. Use when 'how does X work?' would "
+        "otherwise take 3-4 chained calls."
+    ),
+)
+@traced("plan_investigation")
+def plan_investigation(
+    task: str,
+    top_k: int = 5,
+    include_callers: bool = True,
+    include_tests: bool = True,
+    include_rationale: bool = True,
+    *,
+    ctx: Context,
+) -> InvestigationPlanResponse:
+    """Return an ordered investigation plan for ``task``."""
+    from .retrieval.investigation import plan_investigation as _plan
+
+    app = _ctx(ctx)
+    plan = _plan(
+        task,
+        search_engine=app.search_engine,
+        storage=app.storage,
+        top_k=top_k,
+        include_callers=include_callers,
+        include_tests=include_tests,
+        include_rationale=include_rationale,
+    )
+    return InvestigationPlanResponse(
+        task=plan.task,
+        steps=[
+            InvestigationStepEntry(
+                order=s.order, tool=s.tool, purpose=s.purpose, args=s.args,
+            )
+            for s in plan.steps
+        ],
+        primary_symbols=plan.primary_symbols,
+        notes=plan.notes,
+    )
+
+
 # ---- cross-session cache (WIN-230, EPIC 1.9 #22) ---------------------------
 
 
