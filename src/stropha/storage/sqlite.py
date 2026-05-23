@@ -47,7 +47,7 @@ log = get_logger(__name__)
 #     `graph_edges` tables to allow multiple repos with their own graphify
 #     graphs to share a single stropha index. Node IDs are prefixed with
 #     repo_id to avoid collisions across repos.
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 
 def _serialize_vector(vec: list[float]) -> bytes:
@@ -662,6 +662,43 @@ class Storage:
         # Default empty string so existing v8+ rows upgrade cleanly.
         self._add_column_if_missing(
             "sessions", "scratchpad", "TEXT NOT NULL DEFAULT ''"
+        )
+
+        # v13: cross_session_cache table — semantic cache (WIN-230).
+        # Persists (query_embedding, results_json) tuples so a session
+        # querying "how does mastery decay work" can hit a cached
+        # entry written by an earlier session that asked "explain
+        # mastery decay logic". Cross-session findings are reusable
+        # via cosine-similarity lookup over the stored embeddings.
+        #
+        # Implementation note: brute-force cosine over the rows, same
+        # pattern as the graph-vec retrieval stream (sub-ms for ≤50K
+        # entries). embedding_model + embedding_dim are stored so the
+        # lookup can filter to entries that came from the SAME
+        # embedder — cross-embedder cosine is meaningless.
+        cur.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS cross_session_cache (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                repo_id          INTEGER NOT NULL REFERENCES repos(id),
+                query_text       TEXT NOT NULL,
+                query_embedding  BLOB NOT NULL,
+                embedding_model  TEXT NOT NULL,
+                embedding_dim    INTEGER NOT NULL,
+                results_json     TEXT NOT NULL,
+                session_id       TEXT,
+                created_at       TEXT NOT NULL,
+                last_hit_at      TEXT,
+                hit_count        INTEGER NOT NULL DEFAULT 0,
+                expires_at       TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_csc_repo
+                ON cross_session_cache(repo_id);
+            CREATE INDEX IF NOT EXISTS idx_csc_model
+                ON cross_session_cache(embedding_model, embedding_dim);
+            CREATE INDEX IF NOT EXISTS idx_csc_expires
+                ON cross_session_cache(expires_at);
+            """
         )
 
         cur.execute(

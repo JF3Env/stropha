@@ -1601,6 +1601,88 @@ def forget(kind: str, key: str, *, ctx: Context) -> ForgetResponse:
     return ForgetResponse(removed=removed, kind=kind, key=key)
 
 
+# ---- cross-session cache (WIN-230, EPIC 1.9 #22) ---------------------------
+
+
+class CrossSessionCacheStats(BaseModel):
+    """Cache counters returned by ``cache_stats``."""
+
+    total_entries: int
+    total_hits: int
+    distinct_models: int
+    repo: str | None = None
+
+
+class CrossSessionCachePruneResponse(BaseModel):
+    """Outcome of a ``cache_prune`` call."""
+
+    removed: int
+
+
+@mcp.tool(
+    title="Cross-session cache stats",
+    description=(
+        "WIN-230 — return counters for the Schema v13 cross-session "
+        "semantic cache: total_entries, total_hits (cumulative across "
+        "lookups), distinct_models. Use to confirm the cache is "
+        "actually accumulating useful findings across sessions. The "
+        "cache itself is populated by future SearchEngine integration; "
+        "this tool inspects the on-disk state."
+    ),
+)
+@traced("cache_stats")
+def cache_stats(*, ctx: Context) -> CrossSessionCacheStats:
+    """Inspect the cross-session cache for the configured target repo."""
+    from .retrieval.cross_session_cache import stats
+
+    app = _ctx(ctx)
+    repo_id = _resolve_target_repo_id(app)
+    if repo_id is None:
+        return CrossSessionCacheStats(
+            total_entries=0, total_hits=0, distinct_models=0,
+            repo=None,
+        )
+    counters = stats(app.storage, repo_id=repo_id)
+    return CrossSessionCacheStats(
+        total_entries=counters["total_entries"],
+        total_hits=counters["total_hits"],
+        distinct_models=counters["distinct_models"],
+        repo=None,  # could resolve normalized_key if needed
+    )
+
+
+@mcp.tool(
+    title="Prune cross-session cache",
+    description=(
+        "WIN-230 — remove cache entries. Pass ``expired_only=True`` "
+        "for TTL cleanup, or ``older_than_iso`` for a cutoff date. "
+        "Calling with no filters is a NO-OP (refuses to wipe "
+        "everything implicitly)."
+    ),
+)
+@traced("cache_prune")
+def cache_prune(
+    *,
+    ctx: Context,
+    expired_only: bool = False,
+    older_than_iso: str | None = None,
+) -> CrossSessionCachePruneResponse:
+    """Bulk-delete cache entries with explicit filters."""
+    from .retrieval.cross_session_cache import prune
+
+    app = _ctx(ctx)
+    repo_id = _resolve_target_repo_id(app)
+    if repo_id is None:
+        return CrossSessionCachePruneResponse(removed=0)
+    removed = prune(
+        app.storage,
+        repo_id=repo_id,
+        expired_only=expired_only,
+        older_than_iso=older_than_iso,
+    )
+    return CrossSessionCachePruneResponse(removed=removed)
+
+
 # ---- scratchpad (WIN-229, EPIC 1.9 #21) ------------------------------------
 
 
