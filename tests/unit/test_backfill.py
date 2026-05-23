@@ -319,12 +319,19 @@ class TestRunBackfill:
 
 
 class TestHookV5:
-    def test_hook_version_is_five(self) -> None:
-        assert HOOK_VERSION == 5
+    """v=5 introduced the outcome-backfill step. The hook itself moved
+    to v=6 (sleep-time meta loop, WIN-203) but the backfill contract
+    these tests guard remains the same — only the version marker
+    advances forward."""
 
-    def test_template_has_v5_marker(self, tmp_path: Path) -> None:
+    def test_hook_version_is_at_least_five(self) -> None:
+        # Forward-compatible pin: every future bump still ships the
+        # backfill step the rest of this class verifies.
+        assert HOOK_VERSION >= 5
+
+    def test_template_has_current_version_marker(self, tmp_path: Path) -> None:
         text = _render_hook_block(tmp_path)
-        assert "v=5" in text
+        assert f"v={HOOK_VERSION}" in text
 
     def test_template_includes_backfill_step(self, tmp_path: Path) -> None:
         text = _render_hook_block(tmp_path)

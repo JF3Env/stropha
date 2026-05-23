@@ -51,7 +51,15 @@ log = get_logger(__name__)
 #      labeler turns the new trace stream into a T1-T7 outcome JSON. Runs
 #      inside the same detached `nohup` block as the index refresh — git
 #      commit stays <100ms in the foreground per CLAUDE.md §3.5.
-HOOK_VERSION = 5
+# v=6: sleep-time meta iterations (WIN-203). `--meta-iterations N` bakes a
+#      Meta-Harness bandit loop into the post-commit refresh. When N > 0,
+#      the hook runs `stropha meta run --iterations N --proposer bandit`
+#      AFTER the index refresh + backfill so every commit produces a
+#      handful of candidate configs in the background. Disabled by default
+#      (N=0); STROPHA_HOOK_META_ITERATIONS / STROPHA_HOOK_NO_META override
+#      at commit time. Still inside the same detached `nohup` block — the
+#      foreground stays <100ms per CLAUDE.md §3.5.
+HOOK_VERSION = 6
 
 START_MARKER = "# stropha-hook-start"
 END_MARKER = "# stropha-hook-end"
@@ -71,6 +79,9 @@ _VERSION_RE = re.compile(rf"{re.escape(START_MARKER)} v=(\d+)")
 _PROJECT_DIR_RE = re.compile(r'PROJECT_DIR_DEFAULT="([^"]*)"')
 _INDEX_PATH_RE = re.compile(r'INDEX_PATH_DEFAULT="([^"]*)"')
 _LOG_DEFAULT_RE = re.compile(r'LOG_DEFAULT="([^"]*)"')
+# v=6: integer count of sleep-time meta iterations baked into the script.
+# "0" / empty = disabled (the default), the meta step is a no-op.
+_META_ITERATIONS_RE = re.compile(r'META_ITERATIONS_DEFAULT="(\d*)"')
 
 
 # --------------------------------------------------------------------- model
@@ -89,6 +100,10 @@ class HookStatus:
     project_dir: Path | None = None
     index_path: Path | None = None
     log_path_default: Path | None = None
+    # v=6: sleep-time meta iterations baked into the script. 0 (or None
+    # on older hooks) means the meta step is disabled — no bandit loop
+    # runs in the background.
+    meta_iterations: int | None = None
 
     def as_dict(self) -> dict:
         return {
@@ -103,6 +118,7 @@ class HookStatus:
             "log_path_default": (
                 str(self.log_path_default) if self.log_path_default else None
             ),
+            "meta_iterations": self.meta_iterations,
         }
 
 
@@ -180,6 +196,7 @@ def _render_hook_block(
     project_dir: Path | None = None,
     index_path: Path | None = None,
     log_path: Path | None = None,
+    meta_iterations: int | None = None,
 ) -> str:
     """The script body sandwiched between START and END markers.
 
@@ -192,11 +209,25 @@ def _render_hook_block(
     where stropha lives) work without commit-time env vars. Each baked
     value is honoured unless overridden by the matching
     ``STROPHA_HOOK_*`` env var.
+
+    v=6 addition: bake ``meta_iterations`` so the post-commit refresh
+    runs N sleep-time bandit iterations after the index/backfill steps
+    (WIN-203). ``None`` / ``0`` means disabled — the meta step is a
+    no-op and adds nothing to the foreground.
     """
     target_str = str(target)
     project_dir_default = str(project_dir.resolve()) if project_dir else ""
     index_path_default = str(index_path.expanduser()) if index_path else ""
     log_default = str(log_path.expanduser()) if log_path else ""
+    # ``meta_iterations`` of 0 / None / negative is a no-op in the script.
+    # Normalize at install time so the baked value is a plain non-negative
+    # integer string; the runtime test stays a cheap `[ $N -gt 0 ]`.
+    meta_iters = (
+        max(0, int(meta_iterations))
+        if meta_iterations is not None
+        else 0
+    )
+    meta_iterations_default = str(meta_iters) if meta_iters > 0 else ""
     # Use single-quoted heredoc semantics: every $ in the template is a literal
     # for the generated shell file (no Python interpolation).
     return dedent(
@@ -222,6 +253,12 @@ def _render_hook_block(
         #                                  index step. Defaults to the baked
         #                                  INDEX_PATH_DEFAULT, else honours
         #                                  .env in PROJECT_DIR / Config defaults.
+        #   STROPHA_HOOK_META_ITERATIONS=<n> -> override the baked sleep-time
+        #                                  meta loop count. 0 disables.
+        #   STROPHA_HOOK_NO_META=1       -> skip the sleep-time meta step
+        #                                  even when iterations > 0 (panic
+        #                                  switch for when the Meta-Harness
+        #                                  is misbehaving).
 
         # Defaults baked at install time. Re-run `stropha hook install` with
         # the appropriate flags to change. Empty string = no default, fall
@@ -229,6 +266,7 @@ def _render_hook_block(
         PROJECT_DIR_DEFAULT="{project_dir_default}"
         INDEX_PATH_DEFAULT="{index_path_default}"
         LOG_DEFAULT="{log_default}"
+        META_ITERATIONS_DEFAULT="{meta_iterations_default}"
 
         # --- 1. Skip conditions ----------------------------------------------
         [ "${{STROPHA_HOOK_SKIP:-0}}" = "1" ] && exit 0
@@ -325,6 +363,23 @@ def _render_hook_block(
             BACKFILL_CMD="$INDEX_ENV $UV run --directory $PROJECT_DIR stropha meta outcome backfill --since $PREV_SHA --repo $TOPLEVEL"
         fi
 
+        # v=6: sleep-time bandit iterations (WIN-203). Resolved at commit
+        # time so STROPHA_HOOK_META_ITERATIONS / STROPHA_HOOK_NO_META win
+        # over the baked default. ``META_ITERATIONS`` ends up either a
+        # positive integer (run the loop) or 0/empty (skip).
+        META_ITERATIONS="${{STROPHA_HOOK_META_ITERATIONS:-$META_ITERATIONS_DEFAULT}}"
+        if [ "${{STROPHA_HOOK_NO_META:-0}}" = "1" ]; then
+            META_ITERATIONS=0
+        fi
+        META_CMD=""
+        if [ -n "$META_ITERATIONS" ] && [ "$META_ITERATIONS" -gt 0 ] 2>/dev/null; then
+            if [ -n "$TIMEOUT_BIN" ]; then
+                META_CMD="$TIMEOUT_BIN ${{STROPHA_HOOK_TIMEOUT:-600}} $INDEX_ENV $UV run --directory $PROJECT_DIR stropha meta run --iterations $META_ITERATIONS --proposer bandit"
+            else
+                META_CMD="$INDEX_ENV $UV run --directory $PROJECT_DIR stropha meta run --iterations $META_ITERATIONS --proposer bandit"
+            fi
+        fi
+
         nohup sh -c "
             exec 9>'$LOCK'
             if ! flock -n 9 2>/dev/null; then
@@ -354,6 +409,13 @@ def _render_hook_block(
                     && echo '[stropha-hook] backfill done (commit ${{SHORT_SHA}})' >> '$LOG' \\
                     || echo '[stropha-hook] backfill failed (commit ${{SHORT_SHA}})' >> '$LOG'
             fi
+
+            if [ -n '$META_CMD' ]; then
+                echo '[stropha-hook] meta loop (commit ${{SHORT_SHA}}, $META_ITERATIONS iters)' >> '$LOG'
+                $META_CMD >> '$LOG' 2>&1 \\
+                    && echo '[stropha-hook] meta done (commit ${{SHORT_SHA}})' >> '$LOG' \\
+                    || echo '[stropha-hook] meta failed (commit ${{SHORT_SHA}})' >> '$LOG'
+            fi
         " >> "$LOG" 2>&1 < /dev/null &
         disown 2>/dev/null || true
         {END_MARKER}
@@ -382,6 +444,7 @@ def install(
     project_dir: Path | None = None,
     index_path: Path | None = None,
     log_path: Path | None = None,
+    meta_iterations: int | None = None,
 ) -> dict:
     """Install or update the post-commit hook for ``target`` repo.
 
@@ -399,6 +462,14 @@ def install(
     ``~/.cache/stropha-hook.log`` — handy when you maintain hooks for
     several repos and want per-repo trails.
 
+    Sleep-time meta loop (v=6, WIN-203): pass ``meta_iterations=N``
+    (N > 0) to bake a ``stropha meta run --iterations N --proposer
+    bandit`` step into the post-commit refresh. The Meta-Harness loop
+    runs in the same detached background as the index refresh, so the
+    foreground (the actual ``git commit`` return) stays <100 ms per
+    CLAUDE.md §3.5. Pass ``None`` / ``0`` to leave the meta step out.
+    Negative values are clamped to 0.
+
     Returns a structured outcome dict suitable for CLI rendering or logging.
     """
     target = target.resolve()
@@ -411,6 +482,7 @@ def install(
         project_dir=project_dir,
         index_path=index_path,
         log_path=log_path,
+        meta_iterations=meta_iterations,
     )
     existing = hook.read_text(encoding="utf-8") if hook.is_file() else ""
 
@@ -432,12 +504,19 @@ def install(
         action = "appended"
 
     _atomic_write(hook, body, executable=True)
+    # Normalize the meta-iterations report so the CLI / structlog surfaces
+    # a non-negative int even when the caller passed None / a negative
+    # value. The script itself already clamps via the bake.
+    baked_meta = (
+        max(0, int(meta_iterations)) if meta_iterations is not None else 0
+    )
     log.info(
         "hook.install", target=str(target), hook=str(hook), action=action,
         version=HOOK_VERSION, graphify_cohabit=has_graphify,
         project_dir=str(project_dir.resolve()) if project_dir else None,
         index_path=str(index_path.expanduser()) if index_path else None,
         log_path_baked=str(log_path.expanduser()) if log_path else None,
+        meta_iterations=baked_meta,
     )
 
     return {
@@ -449,6 +528,7 @@ def install(
         "log_path": str(log_path.expanduser()) if log_path else str(_log_path()),
         "project_dir": str(project_dir.resolve()) if project_dir else None,
         "index_path": str(index_path.expanduser()) if index_path else None,
+        "meta_iterations": baked_meta,
     }
 
 
@@ -510,6 +590,15 @@ def status(target: Path) -> HookStatus:
         value = m.group(1).strip()
         return Path(value) if value else None
 
+    def _parse_meta_iters() -> int | None:
+        """``None`` when the marker is absent (older hook < v=6), else the
+        baked integer (0 when the bake is the empty-string sentinel)."""
+        m = _META_ITERATIONS_RE.search(existing)
+        if m is None:
+            return None
+        raw = m.group(1).strip()
+        return int(raw) if raw else 0
+
     return HookStatus(
         target_repo=target, hook_path=hook,
         installed=version is not None,
@@ -519,4 +608,5 @@ def status(target: Path) -> HookStatus:
         project_dir=_parse_baked(_PROJECT_DIR_RE),
         index_path=_parse_baked(_INDEX_PATH_RE),
         log_path_default=_parse_baked(_LOG_DEFAULT_RE),
+        meta_iterations=_parse_meta_iters(),
     )

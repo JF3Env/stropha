@@ -376,3 +376,197 @@ def test_install_v4_template_uses_incremental_flag(repo: Path) -> None:
     install(repo)
     body = _read_hook(repo)
     assert "stropha index --repo $TOPLEVEL --incremental" in body
+
+
+# --------------------------------------------------------------------------- v=6 sleep-time meta loop (WIN-203)
+
+
+class TestV6MetaIterations:
+    """v=6 bakes a Meta-Harness bandit loop into the post-commit refresh.
+
+    The meta step runs inside the same detached ``nohup`` block as the
+    index refresh, so the foreground stays <100ms (CLAUDE.md §3.5).
+    Default is disabled — the operator opts in via ``meta_iterations=N``
+    when calling :func:`install`.
+    """
+
+    def test_default_install_disables_meta_loop(self, repo: Path) -> None:
+        """No flag → ``META_ITERATIONS_DEFAULT=""`` and the meta step is
+        a script no-op. Regression guard: shipping v=6 must not turn on
+        the meta loop for every existing v=5 install on upgrade."""
+        result = install(repo)
+        assert result["meta_iterations"] == 0
+        body = _read_hook(repo)
+        assert 'META_ITERATIONS_DEFAULT=""' in body
+        # The script defines META_CMD but it stays empty when the bake
+        # is zero, so the runtime ``if [ -n '$META_CMD' ]`` short-circuits.
+        assert "META_CMD=\"\"" in body
+
+    def test_install_with_meta_iterations_bakes_the_count(
+        self, repo: Path
+    ) -> None:
+        result = install(repo, meta_iterations=5)
+        assert result["meta_iterations"] == 5
+        body = _read_hook(repo)
+        assert 'META_ITERATIONS_DEFAULT="5"' in body
+        # Command line uses the resolved $META_ITERATIONS var, not the
+        # literal — runtime env overrides must keep working.
+        assert "--iterations $META_ITERATIONS --proposer bandit" in body
+
+    def test_negative_meta_iterations_clamped_to_zero(
+        self, repo: Path
+    ) -> None:
+        """Defensive: caller passes a negative integer (e.g. -1 from a
+        misconfigured argparse default) — clamp to 0 instead of baking
+        a nonsense value that breaks the runtime ``[ -gt 0 ]`` test."""
+        result = install(repo, meta_iterations=-3)
+        assert result["meta_iterations"] == 0
+        body = _read_hook(repo)
+        assert 'META_ITERATIONS_DEFAULT=""' in body
+
+    def test_install_with_zero_meta_iterations_is_explicit_disable(
+        self, repo: Path
+    ) -> None:
+        """Passing 0 explicitly is equivalent to omitting the flag —
+        baked as empty string sentinel, meta step is a no-op."""
+        result = install(repo, meta_iterations=0)
+        assert result["meta_iterations"] == 0
+        body = _read_hook(repo)
+        assert 'META_ITERATIONS_DEFAULT=""' in body
+
+    def test_install_with_meta_runs_after_backfill(
+        self, repo: Path
+    ) -> None:
+        """The meta loop step must appear AFTER the backfill block so
+        the candidate evaluation reads a freshly-labelled trace stream.
+        Order matters: index → backfill → meta. We compare the
+        execution log lines (inside the nohup block) since those are
+        what the runtime hits — comment headers earlier in the file
+        would confuse a naive substring search."""
+        install(repo, meta_iterations=3)
+        body = _read_hook(repo)
+        backfill_pos = body.find("[stropha-hook] outcome backfill")
+        meta_pos = body.find("[stropha-hook] meta loop")
+        assert backfill_pos > -1, "backfill log line missing"
+        assert meta_pos > -1, "meta loop log line missing"
+        assert meta_pos > backfill_pos
+
+    def test_install_with_meta_respects_no_meta_env(
+        self, repo: Path
+    ) -> None:
+        """``STROPHA_HOOK_NO_META=1`` is the panic switch — even with a
+        non-zero baked value, the runtime can disable the meta step
+        without re-installing the hook."""
+        install(repo, meta_iterations=3)
+        body = _read_hook(repo)
+        # The runtime resolution block must clear META_ITERATIONS when
+        # STROPHA_HOOK_NO_META=1, before the META_CMD assignment.
+        # After dedent, the inner block has 4-space indent.
+        assert (
+            'if [ "${STROPHA_HOOK_NO_META:-0}" = "1" ]; then\n'
+            "    META_ITERATIONS=0"
+            in body
+        )
+
+    def test_install_meta_command_uses_uv_run_directory(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        """The meta loop must reuse the same ``--directory $PROJECT_DIR``
+        chain as the index step so cross-repo installs (target ≠ where
+        stropha lives) keep working."""
+        venv_dir = tmp_path / "host"
+        venv_dir.mkdir()
+        (venv_dir / "pyproject.toml").write_text(
+            "[project]\nname='h'", encoding="utf-8"
+        )
+        install(repo, project_dir=venv_dir, meta_iterations=2)
+        body = _read_hook(repo)
+        # The bandit command must `uv run --directory $PROJECT_DIR`.
+        assert (
+            "$UV run --directory $PROJECT_DIR stropha meta run --iterations $META_ITERATIONS"
+            in body
+        )
+
+    def test_install_meta_command_uses_timeout_when_available(
+        self, repo: Path
+    ) -> None:
+        """When the host has ``timeout`` / ``gtimeout``, the meta step
+        wraps the bandit call so a runaway proposer can't burn the
+        bg slot indefinitely."""
+        install(repo, meta_iterations=7)
+        body = _read_hook(repo)
+        # The TIMEOUT_BIN variable is reused — assert both branches of
+        # the meta resolution exist.
+        assert "if [ -n \"$TIMEOUT_BIN\" ]; then" in body
+        # And the timeout-protected variant is present in the META_CMD
+        # branch (this checks both the index CMD and meta CMD use it).
+        assert body.count("$TIMEOUT_BIN ${STROPHA_HOOK_TIMEOUT:-600}") >= 2
+
+    def test_status_reports_meta_iterations(
+        self, repo: Path, tmp_path: Path
+    ) -> None:
+        install(repo, meta_iterations=4)
+        s = status(repo)
+        assert s.installed is True
+        assert s.meta_iterations == 4
+        # Dict serialisation surfaces it.
+        d = s.as_dict()
+        assert d["meta_iterations"] == 4
+
+    def test_status_reports_zero_when_explicitly_disabled(
+        self, repo: Path
+    ) -> None:
+        install(repo, meta_iterations=0)
+        s = status(repo)
+        assert s.meta_iterations == 0
+
+    def test_status_on_older_hook_returns_none_for_meta(
+        self, repo: Path
+    ) -> None:
+        """A hook installed by an older stropha (< v=6) does not have
+        the ``META_ITERATIONS_DEFAULT`` line. ``status`` must return
+        ``None`` (not 0) so the caller can distinguish "missing" from
+        "explicitly disabled"."""
+        # Synthesise an old-style hook block missing the meta line.
+        hook_path = repo / ".git" / "hooks" / "post-commit"
+        hook_path.parent.mkdir(parents=True, exist_ok=True)
+        hook_path.write_text(
+            "#!/bin/sh\n"
+            f"{START_MARKER} v=5\n"
+            "# legacy v=5 body, no META_ITERATIONS_DEFAULT line\n"
+            f"{END_MARKER}\n",
+            encoding="utf-8",
+        )
+        s = status(repo)
+        assert s.installed is True
+        assert s.version == 5
+        assert s.meta_iterations is None
+
+    def test_install_meta_log_lines_use_iters_count(
+        self, repo: Path
+    ) -> None:
+        """The log message announcing the meta step must include the
+        iteration count so ``stropha cost`` (WIN-205) can attribute
+        TCO to the right run."""
+        install(repo, meta_iterations=11)
+        body = _read_hook(repo)
+        # Look for the log line template — runtime substitutes the count.
+        assert (
+            "[stropha-hook] meta loop (commit ${SHORT_SHA}, "
+            "$META_ITERATIONS iters)" in body
+        )
+
+    def test_install_preserves_existing_block_meta_setting_on_upgrade(
+        self, repo: Path
+    ) -> None:
+        """Idempotency under upgrade: re-running install() with a fresh
+        meta value cleanly overwrites the previous bake (no leftover
+        old value, no duplicate META_ITERATIONS_DEFAULT line)."""
+        install(repo, meta_iterations=2)
+        install(repo, meta_iterations=8)
+        body = _read_hook(repo)
+        # Only the new value appears.
+        assert 'META_ITERATIONS_DEFAULT="8"' in body
+        assert 'META_ITERATIONS_DEFAULT="2"' not in body
+        # Exactly one occurrence — no duplication.
+        assert body.count("META_ITERATIONS_DEFAULT=") == 1

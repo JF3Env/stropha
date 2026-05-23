@@ -1376,6 +1376,15 @@ def hook_install_cmd(
             "refresh trails. Defaults to ~/.cache/stropha-hook.log."
         ),
     ),
+    meta_iterations: int = typer.Option(
+        0, "--meta-iterations",
+        help=(
+            "Sleep-time bandit iterations per commit (WIN-203). When > 0, "
+            "the hook runs `stropha meta run --iterations N` in the same "
+            "detached background as the index refresh. The foreground "
+            "stays <100ms either way. 0 (default) disables the meta step."
+        ),
+    ),
 ) -> None:
     """Install or refresh the post-commit hook for the target repo."""
     from .tools.hook_install import install
@@ -1393,12 +1402,20 @@ def hook_install_cmd(
                 f"pyproject.toml — `uv run` may fail at commit time.[/yellow]"
             )
 
+    if meta_iterations < 0:
+        console.print(
+            "[red]--meta-iterations must be >= 0[/red] (0 disables the "
+            "meta step). Got: " + str(meta_iterations)
+        )
+        raise typer.Exit(code=1)
+
     try:
         result = install(
             repo, force=force,
             project_dir=project_dir,
             index_path=index_path,
             log_path=log_path,
+            meta_iterations=meta_iterations,
         )
     except (ValueError, OSError) as exc:
         console.print(f"[red]Install failed:[/red] {exc}")
@@ -1417,6 +1434,11 @@ def hook_install_cmd(
         baked_lines.append(f"  • index_path:  [cyan]{result['index_path']}[/cyan]")
     if log_path is not None:
         baked_lines.append(f"  • log_path:    [cyan]{result['log_path']}[/cyan]")
+    if result.get("meta_iterations"):
+        baked_lines.append(
+            f"  • meta_iterations: [cyan]{result['meta_iterations']}[/cyan]"
+            f" [dim](sleep-time bandit, WIN-203)[/dim]"
+        )
     if baked_lines:
         console.print("Baked defaults:")
         for ln in baked_lines:
@@ -1488,6 +1510,16 @@ def hook_status_cmd(
         table.add_row("Baked index_path", str(s.index_path))
     if s.log_path_default:
         table.add_row("Baked log_path", str(s.log_path_default))
+    # v=6: sleep-time meta loop visibility. Show the value when present —
+    # even 0 deserves a row so the operator knows the bake is the older
+    # explicit "disabled" rather than missing.
+    if s.meta_iterations is not None:
+        meta_label = (
+            f"{s.meta_iterations} iter/commit (sleep-time bandit)"
+            if s.meta_iterations > 0
+            else "disabled"
+        )
+        table.add_row("Meta loop", meta_label)
     # Effective log path: baked default wins, else legacy fallback.
     effective_log = s.log_path_default or s.log_path
     table.add_row("Log file", str(effective_log))
