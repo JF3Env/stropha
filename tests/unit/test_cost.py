@@ -175,3 +175,240 @@ def test_default_log_paths_finds_per_repo_logs(monkeypatch, tmp_path: Path) -> N
     assert main in paths
     assert sub1 in paths
     assert sub2 in paths
+
+
+# ---------------------------------------------------------------------------
+# Sleep-time meta loop (WIN-205)
+# ---------------------------------------------------------------------------
+
+
+class TestMetaLoopCost:
+    """``stropha cost`` aggregates Meta-Harness sleep-time activity.
+
+    Two streams: plaintext hook markers (``[stropha-hook] meta loop``,
+    ``meta done``, ``meta failed``) emitted by the v=6 hook (WIN-203),
+    and structlog events (``loop.iter_done``, ``loop.done``,
+    ``loop.propose_failed``, ``loop.evaluate_failed``) from
+    ``stropha.meta.loop`` that land in the same hook log because the
+    meta step runs inside the nohup body.
+    """
+
+    def test_counts_loops_launched_and_done(self, tmp_path: Path) -> None:
+        log = _write_log(
+            tmp_path / "hook.log",
+            [
+                "[stropha-hook] meta loop (commit a1, 5 iters)",
+                "[stropha-hook] meta done (commit a1)",
+                "[stropha-hook] meta loop (commit b2, 3 iters)",
+                "[stropha-hook] meta done (commit b2)",
+            ],
+        )
+        report = aggregate([log])
+        assert report.meta_loop.loops_launched == 2
+        assert report.meta_loop.loops_done == 2
+        assert report.meta_loop.loops_failed == 0
+
+    def test_sums_iterations_requested(self, tmp_path: Path) -> None:
+        """The "(N iters)" suffix on each launch marker gets summed."""
+        log = _write_log(
+            tmp_path / "hook.log",
+            [
+                "[stropha-hook] meta loop (commit a1, 5 iters)",
+                "[stropha-hook] meta loop (commit b2, 12 iters)",
+                "[stropha-hook] meta loop (commit c3, 1 iters)",
+            ],
+        )
+        report = aggregate([log])
+        assert report.meta_loop.loops_launched == 3
+        assert report.meta_loop.iterations_total == 18
+
+    def test_counts_loop_failures(self, tmp_path: Path) -> None:
+        log = _write_log(
+            tmp_path / "hook.log",
+            [
+                "[stropha-hook] meta loop (commit a1, 5 iters)",
+                "[stropha-hook] meta failed (commit a1)",
+            ],
+        )
+        report = aggregate([log])
+        assert report.meta_loop.loops_launched == 1
+        assert report.meta_loop.loops_done == 0
+        assert report.meta_loop.loops_failed == 1
+
+    def test_counts_iter_done_events_from_structlog(
+        self, tmp_path: Path
+    ) -> None:
+        log = _write_log(
+            tmp_path / "hook.log",
+            [
+                json.dumps({
+                    "event": "loop.iter_done", "iter": 1,
+                    "candidate": "abc", "quality": 0.7,
+                    "outcome": 0.4,
+                    "timestamp": "2026-05-23T10:00:00Z",
+                }),
+                json.dumps({
+                    "event": "loop.iter_done", "iter": 2,
+                    "candidate": "def", "quality": 0.8,
+                    "outcome": 0.5,
+                    "timestamp": "2026-05-23T10:00:01Z",
+                }),
+            ],
+        )
+        report = aggregate([log])
+        assert report.meta_loop.candidates_evaluated == 2
+        assert report.meta_loop.last_event == "2026-05-23T10:00:01Z"
+
+    def test_seed_done_counts_as_evaluated(self, tmp_path: Path) -> None:
+        """``loop.seed_done`` is the warm-start phase — those candidates
+        also enter the archive, so they belong in the evaluated tally."""
+        log = _write_log(
+            tmp_path / "hook.log",
+            [
+                json.dumps({
+                    "event": "loop.seed_done", "seed": 0,
+                    "candidate": "s0", "quality": 0.5,
+                    "timestamp": "2026-05-23T10:00:00Z",
+                }),
+                json.dumps({
+                    "event": "loop.seed_done", "seed": 1,
+                    "candidate": "s1", "quality": 0.6,
+                    "timestamp": "2026-05-23T10:00:01Z",
+                }),
+            ],
+        )
+        report = aggregate([log])
+        assert report.meta_loop.candidates_evaluated == 2
+
+    def test_counts_propose_and_evaluate_failures(
+        self, tmp_path: Path
+    ) -> None:
+        log = _write_log(
+            tmp_path / "hook.log",
+            [
+                json.dumps({
+                    "event": "loop.propose_failed",
+                    "error": "RNG exhausted",
+                }),
+                json.dumps({
+                    "event": "loop.evaluate_failed",
+                    "error": "evaluator timeout",
+                }),
+                json.dumps({
+                    "event": "loop.evaluate_failed",
+                    "error": "scorer error",
+                }),
+            ],
+        )
+        report = aggregate([log])
+        assert report.meta_loop.propose_failures == 1
+        assert report.meta_loop.evaluate_failures == 2
+
+    def test_loop_done_updates_last_event(self, tmp_path: Path) -> None:
+        log = _write_log(
+            tmp_path / "hook.log",
+            [
+                json.dumps({
+                    "event": "loop.iter_done", "iter": 1,
+                    "candidate": "x", "quality": 0.5,
+                    "outcome": 0.2,
+                    "timestamp": "2026-05-23T10:00:00Z",
+                }),
+                json.dumps({
+                    "event": "loop.done", "iterations": 1,
+                    "elapsed_s": 1.2, "frontier": 1,
+                    "reason": "budget exhausted", "errors": 0,
+                    "timestamp": "2026-05-23T10:00:05Z",
+                }),
+            ],
+        )
+        report = aggregate([log])
+        assert report.meta_loop.last_event == "2026-05-23T10:00:05Z"
+
+    def test_meta_loop_in_json_output(self, tmp_path: Path) -> None:
+        """The aggregated meta_loop counters surface via render_json so
+        operators / scripts can scrape them."""
+        log = _write_log(
+            tmp_path / "hook.log",
+            [
+                "[stropha-hook] meta loop (commit a1, 5 iters)",
+                "[stropha-hook] meta done (commit a1)",
+            ],
+        )
+        report = aggregate([log])
+        payload = json.loads(render_json(report))
+        assert "meta_loop" in payload
+        assert payload["meta_loop"]["loops_launched"] == 1
+        assert payload["meta_loop"]["loops_done"] == 1
+        assert payload["meta_loop"]["iterations_total"] == 5
+
+    def test_meta_loop_table_rendered_when_activity_present(
+        self, tmp_path: Path
+    ) -> None:
+        """The 'Meta-Harness sleep-time loop' table only appears when
+        the report has any meta activity — keeps the dashboard tidy
+        for users who haven't enabled the loop."""
+        log_with = _write_log(
+            tmp_path / "with.log",
+            ["[stropha-hook] meta loop (commit a1, 3 iters)"],
+        )
+        report_with = aggregate([log_with])
+        rendered = render_table(report_with)
+        assert rendered is not None
+
+        # And rendering survives the zero-meta path.
+        log_without = _write_log(
+            tmp_path / "without.log",
+            [json.dumps({"event": "pipeline.repo_done", "repo": "r",
+                         "files": 1, "chunks": 1, "embedded": 0})],
+        )
+        report_without = aggregate([log_without])
+        # Renderable — meta table simply not part of the group.
+        out = render_table(report_without)
+        assert out is not None
+
+    def test_partial_failure_no_double_counting(
+        self, tmp_path: Path
+    ) -> None:
+        """A launch + failure pair must increment both counters
+        exactly once. Regression guard for the elif chain in the
+        parser — when a launch matches, the failure branch must not
+        also fire on the same line."""
+        log = _write_log(
+            tmp_path / "hook.log",
+            [
+                "[stropha-hook] meta loop (commit a1, 5 iters)",
+                "[stropha-hook] meta failed (commit a1)",
+                "[stropha-hook] meta loop (commit a2, 5 iters)",
+                "[stropha-hook] meta done (commit a2)",
+            ],
+        )
+        report = aggregate([log])
+        assert report.meta_loop.loops_launched == 2
+        assert report.meta_loop.loops_failed == 1
+        assert report.meta_loop.loops_done == 1
+        # Sanity: total iterations = 10 (2 launches × 5 iters each).
+        assert report.meta_loop.iterations_total == 10
+
+    def test_no_meta_activity_means_zero_counters(
+        self, tmp_path: Path
+    ) -> None:
+        """A log with only index activity must surface meta_loop with
+        every counter at 0 — never None or missing."""
+        log = _write_log(
+            tmp_path / "hook.log",
+            [
+                json.dumps({"event": "pipeline.repo_done", "repo": "r",
+                            "files": 1, "chunks": 1, "embedded": 0}),
+            ],
+        )
+        report = aggregate([log])
+        m = report.meta_loop
+        assert m.loops_launched == 0
+        assert m.loops_done == 0
+        assert m.loops_failed == 0
+        assert m.iterations_total == 0
+        assert m.candidates_evaluated == 0
+        assert m.propose_failures == 0
+        assert m.evaluate_failures == 0
+        assert m.last_event is None

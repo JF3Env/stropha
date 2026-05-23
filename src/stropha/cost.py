@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections import defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -34,6 +35,13 @@ from pathlib import Path
 from typing import Any
 
 DEFAULT_HOOK_LOG = Path.home() / ".cache" / "stropha-hook.log"
+
+# Captures the "N iters" hint from the v=6 hook marker
+# "[stropha-hook] meta loop (commit SHA, N iters)" so we can sum the
+# attempted-iteration budget per loop launch. WIN-205.
+_META_LOOP_LAUNCH_RE = re.compile(
+    r"\[stropha-hook\] meta loop \(commit [^,]+, (\d+) iters\)"
+)
 
 
 # --------------------------------------------------------------------- model
@@ -118,6 +126,37 @@ class MetaDiskCost:
 
 
 @dataclass
+class MetaLoopCost:
+    """Sleep-time Meta-Harness loop activity (WIN-205).
+
+    Aggregates two log streams:
+
+    1. Plaintext hook markers (``[stropha-hook] meta loop``,
+       ``meta done``, ``meta failed``) — counts how many post-commit
+       bandit cycles fired and how many succeeded. Source: the hook
+       log written by v=6 (WIN-203).
+    2. structlog events from ``stropha.meta.loop`` — ``loop.iter_done``
+       (per iteration), ``loop.done`` (per loop), ``loop.propose_failed``
+       / ``loop.evaluate_failed``. Source: the same hook log because
+       the meta step runs inside the nohup body.
+
+    Each loop launch also emits an "N iters" hint that the parser
+    extracts into ``iterations_total`` so the operator can correlate
+    "how many candidates were attempted in the background" vs "how
+    many made it into the archive" (``candidates_evaluated``).
+    """
+
+    loops_launched: int = 0
+    loops_done: int = 0
+    loops_failed: int = 0
+    iterations_total: int = 0
+    candidates_evaluated: int = 0
+    propose_failures: int = 0
+    evaluate_failures: int = 0
+    last_event: str | None = None
+
+
+@dataclass
 class CostReport:
     repos: dict[str, RepoCost] = field(default_factory=dict)
     adapters: dict[str, AdapterCost] = field(default_factory=dict)
@@ -125,6 +164,7 @@ class CostReport:
     hook: HookCost = field(default_factory=HookCost)
     savings: SavingsCost = field(default_factory=SavingsCost)
     meta_disk: MetaDiskCost = field(default_factory=MetaDiskCost)
+    meta_loop: MetaLoopCost = field(default_factory=MetaLoopCost)
     sources_scanned: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
@@ -138,6 +178,7 @@ class CostReport:
             "hook": vars(self.hook),
             "savings": savings_dict,
             "meta_disk": vars(self.meta_disk),
+            "meta_loop": vars(self.meta_loop),
             "sources_scanned": self.sources_scanned,
         }
 
@@ -214,6 +255,18 @@ def aggregate(
             if "graphify update (commit" in line:
                 report.hook.graphify_updates += 1
                 matched = True
+            # v=6 sleep-time meta loop markers (WIN-203 → WIN-205).
+            launch_match = _META_LOOP_LAUNCH_RE.search(line)
+            if launch_match is not None:
+                report.meta_loop.loops_launched += 1
+                report.meta_loop.iterations_total += int(launch_match.group(1))
+                matched = True
+            elif "[stropha-hook] meta done" in line:
+                report.meta_loop.loops_done += 1
+                matched = True
+            elif "[stropha-hook] meta failed" in line:
+                report.meta_loop.loops_failed += 1
+                matched = True
             if matched:
                 continue
 
@@ -256,6 +309,40 @@ def aggregate(
             s.total_baseline_tokens += int(d.get("baseline_tokens") or 0)
             s.total_tokens_saved += int(d.get("tokens_saved") or 0)
             s.total_results_returned += int(d.get("results_count") or 0)
+        elif event == "loop.iter_done":
+            # Per-iteration success — counts each candidate that made it
+            # into the archive. Bound below by the structlog stream
+            # available in the hook log (which captures stdout+stderr
+            # of the nohup body).
+            report.meta_loop.candidates_evaluated += 1
+            ts = d.get("timestamp")
+            if ts and (
+                report.meta_loop.last_event is None
+                or ts > report.meta_loop.last_event
+            ):
+                report.meta_loop.last_event = ts
+        elif event == "loop.seed_done":
+            # Seed iterations (the warm-start before the proposer takes
+            # over) also produce real evaluated candidates — counting
+            # them keeps the candidates_evaluated tally honest.
+            report.meta_loop.candidates_evaluated += 1
+            ts = d.get("timestamp")
+            if ts and (
+                report.meta_loop.last_event is None
+                or ts > report.meta_loop.last_event
+            ):
+                report.meta_loop.last_event = ts
+        elif event == "loop.propose_failed":
+            report.meta_loop.propose_failures += 1
+        elif event == "loop.evaluate_failed":
+            report.meta_loop.evaluate_failures += 1
+        elif event == "loop.done":
+            ts = d.get("timestamp")
+            if ts and (
+                report.meta_loop.last_event is None
+                or ts > report.meta_loop.last_event
+            ):
+                report.meta_loop.last_event = ts
     return report
 
 
@@ -351,6 +438,42 @@ def render_table(report: CostReport):
         st.add_row("Tokens saved", f"{report.savings.total_tokens_saved:,}")
         st.add_row("Avg savings %", f"{report.savings.avg_savings_pct:.1f}%")
         renders.append(st)
+
+    m = report.meta_loop
+    if (
+        m.loops_launched
+        or m.candidates_evaluated
+        or m.loops_done
+        or m.loops_failed
+    ):
+        mt = Table(
+            title="Meta-Harness sleep-time loop (WIN-203/204/205)",
+            show_lines=False,
+        )
+        mt.add_column("Metric", style="cyan")
+        mt.add_column("Value", justify="right")
+        mt.add_row("Loops launched", str(m.loops_launched))
+        mt.add_row("Loops done", str(m.loops_done))
+        mt.add_row(
+            "Loops failed",
+            f"[red]{m.loops_failed}[/red]" if m.loops_failed else "0",
+        )
+        mt.add_row("Iterations requested (sum)", str(m.iterations_total))
+        mt.add_row("Candidates evaluated", str(m.candidates_evaluated))
+        mt.add_row(
+            "Propose failures",
+            f"[yellow]{m.propose_failures}[/yellow]"
+            if m.propose_failures
+            else "0",
+        )
+        mt.add_row(
+            "Evaluate failures",
+            f"[yellow]{m.evaluate_failures}[/yellow]"
+            if m.evaluate_failures
+            else "0",
+        )
+        mt.add_row("Last meta event", m.last_event or "—")
+        renders.append(mt)
 
     if not renders:
         return None
