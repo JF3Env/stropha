@@ -88,9 +88,9 @@ Graph-gated tools return `{"graph_loaded": false, "message": …}` when the mirr
 | enricher | `noop`, `hierarchical`, `graph-aware`, `ollama`, `mlx`, `contextual` | `<name>:<flag-letters>` (drift on flag flip) |
 | embedder | `local` (fastembed), `voyage`, `bge-m3`, `model2vec` | `<name>:<model>:<dim>` |
 | storage | `sqlite-vec` | `sqlite-vec:dim=<n>` |
-| retrieval | `hybrid-rrf` (4 streams fused + optional reranker) | `hybrid-rrf:k=60:streams=<hash>:reranker=<id>` |
+| retrieval | `hybrid-rrf` (4 streams fused + cross-encoder reranker by default) | `hybrid-rrf:k=60:streams=<hash>:reranker=<id>` |
 | retrieval-stream | `vec-cosine`, `fts5-bm25`, `like-tokens`, `graph-vec` | `<name>:k=<n>[:min=<sim>]` |
-| reranker | `noop` (default), `cross-encoder` (BAAI/bge-reranker-base), `code-aware` | `reranker:<name>:<model>` |
+| reranker | `cross-encoder` (default, BAAI/bge-reranker-base), `code-aware`, `noop` | `reranker:<name>:<model>` |
 
 The chunker's language sub-adapters are themselves an adapter stage (`language-chunker`) — `stropha adapters list --stage language-chunker` shows them. The `hybrid-rrf` retrieval adapter digests its stream composition into its `adapter_id`, so disabling/swapping any sub-stream forces a fresh id (drift hooks pick it up).
 
@@ -98,7 +98,7 @@ The chunker's language sub-adapters are themselves an adapter stage (`language-c
 
 | Command | Purpose |
 |---|---|
-| `stropha index [--repo … / --manifest …] [--rebuild] [--vacuum] [--full / --incremental] [--since <sha>] [--enricher … --embedder …]` | Run the indexing pipeline (incremental by default when checkpoint exists). Add `--vacuum` to reclaim disk space after `--rebuild`. |
+| `stropha index [--repo … / --manifest …] [--rebuild] [--vacuum] [--full / --incremental] [--since <sha>] [--enricher … --embedder …] [--graphify / --no-graphify]` | Run the indexing pipeline (incremental by default when checkpoint exists). Runs `graphify update` for each repo before loading the graph mirror (default: enabled; gracefully skipped when graphify binary is not installed). Add `--vacuum` to reclaim disk space after `--rebuild`. |
 | `stropha search "<query>" [<repo_url>] [--top-k N] [--refresh]` | Hybrid retrieval, prints top-K. Accepts git URL for remote repos. |
 | `stropha init [<target>] [--mcp-client]` | Initialize project with .stropha/, MCP config, and first index |
 | `stropha stats` | Index metadata: chunks, models, repos, graphify mirror status |
@@ -201,13 +201,13 @@ Cross-repo hooks (v=3, v=4) bake `PROJECT_DIR_DEFAULT` / `INDEX_PATH_DEFAULT` / 
 
 ### 2.6 Test inventory (1457 unit tests, ~22s)
 
-Per file: highlights — `test_anthropic_backend` 38 (was 34, +4 retry-after / 429 tests) · `test_contextual_enricher` 31 (was 19, +12 batch / status / truncation-tolerance tests) · `test_pipeline_parallel_enrich` 16 (was 8, +8 batch / status tests) · `test_savings` 22 (was 17, +5 WIN-158 wiring) · `test_trace_recorder` 32 (NEW, WIN-159) · `test_traced_decorator` 35 (NEW, WIN-160) · `test_search_streams` 5 (NEW, WIN-160 stream attribution) · `test_artifact_store` 55 (NEW, WIN-161) · `test_outcome_labeling` 56 (NEW, WIN-162) · `test_feedback` 26 (NEW, WIN-163). Other files unchanged from the prior baseline.
+Per file: highlights — `test_anthropic_backend` 38 (was 34, +4 retry-after / 429 tests) · `test_contextual_enricher` 31 (was 19, +12 batch / status / truncation-tolerance tests) · `test_pipeline_parallel_enrich` 16 (was 8, +8 batch / status tests) · `test_savings` 22 (was 17, +5 WIN-158 wiring) · `test_trace_recorder` 32 (NEW, WIN-159) · `test_traced_decorator` 35 (NEW, WIN-160) · `test_search_streams` 5 (NEW, WIN-160 stream attribution) · `test_artifact_store` 55 (NEW, WIN-161) · `test_outcome_labeling` 56 (NEW, WIN-162) · `test_feedback` 26 (NEW, WIN-163) · `test_graphify_runner` 22 (NEW, graphify subprocess integration). Other files unchanged from the prior baseline.
 
 ## 3. Key invariants (do NOT break)
 
 1. **Drift detection** — every config flag that changes adapter output MUST be baked into the adapter's `adapter_id` digest. The pipeline uses `(content_hash, embedding_model, enricher_id)` as the chunk freshness key; if you add a config knob, extend `adapter_id` so flipping it triggers re-process. Reference: `src/stropha/adapters/enricher/hierarchical.py::adapter_id`.
 2. **Forward-only schema migrations** — `Storage._migrate()` uses `IF NOT EXISTS` / `_add_column_if_missing`. Never DROP without bumping `SCHEMA_VERSION`. The migration is run on every `Storage()` open, so it MUST be idempotent.
-3. **`Pipeline.run()` owns graph + FTS post-processing order** — `Pipeline.run()` is the only call site for `GraphifyLoader → GraphVecLoader → Storage.augment_fts_with_graph()`. The order matters (structural → embedding → FTS) and you must not reorder it. Reference: `src/stropha/pipeline/pipeline.py::_refresh_graphify_mirror`.
+3. **`Pipeline.run()` owns the full graphify lifecycle** — `Pipeline.run()` is the only call site for `graphify update` (subprocess) → `GraphifyLoader` → `GraphVecLoader` → `Storage.augment_fts_with_graph()`. The order matters (generate/refresh graph.json → load structural mirror → embed nodes → augment FTS) and you must not reorder it. The graphify subprocess step is enabled by default (`graphify=True`) and gracefully skipped when the binary is not installed. Reference: `src/stropha/pipeline/pipeline.py::_run_graphify`, `src/stropha/pipeline/graphify_runner.py`.
 4. **Graph-gated MCP tools never return silent empty** — when `graph_nodes` is empty, the `find_*` tools and `trace_feature` MUST return `{"graph_loaded": false, "message": …}`. The actionable message is part of the contract — agents rely on it to decide whether to call `graphify .`.
 5. **Hook ≤ 100 ms before fork** — the post-commit hook MUST exit the foreground in under 100 ms so `git commit` returns instantly. All real work runs in a detached `nohup` + `flock`-guarded background. The hook itself never blocks the commit, never makes a network call before forking.
 6. **Local-only by default** — no new mandatory cloud dependency. Voyage / Anthropic / OpenAI integrations stay optional (`[mlx]` / `VOYAGE_API_KEY` style). The default install on a fresh box does indexing + search + hook + graph traversal with zero network calls (after fastembed downloads weights once).
@@ -684,7 +684,8 @@ This design ensures:
 | `pipeline/registry.py` | `@register_adapter` decorator + lookup. Auto-imports `stropha.adapters` on first use. |
 | `pipeline/config.py` | YAML + env + CLI cascade → resolved config dict. Legacy aliases live here. |
 | `pipeline/builder.py` | `build_stages(resolved)` → `BuiltStages` (one of each stage). Late-injects Storage into graph-aware enricher. |
-| `pipeline/pipeline.py` | `Pipeline.run(rebuild)` — orchestrator. **Owns the post-index order**: graphify_loader → graph_vec_loader → augment_fts. |
+| `pipeline/pipeline.py` | `Pipeline.run(rebuild)` — orchestrator. **Owns the full graphify lifecycle**: graphify subprocess → graphify_loader → graph_vec_loader → augment_fts. |
+| `pipeline/graphify_runner.py` | Subprocess wrapper for `graphify update`. Graceful skip when binary absent. Auto-detects first-run vs incremental (``--no-cluster`` on incremental). |
 | `stages/{walker,chunker,enricher,embedder,storage,retrieval,retrieval_stream}.py` | One Protocol per stage. Adapters import + implement. |
 | `adapters/walker/{git_ls_files,filesystem,nested_git}.py` | 3 walker adapters. |
 | `adapters/chunker/tree_sitter_dispatch.py` + `adapters/chunker/languages/*.py` | Chunker dispatcher + 5 language sub-adapters (`ast-generic`, `file-level`, `heading-split`, `sfc-split`, `regex-feature-scenario`). |

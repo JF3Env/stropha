@@ -40,7 +40,20 @@ _DEFAULTS: dict[str, dict[str, Any]] = {
     "enricher": {"adapter": "noop", "config": {}},
     "embedder": {"adapter": None, "config": {}},  # `None` => auto (voyage if key, else local)
     "storage": {"adapter": "sqlite-vec", "config": {}},
-    "retrieval": {"adapter": "hybrid-rrf", "config": {}},
+    "retrieval": {
+        "adapter": "hybrid-rrf",
+        "config": {
+            # WIN-296: cross-encoder reranker is default. Benchmark shows +26.7%
+            # Recall@10 (0.50 → 0.63) over noop, with ~1.4s added latency per
+            # query. Model is local ONNX (~1GB, downloaded on first use). Set
+            # reranker: null in stropha.yaml to disable.
+            "reranker": {
+                "adapter": "cross-encoder",
+                "config": {"model": "BAAI/bge-reranker-base"},
+            },
+            "candidate_k": 50,
+        },
+    },
 }
 
 # Env var → (stage, dotted key inside `config`). When dotted key is empty
