@@ -97,6 +97,7 @@ def _print_index_summary(
     vacuum: bool,
     enricher_concurrency: int = 1,
     enricher_batch_size: int = 1,
+    graphify: bool = True,
 ) -> None:
     """Print a consolidated configuration table at the start of `stropha index`.
 
@@ -298,6 +299,22 @@ def _print_index_summary(
 
     # ---- Graph integration ---------------------------------------------
     section("Graph", "graphify symbol mirror")
+    if graphify:
+        from stropha.pipeline.graphify_runner import find_graphify
+        gbin = find_graphify()
+        if gbin:
+            table.add_row(
+                "Graphify",
+                f"[green]enabled[/green]  [dim]({gbin})[/dim]",
+            )
+        else:
+            table.add_row(
+                "Graphify",
+                "[yellow]enabled but binary not found[/yellow]  "
+                "[dim](install graphify for graph tools)[/dim]",
+            )
+    else:
+        table.add_row("Graphify", "[dim]disabled (--no-graphify)[/dim]")
     table.add_row(
         "Source",
         str(cfg.graph.graphify_out) if cfg.graph.graphify_out else "<repo>/graphify-out",
@@ -416,6 +433,18 @@ def index(
             "this flag. Suggested: 10 for Anthropic / DeepSeek / OpenAI."
         ),
     ),
+    graphify: bool = typer.Option(
+        True,
+        "--graphify/--no-graphify",
+        help=(
+            "Run `graphify update` for each repo before loading the "
+            "graph mirror. Creates graphify-out/graph.json on first run "
+            "and refreshes it incrementally on subsequent runs. Enables "
+            "the graph MCP tools (find_callers, find_related, etc.) "
+            "without a separate graphify invocation. Gracefully skipped "
+            "when the graphify binary is not installed. Default: enabled."
+        ),
+    ),
 ) -> None:
     """Walk one or more repos, chunk every file, enrich, embed, and store."""
     cfg = _load_config()
@@ -495,6 +524,7 @@ def index(
         rebuild=rebuild, vacuum=vacuum,
         enricher_concurrency=effective_concurrency,
         enricher_batch_size=effective_batch_size,
+        graphify=graphify,
     )
 
     try:
@@ -508,6 +538,7 @@ def index(
                 repos=targets,
                 enricher_concurrency=effective_concurrency,
                 enricher_batch_size=effective_batch_size,
+                graphify=graphify,
             )
             stats = pipeline.run(rebuild=rebuild, mode=mode, since_sha=since)
             if vacuum:
@@ -1248,6 +1279,14 @@ def eval(
         False, "--json",
         help="Emit machine-readable JSON instead of the rich table.",
     ),
+    track: bool = typer.Option(
+        False, "--track",
+        help="Append scores to JSONL log and check for regression (WIN-382).",
+    ),
+    track_log: Path | None = typer.Option(
+        None, "--track-log",
+        help="Custom path for the eval score log (default: ~/.stropha/eval-scores.jsonl).",
+    ),
 ) -> None:
     """Run the offline eval harness against the golden dataset."""
     from .eval import load_golden, run_eval
@@ -1375,6 +1414,19 @@ def eval(
                 f"{sub.map_at_k:.2f}",
             )
         console.print(split_table)
+
+    # WIN-382: append scores to log and check for regression.
+    if track:
+        from .eval.tracker import append_score, check_regression
+
+        append_score(report, log_path=track_log)
+        is_regression, msg = check_regression(
+            report.recall_at_k, log_path=track_log
+        )
+        if is_regression:
+            console.print(f"[bold red]⚠ {msg}[/bold red]")
+        elif not json_out:
+            console.print(f"[green]{msg}[/green]")
 
     # Non-zero exit when below the spec threshold so CI catches regressions.
     raise typer.Exit(code=0 if report.recall_at_k >= 0.85 else 2)

@@ -65,7 +65,11 @@ log = get_logger(__name__)
 #      §3 invariant #3). The hook no longer resolves or calls graphify
 #      directly — the pipeline handles it. STROPHA_HOOK_GRAPHIFY env var
 #      is honoured by the pipeline's `find_graphify()` as a fallback.
-HOOK_VERSION = 7
+# v=8: auto-eval on every commit (WIN-382). After the index refresh,
+#      runs `stropha eval --track` to append Recall@K/MRR/NDCG to a JSONL
+#      log and alerts on regression. Skippable via STROPHA_HOOK_NO_EVAL=1.
+#      Adds ~2-5s to the bg job (runs the golden set against the index).
+HOOK_VERSION = 8
 
 START_MARKER = "# stropha-hook-start"
 END_MARKER = "# stropha-hook-end"
@@ -267,6 +271,7 @@ def _render_hook_block(
         #                                  .env in PROJECT_DIR / Config defaults.
         #   STROPHA_HOOK_META_ITERATIONS=<n> -> override the baked sleep-time
         #                                  meta loop count. 0 disables.
+        #   STROPHA_HOOK_NO_EVAL=1       -> skip the eval step (WIN-382)
         #   STROPHA_HOOK_NO_META=1       -> skip the sleep-time meta step
         #                                  even when iterations > 0 (panic
         #                                  switch for when the Meta-Harness
@@ -381,6 +386,13 @@ def _render_hook_block(
             fi
         fi
 
+        # v=8: eval tracking (WIN-382). Runs the golden set after index,
+        # appends scores to JSONL log, alerts on regression.
+        EVAL_CMD=""
+        if [ "${{STROPHA_HOOK_NO_EVAL:-0}}" != "1" ]; then
+            EVAL_CMD="$INDEX_ENV $UV run --directory $PROJECT_DIR stropha eval --track"
+        fi
+
         nohup sh -c "
             exec 9>'$LOCK'
             if ! flock -n 9 2>/dev/null; then
@@ -391,6 +403,13 @@ def _render_hook_block(
             $CMD >> '$LOG' 2>&1 \\
                 && echo '[stropha-hook] refresh done (commit ${{SHORT_SHA}})' >> '$LOG' \\
                 || echo '[stropha-hook] failed (commit ${{SHORT_SHA}})' >> '$LOG'
+
+            if [ -n '$EVAL_CMD' ]; then
+                echo '[stropha-hook] eval (commit ${{SHORT_SHA}})' >> '$LOG'
+                $EVAL_CMD >> '$LOG' 2>&1 \\
+                    && echo '[stropha-hook] eval done (commit ${{SHORT_SHA}})' >> '$LOG' \\
+                    || echo '[stropha-hook] eval failed (commit ${{SHORT_SHA}})' >> '$LOG'
+            fi
 
             if [ -n '$BACKFILL_CMD' ]; then
                 echo '[stropha-hook] outcome backfill (commit ${{SHORT_SHA}})' >> '$LOG'
