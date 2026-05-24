@@ -185,8 +185,7 @@ graph:
 | `STROPHA_HOOK_TIMEOUT` | `600` | Hook bg-process wall-clock (seconds) |
 | `STROPHA_HOOK_LOG` | `~/.cache/stropha-hook.log` | Hook log path |
 | `STROPHA_HOOK_UV` | discovered | Override `uv` binary path |
-| `STROPHA_HOOK_GRAPHIFY` | discovered | Override `graphify` binary path |
-| `STROPHA_HOOK_NO_GRAPHIFY=1` | unset | Skip the graphify step inside the hook |
+| `STROPHA_HOOK_GRAPHIFY` | discovered | Override `graphify` binary path (honoured by Pipeline.find_graphify) |
 | `STROPHA_HOOK_PROJECT_DIR` | baked / `$TOPLEVEL` | `uv run --directory` target (cross-repo) |
 | `STROPHA_HOOK_INDEX_PATH` | baked / `.env` | Per-repo `STROPHA_INDEX_PATH` for the hook |
 | `STROPHA_RENAME_THRESHOLD` | `80` | Git rename detection similarity threshold (0-100). Higher = stricter match. |

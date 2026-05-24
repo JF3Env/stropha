@@ -174,10 +174,9 @@ class TestForegroundStructure:
         assert "$CMD >> '$LOG' 2>&1" in body
         assert "$BACKFILL_CMD >> '$LOG' 2>&1" in body
         assert "$META_CMD >> '$LOG' 2>&1" in body
-        # ``graphify`` is the one heavy command we invoke directly
-        # (not via a variable) because the path discovery happens
-        # inline. It must also live inside the nohup.
-        assert "'$GRAPHIFY' update" in body
+        # v=7: graphify is no longer called directly in the hook —
+        # it's handled inside `stropha index` via Pipeline._run_graphify().
+        assert "'$GRAPHIFY' update" not in body
 
     def test_template_skip_conditions_exit_fast(
         self, tmp_path: Path
