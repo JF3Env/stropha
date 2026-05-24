@@ -10,6 +10,7 @@ from stropha.retrieval.query_classify import (
     StreamWeights,
     classify_query,
     get_adaptive_weights,
+    _interpolate_weights,
     SYMBOL_WEIGHTS,
     NATURAL_WEIGHTS,
     MIXED_WEIGHTS,
@@ -168,16 +169,17 @@ class TestGetAdaptiveWeights:
     def test_symbol_query_weights(self):
         weights = get_adaptive_weights("getUserById")
         assert weights.symbol > weights.dense  # Symbol stream boosted
-        assert weights == SYMBOL_WEIGHTS
 
     def test_natural_query_weights(self):
         weights = get_adaptive_weights("how does authentication work")
         assert weights.dense > weights.symbol  # Dense stream boosted
-        assert weights == NATURAL_WEIGHTS
 
-    def test_mixed_query_weights(self):
+    def test_mixed_query_weights_interpolated(self):
+        """Mixed queries should produce weights between the two extremes."""
         weights = get_adaptive_weights("find UserService method")
-        assert weights == MIXED_WEIGHTS
+        # Should be between natural and symbol weights for each stream
+        assert NATURAL_WEIGHTS.dense >= weights.dense >= SYMBOL_WEIGHTS.dense
+        assert SYMBOL_WEIGHTS.symbol >= weights.symbol >= NATURAL_WEIGHTS.symbol
 
     def test_symbol_weights_values(self):
         """Verify symbol weights favor lexical/symbol streams."""
@@ -188,6 +190,72 @@ class TestGetAdaptiveWeights:
         """Verify natural weights favor dense semantic matching."""
         assert NATURAL_WEIGHTS.dense > NATURAL_WEIGHTS.symbol
         assert NATURAL_WEIGHTS.graph_vec >= NATURAL_WEIGHTS.symbol
+
+
+class TestContinuousInterpolation:
+    """Tests for WIN-298 continuous adaptive weighting."""
+
+    def test_ratio_zero_gives_natural_weights(self):
+        """symbol_ratio=0 should produce exactly NATURAL_WEIGHTS."""
+        weights = _interpolate_weights(0.0)
+        assert weights.dense == NATURAL_WEIGHTS.dense
+        assert weights.sparse == NATURAL_WEIGHTS.sparse
+        assert weights.symbol == NATURAL_WEIGHTS.symbol
+        assert weights.graph_vec == NATURAL_WEIGHTS.graph_vec
+
+    def test_ratio_one_gives_symbol_weights(self):
+        """symbol_ratio=1 should produce exactly SYMBOL_WEIGHTS."""
+        weights = _interpolate_weights(1.0)
+        assert weights.dense == SYMBOL_WEIGHTS.dense
+        assert weights.sparse == SYMBOL_WEIGHTS.sparse
+        assert weights.symbol == SYMBOL_WEIGHTS.symbol
+        assert weights.graph_vec == SYMBOL_WEIGHTS.graph_vec
+
+    def test_ratio_half_is_midpoint(self):
+        """symbol_ratio=0.5 should be the exact midpoint."""
+        weights = _interpolate_weights(0.5)
+        expected_dense = (NATURAL_WEIGHTS.dense + SYMBOL_WEIGHTS.dense) / 2
+        expected_symbol = (NATURAL_WEIGHTS.symbol + SYMBOL_WEIGHTS.symbol) / 2
+        assert abs(weights.dense - expected_dense) < 0.001
+        assert abs(weights.symbol - expected_symbol) < 0.001
+
+    def test_monotonic_dense_decreases_with_ratio(self):
+        """Dense weight should decrease as ratio increases (natural → symbol)."""
+        w0 = _interpolate_weights(0.0)
+        w25 = _interpolate_weights(0.25)
+        w50 = _interpolate_weights(0.5)
+        w75 = _interpolate_weights(0.75)
+        w1 = _interpolate_weights(1.0)
+        assert w0.dense >= w25.dense >= w50.dense >= w75.dense >= w1.dense
+
+    def test_monotonic_symbol_increases_with_ratio(self):
+        """Symbol weight should increase as ratio increases."""
+        w0 = _interpolate_weights(0.0)
+        w25 = _interpolate_weights(0.25)
+        w50 = _interpolate_weights(0.5)
+        w75 = _interpolate_weights(0.75)
+        w1 = _interpolate_weights(1.0)
+        assert w0.symbol <= w25.symbol <= w50.symbol <= w75.symbol <= w1.symbol
+
+    def test_gradual_shift_not_sudden_jump(self):
+        """Adjacent ratios should produce similar weights (no sudden jumps)."""
+        w40 = _interpolate_weights(0.4)
+        w50 = _interpolate_weights(0.5)
+        # The step should be small — max delta per 0.1 step in any stream
+        delta_dense = abs(w50.dense - w40.dense)
+        delta_symbol = abs(w50.symbol - w40.symbol)
+        assert delta_dense < 0.2  # At most 0.2 change per 0.1 ratio step
+        assert delta_symbol < 0.2
+
+    def test_continuous_weights_respects_stream_ordering(self):
+        """At any ratio, the relative ordering should make sense."""
+        # At ratio=0.3 (mostly natural), dense should still be >= symbol
+        w = _interpolate_weights(0.3)
+        assert w.dense >= w.symbol
+        
+        # At ratio=0.7 (mostly symbol), symbol should be > dense
+        w = _interpolate_weights(0.7)
+        assert w.symbol > w.dense
 
 
 def _make_hit(

@@ -185,20 +185,42 @@ MIXED_WEIGHTS = StreamWeights(
 )
 
 
+def _lerp(a: float, b: float, t: float) -> float:
+    """Linear interpolation: a when t=0, b when t=1."""
+    return a + (b - a) * t
+
+
+def _interpolate_weights(ratio: float) -> StreamWeights:
+    """Continuous interpolation between NATURAL and SYMBOL weights.
+
+    ``ratio`` is the symbol_ratio from classify_query (0.0 = pure natural,
+    1.0 = pure symbol). Instead of snapping to one of three fixed buckets,
+    each stream weight is smoothly interpolated so a query with 40% symbol
+    tokens gets 40% of the symbol weight shift.
+
+    WIN-298: replaces the binary SYMBOL/MIXED/NATURAL lookup.
+    """
+    return StreamWeights(
+        dense=round(_lerp(NATURAL_WEIGHTS.dense, SYMBOL_WEIGHTS.dense, ratio), 4),
+        sparse=round(_lerp(NATURAL_WEIGHTS.sparse, SYMBOL_WEIGHTS.sparse, ratio), 4),
+        symbol=round(_lerp(NATURAL_WEIGHTS.symbol, SYMBOL_WEIGHTS.symbol, ratio), 4),
+        graph_vec=round(_lerp(NATURAL_WEIGHTS.graph_vec, SYMBOL_WEIGHTS.graph_vec, ratio), 4),
+    )
+
+
 def get_adaptive_weights(query: str) -> StreamWeights:
     """Get adaptive stream weights based on query classification.
-    
+
+    Uses continuous interpolation (WIN-298): the symbol_ratio from query
+    classification drives a smooth blend between NATURAL_WEIGHTS (ratio=0)
+    and SYMBOL_WEIGHTS (ratio=1). A query with 40% symbol tokens gets 40%
+    of the weight shift — no more hard buckets.
+
     Args:
         query: The search query string.
-        
+
     Returns:
-        StreamWeights appropriate for the query type.
+        StreamWeights smoothly interpolated for the query's symbol ratio.
     """
     classification = classify_query(query)
-    
-    if classification.query_type == QueryType.SYMBOL:
-        return SYMBOL_WEIGHTS
-    elif classification.query_type == QueryType.NATURAL:
-        return NATURAL_WEIGHTS
-    else:
-        return MIXED_WEIGHTS
+    return _interpolate_weights(classification.symbol_ratio)
