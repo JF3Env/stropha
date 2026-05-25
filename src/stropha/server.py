@@ -11,8 +11,9 @@ and exposes the Phase 1 tool surface from spec §9.2:
 
 Every search result carries a ``repo`` field (URL, default branch, HEAD)
 so a remote MCP client can ``git clone`` the source. The server speaks
-stdio by default; that is the transport Claude Code, Cursor and friends
-launch automatically when configured via `.mcp.json`.
+the MCP ``streamable-http`` transport at ``http://<host>:<port>/mcp``;
+``bin/stropha-mcp-ensure`` is the canonical daemon launcher and MCP
+clients connect to it as a ``remote`` server.
 
 Background file watcher (enabled by default via ``STROPHA_MCP_WATCH=1``):
 The server starts a background thread that polls the target repo for file
@@ -331,6 +332,15 @@ mcp = FastMCP(
     instructions=_INSTRUCTIONS,
     lifespan=_lifespan,
 )
+
+
+# ---- health endpoint (SSE/HTTP transports only) ----------------------------
+
+@mcp.custom_route("/health", methods=["GET"])
+async def _health_check(request):  # noqa: ANN001, ARG001
+    """Liveness probe. Returns 200 when the server is accepting connections."""
+    from starlette.responses import JSONResponse
+    return JSONResponse({"status": "ok", "version": __version__})
 
 
 # ---- response models --------------------------------------------------------
@@ -4450,10 +4460,42 @@ def understand_file_prompt(file: str, primary_symbol: str) -> str:
 
 # ---- entry point -----------------------------------------------------------
 
+_DEFAULT_PORT = 9741
+
+
 def main() -> None:
-    """Run the MCP server over stdio. Used by `[project.scripts]` console entry."""
+    """Run the MCP server over streamable-http.
+
+    stropha-mcp is HTTP-only: a single shared singleton serves every MCP
+    client concurrently (one SQLite connection, zero WAL contention).
+    Use ``bin/stropha-mcp-ensure`` to start/stop the daemon; clients
+    connect via the ``streamable-http`` transport at
+    ``http://<host>:<port>/mcp``.
+    """
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="stropha-mcp",
+        description="stropha RAG MCP server (streamable-http transport only)",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=_DEFAULT_PORT,
+        help=f"Port to bind (default: {_DEFAULT_PORT})",
+    )
+    parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Bind address (default: 127.0.0.1)",
+    )
+    args = parser.parse_args()
+
+    mcp.settings.host = args.host
+    mcp.settings.port = args.port
+
     try:
-        mcp.run(transport="stdio")
+        mcp.run(transport="streamable-http")
     except KeyboardInterrupt:
         sys.exit(0)
 

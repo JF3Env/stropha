@@ -159,55 +159,36 @@ def detect_mcp_clients() -> list[MCPClient]:
     return found
 
 
+DEFAULT_MCP_URL = "http://127.0.0.1:9741/mcp"
+
+
 def generate_mcp_entry(
-    target: Path,
-    stropha_project_dir: Path | None = None,
+    client: MCPClient,
+    url: str = DEFAULT_MCP_URL,
 ) -> dict[str, Any]:
-    """Generate MCP server configuration entry for stropha.
-    
-    Args:
-        target: Path to the repository to index.
-        stropha_project_dir: Path to stropha installation (for uvx).
-            If None, assumes stropha is installed globally.
+    """Generate the HTTP-remote MCP entry for ``client``.
+
+    stropha-mcp is HTTP-only: every client points at the same shared
+    singleton (started by ``bin/stropha-mcp-ensure``). The entry shape
+    differs by client schema:
+
+    - OpenCode (``key="mcp"``):
+      ``{"type": "remote", "url": ..., "enabled": true}``
+    - Claude Code / Cursor / Continue (``key="mcpServers"``):
+      ``{"url": ..., "transport": "streamable-http"}``
     """
-    target_abs = str(target.resolve())
-    index_path = str((target / ".stropha" / "index.db").resolve())
-    
-    if stropha_project_dir:
-        # Use uv run from the stropha project
-        return {
-            "command": "uv",
-            "args": [
-                "--directory",
-                str(stropha_project_dir.resolve()),
-                "run",
-                "stropha-mcp",
-            ],
-            "env": {
-                "STROPHA_TARGET_REPO": target_abs,
-                "STROPHA_INDEX_PATH": index_path,
-            },
-        }
-    else:
-        # Assume uvx can find stropha
-        return {
-            "command": "uvx",
-            "args": ["stropha-mcp"],
-            "env": {
-                "STROPHA_TARGET_REPO": target_abs,
-                "STROPHA_INDEX_PATH": index_path,
-            },
-        }
+    if client.key == "mcp":
+        return {"type": "remote", "url": url, "enabled": True}
+    return {"url": url, "transport": "streamable-http"}
 
 
 def configure_mcp_client(
     client: MCPClient,
-    target: Path,
-    stropha_project_dir: Path | None = None,
     server_name: str = "stropha_rag",
+    url: str = DEFAULT_MCP_URL,
 ) -> tuple[bool, str]:
-    """Add stropha to an MCP client's configuration.
-    
+    """Add stropha (HTTP remote) to an MCP client's configuration.
+
     Returns:
         Tuple of (success, message)
     """
@@ -230,8 +211,8 @@ def configure_mcp_client(
     if server_name in servers:
         return False, f"{server_name} already configured in {config_path}"
     
-    # Add stropha entry
-    servers[server_name] = generate_mcp_entry(target, stropha_project_dir)
+    # Add stropha entry (HTTP remote)
+    servers[server_name] = generate_mcp_entry(client, url)
     
     # Write back
     try:
@@ -244,22 +225,26 @@ def configure_mcp_client(
 def print_next_steps(target: Path, indexed: bool) -> list[str]:
     """Generate next steps guidance."""
     steps: list[str] = []
-    
+
     if not indexed:
         steps.append(
             f"Run initial index: stropha index --repo {target}"
         )
-    
+
+    steps.append(
+        "Start the shared MCP server: bin/stropha-mcp-ensure"
+    )
+
     steps.append(
         "Install post-commit hook: stropha hook install"
     )
-    
+
     steps.append(
         "Generate symbol graph (optional): graphify ."
     )
-    
+
     steps.append(
         "Search: stropha search \"how does authentication work\""
     )
-    
+
     return steps

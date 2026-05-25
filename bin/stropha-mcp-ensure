@@ -1,0 +1,107 @@
+#!/bin/sh
+# Ensure the shared stropha-mcp server is running.
+# Call this from your shell profile, a LaunchAgent, or before starting
+# an MCP client that connects via URL.
+#
+# Usage:
+#   bin/stropha-mcp-ensure          # start if not running
+#   bin/stropha-mcp-ensure --stop   # stop the running server
+#   bin/stropha-mcp-ensure --status # check if running
+
+set -e
+
+PORT="${STROPHA_MCP_PORT:-9741}"
+HOST="${STROPHA_MCP_HOST:-127.0.0.1}"
+PIDFILE="${HOME}/.cache/stropha/mcp-server.pid"
+LOGFILE="${HOME}/.cache/stropha/mcp-server.log"
+
+# Auto-detect the stropha project dir from the script's location: this
+# script lives at <project>/bin/stropha-mcp-ensure, so the project root
+# is one directory up. Allow override via STROPHA_MCP_PROJECT_DIR.
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
+PROJECT_DIR="${STROPHA_MCP_PROJECT_DIR:-$(dirname "$SCRIPT_DIR")}"
+
+mkdir -p "$(dirname "$PIDFILE")"
+
+_is_running() {
+    [ -f "$PIDFILE" ] || return 1
+    PID=$(cat "$PIDFILE")
+    kill -0 "$PID" 2>/dev/null || { rm -f "$PIDFILE"; return 1; }
+    # Verify it's actually responding
+    curl -sf "http://${HOST}:${PORT}/health" >/dev/null 2>&1
+}
+
+_start() {
+    if _is_running; then
+        echo "[stropha-mcp] already running (pid $(cat "$PIDFILE"), port $PORT)"
+        return 0
+    fi
+
+    echo "[stropha-mcp] starting on ${HOST}:${PORT}..."
+
+    UV="${STROPHA_HOOK_UV:-}"
+    if [ -z "$UV" ]; then
+        if command -v uv >/dev/null 2>&1; then
+            UV=$(command -v uv)
+        elif [ -x "$HOME/.local/bin/uv" ]; then
+            UV="$HOME/.local/bin/uv"
+        elif [ -x "/opt/homebrew/bin/uv" ]; then
+            UV="/opt/homebrew/bin/uv"
+        fi
+    fi
+
+    if [ -z "$UV" ]; then
+        echo "[stropha-mcp] error: uv not found" >&2
+        exit 1
+    fi
+
+    STROPHA_TARGET_REPO="${STROPHA_TARGET_REPO:-$PROJECT_DIR}" \
+    STROPHA_INDEX_PATH="${STROPHA_INDEX_PATH:-${HOME}/.stropha/index.db}" \
+    STROPHA_LOG_LEVEL="${STROPHA_LOG_LEVEL:-WARNING}" \
+    nohup "$UV" run --directory "$PROJECT_DIR" stropha-mcp \
+        --host "$HOST" \
+        --port "$PORT" \
+        >> "$LOGFILE" 2>&1 &
+
+    echo $! > "$PIDFILE"
+    
+    # Wait for it to become healthy (up to 30s for model loading)
+    for i in $(seq 1 30); do
+        if curl -sf "http://${HOST}:${PORT}/health" >/dev/null 2>&1; then
+            echo "[stropha-mcp] ready (pid $(cat "$PIDFILE"), port $PORT)"
+            return 0
+        fi
+        sleep 1
+    done
+
+    echo "[stropha-mcp] warning: started but health check not yet passing" >&2
+    echo "[stropha-mcp] check $LOGFILE for details" >&2
+}
+
+_stop() {
+    if [ ! -f "$PIDFILE" ]; then
+        echo "[stropha-mcp] not running"
+        return 0
+    fi
+    PID=$(cat "$PIDFILE")
+    if kill -0 "$PID" 2>/dev/null; then
+        kill "$PID"
+        echo "[stropha-mcp] stopped (pid $PID)"
+    fi
+    rm -f "$PIDFILE"
+}
+
+_status() {
+    if _is_running; then
+        echo "[stropha-mcp] running (pid $(cat "$PIDFILE"), port $PORT)"
+    else
+        echo "[stropha-mcp] not running"
+        return 1
+    fi
+}
+
+case "${1:-}" in
+    --stop)   _stop ;;
+    --status) _status ;;
+    *)        _start ;;
+esac

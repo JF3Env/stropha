@@ -814,12 +814,12 @@ def init(
             "Auto-detects if not specified."
         ),
     ),
-    stropha_dir: Path | None = typer.Option(
-        None,
-        "--stropha-dir",
+    mcp_url: str = typer.Option(
+        "http://127.0.0.1:9741/mcp",
+        "--mcp-url",
         help=(
-            "Path to stropha project directory (for uv run). "
-            "Defaults to the installed location."
+            "URL of the shared stropha-mcp HTTP server. Defaults to the "
+            "localhost singleton started by `bin/stropha-mcp-ensure`."
         ),
     ),
     run_index: bool = typer.Option(
@@ -875,9 +875,8 @@ def init(
         else:
             success, msg = configure_mcp_client(
                 client,
-                target,
-                stropha_dir,
                 server_name="stropha_rag",
+                url=mcp_url,
             )
             if success:
                 console.print(f"  [green]{msg}[/green]")
@@ -905,12 +904,11 @@ def init(
                                 continue
                         except Exception:
                             pass
-                
+
                 success, msg = configure_mcp_client(
                     client,
-                    target,
-                    stropha_dir,
                     server_name="stropha_rag",
+                    url=mcp_url,
                 )
                 if success:
                     console.print(f"    [green]{msg}[/green]")

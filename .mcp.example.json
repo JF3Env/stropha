@@ -1,20 +1,9 @@
 {
-  "$comment": "Drop this file (renamed to .mcp.json) into the repo whose code you want Claude Code / Cursor / etc. to search. Adjust the absolute path to point at this checkout.",
+  "$comment": "stropha-mcp is HTTP-only. Start the shared singleton with `bin/stropha-mcp-ensure` (port 9741 by default) and then point your MCP client at the URL below. No subprocess spawning, no stdio.",
   "mcpServers": {
     "stropha": {
-      "command": "uv",
-      "args": [
-        "--directory",
-        "/path/to/stropha",
-        "run",
-        "stropha-mcp"
-      ],
-      "env": {
-        "VOYAGE_API_KEY": "${VOYAGE_API_KEY}",
-        "STROPHA_INDEX_PATH": "${HOME}/.stropha/index.db",
-        "STROPHA_TARGET_REPO": "${PWD}",
-        "STROPHA_LOG_LEVEL": "WARNING"
-      }
+      "url": "http://127.0.0.1:9741/mcp",
+      "transport": "streamable-http"
     }
   }
 }

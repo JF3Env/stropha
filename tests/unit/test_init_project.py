@@ -55,25 +55,41 @@ class TestCreateStrophaDir:
 
 
 class TestGenerateMCPEntry:
-    """Tests for generate_mcp_entry function."""
+    """Tests for generate_mcp_entry function (HTTP-only)."""
 
-    def test_basic_entry(self, tmp_path: Path):
-        entry = generate_mcp_entry(tmp_path)
-        
-        assert entry["command"] == "uvx"
-        assert "stropha-mcp" in entry["args"]
-        assert "STROPHA_TARGET_REPO" in entry["env"]
-        assert "STROPHA_INDEX_PATH" in entry["env"]
+    def test_mcpservers_schema(self, tmp_path: Path):
+        client = MCPClient(name="Test", config_paths=[tmp_path], key="mcpServers")
+        entry = generate_mcp_entry(client)
 
-    def test_with_stropha_project_dir(self, tmp_path: Path):
-        stropha_dir = tmp_path / "stropha"
-        stropha_dir.mkdir()
-        
-        entry = generate_mcp_entry(tmp_path, stropha_project_dir=stropha_dir)
-        
-        assert entry["command"] == "uv"
-        assert "--directory" in entry["args"]
-        assert str(stropha_dir.resolve()) in entry["args"]
+        assert entry == {
+            "url": "http://127.0.0.1:9741/mcp",
+            "transport": "streamable-http",
+        }
+
+    def test_opencode_schema(self, tmp_path: Path):
+        client = MCPClient(name="Test", config_paths=[tmp_path], key="mcp")
+        entry = generate_mcp_entry(client)
+
+        assert entry == {
+            "type": "remote",
+            "url": "http://127.0.0.1:9741/mcp",
+            "enabled": True,
+        }
+
+    def test_custom_url(self, tmp_path: Path):
+        client = MCPClient(name="Test", config_paths=[tmp_path], key="mcpServers")
+        entry = generate_mcp_entry(client, url="http://10.0.0.1:8000/mcp")
+
+        assert entry["url"] == "http://10.0.0.1:8000/mcp"
+
+    def test_no_subprocess_spawning(self, tmp_path: Path):
+        """HTTP-only: never spawn stropha-mcp as a subprocess."""
+        for key in ("mcpServers", "mcp"):
+            client = MCPClient(name="Test", config_paths=[tmp_path], key=key)
+            entry = generate_mcp_entry(client)
+            assert "command" not in entry
+            assert "args" not in entry
+            assert "env" not in entry
 
 
 class TestConfigureMCPClient:
@@ -86,27 +102,28 @@ class TestConfigureMCPClient:
             config_paths=[config_path],
             key="mcpServers",
         )
-        
-        success, msg = configure_mcp_client(client, tmp_path)
-        
+
+        success, msg = configure_mcp_client(client)
+
         assert success is True
         assert config_path.is_file()
-        
+
         config = json.loads(config_path.read_text())
         assert "stropha_rag" in config["mcpServers"]
+        assert config["mcpServers"]["stropha_rag"]["url"].startswith("http://")
 
     def test_updates_existing_config(self, tmp_path: Path):
         config_path = tmp_path / ".mcp.json"
         config_path.write_text(json.dumps({"mcpServers": {"other": {}}}))
-        
+
         client = MCPClient(
             name="Test",
             config_paths=[config_path],
             key="mcpServers",
         )
-        
-        success, msg = configure_mcp_client(client, tmp_path)
-        
+
+        success, msg = configure_mcp_client(client)
+
         assert success is True
         config = json.loads(config_path.read_text())
         assert "other" in config["mcpServers"]  # Preserved
@@ -116,34 +133,46 @@ class TestConfigureMCPClient:
         config_path = tmp_path / ".mcp.json"
         config_path.write_text(json.dumps({
             "mcpServers": {
-                "stropha_rag": {"command": "original"}
+                "stropha_rag": {"url": "http://existing/mcp"}
             }
         }))
-        
+
         client = MCPClient(
             name="Test",
             config_paths=[config_path],
             key="mcpServers",
         )
-        
-        success, msg = configure_mcp_client(client, tmp_path)
-        
+
+        success, msg = configure_mcp_client(client)
+
         assert success is False
         assert "already configured" in msg
 
     def test_handles_invalid_json(self, tmp_path: Path):
         config_path = tmp_path / ".mcp.json"
         config_path.write_text("not json")
-        
+
         client = MCPClient(
             name="Test",
             config_paths=[config_path],
             key="mcpServers",
         )
-        
-        success, msg = configure_mcp_client(client, tmp_path)
-        
+
+        success, msg = configure_mcp_client(client)
+
         assert success is False
+
+    def test_opencode_uses_remote_schema(self, tmp_path: Path):
+        config_path = tmp_path / "opencode.json"
+        client = MCPClient(name="OpenCode", config_paths=[config_path], key="mcp")
+
+        success, _ = configure_mcp_client(client)
+
+        assert success is True
+        config = json.loads(config_path.read_text())
+        entry = config["mcp"]["stropha_rag"]
+        assert entry["type"] == "remote"
+        assert entry["enabled"] is True
 
 
 class TestMCPClient:
