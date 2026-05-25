@@ -268,48 +268,57 @@ which prepends the matching community label to every chunk's
 
 ## MCP integration
 
-stropha ships an MCP server registered as **`stropha_rag`**. Any
-MCP-compatible client (Claude Code, Cursor, Continue, OpenCode, …) can
-connect to it.
+stropha ships an MCP server registered as **`stropha_rag`**. It is
+**HTTP-only** (streamable-http transport): a single shared daemon
+serves every MCP-compatible client (Claude Code, Cursor, Continue,
+OpenCode, …) concurrently.
 
-### OpenCode
+### Step 1 — start the shared server
 
-Already wired in `opencode.json`:
+```bash
+bin/stropha-mcp-ensure          # start (foregrounds via nohup, returns when healthy)
+bin/stropha-mcp-ensure --status # check it
+bin/stropha-mcp-ensure --stop   # shut it down
+```
+
+The daemon listens on `http://127.0.0.1:9741/mcp` by default. Override
+with `STROPHA_MCP_HOST` / `STROPHA_MCP_PORT`. The pidfile lives at
+`~/.cache/stropha/mcp-server.pid` and the log at
+`~/.cache/stropha/mcp-server.log`. Health probe: `GET /health`.
+
+### Step 2 — point your MCP client at the URL
+
+#### OpenCode
 
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
   "mcp": {
     "stropha_rag": {
-      "type": "local",
-      "command": ["uv", "--directory", "/abs/path/to/stropha", "run", "stropha-mcp"],
-      "enabled": true,
-      "env": {
-        "STROPHA_TARGET_REPO": "/abs/path/to/your/code",
-        "STROPHA_INDEX_PATH": "/abs/path/to/your/code/.stropha/index.db"
-      }
+      "type": "remote",
+      "url": "http://127.0.0.1:9741/mcp",
+      "enabled": true
     }
   }
 }
 ```
 
-### Claude Code / Claude Desktop
-
-Add to your project's `.mcp.json`:
+#### Claude Code / Claude Desktop / Cursor / Continue
 
 ```json
 {
   "mcpServers": {
     "stropha_rag": {
-      "command": "uv",
-      "args": ["--directory", "/abs/path/to/stropha", "run", "stropha-mcp"],
-      "env": {
-        "STROPHA_TARGET_REPO": "/abs/path/to/your/code"
-      }
+      "url": "http://127.0.0.1:9741/mcp",
+      "transport": "streamable-http"
     }
   }
 }
 ```
+
+> **No stdio.** Subprocess-spawning client configs (`command`, `args`,
+> per-process `env`) are not supported — every client connects to the
+> same singleton over HTTP.
 
 ### Available MCP tools
 
@@ -653,7 +662,7 @@ CLAUDE.md            # live state for LLM agents — read this first
 AGENTS.md            # OpenCode-specific graphify rules
 tests/unit/          # 429 unit tests (~5s)
 tests/eval/          # golden JSONL (30 queries; CI guard via `stropha eval`)
-graphify-out/        # generated graph snapshot (committed; refreshed by post-commit hook)
+graphify-out/        # generated graph snapshot (gitignored; refreshed by post-commit hook)
 ```
 
 For coding agents: **read `CLAUDE.md` before editing**. It has the current

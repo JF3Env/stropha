@@ -168,35 +168,48 @@ Error: Failed to start MCP server
 # Check uv is available
 which uv
 
-# Test manual start
-uv run stropha-mcp
+# Start the shared singleton (foregrounds via nohup, returns when healthy)
+bin/stropha-mcp-ensure
 
-# Check for port conflicts (stdio uses no ports, but check logs)
-STROPHA_LOG_LEVEL=DEBUG uv run stropha-mcp
+# Check status / health
+bin/stropha-mcp-ensure --status
+curl http://127.0.0.1:9741/health
+
+# Verbose start (run in foreground)
+STROPHA_LOG_LEVEL=DEBUG uv run stropha-mcp --port 9741
+
+# Tail the daemon log
+tail -f ~/.cache/stropha/mcp-server.log
 ```
 
 ### Tools not appearing in client
 
 **Causes:**
-1. MCP config path is wrong
+1. MCP config URL is wrong
 2. Server name doesn't match
-3. Client needs restart
+3. Daemon isn't running
+4. Client needs restart
 
 **Solutions:**
-1. Verify config file location (varies by client)
+1. Verify the URL: `http://127.0.0.1:9741/mcp` (override host/port with
+   `STROPHA_MCP_HOST` / `STROPHA_MCP_PORT`)
 2. Check server name is `stropha_rag`
-3. Restart the MCP client
+3. `bin/stropha-mcp-ensure --status`
+4. Restart the MCP client
 
 ```json
 {
   "mcpServers": {
     "stropha_rag": {
-      "command": "uv",
-      "args": ["--directory", "/correct/path/to/stropha", "run", "stropha-mcp"]
+      "url": "http://127.0.0.1:9741/mcp",
+      "transport": "streamable-http"
     }
   }
 }
 ```
+
+> stropha is **HTTP-only**. Subprocess-spawning configs (`command`,
+> `args`, per-process `env`) are not supported.
 
 ### "graph_loaded: false" from graph tools
 

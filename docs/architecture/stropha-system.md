@@ -91,7 +91,7 @@ Documento de design técnico para um sistema de Retrieval-Augmented Generation (
 │  Tools: search_code · get_symbol · find_callers · get_file_outline   │
 │         find_tests_for · explain_module · trace_feature              │
 │  Resources: index_stats · indexed_files                              │
-│  Transport: stdio (default) · streamable HTTP (opcional)             │
+│  Transport: streamable HTTP only (singleton at /mcp)                 │
 └──────────────────────────────────────────────────────────────────────┘
                               │
                               ▼
@@ -662,10 +662,13 @@ Conceitos:
 - **Prompts**: templates parametrizados (ex.: prompt "explique o módulo X" pré-formatado).
 - **Sampling**: o servidor pode pedir ao cliente (LLM) para gerar texto. Útil para HyDE.
 
-Transports:
+Transport:
 
-- **stdio**: processo filho do cliente. Default; menor latência; sem auth.
-- **HTTP streamable**: servidor remoto; SSE para responses streaming; suporta auth (OAuth 2.1 com PKCE).
+- **HTTP streamable (único transporte suportado)**: servidor singleton
+  exposto em `http://<host>:<port>/mcp`. Um único processo serve todos
+  os clientes MCP concorrentemente (uma conexão SQLite, zero
+  contenção WAL). `bin/stropha-mcp-ensure` é o launcher canônico;
+  health probe em `GET /health`. stdio e SSE não são suportados.
 
 ### 9.2 Design dos tools
 

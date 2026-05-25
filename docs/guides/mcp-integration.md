@@ -1,7 +1,10 @@
 # MCP Integration Guide
 
-> **stropha** exposes 11 MCP tools for code search and graph traversal.
-> This guide shows how to integrate stropha with popular AI coding assistants.
+> **stropha** exposes its MCP tools over **HTTP only** (streamable-http
+> transport). A single shared singleton serves every MCP client
+> concurrently — one process, one SQLite connection, no WAL contention,
+> no subprocess spawning. This guide shows how to start the daemon and
+> point each client at it.
 
 ---
 
@@ -10,147 +13,134 @@
 ### 1. Install stropha
 
 ```bash
-# Clone the repository
-git clone https://github.com/your-org/stropha.git
+git clone https://github.com/JonatasFischer/stropha.git
 cd stropha
-
-# Install dependencies
 uv sync
 ```
 
 ### 2. Index your codebase
 
 ```bash
-# Index the current repo
-uv run stropha index
-
-# Or specify a different repo
-STROPHA_TARGET_REPO=/path/to/your/project uv run stropha index
-
-# Test it works
+uv run stropha index                                   # current repo
+STROPHA_TARGET_REPO=/path/to/project uv run stropha index   # explicit target
 uv run stropha search "where is the main entry point"
 ```
 
-### 3. Configure your MCP client
-
-Copy the example config and adjust paths:
+### 3. Start the shared MCP server
 
 ```bash
-cp .mcp.example.json /path/to/your/project/.mcp.json
-# Edit the paths in .mcp.json
+bin/stropha-mcp-ensure          # start (returns when healthy)
+bin/stropha-mcp-ensure --status # check
+bin/stropha-mcp-ensure --stop   # shut down
 ```
+
+Defaults:
+
+| | |
+|---|---|
+| URL | `http://127.0.0.1:9741/mcp` |
+| Health probe | `GET /health` |
+| PID file | `~/.cache/stropha/mcp-server.pid` |
+| Log file | `~/.cache/stropha/mcp-server.log` |
+
+Override host / port with `STROPHA_MCP_HOST` / `STROPHA_MCP_PORT`.
+
+### 4. Configure your MCP client
+
+Copy `.mcp.example.json` into the repo that you want the client to read,
+or use one of the client-specific snippets below.
 
 ---
 
-## Client-Specific Instructions
+## Client-Specific Configuration
+
+All clients connect to the same URL. The schema differs slightly by
+client.
 
 ### OpenCode
 
-OpenCode natively supports MCP. Add stropha to your `opencode.json`:
-
 ```json
 {
-  "mcpServers": {
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
     "stropha_rag": {
-      "command": "uv",
-      "args": ["--directory", "/path/to/stropha", "run", "stropha-mcp"],
-      "env": {
-        "STROPHA_TARGET_REPO": "${workspaceFolder}",
-        "STROPHA_INDEX_PATH": "${HOME}/.stropha/index.db"
-      }
+      "type": "remote",
+      "url": "http://127.0.0.1:9741/mcp",
+      "enabled": true
     }
   }
 }
 ```
 
-The tools will appear as `mcp_Stropha_rag_*` in OpenCode's tool palette.
+### Claude Desktop / Claude Code
 
-### Claude Desktop
-
-Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
+`~/Library/Application Support/Claude/claude_desktop_config.json` (macOS)
+or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
 
 ```json
 {
   "mcpServers": {
     "stropha_rag": {
-      "command": "uv",
-      "args": ["--directory", "/path/to/stropha", "run", "stropha-mcp"],
-      "env": {
-        "STROPHA_TARGET_REPO": "/path/to/your/project",
-        "STROPHA_INDEX_PATH": "/path/to/index.db"
-      }
+      "url": "http://127.0.0.1:9741/mcp",
+      "transport": "streamable-http"
     }
   }
 }
 ```
 
-### Continue (VS Code Extension)
+### Cursor
 
-Add to your Continue config (`~/.continue/config.json`):
+`.cursor/mcp.json` in your project:
+
+```json
+{
+  "mcpServers": {
+    "stropha_rag": {
+      "url": "http://127.0.0.1:9741/mcp",
+      "transport": "streamable-http"
+    }
+  }
+}
+```
+
+### Continue (VS Code)
+
+`~/.continue/config.json`:
 
 ```json
 {
   "mcpServers": [
     {
       "name": "stropha_rag",
-      "command": "uv",
-      "args": ["--directory", "/path/to/stropha", "run", "stropha-mcp"],
-      "env": {
-        "STROPHA_TARGET_REPO": "${workspaceFolder}"
-      }
+      "url": "http://127.0.0.1:9741/mcp",
+      "transport": "streamable-http"
     }
   ]
 }
 ```
 
-### Cursor
-
-Cursor supports MCP via its settings. Add to `.cursor/mcp.json` in your project:
-
-```json
-{
-  "mcpServers": {
-    "stropha_rag": {
-      "command": "uv",
-      "args": ["--directory", "/path/to/stropha", "run", "stropha-mcp"],
-      "env": {
-        "STROPHA_TARGET_REPO": "."
-      }
-    }
-  }
-}
-```
-
 ### Zed
 
-Add to your Zed settings (`~/.config/zed/settings.json`):
+`~/.config/zed/settings.json`:
 
 ```json
 {
   "assistant": {
     "mcp_servers": {
       "stropha_rag": {
-        "command": "uv",
-        "args": ["--directory", "/path/to/stropha", "run", "stropha-mcp"],
-        "env": {
-          "STROPHA_TARGET_REPO": "."
-        }
+        "url": "http://127.0.0.1:9741/mcp",
+        "transport": "streamable-http"
       }
     }
   }
 }
 ```
 
-### Generic MCP Client
+### Other MCP-compatible clients
 
-Any MCP-compatible client can use stropha via stdio transport:
-
-```bash
-# Start the server (connects via stdin/stdout)
-uv run stropha-mcp
-```
-
-The server speaks the MCP protocol over stdio.
+Any client that speaks the MCP streamable-http transport works. Point
+it at `http://127.0.0.1:9741/mcp`. **stdio is not supported** — there
+is no per-client subprocess.
 
 ---
 
@@ -167,7 +157,8 @@ The server speaks the MCP protocol over stdio.
 
 ### Graph Traversal Tools
 
-These tools require the graphify mirror to be loaded (run `graphify .` in your repo first).
+These tools require the graphify mirror to be loaded. Index runs
+`graphify update` automatically when the binary is installed.
 
 | Tool | Description |
 |------|-------------|
@@ -217,49 +208,68 @@ find_rationale("FsrsCalculator")
 
 ## Environment Variables
 
+### Server (consumed by `bin/stropha-mcp-ensure` and `stropha-mcp`)
+
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `STROPHA_TARGET_REPO` | cwd | Repository to index/search |
-| `STROPHA_INDEX_PATH` | `.stropha/index.db` | SQLite index location |
+| `STROPHA_MCP_HOST` | `127.0.0.1` | Bind address for the daemon |
+| `STROPHA_MCP_PORT` | `9741` | Bind port for the daemon |
+| `STROPHA_TARGET_REPO` | cwd | Repository the server reads from |
+| `STROPHA_INDEX_PATH` | `~/.stropha/index.db` | SQLite index location |
+| `STROPHA_LOG_LEVEL` | `WARNING` | Log verbosity for the server |
+
+### Indexing (consumed by `stropha index`)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
 | `VOYAGE_API_KEY` | unset | Enable Voyage embeddings (optional, local fallback available) |
 | `STROPHA_LOG_LEVEL` | `INFO` | Log verbosity |
-| `STROPHA_RECURSIVE_RETRIEVAL` | `0` | Auto-merge sibling/adjacent chunks |
-| `STROPHA_HYDE_ENABLED` | `0` | Hypothetical document rewriting |
-| `STROPHA_MULTI_QUERY_ENABLED` | `0` | Multi-query expansion |
-| `STROPHA_QUERY_CACHE_ENABLED` | `0` | Semantic query caching |
+
+Query-time toggles (HyDE, recursive merge, multi-query, query cache)
+live in `stropha.yaml` under `retrieval_features:` — they no longer
+have env-var equivalents. See the project's `stropha.yaml` for the
+full schema.
 
 ---
 
 ## Automatic Index Updates
 
-stropha includes a post-commit hook that automatically updates the index after each commit:
+stropha includes a post-commit hook that updates the index after every
+commit:
 
 ```bash
-# Install the hook in your project
 cd /path/to/your/project
 uv run --directory /path/to/stropha stropha hook install
 
-# Check status
 uv run --directory /path/to/stropha stropha hook status
 ```
 
-The hook runs in the background (non-blocking) and updates both the stropha index and the graphify graph.
+The hook runs in the background (non-blocking) and refreshes both the
+SQLite index and the graphify graph. Because the MCP server reads the
+same SQLite file, your next query sees the new state immediately — no
+client restart required.
 
 ---
 
 ## Troubleshooting
 
-### "No results" from search_code
+### "Connection refused" / client can't reach stropha
 
-1. Check the index exists: `ls .stropha/index.db`
+1. Is the daemon running? `bin/stropha-mcp-ensure --status`
+2. Health check: `curl http://127.0.0.1:9741/health`
+3. Tail the log: `tail -f ~/.cache/stropha/mcp-server.log`
+
+### "No results" from `search_code`
+
+1. Check the index exists: `ls ~/.stropha/index.db`
 2. Verify repo is indexed: `uv run stropha stats`
 3. Try a simpler query to test basic functionality
 
-### Graph tools return "graph_loaded: false"
+### Graph tools return `graph_loaded: false`
 
-1. Run graphify in your repo: `graphify .`
-2. Verify graph exists: `ls graphify-out/graph.json`
-3. Re-run index: `uv run stropha index`
+1. Make sure graphify is installed: `which graphify`
+2. Re-run index: `uv run stropha index` (runs `graphify update` automatically)
+3. Verify graph exists: `ls graphify-out/graph.json`
 
 ### Slow indexing
 
@@ -301,9 +311,11 @@ retrieval:
   adapter: hybrid-rrf
   config:
     top_k: 10
-    hyde_enabled: true
-    multi_query_enabled: true
-    recursive_enabled: true
+
+retrieval_features:
+  hyde_enabled: true
+  multi_query_enabled: true
+  recursive_enabled: true
 ```
 
 ### Multi-Repo Indexing
@@ -332,8 +344,9 @@ uv run stropha index --repo ../frontend --repo ../backend --repo ../shared
 
 ## Performance Tips
 
-1. **Use local embeddings** for development (zero latency)
-2. **Enable query cache** for repeated queries (`STROPHA_QUERY_CACHE_ENABLED=1`)
-3. **Use incremental indexing** (default with hook v4)
-4. **Exclude large files** via `.strophaignore`
-5. **Use get_symbol instead of search_code** when you know the exact name
+1. **Keep the daemon alive.** It's a singleton — start once per workstation, every project reads from it.
+2. **Use local embeddings** for development (zero latency, zero cost)
+3. **Enable query cache** for repeated queries (`retrieval_features.cache_enabled: true`)
+4. **Use incremental indexing** (default with hook v4)
+5. **Exclude large files** via `.strophaignore`
+6. **Use `get_symbol` instead of `search_code`** when you know the exact name
