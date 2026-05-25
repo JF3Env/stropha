@@ -10,6 +10,10 @@ build/
 .mypy_cache/
 .ruff_cache/
 .pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
 
 # Env / secrets
 .env
@@ -30,13 +34,13 @@ index.db
 *.swp
 .DS_Store
 
+# Claude Code session state
+.claude/
+
 # OpenCode/Claude local config
 .mcp.local.json
 
-# Graphify artifacts (commit graph.json/graph.html/GRAPH_REPORT.md, ignore the rest)
-graphify-out/cache/
-graphify-out/cost.json
-graphify-out/manifest.json
-graphify-out/.graphify_*
-graphify-out/.rebuild.lock
-graphify-out/.needs_update
+# Graphify artifacts — never commit. The post-commit hook regenerates
+# everything in this directory on every commit; tracking it produces
+# enormous diffs and constant churn.
+graphify-out/
