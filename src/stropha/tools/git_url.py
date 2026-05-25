@@ -195,14 +195,15 @@ def index_cached_repo(cached: CachedRepo) -> None:
     try:
         resolved = load_pipeline_config()
         built = build_stages(resolved)
-        pipeline = Pipeline(
-            built.walker,
-            built.chunker,
-            built.enricher,
-            built.embedder,
-            built.storage,
-        )
-        with built.storage:  # type: ignore[union-attr]
+        with built.storage as storage:  # type: ignore[union-attr]
+            pipeline = Pipeline(
+                storage=storage,
+                embedder=built.embedder,
+                enricher=built.enricher,
+                walker=built.walker,
+                chunker=built.chunker,
+                repos=[cached.local_path],
+            )
             stats = pipeline.run(rebuild=False)
         
         logger.info(

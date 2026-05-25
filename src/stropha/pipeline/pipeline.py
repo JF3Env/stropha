@@ -114,6 +114,7 @@ class Pipeline:
         chunker: ChunkerStage | None = None,
         enricher_concurrency: int = 1,
         enricher_batch_size: int = 1,
+        graphify: bool = True,
     ) -> None:
         """Construct the indexing pipeline.
 
@@ -137,6 +138,13 @@ class Pipeline:
                 implements true batching; other enrichers (noop,
                 hierarchical, graph-aware, ollama, mlx) ignore the knob and
                 stay per-chunk. Config: ``inference.enricher_batch_size``.
+            graphify: run ``graphify update`` before loading the graph
+                mirror.  When ``True`` (default) the pipeline invokes
+                graphify as a subprocess for each repo — creating
+                ``graphify-out/graph.json`` on first run and refreshing
+                it on subsequent runs.  Gracefully skipped when the
+                ``graphify`` binary is not installed.  Pass ``False``
+                to disable (e.g. ``--no-graphify`` on the CLI).
         """
         if not repos:
             raise ValueError("Pipeline requires at least one repo")
@@ -154,6 +162,7 @@ class Pipeline:
         self._repos = [p.resolve() for p in repos]
         self._enricher_concurrency = enricher_concurrency
         self._enricher_batch_size = enricher_batch_size
+        self._graphify = graphify
 
         # Pre-warm the enricher's lazy state (e.g. inference backend
         # singleton) so the first batch of N parallel enrichment calls
@@ -247,12 +256,50 @@ class Pipeline:
         self._storage.set_meta("active_embedder_id", self._embedder.adapter_id)
         self._storage.commit()
 
+        # Run graphify to produce / refresh graph.json BEFORE loading the
+        # mirror.  This makes ``stropha index`` a self-contained entry point:
+        # even on first run, the graph tools will have structural data.
+        # Gracefully skipped when the graphify binary is not installed.
+        if self._graphify:
+            self._run_graphify()
+
         # Optional graphify graph mirror — populates graph_nodes/graph_edges
         # for the find_callers / find_related / get_community / find_rationale
         # MCP tools. No-op when graphify-out/graph.json is absent. Only
         # reload when the file mtime is newer than our last load.
         self._refresh_graphify_mirror()
         return stats
+
+    def _run_graphify(self) -> None:
+        """Invoke ``graphify update`` for each repo before the mirror load.
+
+        Creates ``graphify-out/graph.json`` on first run; refreshes it
+        incrementally on subsequent runs.  Skipped silently when the
+        ``graphify`` binary is not installed (no hard dependency).
+        """
+        from .graphify_runner import run_graphify_multi
+
+        results = run_graphify_multi(list(self._repos))
+        for r in results:
+            if r.error:
+                log.warning(
+                    "pipeline.graphify_error",
+                    repo=str(r.repo),
+                    error=r.error,
+                    elapsed_s=round(r.elapsed_s, 2),
+                )
+            elif r.created:
+                log.info(
+                    "pipeline.graphify_created",
+                    repo=str(r.repo),
+                    elapsed_s=round(r.elapsed_s, 2),
+                )
+            elif r.updated:
+                log.info(
+                    "pipeline.graphify_updated",
+                    repo=str(r.repo),
+                    elapsed_s=round(r.elapsed_s, 2),
+                )
 
     def _refresh_graphify_mirror(self) -> None:
         """Reload the graphify mirror tables if the on-disk graph is newer.
