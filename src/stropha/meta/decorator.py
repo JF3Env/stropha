@@ -162,9 +162,22 @@ def traced(tool_name: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]
             ctx = kwargs.get("ctx")
             try:
                 result = fn(*args, **kwargs)
-            except Exception:
-                # Trace the failure but re-raise so the caller observes it.
+            except Exception as exc:
+                # Log centrally so every MCP tool failure is visible in
+                # the stropha server logs — not just in the JSONL trace
+                # stream.  This is the single point through which ALL
+                # unhandled tool exceptions flow before FastMCP wraps
+                # them as ToolError → CallToolResult(isError=True).
                 latency_ms = (time.perf_counter() - start) * 1000
+                log.error(
+                    "mcp.tool.exception",
+                    tool=tool_name,
+                    error=str(exc),
+                    error_type=type(exc).__qualname__,
+                    latency_ms=round(latency_ms, 1),
+                    query=kwargs.get("query"),
+                    exc_info=True,
+                )
                 app = _resolve_app(ctx) if ctx is not None else None
                 _record_safely(
                     recorder=getattr(app, "trace_recorder", None) if app else None,

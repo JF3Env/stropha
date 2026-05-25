@@ -396,7 +396,8 @@ def _render_hook_block(
         nohup sh -c "
             exec 9>'$LOCK'
             if ! flock -n 9 2>/dev/null; then
-                :
+                echo '[stropha-hook] skipped (previous run still active, commit ${{SHORT_SHA}})' >> '$LOG'
+                exit 0
             fi
             cd '$TOPLEVEL' || exit 1
 
