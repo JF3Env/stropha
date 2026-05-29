@@ -9,6 +9,7 @@ sub-batches whose estimated token sum stays below the budget.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -133,6 +134,18 @@ class TestVoyageEmbedderInit:
             with patch.dict("os.environ", {}, clear=True):
                 embedder.embed_query("hi")
         voyageai_module.Client.assert_called_once_with(api_key="sk-explicit")
+
+    def test_init_without_env_uses_yaml_secret(self) -> None:
+        """Pipeline-built adapters should honor the unified YAML secret."""
+        voyageai_module, _ = _make_mock_voyageai()
+        fake_config = SimpleNamespace(secrets=SimpleNamespace(voyage_api_key="sk-yaml"))
+        with patch.dict("sys.modules", {"voyageai": voyageai_module}):
+            embedder = VoyageEmbedder()
+            voyageai_module.Client.assert_not_called()
+            with patch.dict("os.environ", {}, clear=True):
+                with patch("stropha.config.get_config", return_value=fake_config):
+                    embedder.embed_query("hi")
+        voyageai_module.Client.assert_called_once_with(api_key="sk-yaml")
 
     def test_init_legacy_kwargs_path(self) -> None:
         """Back-compat: positional model + dim still work."""

@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import pytest
 from pydantic import BaseModel
 
+from stropha.config import reset_config
 from stropha import adapters  # noqa: F401  triggers auto-import
 from stropha.errors import AdapterError, ConfigError
+from stropha.ingest.graph_vec_loader import GraphVecLoader
 from stropha.pipeline import (
     StageContext,
     StageHealth,
@@ -18,6 +22,13 @@ from stropha.pipeline import (
     register_adapter,
 )
 from stropha.pipeline.registry import _REGISTRY  # type: ignore[attr-defined]
+from stropha.storage import Storage
+
+
+class _StubNodeVoyageClient:
+    def embed(self, texts: Sequence[str], *_, **kwargs):
+        dim = kwargs.get("output_dimension", 512)
+        return type("_Resp", (), {"embeddings": [[0.0] * dim for _ in texts]})()
 
 # ---------------------------------------------------------------------------
 # Registry
@@ -227,3 +238,62 @@ def test_build_stages_invalid_config_raises() -> None:
     }
     with pytest.raises(ConfigError):
         build_stages(resolved)
+
+
+def test_pipeline_built_voyage_embedder_uses_yaml_secret_for_graph_loader(
+    tmp_path, monkeypatch
+) -> None:
+    from pathlib import Path
+
+    cfg_dir = tmp_path / ".stropha"
+    cfg_dir.mkdir()
+    (cfg_dir / "config.yaml").write_text("secrets:\n  voyage_api_key: sk-test\n")
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.delenv("VOYAGE_API_KEY", raising=False)
+    reset_config()
+
+    resolved = load_pipeline_config(project_root=tmp_path)
+    assert resolved["embedder"]["adapter"] == "voyage"
+
+    voyageai_module = type(
+        "_VoyageModule",
+        (),
+        {"Client": lambda self=None, api_key=None: _StubNodeVoyageClient()},
+    )()
+    monkeypatch.setitem(__import__("sys").modules, "voyageai", voyageai_module)
+
+    storage = Storage(tmp_path / "idx.db", embedding_dim=512)
+    try:
+        storage._conn.execute(
+            """CREATE TABLE IF NOT EXISTS graph_nodes (
+                   node_id TEXT PRIMARY KEY,
+                   label TEXT,
+                   community_label TEXT,
+                   embedding BLOB,
+                   embedding_model TEXT,
+                   embedding_dim INTEGER
+               )"""
+        )
+        storage._conn.execute(
+            "INSERT INTO graph_nodes(node_id, label) VALUES (?, ?)",
+            ("n1", "Alpha"),
+        )
+        storage.commit()
+
+        built = build_stages(
+            {
+                **resolved,
+                "chunker": {"adapter": "tree-sitter-dispatch", "config": {}},
+                "walker": {"adapter": "git-ls-files", "config": {}},
+                "enricher": {"adapter": "noop", "config": {}},
+                "storage": {"adapter": "sqlite-vec", "config": {"path": str(tmp_path / "idx.db")}},
+                "retrieval": {"adapter": "hybrid-rrf", "config": {}},
+            }
+        )
+
+        result = GraphVecLoader(storage, built.embedder).load(batch_size=1)
+        assert result.failed == 0
+        assert result.embedded == 1
+    finally:
+        storage.close()
+        reset_config()

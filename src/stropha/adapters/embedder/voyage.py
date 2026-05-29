@@ -1,6 +1,7 @@
 """Voyage AI embedder adapter.
 
-Active when ``VOYAGE_API_KEY`` is set. The default model is
+Active when a Voyage API key is available via explicit override,
+``~/.stropha/config.yaml``, or ``VOYAGE_API_KEY``. The default model is
 ``voyage-4-large`` — Voyage's latest large-form embedder. Earlier
 generations (``voyage-3-large``, ``voyage-code-3``) remain available via
 ``embedder.config.model: <id>`` in ``stropha.yaml`` or
@@ -115,17 +116,21 @@ class VoyageEmbedder(EmbedderStage):
         # Lazy: the MCP server constructs every adapter at startup, but the
         # retrieval-only query path may never touch the embedder. Deferring
         # the API-key check + Client construction lets stropha-mcp start
-        # without VOYAGE_API_KEY when only serving an existing index.
+        # without an active Voyage key when only serving an existing index.
         if self._client is not None:
             return self._client
-        resolved_key = (
-            self._api_key_override
-            if self._api_key_override is not None
-            else os.environ.get(self._config.api_key_env, "")
-        )
+        resolved_key = self._api_key_override or os.environ.get(self._config.api_key_env, "")
+        if not resolved_key:
+            try:
+                from ...config import get_config
+
+                resolved_key = get_config().secrets.voyage_api_key or ""
+            except Exception:
+                resolved_key = ""
         if not resolved_key:
             raise EmbeddingError(
-                f"Voyage API key is empty (env var {self._config.api_key_env!r} not set)."
+                "Voyage API key is empty (no explicit key, config secret, "
+                f"or env var {self._config.api_key_env!r} set)."
             )
         self._client = self._voyageai.Client(api_key=resolved_key)
         return self._client
