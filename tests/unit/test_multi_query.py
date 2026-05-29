@@ -37,7 +37,8 @@ def test_multi_query_disabled_by_default(isolated_test_env) -> None:
 def test_multi_query_returns_paraphrases_when_enabled(isolated_test_env) -> None:
     """Multi-query generates paraphrases when enabled via YAML."""
     from stropha.config import reset_config
-    yaml_path = isolated_test_env / "stropha.yaml"
+    (isolated_test_env / ".stropha").mkdir(exist_ok=True)
+    yaml_path = isolated_test_env / ".stropha" / "config.yaml"
     yaml_path.write_text("""
 retrieval_features:
   multi_query_enabled: true
@@ -212,7 +213,8 @@ def test_expander_respects_num_paraphrases(monkeypatch) -> None:
 def test_yaml_config_count(isolated_test_env) -> None:
     """multi_query_count in YAML is respected."""
     from stropha.config import reset_config
-    yaml_path = isolated_test_env / "stropha.yaml"
+    (isolated_test_env / ".stropha").mkdir(exist_ok=True)
+    yaml_path = isolated_test_env / ".stropha" / "config.yaml"
     yaml_path.write_text("""
 retrieval_features:
   multi_query_enabled: true
@@ -238,7 +240,8 @@ retrieval_features:
 def test_paraphrases_deduplicated(isolated_test_env) -> None:
     """Duplicate paraphrases are removed."""
     from stropha.config import reset_config
-    yaml_path = isolated_test_env / "stropha.yaml"
+    (isolated_test_env / ".stropha").mkdir(exist_ok=True)
+    yaml_path = isolated_test_env / ".stropha" / "config.yaml"
     yaml_path.write_text("""
 retrieval_features:
   multi_query_enabled: true
@@ -262,7 +265,8 @@ retrieval_features:
 def test_original_query_always_first(isolated_test_env) -> None:
     """Original query is always first in results."""
     from stropha.config import reset_config
-    yaml_path = isolated_test_env / "stropha.yaml"
+    (isolated_test_env / ".stropha").mkdir(exist_ok=True)
+    yaml_path = isolated_test_env / ".stropha" / "config.yaml"
     yaml_path.write_text("""
 retrieval_features:
   multi_query_enabled: true
@@ -282,7 +286,8 @@ retrieval_features:
 def test_numbered_lists_filtered(isolated_test_env) -> None:
     """Numbered list markers are filtered out."""
     from stropha.config import reset_config
-    yaml_path = isolated_test_env / "stropha.yaml"
+    (isolated_test_env / ".stropha").mkdir(exist_ok=True)
+    yaml_path = isolated_test_env / ".stropha" / "config.yaml"
     yaml_path.write_text("""
 retrieval_features:
   multi_query_enabled: true
@@ -309,7 +314,8 @@ retrieval_features:
 def test_short_paraphrases_filtered(isolated_test_env) -> None:
     """Very short paraphrases are filtered."""
     from stropha.config import reset_config
-    yaml_path = isolated_test_env / "stropha.yaml"
+    (isolated_test_env / ".stropha").mkdir(exist_ok=True)
+    yaml_path = isolated_test_env / ".stropha" / "config.yaml"
     yaml_path.write_text("""
 retrieval_features:
   multi_query_enabled: true

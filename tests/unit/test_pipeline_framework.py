@@ -102,37 +102,45 @@ def test_stage_health_ready() -> None:
 
 
 def test_config_defaults_pick_local_when_no_voyage_key(tmp_path) -> None:
-    cfg = load_pipeline_config(project_root=tmp_path, environ={})
+    cfg = load_pipeline_config(project_root=tmp_path)
     assert cfg["embedder"]["adapter"] == "local"
     assert cfg["enricher"]["adapter"] == "noop"
 
 
-def test_config_picks_voyage_when_api_key_set(tmp_path) -> None:
-    cfg = load_pipeline_config(
-        project_root=tmp_path, environ={"VOYAGE_API_KEY": "sk-test"}
-    )
+def test_config_picks_voyage_when_api_key_set(tmp_path, monkeypatch) -> None:
+    from pathlib import Path
+    cfg_dir = tmp_path / ".stropha"
+    cfg_dir.mkdir()
+    (cfg_dir / "config.yaml").write_text("secrets:\n  voyage_api_key: sk-test\n")
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    cfg = load_pipeline_config(project_root=tmp_path)
     assert cfg["embedder"]["adapter"] == "voyage"
 
 
-def test_config_legacy_alias_local_model(tmp_path) -> None:
-    cfg = load_pipeline_config(
-        project_root=tmp_path,
-        environ={"STROPHA_LOCAL_EMBED_MODEL": "BAAI/bge-small-en-v1.5"},
+def test_config_legacy_alias_local_model(tmp_path, monkeypatch) -> None:
+    from pathlib import Path
+    cfg_dir = tmp_path / ".stropha"
+    cfg_dir.mkdir()
+    (cfg_dir / "config.yaml").write_text(
+        "pipeline:\n  embedder:\n    adapter: local\n    config:\n      model: BAAI/bge-small-en-v1.5\n"
     )
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    cfg = load_pipeline_config(project_root=tmp_path)
     assert cfg["embedder"]["adapter"] == "local"
     assert cfg["embedder"]["config"]["model"] == "BAAI/bge-small-en-v1.5"
 
 
-def test_config_legacy_alias_voyage_does_not_leak_into_local(tmp_path) -> None:
-    """Regression: STROPHA_VOYAGE_EMBED_MODEL must NOT contaminate a local adapter."""
-    cfg = load_pipeline_config(
-        project_root=tmp_path,
-        environ={
-            # No VOYAGE_API_KEY -> auto-select local.
-            "STROPHA_VOYAGE_EMBED_MODEL": "voyage-code-3",
-            "STROPHA_LOCAL_EMBED_MODEL": "BAAI/bge-small-en-v1.5",
-        },
+def test_config_legacy_alias_voyage_does_not_leak_into_local(tmp_path, monkeypatch) -> None:
+    """Regression: voyage adapter config must NOT contaminate a local adapter."""
+    from pathlib import Path
+    # No voyage key → auto-select local; only local model set.
+    cfg_dir = tmp_path / ".stropha"
+    cfg_dir.mkdir()
+    (cfg_dir / "config.yaml").write_text(
+        "pipeline:\n  embedder:\n    adapter: local\n    config:\n      model: BAAI/bge-small-en-v1.5\n"
     )
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    cfg = load_pipeline_config(project_root=tmp_path)
     assert cfg["embedder"]["adapter"] == "local"
     assert cfg["embedder"]["config"]["model"] == "BAAI/bge-small-en-v1.5"
 
@@ -140,33 +148,44 @@ def test_config_legacy_alias_voyage_does_not_leak_into_local(tmp_path) -> None:
 def test_config_cli_override_wins_over_env(tmp_path) -> None:
     cfg = load_pipeline_config(
         project_root=tmp_path,
-        environ={"STROPHA_ENRICHER": "hierarchical"},
         overrides={"enricher": {"adapter": "noop"}},
     )
     assert cfg["enricher"]["adapter"] == "noop"
 
 
-def test_config_env_overlay_for_nested_path(tmp_path) -> None:
-    cfg = load_pipeline_config(
-        project_root=tmp_path,
-        environ={"STROPHA_ENRICHER__INCLUDE_REPO_URL": "true"},
+def test_config_env_overlay_for_nested_path(tmp_path, monkeypatch) -> None:
+    from pathlib import Path
+    cfg_dir = tmp_path / ".stropha"
+    cfg_dir.mkdir()
+    (cfg_dir / "config.yaml").write_text(
+        "pipeline:\n  enricher:\n    config:\n      include_repo_url: true\n"
     )
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    cfg = load_pipeline_config(project_root=tmp_path)
     # Note: lowercased keys per the loader convention.
     assert cfg["enricher"]["config"]["include_repo_url"] is True
 
 
-def test_config_yaml_file_loaded_when_present(tmp_path) -> None:
-    (tmp_path / "stropha.yaml").write_text(
+def test_config_yaml_file_loaded_when_present(tmp_path, monkeypatch) -> None:
+    from pathlib import Path
+    cfg_dir = tmp_path / ".stropha"
+    cfg_dir.mkdir()
+    (cfg_dir / "config.yaml").write_text(
         "pipeline:\n  enricher:\n    adapter: hierarchical\n", encoding="utf-8"
     )
-    cfg = load_pipeline_config(project_root=tmp_path, environ={})
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    cfg = load_pipeline_config(project_root=tmp_path)
     assert cfg["enricher"]["adapter"] == "hierarchical"
 
 
-def test_config_yaml_invalid_raises_config_error(tmp_path) -> None:
-    (tmp_path / "stropha.yaml").write_text("not:\n  : -valid: [", encoding="utf-8")
+def test_config_yaml_invalid_raises_config_error(tmp_path, monkeypatch) -> None:
+    from pathlib import Path
+    cfg_dir = tmp_path / ".stropha"
+    cfg_dir.mkdir()
+    (cfg_dir / "config.yaml").write_text("not:\n  : -valid: [", encoding="utf-8")
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
     with pytest.raises(ConfigError):
-        load_pipeline_config(project_root=tmp_path, environ={})
+        load_pipeline_config(project_root=tmp_path)
 
 
 # ---------------------------------------------------------------------------

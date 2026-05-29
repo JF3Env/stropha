@@ -67,26 +67,23 @@ class TestDeepSeekBackend:
         # Trailing slash is stripped.
         assert backend._base_url == "https://proxy.example.com/v1"
 
-    def test_env_var_api_key_pickup(self, isolated_test_env, monkeypatch):
-        """DEEPSEEK_API_KEY env var feeds SecretsConfig.deepseek_api_key."""
+    def test_env_var_api_key_pickup(self, isolated_test_env):
+        """YAML secrets.deepseek_api_key feeds DeepSeekBackend._api_key."""
         from stropha.config import reset_config
 
-        monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-from-env")
+        cfg_dir = isolated_test_env / ".stropha"
+        cfg_dir.mkdir(exist_ok=True)
+        (cfg_dir / "config.yaml").write_text("secrets:\n  deepseek_api_key: sk-from-yaml\n")
         reset_config()
         backend = DeepSeekBackend()
-        assert backend._api_key == "sk-from-env"
+        assert backend._api_key == "sk-from-yaml"
         assert backend.is_available is True
 
-    def test_is_available_false_without_api_key(self, isolated_test_env, monkeypatch):
-        """No DEEPSEEK_API_KEY → is_available returns False.
-
-        Sets the env var to empty string so ``load_dotenv(override=False)``
-        does NOT re-introduce the project's real key via dotenv's
-        walk-up-from-__file__ search. This is more robust than ``delenv``.
-        """
+    def test_is_available_false_without_api_key(self, isolated_test_env):
+        """No deepseek_api_key in YAML → is_available returns False."""
         from stropha.config import reset_config
 
-        monkeypatch.setenv("DEEPSEEK_API_KEY", "")
+        # isolated_test_env has no .stropha/config.yaml → no key
         reset_config()
         backend = DeepSeekBackend()
         assert backend._api_key in (None, "")
@@ -268,7 +265,9 @@ class TestDeepSeekBackend:
         """When not overridden, the backend pulls timeout / max_retries from YAML."""
         from stropha.config import reset_config
 
-        (isolated_test_env / "stropha.yaml").write_text(
+        cfg_dir = isolated_test_env / ".stropha"
+        cfg_dir.mkdir(exist_ok=True)
+        (cfg_dir / "config.yaml").write_text(
             "inference:\n"
             "  deepseek_timeout: 30\n"
             "  deepseek_max_retries: 5\n"
@@ -310,10 +309,10 @@ class TestDeepSeekBackend:
 
     # ---- health_check -----------------------------------------------------
 
-    def test_health_check_missing_key(self, isolated_test_env, monkeypatch):
+    def test_health_check_missing_key(self, isolated_test_env):
         from stropha.config import reset_config
 
-        monkeypatch.setenv("DEEPSEEK_API_KEY", "")
+        # No key in YAML → missing
         reset_config()
         backend = DeepSeekBackend()
         ok, message = backend.health_check()
@@ -355,16 +354,17 @@ class TestDeepSeekBackend:
 # --------------------------------------------------------------------------- #
 
 
-def test_is_deepseek_available_reflects_secret(isolated_test_env, monkeypatch):
+def test_is_deepseek_available_reflects_secret(isolated_test_env):
     from stropha.config import reset_config
 
-    # Missing key → False.
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "")
+    # Missing key → False (no .stropha/config.yaml).
     reset_config()
     assert is_deepseek_available() is False
 
     # Present key → True.
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-y")
+    cfg_dir = isolated_test_env / ".stropha"
+    cfg_dir.mkdir(exist_ok=True)
+    (cfg_dir / "config.yaml").write_text("secrets:\n  deepseek_api_key: sk-y\n")
     reset_config()
     assert is_deepseek_available() is True
 
@@ -378,13 +378,15 @@ class TestGetBackendDeepSeek:
     def test_prefer_deepseek_with_key(self, isolated_test_env):
         from stropha.config import reset_config
 
-        with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "sk-y"}):
-            reset_config()
-            backend = get_backend(prefer="deepseek")
-            assert isinstance(backend, DeepSeekBackend)
+        cfg_dir = isolated_test_env / ".stropha"
+        cfg_dir.mkdir(exist_ok=True)
+        (cfg_dir / "config.yaml").write_text("secrets:\n  deepseek_api_key: sk-y\n")
+        reset_config()
+        backend = get_backend(prefer="deepseek")
+        assert isinstance(backend, DeepSeekBackend)
 
     def test_prefer_deepseek_without_key_does_not_silent_fallback(
-        self, isolated_test_env, monkeypatch
+        self, isolated_test_env
     ):
         """When the user explicitly asks for DeepSeek but no key is set, we
         still return a DeepSeekBackend (so health_check surfaces the issue)
@@ -392,7 +394,7 @@ class TestGetBackendDeepSeek:
         return ``None`` per the contract."""
         from stropha.config import reset_config
 
-        monkeypatch.setenv("DEEPSEEK_API_KEY", "")
+        # No key in YAML → is_available=False
         reset_config()
         backend = get_backend(prefer="deepseek")
         assert isinstance(backend, DeepSeekBackend)
@@ -402,25 +404,30 @@ class TestGetBackendDeepSeek:
         """YAML inference.backend=deepseek selects DeepSeek when key present."""
         from stropha.config import reset_config
 
-        (isolated_test_env / "stropha.yaml").write_text(
+        cfg_dir = isolated_test_env / ".stropha"
+        cfg_dir.mkdir(exist_ok=True)
+        (cfg_dir / "config.yaml").write_text(
             "inference:\n  backend: deepseek\n"
+            "secrets:\n  deepseek_api_key: sk-y\n"
         )
-        with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "sk-y"}):
-            reset_config()
-            backend = get_backend()
-            assert isinstance(backend, DeepSeekBackend)
+        reset_config()
+        backend = get_backend()
+        assert isinstance(backend, DeepSeekBackend)
 
     def test_auto_detect_never_picks_deepseek(self, isolated_test_env):
-        """Auto-detection MUST NOT route to DeepSeek even when API key is
-        set — local-only-by-default invariant (CLAUDE.md §3.6)."""
+        """Auto-detection MUST NOT route to DeepSeek — local-only-by-default
+        invariant (CLAUDE.md §3.6). Even with key in YAML."""
         from stropha.config import reset_config
 
-        with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "sk-y"}):
-            reset_config()
-            # No backend preference → auto-detect → must pick MLX or Ollama.
-            backend = get_backend()
-            assert not isinstance(backend, DeepSeekBackend)
-            assert isinstance(backend, (MlxBackend, OllamaBackend))
+        cfg_dir = isolated_test_env / ".stropha"
+        cfg_dir.mkdir(exist_ok=True)
+        (cfg_dir / "config.yaml").write_text("secrets:\n  deepseek_api_key: sk-y\n")
+        reset_config()
+        # No backend preference → auto-detect → must pick MLX or Ollama.
+        backend = get_backend()
+        assert not isinstance(backend, DeepSeekBackend)
+        assert isinstance(backend, (MlxBackend, OllamaBackend))
+
 
 
 # --------------------------------------------------------------------------- #

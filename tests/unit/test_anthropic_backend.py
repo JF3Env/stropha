@@ -80,21 +80,25 @@ class TestAnthropicBackend:
         # Trailing slash is stripped.
         assert backend._base_url == "https://proxy.example.com/v1"
 
-    def test_env_var_api_key_pickup(self, isolated_test_env, monkeypatch):
-        """ANTHROPIC_API_KEY env var feeds SecretsConfig.anthropic_api_key."""
+    def test_yaml_api_key_pickup(self, isolated_test_env):
+        """anthropic_api_key in YAML secrets feeds SecretsConfig.anthropic_api_key."""
         from stropha.config import reset_config
 
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-from-env")
+        (isolated_test_env / ".stropha").mkdir(exist_ok=True)
+        (isolated_test_env / ".stropha" / "config.yaml").write_text(
+            "secrets:\n  anthropic_api_key: sk-ant-from-yaml\n"
+        )
         reset_config()
         backend = AnthropicBackend()
-        assert backend._api_key == "sk-ant-from-env"
+        assert backend._api_key == "sk-ant-from-yaml"
         assert backend.is_available is True
 
-    def test_is_available_false_without_api_key(self, isolated_test_env, monkeypatch):
-        """No ANTHROPIC_API_KEY → is_available returns False."""
+    def test_is_available_false_without_api_key(self, isolated_test_env):
+        """No anthropic_api_key in YAML → is_available returns False."""
         from stropha.config import reset_config
 
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+        (isolated_test_env / ".stropha").mkdir(exist_ok=True)
+        (isolated_test_env / ".stropha" / "config.yaml").write_text("{}\n")
         reset_config()
         backend = AnthropicBackend()
         assert backend._api_key in (None, "")
@@ -402,7 +406,9 @@ class TestAnthropicBackend:
         """When not overridden, the backend pulls timeout / max_retries from YAML."""
         from stropha.config import reset_config
 
-        (isolated_test_env / "stropha.yaml").write_text(
+        cfg_dir = isolated_test_env / ".stropha"
+        cfg_dir.mkdir(exist_ok=True)
+        (cfg_dir / "config.yaml").write_text(
             "inference:\n"
             "  anthropic_timeout: 30\n"
             "  anthropic_max_retries: 5\n"
@@ -416,7 +422,9 @@ class TestAnthropicBackend:
         """Custom anthropic_version is forwarded to the request header."""
         from stropha.config import reset_config
 
-        (isolated_test_env / "stropha.yaml").write_text(
+        cfg_dir = isolated_test_env / ".stropha"
+        cfg_dir.mkdir(exist_ok=True)
+        (cfg_dir / "config.yaml").write_text(
             "inference:\n  anthropic_version: '2024-01-01'\n"
         )
         reset_config()
@@ -461,10 +469,10 @@ class TestAnthropicBackend:
 
     # ---- health_check -----------------------------------------------------
 
-    def test_health_check_missing_key(self, isolated_test_env, monkeypatch):
+    def test_health_check_missing_key(self, isolated_test_env):
         from stropha.config import reset_config
 
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+        # No key in YAML → missing
         reset_config()
         backend = AnthropicBackend()
         ok, message = backend.health_check()
@@ -484,16 +492,17 @@ class TestAnthropicBackend:
 # --------------------------------------------------------------------------- #
 
 
-def test_is_anthropic_available_reflects_secret(isolated_test_env, monkeypatch):
+def test_is_anthropic_available_reflects_secret(isolated_test_env):
     from stropha.config import reset_config
 
-    # Missing key → False.
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+    # Missing key → False (no .stropha/config.yaml written).
     reset_config()
     assert is_anthropic_available() is False
 
     # Present key → True.
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-y")
+    cfg_dir = isolated_test_env / ".stropha"
+    cfg_dir.mkdir(exist_ok=True)
+    (cfg_dir / "config.yaml").write_text("secrets:\n  anthropic_api_key: sk-ant-y\n")
     reset_config()
     assert is_anthropic_available() is True
 
@@ -507,13 +516,15 @@ class TestGetBackendAnthropic:
     def test_prefer_anthropic_with_key(self, isolated_test_env):
         from stropha.config import reset_config
 
-        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-ant-y"}):
-            reset_config()
-            backend = get_backend(prefer="anthropic")
-            assert isinstance(backend, AnthropicBackend)
+        cfg_dir = isolated_test_env / ".stropha"
+        cfg_dir.mkdir(exist_ok=True)
+        (cfg_dir / "config.yaml").write_text("secrets:\n  anthropic_api_key: sk-ant-y\n")
+        reset_config()
+        backend = get_backend(prefer="anthropic")
+        assert isinstance(backend, AnthropicBackend)
 
     def test_prefer_anthropic_without_key_does_not_silent_fallback(
-        self, isolated_test_env, monkeypatch
+        self, isolated_test_env
     ):
         """When the user explicitly asks for Anthropic but no key is set, we
         still return an AnthropicBackend (so health_check surfaces the issue)
@@ -521,7 +532,7 @@ class TestGetBackendAnthropic:
         return ``None`` per the contract."""
         from stropha.config import reset_config
 
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+        # No key in YAML → is_available=False
         reset_config()
         backend = get_backend(prefer="anthropic")
         assert isinstance(backend, AnthropicBackend)
@@ -531,40 +542,46 @@ class TestGetBackendAnthropic:
         """YAML inference.backend=anthropic selects Anthropic when key present."""
         from stropha.config import reset_config
 
-        (isolated_test_env / "stropha.yaml").write_text(
+        cfg_dir = isolated_test_env / ".stropha"
+        cfg_dir.mkdir(exist_ok=True)
+        (cfg_dir / "config.yaml").write_text(
             "inference:\n  backend: anthropic\n"
+            "secrets:\n  anthropic_api_key: sk-ant-y\n"
         )
-        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-ant-y"}):
-            reset_config()
-            backend = get_backend()
-            assert isinstance(backend, AnthropicBackend)
+        reset_config()
+        backend = get_backend()
+        assert isinstance(backend, AnthropicBackend)
 
     def test_auto_detect_never_picks_anthropic(self, isolated_test_env):
-        """Auto-detection MUST NOT route to Anthropic even when API key is
-        set — local-only-by-default invariant (CLAUDE.md §3.6)."""
+        """Auto-detection MUST NOT route to Anthropic — local-only-by-default
+        invariant (CLAUDE.md §3.6). Even with key in YAML, no backend preference
+        means auto-detect picks local."""
         from stropha.config import reset_config
 
-        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-ant-y"}):
-            reset_config()
-            # No backend preference → auto-detect → must pick MLX or Ollama.
-            backend = get_backend()
-            assert not isinstance(backend, AnthropicBackend)
-            assert isinstance(backend, (MlxBackend, OllamaBackend))
+        cfg_dir = isolated_test_env / ".stropha"
+        cfg_dir.mkdir(exist_ok=True)
+        (cfg_dir / "config.yaml").write_text("secrets:\n  anthropic_api_key: sk-ant-y\n")
+        reset_config()
+        # No backend preference → auto-detect → must pick MLX or Ollama.
+        backend = get_backend()
+        assert not isinstance(backend, AnthropicBackend)
+        assert isinstance(backend, (MlxBackend, OllamaBackend))
 
     def test_anthropic_and_deepseek_keys_both_set_auto_picks_local(
         self, isolated_test_env
     ):
-        """Both cloud keys present, no preference → still picks local."""
+        """Both cloud keys present in YAML, no preference → still picks local."""
         from stropha.config import reset_config
 
-        with patch.dict(
-            os.environ,
-            {"ANTHROPIC_API_KEY": "sk-ant-y", "DEEPSEEK_API_KEY": "sk-y"},
-        ):
-            reset_config()
-            backend = get_backend()
-            assert not isinstance(backend, AnthropicBackend)
-            assert not isinstance(backend, DeepSeekBackend)
+        cfg_dir = isolated_test_env / ".stropha"
+        cfg_dir.mkdir(exist_ok=True)
+        (cfg_dir / "config.yaml").write_text(
+            "secrets:\n  anthropic_api_key: sk-ant-y\n  deepseek_api_key: sk-y\n"
+        )
+        reset_config()
+        backend = get_backend()
+        assert not isinstance(backend, AnthropicBackend)
+        assert not isinstance(backend, DeepSeekBackend)
 
 
 # --------------------------------------------------------------------------- #

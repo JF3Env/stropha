@@ -86,8 +86,9 @@ class TestMlxBackend:
     def test_yaml_model_override(self, isolated_test_env):
         """YAML config can override MLX model."""
         from stropha.config import reset_config
-        yaml_path = isolated_test_env / "stropha.yaml"
-        yaml_path.write_text("""
+        cfg_dir = isolated_test_env / ".stropha"
+        cfg_dir.mkdir(exist_ok=True)
+        (cfg_dir / "config.yaml").write_text("""
 inference:
   mlx_model: yaml-model
 """)
@@ -122,12 +123,16 @@ class TestOllamaBackend:
         assert backend._base_url == "http://custom:1234"
 
     def test_env_var_host_override(self, isolated_test_env):
-        """OLLAMA_HOST env var still works for ecosystem compatibility."""
+        """YAML ollama_host can override the default Ollama host."""
         from stropha.config import reset_config
-        with patch.dict(os.environ, {"OLLAMA_HOST": "http://env-host:5678"}):
-            reset_config()  # Reload config to pick up env var
-            backend = OllamaBackend()
-            assert backend._base_url == "http://env-host:5678"
+        cfg_dir = isolated_test_env / ".stropha"
+        cfg_dir.mkdir(exist_ok=True)
+        (cfg_dir / "config.yaml").write_text(
+            "inference:\n  ollama_host: http://yaml-host:5678\n"
+        )
+        reset_config()  # Reload config to pick up YAML
+        backend = OllamaBackend()
+        assert backend._base_url == "http://yaml-host:5678"
 
     def test_is_available_returns_false_on_connection_error(self):
         with patch("stropha.inference.ollama_backend.urllib_request.urlopen") as mock:
@@ -177,8 +182,9 @@ class TestGetBackend:
     def test_yaml_config_backend_override(self, isolated_test_env):
         """YAML config can select backend."""
         from stropha.config import reset_config
-        yaml_path = isolated_test_env / "stropha.yaml"
-        yaml_path.write_text("""
+        cfg_dir = isolated_test_env / ".stropha"
+        cfg_dir.mkdir(exist_ok=True)
+        (cfg_dir / "config.yaml").write_text("""
 inference:
   backend: ollama
 """)
@@ -323,14 +329,17 @@ class TestPerBackendBatchSizeYAMLParsing:
 
     def test_deepseek_batch_size_parsed_from_yaml(self, tmp_path, monkeypatch):
         import stropha.config as cfg_mod
+        from pathlib import Path
 
-        (tmp_path / "stropha.yaml").write_text(
+        cfg_dir = tmp_path / ".stropha"
+        cfg_dir.mkdir()
+        (cfg_dir / "config.yaml").write_text(
             "inference:\n"
             "  backend: deepseek\n"
             "  enricher_batch_size: 10\n"
             "  deepseek_batch_size: 5\n"
         )
-        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
         # Force a fresh load.
         cfg_mod.reset_config()
         cfg = cfg_mod.load_config()
@@ -341,13 +350,16 @@ class TestPerBackendBatchSizeYAMLParsing:
 
     def test_absent_per_backend_override_stays_none(self, tmp_path, monkeypatch):
         import stropha.config as cfg_mod
+        from pathlib import Path
 
-        (tmp_path / "stropha.yaml").write_text(
+        cfg_dir = tmp_path / ".stropha"
+        cfg_dir.mkdir()
+        (cfg_dir / "config.yaml").write_text(
             "inference:\n"
             "  backend: deepseek\n"
             "  enricher_batch_size: 10\n"
         )
-        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
         cfg_mod.reset_config()
         cfg = cfg_mod.load_config()
 
@@ -359,14 +371,17 @@ class TestPerBackendBatchSizeYAMLParsing:
     ):
         """A non-integer value parses to None → uses global enricher_batch_size."""
         import stropha.config as cfg_mod
+        from pathlib import Path
 
-        (tmp_path / "stropha.yaml").write_text(
+        cfg_dir = tmp_path / ".stropha"
+        cfg_dir.mkdir()
+        (cfg_dir / "config.yaml").write_text(
             "inference:\n"
             "  backend: deepseek\n"
             "  enricher_batch_size: 8\n"
             "  deepseek_batch_size: not-a-number\n"
         )
-        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
         cfg_mod.reset_config()
         cfg = cfg_mod.load_config()
 

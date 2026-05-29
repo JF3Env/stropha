@@ -187,7 +187,8 @@ def test_yaml_config_drives_confidence_filter(isolated_test_env, tmp_path: Path,
     from stropha.config import reset_config
     
     # Write config to the isolated env
-    yaml_path = isolated_test_env / "stropha.yaml"
+    (isolated_test_env / ".stropha").mkdir(exist_ok=True)
+    yaml_path = isolated_test_env / ".stropha" / "config.yaml"
     yaml_path.write_text("""
 graph:
   confidence: "EXTRACTED,INFERRED"

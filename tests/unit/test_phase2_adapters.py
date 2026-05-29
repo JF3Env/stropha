@@ -229,12 +229,13 @@ def test_builder_assembles_full_pipeline(tmp_path: Path) -> None:
 
 
 def test_builder_storage_path_alias_propagates(tmp_path: Path) -> None:
-    """STROPHA_INDEX_PATH must route into pipeline.storage.config.path."""
+    """CLI overrides must route into pipeline.storage.config.path."""
+    alias_db = str(tmp_path / "alias.db")
     resolved = load_pipeline_config(
         project_root=tmp_path,
-        environ={"STROPHA_INDEX_PATH": str(tmp_path / "alias.db")},
+        overrides={"storage": {"config": {"path": alias_db}}},
     )
-    assert resolved["storage"]["config"]["path"] == str(tmp_path / "alias.db")
+    assert resolved["storage"]["config"]["path"] == alias_db
 
 
 def test_builder_unknown_storage_adapter_raises(tmp_path: Path) -> None:

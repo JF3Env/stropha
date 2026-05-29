@@ -80,7 +80,8 @@ def test_cache_enabled_via_config() -> None:
 def test_cache_enabled_via_yaml(isolated_test_env) -> None:
     """Cache can be enabled via YAML config."""
     from stropha.config import reset_config
-    yaml_path = isolated_test_env / "stropha.yaml"
+    (isolated_test_env / ".stropha").mkdir(exist_ok=True)
+    yaml_path = isolated_test_env / ".stropha" / "config.yaml"
     yaml_path.write_text("""
 retrieval_features:
   cache_enabled: true

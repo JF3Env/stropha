@@ -1,26 +1,20 @@
 """Pipeline configuration loader.
 
-Cascading precedence (per ``docs/architecture/stropha-pipeline-adapters.md`` §5):
+Cascading precedence:
 
-    CLI overrides  >  Env vars  >  YAML file(s)  >  Built-in defaults
+    CLI overrides  >  YAML (~/.stropha/config.yaml)  >  Built-in defaults
 
-YAML lookup order: ``./stropha.yaml`` (project) then ``~/.stropha/config.yaml``
-(user). The project file wins on key conflict. Both are optional — no YAML
-means we fall back to env-only behavior identical to v0.1.0.
+Single config file: ``~/.stropha/config.yaml``.  No project-level override,
+no env-var overlay (``STROPHA_<STAGE>__<KEY>`` format removed), no legacy
+aliases.
 
-Env-var convention: ``STROPHA_<STAGE>__<KEY>__<SUBKEY>`` (``__`` separates
-levels). Legacy v0.1.0 vars (``STROPHA_INDEX_PATH``, ``STROPHA_LOCAL_EMBED_MODEL``,
-…) keep working as aliases per ADR-005.
-
-Phase 1 scope: only the ``embedder`` and ``enricher`` sections are
-adapter-aware. Other stages still come from ``stropha.config.Config``
-until Phases 2/3 migrate them.
+For embedder auto-resolution (adapter=None), the YAML ``secrets.voyage_api_key``
+field determines whether voyage or local is selected.
 """
 
 from __future__ import annotations
 
 import copy
-import os
 from pathlib import Path
 from typing import Any
 
@@ -46,7 +40,7 @@ _DEFAULTS: dict[str, dict[str, Any]] = {
             # WIN-296: cross-encoder reranker is default. Benchmark shows +26.7%
             # Recall@10 (0.50 → 0.63) over noop, with ~1.4s added latency per
             # query. Model is local ONNX (~1GB, downloaded on first use). Set
-            # reranker: null in stropha.yaml to disable.
+            # reranker: null in ~/.stropha/config.yaml to disable.
             "reranker": {
                 "adapter": "cross-encoder",
                 "config": {"model": "BAAI/bge-reranker-base"},
@@ -54,16 +48,6 @@ _DEFAULTS: dict[str, dict[str, Any]] = {
             "candidate_k": 50,
         },
     },
-}
-
-# Env var → (stage, dotted key inside `config`). When dotted key is empty
-# the env var sets the adapter name itself.
-_LEGACY_ALIASES: dict[str, tuple[str, str]] = {
-    "STROPHA_LOCAL_EMBED_MODEL": ("embedder", "model"),  # only honored when adapter=local
-    "STROPHA_VOYAGE_EMBED_MODEL": ("embedder", "model"),  # only honored when adapter=voyage
-    "STROPHA_VOYAGE_EMBED_DIM": ("embedder", "dim"),     # only honored when adapter=voyage
-    "STROPHA_INDEX_PATH": ("storage", "path"),
-    "STROPHA_MAX_FILE_BYTES": ("walker", "max_file_bytes"),
 }
 
 
@@ -76,15 +60,13 @@ def pipeline_config_from_dict(
 
     WIN-179: the Meta-Harness loop needs to score candidate configs in
     full isolation. ``load_pipeline_config`` reads
-    ``~/.stropha/config.yaml`` and ``./stropha.yaml`` and the env, so
-    two candidate evaluations on the same host would silently inherit
-    whatever the operator has in those files — fitness comparisons
-    become non-reproducible.
+    ``~/.stropha/config.yaml``, so two candidate evaluations on the
+    same host would silently inherit whatever the operator has in that
+    file — fitness comparisons become non-reproducible.
 
     This helper bypasses every external source. It deep-merges
-    ``overrides`` onto the built-in ``_DEFAULTS`` skeleton, runs the
-    embedder=None auto-resolution against an EMPTY environment (so the
-    default lands on ``local`` regardless of ``VOYAGE_API_KEY``), and
+    ``overrides`` onto the built-in ``_DEFAULTS`` skeleton, resolves
+    embedder=None to ``local`` (deterministic, no key lookup), and
     optionally materialises the storage path.
 
     Args:
@@ -102,8 +84,7 @@ def pipeline_config_from_dict(
     if overrides:
         _merge(cfg, overrides)
 
-    # Auto-resolve embedder=None — but use an EMPTY env so the call is
-    # deterministic regardless of VOYAGE_API_KEY on the host.
+    # Auto-resolve embedder=None to local (deterministic, no secrets lookup).
     if cfg["embedder"].get("adapter") is None:
         cfg["embedder"]["adapter"] = "local"
 
@@ -126,63 +107,44 @@ def load_pipeline_config(
     """Resolve the full pipeline config dict.
 
     Args:
-        project_root: dir to look for ``stropha.yaml`` (defaults to cwd).
+        project_root: Ignored — kept for call-site compatibility only.
+                      All config comes from ``~/.stropha/config.yaml``.
         overrides: CLI-level overrides, deep-merged last (highest priority).
-        environ: env-var snapshot (defaults to ``os.environ``); injected to
-                 make tests deterministic.
+        environ: Ignored — kept for call-site compatibility only.
+                 Env vars no longer influence pipeline config.
 
     Returns the resolved config in the form ``{"embedder": {...}, "enricher": {...}}``,
     where each section has ``adapter`` (str|None) and ``config`` (dict).
     """
-    env = environ if environ is not None else dict(os.environ)
+    if environ is not None:
+        log.debug("pipeline.config.environ_ignored", reason="env vars no longer used for pipeline config")
+
     cfg = copy.deepcopy(_DEFAULTS)
     sources: list[str] = []
 
-    # 1. User YAML (~/.stropha/config.yaml)
+    # 1. User YAML (~/.stropha/config.yaml) — the only config file.
     user_yaml = Path.home() / ".stropha" / "config.yaml"
     if user_yaml.is_file():
         _merge(cfg, _read_yaml(user_yaml))
         sources.append(str(user_yaml))
 
-    # 2. Project YAML (./stropha.yaml)
-    project = project_root or Path.cwd()
-    project_yaml = project / "stropha.yaml"
-    if project_yaml.is_file():
-        _merge(cfg, _read_yaml(project_yaml))
-        sources.append(str(project_yaml))
-
-    # 3. Env vars (new format)
-    env_overlay = _env_to_dict(env)
-    if env_overlay:
-        _merge(cfg, env_overlay)
-        sources.append("env")
-
-    # 4. CLI overrides (applied early so they win the adapter-auto-resolution).
+    # 2. CLI overrides (highest priority).
     if overrides:
         _merge(cfg, overrides)
         sources.append("cli")
 
-    # 5. Resolve embedder=None (auto pick voyage vs local). Must happen BEFORE
-    # legacy alias resolution because the aliases pick a target based on the
-    # active adapter.
+    # 3. Resolve embedder=None (auto pick voyage vs local).
+    #    Uses secrets.voyage_api_key from YAML (already loaded above via
+    #    the unified Config). We import here to avoid circular imports.
     if cfg["embedder"].get("adapter") is None:
-        if env.get("VOYAGE_API_KEY", "").strip():
-            cfg["embedder"]["adapter"] = "voyage"
-        else:
-            cfg["embedder"]["adapter"] = "local"
+        try:
+            from ..config import get_config
+            has_voyage = get_config().secrets.has_voyage
+        except Exception:
+            has_voyage = False
+        cfg["embedder"]["adapter"] = "voyage" if has_voyage else "local"
 
-    # 6. Legacy env aliases — applied LAST so they only patch the now-known
-    # adapter (e.g. STROPHA_VOYAGE_EMBED_MODEL only fires when adapter='voyage').
-    legacy_overlay = _legacy_env_to_dict(env, cfg)
-    if legacy_overlay:
-        _merge(cfg, legacy_overlay)
-        sources.append("env(legacy)")
-
-    # 7. Materialize the storage path NOW so it shows up in logs / `pipeline
-    # show` output. Without this the path stays implicit (resolved by the
-    # adapter's `default_factory` at build time) and silently diverges from
-    # what `Config.resolve_index_path()` reports. Belt-and-suspenders fix for
-    # the bug where the CLI wrote to ~/.stropha and the MCP read from ./.stropha.
+    # 4. Materialize the storage path so it shows up in logs / `pipeline show`.
     storage_cfg = cfg.setdefault("storage", {}).setdefault("config", {})
     if not storage_cfg.get("path"):
         from ..config.models import _default_index_path
@@ -205,87 +167,6 @@ def _read_yaml(path: Path) -> dict[str, Any]:
     if not isinstance(inner, dict):
         raise ConfigError(f"{path}: `pipeline` must be a mapping")
     return inner
-
-
-def _env_to_dict(env: dict[str, str]) -> dict[str, Any]:
-    """Translate ``STROPHA_<STAGE>__<KEY>__...`` into nested dict overlay.
-
-    ``STROPHA_<STAGE>`` (no double underscore) sets the adapter name.
-    """
-    out: dict[str, Any] = {}
-    for raw_key, raw_val in env.items():
-        if not raw_key.startswith("STROPHA_"):
-            continue
-        body = raw_key[len("STROPHA_"):]
-        if not body:
-            continue
-        # Reject the legacy single-underscore form by checking if the body
-        # looks like a known top-level stage with __ separator.
-        if "__" not in body:
-            # Could be `STROPHA_EMBEDDER` (adapter name) or any unrelated env.
-            stage = body.lower()
-            if stage in _DEFAULTS:
-                out.setdefault(stage, {})["adapter"] = raw_val
-            continue
-        parts = body.split("__")
-        stage = parts[0].lower()
-        if stage not in _DEFAULTS:
-            continue  # not ours — skip silently
-        # Remaining parts become the dotted path into `config`.
-        node = out.setdefault(stage, {}).setdefault("config", {})
-        for p in parts[1:-1]:
-            node = node.setdefault(p.lower(), {})
-        last = parts[-1].lower()
-        node[last] = _coerce(raw_val)
-    return out
-
-
-def _legacy_env_to_dict(env: dict[str, str], current: dict[str, Any]) -> dict[str, Any]:
-    """Map deprecated env vars onto the new shape. Logs a warning.
-
-    Caller MUST resolve adapter auto-selection before invoking this — the
-    aliases are routed strictly by ``current[stage]['adapter']`` to avoid
-    cross-adapter contamination (e.g. ``STROPHA_VOYAGE_EMBED_MODEL`` MUST
-    NOT leak into a ``local`` adapter's config).
-    """
-    out: dict[str, Any] = {}
-    for legacy_var, (stage, dotted) in _LEGACY_ALIASES.items():
-        if legacy_var not in env:
-            continue
-        active = current.get(stage, {}).get("adapter")
-        if legacy_var == "STROPHA_LOCAL_EMBED_MODEL" and active != "local":
-            continue
-        if legacy_var in ("STROPHA_VOYAGE_EMBED_MODEL", "STROPHA_VOYAGE_EMBED_DIM"):
-            if active != "voyage":
-                continue
-        node = out.setdefault(stage, {}).setdefault("config", {})
-        for p in dotted.split(".")[:-1]:
-            node = node.setdefault(p, {})
-        node[dotted.split(".")[-1]] = _coerce(env[legacy_var])
-        log.info(
-            "pipeline.config.legacy_alias",
-            from_var=legacy_var,
-            to_path=f"pipeline.{stage}.config.{dotted}",
-        )
-    return out
-
-
-def _coerce(value: str) -> Any:
-    """Cheap coercion for env-var strings to int/float/bool/str."""
-    lo = value.strip().lower()
-    if lo in ("true", "yes", "on"):
-        return True
-    if lo in ("false", "no", "off"):
-        return False
-    try:
-        return int(value)
-    except ValueError:
-        pass
-    try:
-        return float(value)
-    except ValueError:
-        pass
-    return value
 
 
 def _merge(dst: dict[str, Any], src: dict[str, Any]) -> None:

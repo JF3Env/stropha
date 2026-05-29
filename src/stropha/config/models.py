@@ -5,6 +5,10 @@ No other module should define configuration dataclasses or read environment
 variables directly — everything goes through the unified ``Config`` object
 returned by :func:`stropha.config.get_config`.
 
+All configuration is read from ``~/.stropha/config.yaml``, including secrets
+(API keys).  The only env vars still honoured are ``STROPHA_TARGET_REPO``
+(runtime argument) and ``STROPHA_HOOK_*`` (hook subprocess overrides).
+
 The structure is intentionally nested by concern so that adapters and
 modules ask for the section they care about (``cfg.retrieval_features``,
 ``cfg.paths``, …) rather than reaching for flat attributes.
@@ -18,7 +22,6 @@ nested sections.
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -76,7 +79,7 @@ class InferenceConfig:
     The ``deepseek_*`` and ``anthropic_*`` fields are opt-in cloud knobs
     — the backend is only selected when ``backend == "deepseek"`` or
     ``"anthropic"``. The API keys live in :class:`SecretsConfig`
-    (ENV only, never YAML).
+    (YAML: ``secrets``).
     """
 
     backend: str | None = None  # "mlx", "ollama", "deepseek", "anthropic", or None for auto-detect
@@ -187,24 +190,24 @@ def _default_index_path() -> Path:
 
 @dataclass(frozen=True)
 class PathsConfig:
-    """Filesystem paths (YAML: ``paths``; ENV fallback)."""
+    """Filesystem paths (YAML: ``paths``)."""
 
     target_repo: Path = field(default_factory=Path.cwd)
     index_path: Path = field(default_factory=_default_index_path)
 
     def resolve_index_path(self) -> Path:
-        """Expand ``~`` and env vars in the configured index path."""
-        return Path(os.path.expandvars(str(self.index_path))).expanduser()
+        """Expand ``~`` in the configured index path."""
+        return self.index_path.expanduser()
 
 
 # ---------------------------------------------------------------------------
-# Section: secrets (API keys — ENV only, never YAML)
+# Section: secrets (API keys — YAML: ``secrets``)
 # ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
 class SecretsConfig:
-    """API keys. ENV only — never persisted to YAML."""
+    """API keys. Read from ``~/.stropha/config.yaml`` under ``secrets:``."""
 
     voyage_api_key: str | None = None
     anthropic_api_key: str | None = None

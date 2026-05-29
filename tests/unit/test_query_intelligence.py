@@ -23,7 +23,8 @@ class TestHyDE:
     def test_hyde_returns_none_for_empty_query(self, isolated_test_env) -> None:
         """HyDE should return None for empty queries even when enabled."""
         from stropha.config import reset_config
-        yaml_path = isolated_test_env / "stropha.yaml"
+        (isolated_test_env / ".stropha").mkdir(exist_ok=True)
+        yaml_path = isolated_test_env / ".stropha" / "config.yaml"
         yaml_path.write_text("""
 retrieval_features:
   hyde_enabled: true
@@ -36,7 +37,8 @@ retrieval_features:
     def test_hyde_calls_inference_backend(self, mock_gen: MagicMock, isolated_test_env) -> None:
         """HyDE should call inference backend when enabled."""
         from stropha.config import reset_config
-        yaml_path = isolated_test_env / "stropha.yaml"
+        (isolated_test_env / ".stropha").mkdir(exist_ok=True)
+        yaml_path = isolated_test_env / ".stropha" / "config.yaml"
         yaml_path.write_text("""
 retrieval_features:
   hyde_enabled: true
@@ -52,7 +54,8 @@ retrieval_features:
     def test_hyde_handles_inference_failure(self, mock_gen: MagicMock, isolated_test_env) -> None:
         """HyDE should return None when inference fails."""
         from stropha.config import reset_config
-        yaml_path = isolated_test_env / "stropha.yaml"
+        (isolated_test_env / ".stropha").mkdir(exist_ok=True)
+        yaml_path = isolated_test_env / ".stropha" / "config.yaml"
         yaml_path.write_text("""
 retrieval_features:
   hyde_enabled: true
@@ -67,7 +70,8 @@ retrieval_features:
     def test_hyde_handles_empty_response(self, mock_gen: MagicMock, isolated_test_env) -> None:
         """HyDE should return None when inference returns empty."""
         from stropha.config import reset_config
-        yaml_path = isolated_test_env / "stropha.yaml"
+        (isolated_test_env / ".stropha").mkdir(exist_ok=True)
+        yaml_path = isolated_test_env / ".stropha" / "config.yaml"
         yaml_path.write_text("""
 retrieval_features:
   hyde_enabled: true
@@ -91,7 +95,8 @@ class TestQueryRewrite:
     def test_rewrite_returns_none_for_empty_query(self, isolated_test_env) -> None:
         """Query rewriting should return None for empty queries even when enabled."""
         from stropha.config import reset_config
-        yaml_path = isolated_test_env / "stropha.yaml"
+        (isolated_test_env / ".stropha").mkdir(exist_ok=True)
+        yaml_path = isolated_test_env / ".stropha" / "config.yaml"
         yaml_path.write_text("""
 retrieval_features:
   query_rewrite_enabled: true
@@ -104,7 +109,8 @@ retrieval_features:
     def test_rewrite_calls_inference_backend(self, mock_gen: MagicMock, isolated_test_env) -> None:
         """Query rewriting should call inference backend when enabled."""
         from stropha.config import reset_config
-        yaml_path = isolated_test_env / "stropha.yaml"
+        (isolated_test_env / ".stropha").mkdir(exist_ok=True)
+        yaml_path = isolated_test_env / ".stropha" / "config.yaml"
         yaml_path.write_text("""
 retrieval_features:
   query_rewrite_enabled: true
@@ -121,7 +127,8 @@ retrieval_features:
     def test_rewrite_combines_original_and_expanded(self, mock_gen: MagicMock, isolated_test_env) -> None:
         """Query rewriting should combine original query with expanded terms."""
         from stropha.config import reset_config
-        yaml_path = isolated_test_env / "stropha.yaml"
+        (isolated_test_env / ".stropha").mkdir(exist_ok=True)
+        yaml_path = isolated_test_env / ".stropha" / "config.yaml"
         yaml_path.write_text("""
 retrieval_features:
   query_rewrite_enabled: true
@@ -139,7 +146,8 @@ retrieval_features:
     def test_rewrite_handles_inference_failure(self, mock_gen: MagicMock, isolated_test_env) -> None:
         """Query rewriting should return None when inference fails."""
         from stropha.config import reset_config
-        yaml_path = isolated_test_env / "stropha.yaml"
+        (isolated_test_env / ".stropha").mkdir(exist_ok=True)
+        yaml_path = isolated_test_env / ".stropha" / "config.yaml"
         yaml_path.write_text("""
 retrieval_features:
   query_rewrite_enabled: true
@@ -154,7 +162,8 @@ retrieval_features:
     def test_rewrite_truncates_long_output(self, mock_gen: MagicMock, isolated_test_env) -> None:
         """Query rewriting should truncate very long outputs."""
         from stropha.config import reset_config
-        yaml_path = isolated_test_env / "stropha.yaml"
+        (isolated_test_env / ".stropha").mkdir(exist_ok=True)
+        yaml_path = isolated_test_env / ".stropha" / "config.yaml"
         yaml_path.write_text("""
 retrieval_features:
   query_rewrite_enabled: true
@@ -301,7 +310,8 @@ class TestHybridRrfSearchIntegration:
         from stropha.adapters.retrieval.hybrid_rrf import HybridRrfConfig, HybridRrfRetrieval
         from stropha.config import reset_config
         
-        yaml_path = isolated_test_env / "stropha.yaml"
+        (isolated_test_env / ".stropha").mkdir(exist_ok=True)
+        yaml_path = isolated_test_env / ".stropha" / "config.yaml"
         yaml_path.write_text("""
 retrieval_features:
   hyde_enabled: true
@@ -347,7 +357,8 @@ retrieval_features:
         from stropha.adapters.retrieval.hybrid_rrf import HybridRrfConfig, HybridRrfRetrieval
         from stropha.config import reset_config
         
-        yaml_path = isolated_test_env / "stropha.yaml"
+        (isolated_test_env / ".stropha").mkdir(exist_ok=True)
+        yaml_path = isolated_test_env / ".stropha" / "config.yaml"
         yaml_path.write_text("""
 retrieval_features:
   query_rewrite_enabled: true

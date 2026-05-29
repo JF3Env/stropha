@@ -2,71 +2,46 @@
 
 We care about three guarantees:
 
-1. ``get_config_info()`` exposes every env var listed in §2.5 of CLAUDE.md, not
-   just the legacy four. New env vars must be registered.
-2. Source detection (``env`` vs ``dotenv`` vs ``default``) is accurate.
-3. Secrets are never leaked — they show as ``(set)`` or ``null``.
+1. ``get_config_info()`` exposes the env vars still in the registry
+   (STROPHA_TARGET_REPO + STROPHA_HOOK_*) and the YAML-backed settings.
+2. Secrets loaded from YAML are redacted in introspection output.
+3. Back-compat keys are preserved for existing callers.
 """
 
 from __future__ import annotations
 
 import os
+import textwrap
 
 import pytest
 
-from stropha.config import _ENV_REGISTRY, get_config_info, reset_config
+from stropha.config import _ENV_REGISTRY, get_config_info, load_config, reset_config
 
 
 @pytest.fixture(autouse=True)
-def _isolate_env(monkeypatch):
-    """Each test starts with a clean slate of stropha env vars."""
-    for var in _ENV_REGISTRY:
-        monkeypatch.delenv(var.name, raising=False)
+def _isolate(monkeypatch, tmp_path):
+    """Each test gets an isolated home dir so ~/.stropha/config.yaml is fresh."""
+    stropha_dir = tmp_path / ".stropha"
+    stropha_dir.mkdir()
+    monkeypatch.setenv("HOME", str(tmp_path))
+    # Remove any stale STROPHA_TARGET_REPO so tests start clean.
+    monkeypatch.delenv("STROPHA_TARGET_REPO", raising=False)
     reset_config()
     yield
     reset_config()
 
 
-def test_every_known_env_var_is_in_sources(monkeypatch, tmp_path):
-    """The registry MUST cover every env var the runtime consumes.
+def _write_config(tmp_path, content: str) -> None:
+    (tmp_path / ".stropha" / "config.yaml").write_text(textwrap.dedent(content))
 
-    If you add a new ``os.environ.get("STROPHA_FOO")`` somewhere in the code,
-    add a matching ``_EnvVar(...)`` row to the registry. Catch the drift here.
-    """
-    # Set one var so .env loading is skipped (deterministic test).
-    monkeypatch.setenv("STROPHA_INDEX_PATH", str(tmp_path / "x.db"))
 
+def test_registry_covers_hook_and_target_repo(tmp_path):
+    """The registry must cover STROPHA_TARGET_REPO and all STROPHA_HOOK_* vars."""
+    _write_config(tmp_path, "")
     info = get_config_info()
 
-    # At minimum the categories users care about must be present.
     expected = {
-        # Core
-        "STROPHA_INDEX_PATH", "STROPHA_TARGET_REPO", "STROPHA_LOG_LEVEL",
-        "STROPHA_MAX_FILE_BYTES",
-        # Embedders
-        "STROPHA_LOCAL_EMBED_MODEL", "STROPHA_VOYAGE_EMBED_MODEL",
-        "STROPHA_VOYAGE_EMBED_DIM", "VOYAGE_API_KEY", "ANTHROPIC_API_KEY",
-        # Inference
-        "STROPHA_INFERENCE_BACKEND", "STROPHA_OLLAMA_MODEL", "OLLAMA_HOST",
-        # Query intelligence
-        "STROPHA_HYDE_ENABLED", "STROPHA_HYDE_CODE_TUNED",
-        "STROPHA_QUERY_ROUTER_LLM",
-        "STROPHA_QUERY_DECOMPOSITION_ENABLED", "STROPHA_QUERY_REWRITE_ENABLED",
-        "STROPHA_MULTI_QUERY_ENABLED", "STROPHA_MULTI_QUERY_COUNT",
-        "STROPHA_ADAPTIVE_WEIGHTING",
-        # Cache
-        "STROPHA_QUERY_CACHE_ENABLED", "STROPHA_QUERY_CACHE_SIZE",
-        "STROPHA_QUERY_CACHE_TTL",
-        # Retrieval
-        "STROPHA_RECURSIVE_RETRIEVAL", "STROPHA_GRAPH_FTS_AUGMENT",
-        "STROPHA_GRAPH_CONFIDENCE", "STROPHA_GRAPHIFY_OUT",
-        # MCP watcher
-        "STROPHA_MCP_WATCH", "STROPHA_MCP_WATCH_INTERVAL",
-        "STROPHA_MCP_WATCH_DEBOUNCE",
-        # Git url cache
-        "STROPHA_GIT_URL_CACHE", "STROPHA_GIT_URL_TTL",
-        "STROPHA_RENAME_THRESHOLD",
-        # Hook
+        "STROPHA_TARGET_REPO",
         "STROPHA_HOOK_LOG", "STROPHA_HOOK_TIMEOUT", "STROPHA_HOOK_SKIP",
         "STROPHA_HOOK_UV", "STROPHA_HOOK_GRAPHIFY", "STROPHA_HOOK_NO_GRAPHIFY",
         "STROPHA_HOOK_PROJECT_DIR", "STROPHA_HOOK_INDEX_PATH",
@@ -75,41 +50,15 @@ def test_every_known_env_var_is_in_sources(monkeypatch, tmp_path):
     assert not missing, f"Missing from registry: {sorted(missing)}"
 
 
-def test_source_env_vs_default(monkeypatch, tmp_path):
-    """A var explicitly set before stropha starts MUST report source=env."""
-    monkeypatch.setenv("STROPHA_INDEX_PATH", str(tmp_path / "x.db"))
-    monkeypatch.setenv("STROPHA_HYDE_ENABLED", "1")
+def test_secrets_from_yaml_are_redacted(tmp_path):
+    """API keys in YAML must NEVER appear verbatim in the introspection output."""
+    _write_config(tmp_path, """
+        secrets:
+          voyage_api_key: "pa-secret-do-not-leak"
+          anthropic_api_key: "sk-also-secret"
+    """)
 
     info = get_config_info()
-    assert info["sources"]["STROPHA_HYDE_ENABLED"] == "env"
-    assert info["sources"]["STROPHA_QUERY_CACHE_ENABLED"] == "default"
-
-
-def test_env_values_fill_in_defaults(monkeypatch, tmp_path):
-    """When an env var is unset, ``env_values`` exposes the documented default.
-
-    This is the point of the registry — the agent calling the MCP tool should
-    see what the runtime will actually do, not just what was set.
-    """
-    monkeypatch.setenv("STROPHA_INDEX_PATH", str(tmp_path / "x.db"))
-
-    info = get_config_info()
-    assert info["env_values"]["STROPHA_HYDE_ENABLED"] == "0"
-    assert info["env_values"]["STROPHA_MULTI_QUERY_COUNT"] == "3"
-    assert info["env_values"]["STROPHA_QUERY_CACHE_TTL"] == "3600"
-    assert info["env_values"]["OLLAMA_HOST"] == "http://localhost:11434"
-
-
-def test_secrets_are_redacted(monkeypatch, tmp_path):
-    """API keys must NEVER appear verbatim in the introspection output."""
-    monkeypatch.setenv("STROPHA_INDEX_PATH", str(tmp_path / "x.db"))
-    monkeypatch.setenv("VOYAGE_API_KEY", "pa-secret-do-not-leak")
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-also-secret")
-
-    info = get_config_info()
-    assert info["env_values"]["VOYAGE_API_KEY"] == "(set)"
-    assert info["env_values"]["ANTHROPIC_API_KEY"] == "(set)"
-    # And in the settings dump.
     assert info["settings"]["voyage_api_key"] == "(set)"
     assert info["settings"]["anthropic_api_key"] == "(set)"
     # Defensive: the raw secret never appears anywhere in the structure.
@@ -118,10 +67,77 @@ def test_secrets_are_redacted(monkeypatch, tmp_path):
     assert "sk-also-secret" not in serialised
 
 
-def test_env_groups_partition_registry(monkeypatch, tmp_path):
-    """Every registered var must be reachable through ``env_groups`` exactly once."""
-    monkeypatch.setenv("STROPHA_INDEX_PATH", str(tmp_path / "x.db"))
+def test_secrets_absent_when_not_set(tmp_path):
+    """When secrets are not in YAML, introspection reports None."""
+    _write_config(tmp_path, "")
+    info = get_config_info()
+    assert info["settings"]["voyage_api_key"] is None
+    assert info["settings"]["anthropic_api_key"] is None
 
+
+def test_use_voyage_true_when_key_present(tmp_path):
+    """use_voyage must be True when voyage_api_key is set in YAML."""
+    _write_config(tmp_path, """
+        secrets:
+          voyage_api_key: "pa-test"
+    """)
+    info = get_config_info()
+    assert info["settings"]["use_voyage"] is True
+    assert info["config"]["use_voyage"] is True
+
+
+def test_use_voyage_false_without_key(tmp_path):
+    """use_voyage must be False when no voyage_api_key in YAML."""
+    _write_config(tmp_path, "")
+    info = get_config_info()
+    assert info["settings"]["use_voyage"] is False
+
+
+def test_paths_from_yaml(tmp_path):
+    """index_path and target_repo must come from YAML paths section."""
+    _write_config(tmp_path, f"""
+        paths:
+          index: {tmp_path}/.stropha/custom.db
+    """)
+    info = get_config_info()
+    assert "custom.db" in info["config"]["index_path"]
+
+
+def test_target_repo_env_override(tmp_path, monkeypatch):
+    """STROPHA_TARGET_REPO env var must still override the default target."""
+    _write_config(tmp_path, "")
+    monkeypatch.setenv("STROPHA_TARGET_REPO", str(tmp_path))
+    reset_config()
+
+    info = get_config_info()
+    assert info["config"]["target_repo"] == str(tmp_path)
+    assert info["sources"]["STROPHA_TARGET_REPO"] == "env"
+
+
+def test_back_compat_keys_preserved(tmp_path):
+    """Existing callers reading ``info['config']['…']`` must keep working."""
+    _write_config(tmp_path, "")
+    info = get_config_info()
+    legacy = info["config"]
+    for key in (
+        "index_path", "target_repo", "log_level", "max_file_bytes",
+        "use_voyage", "local_embed_model", "voyage_embed_model",
+        "voyage_embed_dim",
+    ):
+        assert key in legacy, f"Back-compat key {key!r} missing from info['config']"
+
+
+def test_settings_dump_has_mcp_fields(tmp_path):
+    """The ``settings`` block must expose MCP watcher fields."""
+    _write_config(tmp_path, "")
+    info = get_config_info()
+    for key in ("mcp_watch", "mcp_watch_interval", "mcp_watch_debounce"):
+        assert key in info["settings"], f"Field {key!r} missing from settings dump"
+
+
+def test_env_groups_partition_registry(tmp_path):
+    """Every registered var must be reachable through ``env_groups`` exactly once."""
+    _write_config(tmp_path, "")
     info = get_config_info()
     flattened: list[str] = []
     for group, vars_ in info["env_groups"].items():
@@ -133,25 +149,37 @@ def test_env_groups_partition_registry(monkeypatch, tmp_path):
     assert sorted(flattened) == sorted(info["sources"].keys())
 
 
-def test_back_compat_keys_preserved(monkeypatch, tmp_path):
-    """Existing callers reading ``info['config']['…']`` must keep working."""
-    monkeypatch.setenv("STROPHA_INDEX_PATH", str(tmp_path / "x.db"))
+def test_embedder_from_yaml(tmp_path):
+    """Embedder model settings are read from YAML, not env vars."""
+    _write_config(tmp_path, """
+        embedder:
+          voyage_model: voyage-code-3
+          voyage_dim: 1024
+          local_model: BAAI/bge-small-en-v1.5
+    """)
+    cfg = load_config()
+    assert cfg.embedder.voyage_model == "voyage-code-3"
+    assert cfg.embedder.voyage_dim == 1024
+    assert cfg.embedder.local_model == "BAAI/bge-small-en-v1.5"
 
-    info = get_config_info()
-    legacy = info["config"]
-    for key in (
-        "index_path", "target_repo", "log_level", "max_file_bytes",
-        "use_voyage", "local_embed_model", "voyage_embed_model",
-        "voyage_embed_dim",
-    ):
-        assert key in legacy
+
+def test_logging_from_yaml(tmp_path):
+    """Log level is read from YAML logging.level."""
+    _write_config(tmp_path, """
+        logging:
+          level: DEBUG
+    """)
+    cfg = load_config()
+    assert cfg.log_level == "DEBUG"
 
 
-def test_settings_dump_mirrors_pydantic_model(monkeypatch, tmp_path):
-    """The ``settings`` block exposes every Config field — future-proof."""
-    monkeypatch.setenv("STROPHA_INDEX_PATH", str(tmp_path / "x.db"))
-
-    info = get_config_info()
-    # MCP watcher fields are on Config but were missing from the legacy block.
-    for key in ("mcp_watch", "mcp_watch_interval", "mcp_watch_debounce"):
-        assert key in info["settings"], f"Pydantic field {key!r} missing from settings dump"
+def test_mcp_from_yaml(tmp_path):
+    """MCP watch settings are read from YAML."""
+    _write_config(tmp_path, """
+        mcp:
+          watch: false
+          watch_interval: 5.0
+    """)
+    cfg = load_config()
+    assert cfg.mcp_watch is False
+    assert cfg.mcp_watch_interval == 5.0
