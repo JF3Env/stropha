@@ -29,19 +29,15 @@ import os
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from collections import deque
-from dataclasses import dataclass, field
 
-from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.fastmcp import Context
 from pydantic import BaseModel, Field
 
 from . import __version__
 from .config import Config, get_config, get_config_info
-from .embeddings.base import Embedder
 from .errors import StrophaError
 from .logging import configure_logging, get_logger
 from .pipeline import build_stages, load_pipeline_config
-from .retrieval import SearchEngine
 from .retrieval.graph import (
     find_callers as graph_find_callers,
     find_rationale as graph_find_rationale,
@@ -55,20 +51,112 @@ from .retrieval.graph import (
 from .retrieval.savings import track_search_savings
 from .retrieval.smart_search import SmartSearchResult, smart_search
 from .meta.decorator import traced
-from .retrieval.graph import (
-    find_rationale as graph_find_rationale,
+from .server_discovery_tools import (
+    get_file_outline_impl,
+    get_symbol_impl,
+    list_repos_impl,
+    smart_search_tool_impl,
 )
-from .retrieval.graph import (
-    find_related as graph_find_related,
+from .server_graph_tools import (
+    assert_snippet_freshness_impl,
+    audit_citations_impl,
+    blast_radius_impl,
+    check_symbols_impl,
+    contract_tests_impl,
+    default_spec_loader as server_default_spec_loader,
+    find_callers_impl,
+    find_rationale_impl,
+    find_related_impl,
+    find_tests_for_impl,
+    get_community_impl,
+    spec_consistency_impl,
+    test_impact_impl,
+    trace_feature_impl,
+    verify_claim_impl,
 )
-from .retrieval.graph import (
-    get_community as graph_get_community,
+from .server_http import RestartTolerantFastMCP
+from .server_memory_tools import (
+    bootstrap_environment_impl,
+    cache_prune_impl,
+    cache_stats_impl,
+    check_staleness_impl,
+    co_occurrence_impl,
+    current_head_commit as server_current_head_commit,
+    entry_from_record,
+    episode_to_entry,
+    forget_impl,
+    recall_episodes_impl,
+    recall_impl,
+    record_episode_impl,
+    remember_impl,
+    resolve_target_repo_id as server_resolve_target_repo_id,
+    scratchpad_append_impl,
+    scratchpad_clear_impl,
+    scratchpad_read_impl,
+    scratchpad_write_impl,
 )
-from .retrieval.graph import (
-    graph_loaded,
-    has_rationale_edges,
+from .server_models import (
+    BootstrapResponse,
+    BlastRadiusResponse,
+    CitationAuditResponse,
+    CitationEntry,
+    ClaimAuditEntry,
+    CoOccurrenceResponse,
+    ContractTestEntry,
+    ContractTestsResponse,
+    CrossSessionCachePruneResponse,
+    CrossSessionCacheStats,
+    DetectedStackEntry,
+    EpisodeEntry,
+    ForgetResponse,
+    FreshnessResponse,
+    HallucinationGuardResponse,
+    ImpactedTestEntry,
+    ExpandChunkResponse,
+    ExpandChunksResponse,
+    FacetCounts,
+    MemoryEntry,
+    ListPinsResponse,
+    OutlineEntry,
+    PerSymbolCounts,
+    PinListEntry,
+    PinResponse,
+    RecallEpisodesResponse,
+    RecallResponse,
+    RecordEpisodeResponse,
+    RememberResponse,
+    RepoInfo,
+    RepoSummary,
+    ResetDedupResponse,
+    ScratchpadResponse,
+    SearchResponse,
+    SearchResult,
+    SpecConflictEntry,
+    SpecConsistencyResponse,
+    SpecInvariantEntry,
+    StalenessResponse,
+    SymbolCheckEntry,
+    SmartSearchResponse,
+    StatsPayload,
+    TestImpactResponse,
+    VerdictResponse,
 )
-from .storage import Storage
+from .server_search import apply_filters as server_apply_filters
+from .server_search import search_code_impl
+from .server_runtime import (
+    AppContext,
+    ctx_from_mcp,
+    lifespan as server_lifespan,
+    persist_session_state,
+)
+from .server_session_tools import (
+    expand_chunk_impl,
+    expand_chunks_impl,
+    list_pins_impl,
+    pin_chunks_impl,
+    reset_dedup_impl,
+    unpin_chunks_impl,
+)
 from .watch import WatchController
 
 log = get_logger(__name__)
@@ -76,213 +164,18 @@ log = get_logger(__name__)
 
 # ---- composition root ------------------------------------------------------
 
-@dataclass
-class AppContext:
-    """Long-lived dependencies, injected into every tool via the MCP Context.
-
-    ``built`` is the full :class:`BuiltStages` so MCP tools can introspect
-    every pipeline stage (walker, chunker, enricher, retrieval, reranker)
-    — not just storage + embedder. The ``get_config`` tool uses this to
-    render a comprehensive runtime snapshot for the calling agent.
-
-    ``session_id`` (WIN-160) is rotated on every ``mcp.startup`` — one uuid4
-    per process, recorded on every trace entry so the Meta-Harness outcome
-    labeler can detect engagement between correlated calls (tier T4).
-
-    ``seen_chunk_ids`` (WIN-217) tracks which chunks have been served to
-    the agent in this session, enabling session-scoped dedup on subsequent
-    searches. Reset via ``reset_dedup`` MCP tool.
-
-    ``pinned_chunk_ids`` (WIN-218) is the inverse: chunks the agent
-    explicitly wants kept across retrievals. Pinning wins over dedup
-    (pinned chunks are NEVER filtered out). Mutated via ``pin_chunks``
-    / ``unpin_chunks`` MCP tools.
-
-    ``client_id`` (WIN-221) — optional stable identifier the MCP
-    client provides via ``STROPHA_CLIENT_ID``. When set, the
-    Schema-v8 ``sessions`` row is resumed across server restarts so
-    seen + pinned sets survive process boundaries. When unset, each
-    process gets a fresh ephemeral session.
-
-    ``recent_queries`` (WIN-224) — ring buffer of the last N
-    ``search_code`` queries. Used when the agent passes
-    ``conversation_aware=True`` to bias retrieval toward the current
-    conversation thread instead of treating each query as amnesic.
-
-    ``scratchpad`` (WIN-229) — durable free-form working notes that
-    survive MCP-server restarts via the Schema-v12
-    ``sessions.scratchpad`` column. Mutated via the
-    ``scratchpad_*`` MCP tools.
-    """
-
-    config: Config
-    storage: Storage
-    embedder: Embedder
-    search_engine: SearchEngine
-    built: object  # BuiltStages; typed as object to avoid the heavy import here
-    session_id: str = ""
-    trace_recorder: object = None  # TraceRecorder | None; typed loose to avoid import cycles
-    bad_result_store: object = None  # BadResultStore | None — produces the T6 signal for the labeler
-    seen_chunk_ids: set[str] = field(default_factory=set)
-    pinned_chunk_ids: set[str] = field(default_factory=set)
-    client_id: str | None = None
-    recent_queries: deque[str] = field(
-        default_factory=lambda: deque(maxlen=5)
-    )
-    scratchpad: str = ""
-
-
 @asynccontextmanager
-async def _lifespan(app: FastMCP) -> AsyncIterator[AppContext]:
-    import uuid as _uuid
-    from pathlib import Path as _Path
-
-    from .meta import TraceRecorder as _TraceRecorder
-
-    # Use the centralized config singleton. It handles .env loading with proper
-    # precedence (env vars from MCP client override .env file values).
-    cfg = get_config()
-    configure_logging(cfg.log_level)
-    # WIN-160: one session_id per process, generated at mcp.startup. Logged
-    # immediately so the operator can correlate this run's events.
-    session_id = _uuid.uuid4().hex
-    log.info(
-        "mcp.startup",
+async def _lifespan(app: RestartTolerantFastMCP) -> AsyncIterator[AppContext]:
+    async with server_lifespan(
+        app,
         version=__version__,
-        index_path=str(cfg.resolve_index_path()),
-        target=str(cfg.target_repo),
-        mcp_watch=cfg.mcp_watch,
-        session_id=session_id,
-    )
-    # Route through the adapter framework so pipeline.embedder.adapter from
-    # stropha.yaml is honored (mlx, voyage, local, bge-m3, …). Without this
-    # the MCP server would diverge from `stropha index` / `stropha search`,
-    # which both go through build_stages().
-    resolved = load_pipeline_config()
-    built = build_stages(resolved)
-    embedder = built.embedder
-    storage = built.storage  # already open; sqlite-vec adapter subclass of Storage
-    engine = SearchEngine(storage, embedder)
-
-    # WIN-160: spin up the Meta-Harness trace recorder. Default location is
-    # ``<index_parent>/meta/traces/`` next to ``index.db`` so a single repo's
-    # meta state stays self-contained. WIN-161 will formalize the layout.
-    traces_dir = (
-        _Path(os.environ.get("STROPHA_TRACES_DIR"))
-        if os.environ.get("STROPHA_TRACES_DIR")
-        else _Path(cfg.resolve_index_path()).parent / "meta" / "traces"
-    )
-    try:
-        trace_recorder: object = _TraceRecorder(
-            base_dir=traces_dir, session_id=session_id
-        )
-    except OSError as exc:
-        # Trace recording is observability, not critical path. If we cannot
-        # open the directory (read-only fs, permission, …) log and continue.
-        log.warning("mcp.trace_recorder.disabled", error=str(exc))
-        trace_recorder = None
-
-    # WIN-163: bad-result feedback store. Lives next to traces under the
-    # same parent meta/ directory so the labeler can find it without
-    # extra plumbing.
-    from .meta.feedback import BadResultStore as _BadResultStore
-    try:
-        bad_result_store: object = _BadResultStore(base_dir=traces_dir.parent)
-    except OSError as exc:
-        log.warning("mcp.bad_result_store.disabled", error=str(exc))
-        bad_result_store = None
-
-    # Start background file watcher if enabled (default: on).
-    # This keeps the index fresh as the user edits files, so MCP queries
-    # always see recent changes without requiring a separate `stropha watch`.
-    watcher: WatchController | None = None
-    if cfg.mcp_watch:
-        watcher = WatchController(
-            repo=cfg.target_repo,
-            interval_s=cfg.mcp_watch_interval,
-            debounce_s=cfg.mcp_watch_debounce,
-            full_refresh=False,  # Light refresh; hook handles graphify
-        )
-        watcher.start()
-
-    # WIN-221 / EPIC 1.9: load the prior session row if a client_id is
-    # configured and a matching session exists. Otherwise the in-
-    # memory sets start empty and the row is created lazily on the
-    # first persistent mutation.
-    seen_chunk_ids: set[str] = set()
-    pinned_chunk_ids: set[str] = set()
-    client_id = os.environ.get("STROPHA_CLIENT_ID")
-    if client_id:
-        try:
-            prior_sessions = storage.list_sessions(
-                client_id=client_id, limit=1,
-            )
-        except Exception as exc:  # noqa: BLE001 — defensive
-            log.warning("mcp.sessions.list_failed", error=str(exc))
-            prior_sessions = []
-        if prior_sessions:
-            prior = prior_sessions[0]
-            seen_chunk_ids = set(prior.seen_chunk_ids)
-            pinned_chunk_ids = set(prior.pinned_chunk_ids)
-            prior_scratchpad = prior.scratchpad or ""
-            # Reuse the same session_id so cross-restart correlation
-            # via the trace recorder stays cheap.
-            session_id = prior.session_id
-            log.info(
-                "mcp.sessions.resumed",
-                session_id=session_id,
-                client_id=client_id,
-                seen=len(seen_chunk_ids),
-                pinned=len(pinned_chunk_ids),
-                scratchpad_chars=len(prior_scratchpad),
-            )
-        else:
-            prior_scratchpad = ""
-    else:
-        prior_scratchpad = ""
-
-    app_ctx = AppContext(
-        config=cfg,
-        storage=storage,
-        embedder=embedder,
-        search_engine=engine,
-        built=built,
-        session_id=session_id,
-        trace_recorder=trace_recorder,
-        bad_result_store=bad_result_store,
-        seen_chunk_ids=seen_chunk_ids,
-        pinned_chunk_ids=pinned_chunk_ids,
-        client_id=client_id,
-        scratchpad=prior_scratchpad,
-    )
-    try:
+        get_config_fn=get_config,
+        configure_logging_fn=configure_logging,
+        load_pipeline_config_fn=load_pipeline_config,
+        build_stages_fn=build_stages,
+        watch_controller_cls=WatchController,
+    ) as app_ctx:
         yield app_ctx
-    finally:
-        if watcher is not None:
-            watcher.stop()
-        if trace_recorder is not None:
-            try:
-                trace_recorder.close()  # type: ignore[attr-defined]
-            except Exception as exc:  # noqa: BLE001 — defensive shutdown
-                log.warning("mcp.trace_recorder.close_failed", error=str(exc))
-        # WIN-221: persist the final session state so the next process
-        # picks up where we left off. We do this in ``finally`` so an
-        # exception during the MCP yield doesn't lose the working set.
-        # WIN-229 extends this to flush the scratchpad too — we read
-        # from the LIVE app_ctx (not the startup-time prior_scratchpad)
-        # so in-flight mutations during the session land on disk.
-        try:
-            storage.upsert_session(
-                session_id=session_id,
-                client_id=client_id,
-                seen_chunk_ids=app_ctx.seen_chunk_ids,
-                pinned_chunk_ids=app_ctx.pinned_chunk_ids,
-                scratchpad=app_ctx.scratchpad,
-            )
-        except Exception as exc:  # noqa: BLE001 — defensive shutdown
-            log.warning("mcp.sessions.persist_failed", error=str(exc))
-        log.info("mcp.shutdown", session_id=session_id)
-        storage.close()
 
 
 _INSTRUCTIONS = """\
@@ -327,7 +220,7 @@ to bootstrap.
 """
 
 
-mcp = FastMCP(
+mcp = RestartTolerantFastMCP(
     name="stropha_rag",
     instructions=_INSTRUCTIONS,
     lifespan=_lifespan,
@@ -345,199 +238,14 @@ async def _health_check(request):  # noqa: ANN001, ARG001
 
 # ---- response models --------------------------------------------------------
 
-class RepoInfo(BaseModel):
-    """Source-repo identity attached to every search result.
-
-    A client can run `git clone {url}` (when `url` is non-null) to obtain
-    the source tree, then check out `default_branch` (or `head_commit`).
-    """
-
-    normalized_key: str = Field(
-        description="Stable cross-user key (e.g. 'github.com/foo/bar')."
-    )
-    url: str | None = Field(default=None, description="HTTPS clone URL for remote access.")
-    local_path: str | None = Field(
-        default=None,
-        description=(
-            "Absolute filesystem path to the repo root on the indexer host. "
-            "Combined with 'path' gives the full local file path."
-        ),
-    )
-    default_branch: str | None = None
-    head_commit: str | None = None
-
-
-class SearchResult(BaseModel):
-    rank: int
-    score: float = Field(description="Hybrid (RRF) score; higher = more relevant.")
-    path: str = Field(description="File path relative to the repo root.")
-    start_line: int
-    end_line: int
-    language: str
-    kind: str = Field(description="file | class | method | function | section | scenario | …")
-    symbol: str | None = None
-    snippet: str = Field(description="Truncated preview. Use Read tool for full content.")
-    chunk_id: str
-    repo: RepoInfo | None = Field(
-        default=None,
-        description="Source repository identity (URL, branch, HEAD).",
-    )
-    # WIN-214 — per-hit provenance. Tells the agent WHICH retrieval
-    # streams contributed to this hit so it can self-audit context.
-    # e.g. {"dense": 0.0164, "sparse": 0.0162} means dense + sparse
-    # both surfaced the chunk via RRF; a symbol-only hit would have
-    # {"symbol": <score>} and signal a literal-match.
-    streams: dict[str, float] | None = Field(
-        default=None,
-        description=(
-            "WIN-214: per-stream RRF contributions when the hit came "
-            "from a fused retrieval. Keys: dense | sparse | symbol | "
-            "graph-vec. None for single-stream short-circuit hits "
-            "where no fusion happened."
-        ),
-    )
-
-
-class FacetCounts(BaseModel):
-    """Counts per facet dimension, computed from search results."""
-
-    language: dict[str, int] = Field(
-        default_factory=dict,
-        description="Count of results per language (e.g. {'python': 15, 'java': 8}).",
-    )
-    kind: dict[str, int] = Field(
-        default_factory=dict,
-        description="Count of results per chunk kind (e.g. {'method': 20, 'class': 5}).",
-    )
-    repo: dict[str, int] = Field(
-        default_factory=dict,
-        description="Count of results per repository.",
-    )
-
-
-class SearchResponse(BaseModel):
-    results: list[SearchResult]
-    total_candidates: int = Field(
-        description="Total candidates considered before fusion (sum of dense + sparse top-50)."
-    )
-    query: str
-    facets: FacetCounts | None = Field(
-        default=None,
-        description="Facet counts when include_facets=True. Shows distribution by language, kind, repo.",
-    )
-    # WIN-208 — token-budget packing observability. Populated only when
-    # the caller passed ``context_budget``; left at defaults otherwise so
-    # the legacy response shape is unchanged.
-    spilled_count: int = Field(
-        default=0,
-        description=(
-            "WIN-208: number of hits that fell off the tail because "
-            "context_budget was tight. 0 when no packing was requested."
-        ),
-    )
-    truncated_oversize: bool = Field(
-        default=False,
-        description=(
-            "WIN-208: True when the single top hit exceeds context_budget "
-            "and was returned anyway (escape hatch to avoid empty result)."
-        ),
-    )
-
-
-class OutlineEntry(BaseModel):
-    chunk_id: str
-    kind: str
-    symbol: str | None
-    parent_chunk_id: str | None
-    start_line: int
-    end_line: int
-
-
-class RepoSummary(BaseModel):
-    """One entry in the `list_repos` response.
-
-    Includes both the git origin URL and local filesystem path for each
-    repo, so callers can access files via either method.
-    """
-
-    normalized_key: str
-    url: str | None = Field(default=None, description="HTTPS clone URL for remote access.")
-    local_path: str | None = Field(
-        default=None,
-        description="Absolute filesystem path to the repo root on the indexer host.",
-    )
-    default_branch: str | None = None
-    head_commit: str | None = None
-    files: int
-    chunks: int
-    last_indexed_at: str | None
-
-
-class StatsPayload(BaseModel):
-    db_path: str
-    size_bytes: int
-    chunks: int
-    files: int
-    index_dim: int
-    models: list[dict]
-    repos: list[RepoSummary] = Field(default_factory=list)
-    enrichers: list[dict] = Field(default_factory=list)
-    enrichment_cache_size: int = 0
-    graph: dict | None = Field(
-        default=None,
-        description="Graphify mirror summary (None when no graph loaded).",
-    )
-
-
 # ---- helpers ---------------------------------------------------------------
 
 def _ctx(mcp_ctx: Context) -> AppContext:
-    """Pull the AppContext out of an MCP Context and bind session_id to logs.
-
-    WIN-160: ``structlog.contextvars.bind_contextvars`` makes ``session_id``
-    appear on every structlog event emitted while this request is in flight,
-    without each tool having to remember to pass it. The bind is per-thread
-    (Python's contextvars semantics), so concurrent MCP calls do not bleed
-    each other's session ids.
-    """
-    import structlog
-
-    app: AppContext = mcp_ctx.request_context.lifespan_context
-    if app.session_id:
-        structlog.contextvars.bind_contextvars(session_id=app.session_id)
-    return app
+    return ctx_from_mcp(mcp_ctx)
 
 
 def _persist_session_state(app: AppContext) -> None:
-    """Write-through the current AppContext session state to storage.
-
-    WIN-221 / EPIC 1.9 — every mutation of ``seen_chunk_ids`` or
-    ``pinned_chunk_ids`` calls here so a process crash never loses
-    more than the last call's worth of state. The persistence is
-    GATED on ``client_id`` being set: without a stable identifier
-    we can't rejoin the row across restarts, so paying the write
-    cost serves no purpose.
-
-    Defensive: a write failure (read-only fs, disk full, …) is
-    logged but does not propagate — the agent's MCP call must
-    succeed even when persistence is degraded.
-    """
-    if not app.client_id:
-        return
-    try:
-        app.storage.upsert_session(
-            session_id=app.session_id,
-            client_id=app.client_id,
-            seen_chunk_ids=app.seen_chunk_ids,
-            pinned_chunk_ids=app.pinned_chunk_ids,
-            scratchpad=app.scratchpad,
-        )
-    except Exception as exc:  # noqa: BLE001 — defensive
-        log.warning(
-            "mcp.sessions.persist_failed",
-            session_id=app.session_id,
-            error=str(exc),
-        )
+    persist_session_state(app)
 
 
 def _to_result(hit) -> SearchResult:  # type: ignore[no-untyped-def]
@@ -583,27 +291,13 @@ def _apply_filters(
     Note: This is post-filtering on already-retrieved candidates. For large
     result sets, pre-filtering in SQL would be more efficient (future work).
     """
-    result = hits
-    
-    if language:
-        lang_set = {lang.lower() for lang in language}
-        result = [h for h in result if h.language.lower() in lang_set]
-    
-    if path_prefix:
-        result = [h for h in result if h.rel_path.startswith(path_prefix)]
-    
-    if kind:
-        kind_set = {k.lower() for k in kind}
-        result = [h for h in result if h.kind.lower() in kind_set]
-    
-    if exclude_tests:
-        test_patterns = ("test_", "_test.", ".test.", "/tests/", "/test/", "Test.")
-        result = [
-            h for h in result
-            if not any(p in h.rel_path for p in test_patterns)
-        ]
-    
-    return result
+    return server_apply_filters(
+        hits,
+        language=language,
+        path_prefix=path_prefix,
+        kind=kind,
+        exclude_tests=exclude_tests,
+    )
 
 
 @mcp.tool(
@@ -688,234 +382,33 @@ def search_code(
             queries like "tests for it" carry implicit references
             from earlier turns into the dense match.
     """
-    import os
-
     from .tools.git_url import is_git_url, search_git_url
-
-    app = _ctx(ctx)
-    top_k = max(1, min(top_k, 30))
-
-    # Enable recursive retrieval for this search if requested
-    prev_recursive = os.environ.get("STROPHA_RECURSIVE_RETRIEVAL")
-    if recursive:
-        os.environ["STROPHA_RECURSIVE_RETRIEVAL"] = "1"
-
-    # Fetch more candidates when filtering to ensure we get enough results
-    has_filters = any([language, path_prefix, kind, exclude_tests])
-    fetch_k = top_k * 3 if has_filters else top_k
-
-    # WIN-224: build the conversation context BEFORE the search so the
-    # SearchEngine can blend it into the dense embedding. The current
-    # query is NOT included in the context (it goes directly to the
-    # engine), only the prior turns. We add the current query to the
-    # ring buffer AFTER the search so the next call sees this query
-    # as part of its context window.
-    conversation_context: str | None = None
-    if conversation_aware and app.recent_queries:
-        # Join the last N queries with " | " separators so the
-        # embedder sees them as related-but-secondary signal.
-        conversation_context = " | ".join(app.recent_queries)
-
-    try:
-        # Handle remote git URL search
-        if repo_url and is_git_url(repo_url):
-            log.info("mcp.search_code.remote", repo_url=repo_url, refresh=refresh)
-            hits = search_git_url(query, repo_url, top_k=fetch_k, refresh=refresh)
-        else:
-            hits = app.search_engine.search(
-                query, top_k=fetch_k,
-                conversation_context=conversation_context,
-            )
-    except StrophaError as exc:
-        log.warning("mcp.search_code.error", error=str(exc))
-        return SearchResponse(results=[], total_candidates=0, query=query, facets=None)
-    finally:
-        # Restore previous env var state
-        if recursive:
-            if prev_recursive is None:
-                os.environ.pop("STROPHA_RECURSIVE_RETRIEVAL", None)
-            else:
-                os.environ["STROPHA_RECURSIVE_RETRIEVAL"] = prev_recursive
-
-    # Apply filters
-    if has_filters:
-        hits = _apply_filters(
-            hits,
-            language=language,
-            path_prefix=path_prefix,
-            kind=kind,
-            exclude_tests=exclude_tests,
-        )
-
-    # WIN-217: session-scoped dedup. Filter out chunks we've already
-    # served to this agent's session, then accumulate the survivors
-    # into the seen set so subsequent calls skip them too. The
-    # ``seen_chunk_ids`` set lives on AppContext and is the MVP backing
-    # store; EPIC 1.9 (WIN-221) will swap in the persistent Schema v8
-    # sessions table without touching this call site.
-    #
-    # WIN-218 interaction: pinned chunk_ids are EXEMPT from dedup.
-    # The agent's pin signal is strictly stronger than "skip
-    # already-seen" — a pinned chunk should still be visible even
-    # after it was served once.
-    dedup_filtered = 0
-    if dedup and hits:
-        before = len(hits)
-        hits = [
-            h for h in hits
-            if h.chunk_id in app.pinned_chunk_ids
-            or h.chunk_id not in app.seen_chunk_ids
-        ]
-        dedup_filtered = before - len(hits)
-
-    # WIN-218: Prepend pinned chunks at the top of the result list.
-    # Resolves each pin via Storage.lookup_by_chunk_id (WIN-216) and
-    # splices into the head of ``hits``, deduped by chunk_id so a
-    # search result that's also pinned doesn't appear twice. Pinning
-    # is always-on (no opt-in flag) — once the agent has pinned, the
-    # signal applies until unpinned.
-    if app.pinned_chunk_ids:
-        from .retrieval.pinning import prepend_pins, resolve_pins
-
-        resolved = resolve_pins(app.storage, app.pinned_chunk_ids)
-        pinned_hits = [r.hit for r in resolved if r.found and r.hit is not None]
-        if pinned_hits:
-            hits = prepend_pins(pinned_hits, hits)
-
-    # Compute facets before truncating (on filtered results)
-    facets: FacetCounts | None = None
-    if include_facets and hits:
-        chunk_ids = [h.chunk_id for h in hits]
-        facet_data = app.storage.compute_facets(chunk_ids)
-        facets = FacetCounts(
-            language=facet_data["language"],
-            kind=facet_data["kind"],
-            repo=facet_data["repo"],
-        )
-
-    # Truncate to requested top_k
-    hits = hits[:top_k]
-
-    # WIN-210: Extractive compression of each hit's snippet — keep
-    # the signature, matched lines, small context window. Applied
-    # BEFORE budget packing so the budget reflects compressed cost.
-    if compress and hits:
-        from .retrieval.compression import compress_hits
-
-        hits = compress_hits(hits, query)
-
-    # WIN-213: Relevance decay (per-rank card schedule) wins over
-    # card_level when both are set — the agent explicitly asked for
-    # graduated detail per rank, which is more specific than a single
-    # uniform level.
-    if relevance_decay and hits:
-        from .retrieval.cards import apply_relevance_decay
-
-        hits = apply_relevance_decay(hits)
-    # WIN-212: Apply card-level rendering BEFORE packing so the budget
-    # reflects the smaller per-hit cost. "full" is a no-op pass-through.
-    elif card_level != "full" and hits:
-        from .retrieval.cards import ALLOWED_LEVELS, apply_level_to_snippets
-
-        if card_level not in ALLOWED_LEVELS:
-            log.warning(
-                "mcp.search_code.bad_card_level",
-                level=card_level, allowed=list(ALLOWED_LEVELS),
-            )
-        else:
-            # type narrowed by the membership check above
-            hits = apply_level_to_snippets(hits, card_level)  # type: ignore[arg-type]
-
-    # WIN-208: Greedy-pack to ``context_budget`` AFTER top_k truncation.
-    # Done at the MCP layer (not inside SearchEngine.search) so the
-    # facet computation above sees the full top_k slice — facet counts
-    # describe what was *available* before packing, not what survived.
-    # The CLI search wires the budget via the engine's own packing path
-    # since it doesn't compute facets.
-    spilled_count = 0
-    truncated_oversize = False
-    if context_budget is not None and context_budget > 0:
-        from .retrieval.packing import pack_to_budget
-
-        pack = pack_to_budget(hits, context_budget)
-        hits = pack.packed
-        spilled_count = len(pack.spilled)
-        truncated_oversize = pack.truncated
-        log.info(
-            "mcp.search_code.packed",
-            budget=context_budget,
-            total_tokens=pack.total_tokens,
-            packed=len(hits),
-            spilled=spilled_count,
-            truncated=truncated_oversize,
-        )
-
-    # WIN-158: Track token savings so `stropha cost` can report on RAG value.
-    # The producer at retrieval/savings.py emits a `search.served` structlog
-    # event which the consumer at cost.py:211 already aggregates. Wrapped in
-    # try/except so a savings-calc bug can never break a search response —
-    # this is an observability hook, not a critical path.
-    try:
-        track_search_savings(query, hits)
-    except Exception:
-        # Defensive: never fail a search response on a stats-tracking bug.
-        log.debug("search.savings.track_failed", exc_info=True)
-
-    # WIN-224: record the current query into the ring buffer so the
-    # NEXT conversation-aware call can see it as context. We append
-    # unconditionally (regardless of ``conversation_aware``) so the
-    # operator who toggles the flag on mid-session immediately gets
-    # useful context; the deque's maxlen caps memory growth.
-    if query and query.strip():
-        app.recent_queries.append(query.strip())
-
-    # WIN-217: After every filter/pack pass, accumulate the final
-    # response's chunk_ids into the session's seen set so subsequent
-    # `dedup=True` calls skip them. We only record when the caller
-    # opted in to dedup — opting out should be transparent.
-    #
-    # WIN-218 interaction: pinned chunks are NOT added to the seen
-    # set. They appear in results because of the explicit pin, not
-    # because the agent organically asked for them — treating them
-    # as "seen" would make a future unpin + dedup'd search drop
-    # them, which is the opposite of what the agent wants.
-    if dedup and hits:
-        new_seen = {
-            h.chunk_id for h in hits
-            if h.chunk_id not in app.pinned_chunk_ids
-        }
-        if new_seen:
-            app.seen_chunk_ids.update(new_seen)
-            # WIN-221: persist to Schema-v8 sessions row when the
-            # agent supplied a stable client_id. Without one, the
-            # session is ephemeral and persistence would be noise.
-            _persist_session_state(app)
-        log.info(
-            "mcp.search_code.dedup",
-            filtered_before_pack=dedup_filtered,
-            served=len(hits),
-            session_seen_total=len(app.seen_chunk_ids),
-            pinned=len(app.pinned_chunk_ids),
-        )
-
-    return SearchResponse(
-        results=[_to_result(h) for h in hits],
-        total_candidates=len(hits),
-        query=query,
-        facets=facets,
-        spilled_count=spilled_count,
-        truncated_oversize=truncated_oversize,
-    )
-
-
-# ---- reset_dedup (WIN-217) -------------------------------------------------
-
-
-class ResetDedupResponse(BaseModel):
-    """Outcome of clearing the session's seen-set."""
-
-    cleared: int = Field(
-        description="Number of chunk_ids removed from the seen set.",
+    return search_code_impl(
+        query,
+        top_k,
+        language,
+        path_prefix,
+        kind,
+        exclude_tests,
+        include_facets,
+        recursive,
+        repo_url,
+        refresh,
+        context_budget,
+        compress,
+        card_level,
+        relevance_decay,
+        dedup,
+        conversation_aware,
+        _ctx(ctx),
+        to_result=_to_result,
+        persist_session_state=_persist_session_state,
+        track_search_savings_fn=track_search_savings,
+        is_git_url_fn=is_git_url,
+        search_git_url_fn=search_git_url,
+        apply_filters_fn=_apply_filters,
+        stropha_error_cls=StrophaError,
+        log=log,
     )
 
 
@@ -933,56 +426,11 @@ class ResetDedupResponse(BaseModel):
 @traced("reset_dedup")
 def reset_dedup(*, ctx: Context) -> ResetDedupResponse:
     """Drop every chunk_id from the session's seen-set."""
-    app = _ctx(ctx)
-    count = len(app.seen_chunk_ids)
-    app.seen_chunk_ids.clear()
-    _persist_session_state(app)
-    log.info("mcp.reset_dedup", cleared=count, session_id=app.session_id)
-    return ResetDedupResponse(cleared=count)
-
-
-# ---- pin_chunks / unpin_chunks / list_pins (WIN-218) ------------------------
-
-
-class PinResponse(BaseModel):
-    """Outcome of a pin/unpin mutation."""
-
-    pinned: list[str] = Field(
-        description="Chunk ids currently pinned after this operation.",
+    return reset_dedup_impl(
+        _ctx(ctx),
+        persist_session_state=_persist_session_state,
+        log=log,
     )
-    added: int = Field(
-        default=0,
-        description="How many ids the call added to the pin set.",
-    )
-    removed: int = Field(
-        default=0,
-        description="How many ids the call removed from the pin set.",
-    )
-
-
-class PinListEntry(BaseModel):
-    """One entry in the ``list_pins`` response."""
-
-    chunk_id: str
-    found: bool = Field(
-        description=(
-            "True when the pinned id resolved to a stored chunk. "
-            "False usually means the index was rebuilt since the "
-            "pin was set."
-        ),
-    )
-    result: SearchResult | None = Field(
-        default=None,
-        description="Resolved chunk metadata when found=True.",
-    )
-
-
-class ListPinsResponse(BaseModel):
-    """Response payload for ``list_pins``."""
-
-    entries: list[PinListEntry]
-    found_count: int
-    missing_count: int
 
 
 @mcp.tool(
@@ -1001,21 +449,11 @@ class ListPinsResponse(BaseModel):
 @traced("pin_chunks")
 def pin_chunks(chunk_ids: list[str], *, ctx: Context) -> PinResponse:
     """Add ``chunk_ids`` to the session's pin set."""
-    app = _ctx(ctx)
-    before = len(app.pinned_chunk_ids)
-    app.pinned_chunk_ids.update(chunk_ids)
-    added = len(app.pinned_chunk_ids) - before
-    if added:
-        _persist_session_state(app)
-    log.info(
-        "mcp.pin_chunks",
-        added=added,
-        total=len(app.pinned_chunk_ids),
-        session_id=app.session_id,
-    )
-    return PinResponse(
-        pinned=sorted(app.pinned_chunk_ids),
-        added=added,
+    return pin_chunks_impl(
+        chunk_ids,
+        _ctx(ctx),
+        persist_session_state=_persist_session_state,
+        log=log,
     )
 
 
@@ -1032,21 +470,11 @@ def pin_chunks(chunk_ids: list[str], *, ctx: Context) -> PinResponse:
 @traced("unpin_chunks")
 def unpin_chunks(chunk_ids: list[str], *, ctx: Context) -> PinResponse:
     """Drop ``chunk_ids`` from the session's pin set."""
-    app = _ctx(ctx)
-    before = len(app.pinned_chunk_ids)
-    app.pinned_chunk_ids.difference_update(chunk_ids)
-    removed = before - len(app.pinned_chunk_ids)
-    if removed:
-        _persist_session_state(app)
-    log.info(
-        "mcp.unpin_chunks",
-        removed=removed,
-        total=len(app.pinned_chunk_ids),
-        session_id=app.session_id,
-    )
-    return PinResponse(
-        pinned=sorted(app.pinned_chunk_ids),
-        removed=removed,
+    return unpin_chunks_impl(
+        chunk_ids,
+        _ctx(ctx),
+        persist_session_state=_persist_session_state,
+        log=log,
     )
 
 
@@ -1062,44 +490,7 @@ def unpin_chunks(chunk_ids: list[str], *, ctx: Context) -> PinResponse:
 @traced("list_pins")
 def list_pins(*, ctx: Context) -> ListPinsResponse:
     """Resolve every pinned chunk_id into a structured response."""
-    from .retrieval.pinning import resolve_pins
-
-    app = _ctx(ctx)
-    resolved = resolve_pins(app.storage, app.pinned_chunk_ids)
-    entries: list[PinListEntry] = []
-    found = 0
-    for r in resolved:
-        if r.found and r.hit is not None:
-            entries.append(
-                PinListEntry(
-                    chunk_id=r.chunk_id, found=True,
-                    result=_to_result(r.hit),
-                )
-            )
-            found += 1
-        else:
-            entries.append(
-                PinListEntry(chunk_id=r.chunk_id, found=False, result=None)
-            )
-    return ListPinsResponse(
-        entries=entries,
-        found_count=found,
-        missing_count=len(entries) - found,
-    )
-
-
-# ---- smart search (query routing) ------------------------------------------
-
-class SmartSearchResponse(BaseModel):
-    """Response from smart_search with routing metadata."""
-    results: list[SearchResult]
-    total_candidates: int
-    query: str
-    intent: str = Field(description="Detected query intent (find_callers, find_tests_for, search_code, etc.)")
-    symbol: str | None = Field(default=None, description="Extracted symbol name, if any")
-    tool_used: str = Field(description="The actual tool invoked (find_callers, search_code, etc.)")
-    confidence: float = Field(description="Routing confidence (0.0-1.0)")
-    graph_available: bool = Field(default=True, description="Whether the graph is loaded")
+    return list_pins_impl(_ctx(ctx), to_result=_to_result)
 
 
 @mcp.tool(
@@ -1131,45 +522,16 @@ def smart_search_tool(
         top_k: 1–30. Default 10.
         use_llm_router: If True, use LLM for ambiguous queries (slower but more accurate).
     """
-    app = _ctx(ctx)
-    top_k = max(1, min(top_k, 30))
-    
-    try:
-        # WIN-234: pass the configured router stage so the dispatch
-        # uses the operator's chosen policy. Falls back to the
-        # legacy ``route_query`` when no router was built.
-        configured_router = getattr(app.built, "router", None)
-        result = smart_search(
-            query,
-            app.storage,
-            app.embedder,
-            top_k=top_k,
-            use_router=True,
-            use_llm_router=use_llm_router,
-            router=configured_router,
-        )
-        return SmartSearchResponse(
-            results=[_to_result(h) for h in result.hits],
-            total_candidates=len(result.hits),
-            query=query,
-            intent=result.routed.intent.value,
-            symbol=result.routed.symbol,
-            tool_used=result.tool_used,
-            confidence=result.routed.confidence,
-            graph_available=graph_loaded(app.storage),
-        )
-    except StrophaError as exc:
-        log.warning("mcp.smart_search.error", error=str(exc))
-        return SmartSearchResponse(
-            results=[],
-            total_candidates=0,
-            query=query,
-            intent="search_code",
-            symbol=None,
-            tool_used="search_code",
-            confidence=0.0,
-            graph_available=graph_loaded(app.storage),
-        )
+    return smart_search_tool_impl(
+        query,
+        top_k,
+        use_llm_router,
+        _ctx(ctx),
+        to_result=_to_result,
+        smart_search_fn=smart_search,
+        graph_loaded_fn=graph_loaded,
+        log=log,
+    )
 
 
 @mcp.tool(
@@ -1186,9 +548,7 @@ def smart_search_tool(
 @traced("get_symbol")
 def get_symbol(symbol: str, limit: int = 5, *, ctx: Context) -> list[SearchResult]:
     """Find by symbol name. Returns up to `limit` matches, exact-match first."""
-    app = _ctx(ctx)
-    hits = app.storage.lookup_by_symbol(symbol, limit=max(1, min(limit, 20)))
-    return [_to_result(h) for h in hits]
+    return get_symbol_impl(symbol, limit, _ctx(ctx), to_result=_to_result)
 
 
 @mcp.tool(
@@ -1206,20 +566,7 @@ def list_repos(*, ctx: Context) -> list[RepoSummary]:
     Returns both the git origin URL and local filesystem path for each
     repo, so callers can access files via either method.
     """
-    app = _ctx(ctx)
-    return [
-        RepoSummary(
-            normalized_key=r.normalized_key,
-            url=r.url,
-            local_path=r.local_path,
-            default_branch=r.default_branch,
-            head_commit=r.head_commit,
-            files=r.files,
-            chunks=r.chunks,
-            last_indexed_at=r.last_indexed_at,
-        )
-        for r in app.storage.list_repos()
-    ]
+    return list_repos_impl(_ctx(ctx))
 
 
 @mcp.tool(
@@ -1235,36 +582,7 @@ def list_repos(*, ctx: Context) -> list[RepoSummary]:
 @traced("get_file_outline")
 def get_file_outline(path: str, *, ctx: Context) -> list[OutlineEntry]:
     """Return the chunk-level outline of a file path (repo-relative)."""
-    app = _ctx(ctx)
-    rows = app.storage.file_outline(path)
-    return [
-        OutlineEntry(
-            chunk_id=r["chunk_id"],
-            kind=r["kind"],
-            symbol=r["symbol"],
-            parent_chunk_id=r["parent_chunk_id"],
-            start_line=int(r["start_line"]),
-            end_line=int(r["end_line"]),
-        )
-        for r in rows
-    ]
-
-
-# ---- expand_chunk(s) — just-in-time dereferencing (WIN-216) ----------------
-
-
-class ExpandChunkResponse(BaseModel):
-    """Single ``expand_chunk`` payload: either the resolved hit, or
-    a not-found marker."""
-
-    chunk_id: str
-    found: bool = Field(
-        description="True when the chunk_id resolved to a stored chunk.",
-    )
-    result: SearchResult | None = Field(
-        default=None,
-        description="The resolved chunk as a SearchResult, or null when missing.",
-    )
+    return get_file_outline_impl(path, _ctx(ctx))
 
 
 @mcp.tool(
@@ -1300,34 +618,7 @@ def expand_chunk(
         :class:`ExpandChunkResponse` with ``found`` and (when found)
         the rendered :class:`SearchResult`.
     """
-    from .retrieval.cards import ALLOWED_LEVELS, apply_level_to_snippets
-
-    app = _ctx(ctx)
-    # Storage.get_chunk_by_id returns the raw chunk dict; we convert it
-    # to a SearchHit-shaped dict via the same path lookup_by_symbol uses.
-    hit = app.storage.lookup_by_chunk_id(chunk_id)
-    if hit is None:
-        return ExpandChunkResponse(chunk_id=chunk_id, found=False, result=None)
-    if card_level != "full" and card_level in ALLOWED_LEVELS:
-        hits = apply_level_to_snippets([hit], card_level)  # type: ignore[arg-type]
-        hit = hits[0]
-    return ExpandChunkResponse(
-        chunk_id=chunk_id,
-        found=True,
-        result=_to_result(hit),
-    )
-
-
-class ExpandChunksResponse(BaseModel):
-    """Batch ``expand_chunks`` payload."""
-
-    results: list[ExpandChunkResponse]
-    found_count: int = Field(
-        description="How many chunk_ids resolved successfully.",
-    )
-    missing_count: int = Field(
-        description="How many chunk_ids could not be resolved.",
-    )
+    return expand_chunk_impl(chunk_id, card_level, _ctx(ctx), to_result=_to_result)
 
 
 @mcp.tool(
@@ -1348,32 +639,7 @@ def expand_chunks(
     ctx: Context,
 ) -> ExpandChunksResponse:
     """Batch dereference. Returns a parallel list — one response per id."""
-    from .retrieval.cards import ALLOWED_LEVELS, apply_level_to_snippets
-
-    app = _ctx(ctx)
-    results: list[ExpandChunkResponse] = []
-    found = 0
-    for cid in chunk_ids:
-        hit = app.storage.lookup_by_chunk_id(cid)
-        if hit is None:
-            results.append(
-                ExpandChunkResponse(chunk_id=cid, found=False, result=None)
-            )
-            continue
-        if card_level != "full" and card_level in ALLOWED_LEVELS:
-            hits = apply_level_to_snippets([hit], card_level)  # type: ignore[arg-type]
-            hit = hits[0]
-        results.append(
-            ExpandChunkResponse(
-                chunk_id=cid, found=True, result=_to_result(hit),
-            )
-        )
-        found += 1
-    return ExpandChunksResponse(
-        results=results,
-        found_count=found,
-        missing_count=len(chunk_ids) - found,
-    )
+    return expand_chunks_impl(chunk_ids, card_level, _ctx(ctx), to_result=_to_result)
 
 
 # ---- graph tools (RFC §5 — Trilha A 1.5b) ----------------------------------
@@ -1397,104 +663,15 @@ def _graph_unavailable() -> dict:
 
 
 def _resolve_target_repo_id(app: AppContext) -> int | None:
-    """Resolve the configured target repo's ``repos.id`` for memory tools.
-
-    Project memory is repo-scoped (Schema v9 FK). We derive the
-    repo_id by detecting the target_repo's normalized_key and looking
-    it up. Returns ``None`` when the repo has never been indexed
-    (no row to anchor against).
-    """
-    from .ingest.git_meta import detect as _detect_repo
-
-    if app.config.target_repo is None:
-        return None
-    try:
-        identity = _detect_repo(app.config.target_repo)
-    except Exception as exc:  # noqa: BLE001 — defensive
-        log.warning(
-            "mcp.memory.detect_repo_failed", error=str(exc),
-        )
-        return None
-    return app.storage.lookup_repo_id(identity.normalized_key)
+    return server_resolve_target_repo_id(app, log=log)
 
 
 def _current_head_commit(app: AppContext) -> str | None:
-    """WIN-228 — fetch the target_repo's HEAD SHA for provenance.
-
-    Returns ``None`` on any git failure or when no target_repo is
-    configured. The memory write succeeds either way; provenance is
-    a hint, not a contract.
-    """
-    if app.config.target_repo is None:
-        return None
-    from .meta.provenance import current_head_commit
-
-    return current_head_commit(app.config.target_repo)
-
-
-class MemoryEntry(BaseModel):
-    """One ``project_memory`` row exposed to MCP clients."""
-
-    kind: str
-    key: str
-    value: str
-    source: str | None = None
-    created_at: str
-    updated_at: str
-    expires_at: str | None = None
-    provenance_commit: str | None = Field(
-        default=None,
-        description=(
-            "Git HEAD SHA at the time the entry was last upserted "
-            "(WIN-228). Drives the check_staleness tool."
-        ),
-    )
-
-
-class RememberResponse(BaseModel):
-    """Outcome of a ``remember`` call."""
-
-    ok: bool
-    entry: MemoryEntry | None = None
-    error: str | None = Field(
-        default=None,
-        description=(
-            "Populated when ok=False — typically 'no indexed repo' "
-            "when the agent calls remember before any index pass has "
-            "registered the target repo."
-        ),
-    )
-
-
-class RecallResponse(BaseModel):
-    """Outcome of a ``recall`` call."""
-
-    entries: list[MemoryEntry]
-    repo: str | None = Field(
-        default=None,
-        description="normalized_key of the repo the entries belong to.",
-    )
-
-
-class ForgetResponse(BaseModel):
-    """Outcome of a ``forget`` call."""
-
-    removed: bool
-    kind: str
-    key: str
+    return server_current_head_commit(app)
 
 
 def _entry_from_record(rec) -> MemoryEntry:  # type: ignore[no-untyped-def]
-    return MemoryEntry(
-        kind=rec.kind,
-        key=rec.key,
-        value=rec.value,
-        source=rec.source,
-        created_at=rec.created_at,
-        updated_at=rec.updated_at,
-        expires_at=rec.expires_at,
-        provenance_commit=getattr(rec, "provenance_commit", None),
-    )
+    return entry_from_record(rec)
 
 
 @mcp.tool(
@@ -1523,26 +700,15 @@ def remember(
     expires_at: str | None = None,
 ) -> RememberResponse:
     """Upsert a project-memory entry for the configured target repo."""
-    app = _ctx(ctx)
-    repo_id = _resolve_target_repo_id(app)
-    if repo_id is None:
-        return RememberResponse(
-            ok=False,
-            error=(
-                "no indexed repo for target_repo — run `stropha index` "
-                "first so the memory entry has a repo to anchor against"
-            ),
-        )
-    rec = app.storage.remember(
-        repo_id=repo_id,
-        kind=kind,
-        key=key,
-        value=value,
-        source=app.session_id or None,
+    return remember_impl(
+        kind,
+        key,
+        value,
+        _ctx(ctx),
         expires_at=expires_at,
-        provenance_commit=_current_head_commit(app),
+        resolve_target_repo_id_fn=_resolve_target_repo_id,
+        current_head_commit_fn=_current_head_commit,
     )
-    return RememberResponse(ok=True, entry=_entry_from_record(rec))
 
 
 @mcp.tool(
@@ -1567,32 +733,13 @@ def recall(
     include_expired: bool = False,
 ) -> RecallResponse:
     """Fetch project-memory entries for the configured target repo."""
-    app = _ctx(ctx)
-    repo_id = _resolve_target_repo_id(app)
-    if repo_id is None:
-        return RecallResponse(entries=[], repo=None)
-    rows = app.storage.recall(
-        repo_id=repo_id,
+    return recall_impl(
+        _ctx(ctx),
         kind=kind,
         key=key,
-        limit=max(1, min(limit, 200)),
+        limit=limit,
         include_expired=include_expired,
-    )
-    # Best-effort surface of the repo's normalized_key so the agent
-    # can confirm "this is the right project".
-    repo_key: str | None = None
-    if rows:
-        try:
-            row = app.storage._conn.execute(
-                "SELECT normalized_key FROM repos WHERE id = ?",
-                (repo_id,),
-            ).fetchone()
-            repo_key = row["normalized_key"] if row else None
-        except Exception:
-            repo_key = None
-    return RecallResponse(
-        entries=[_entry_from_record(r) for r in rows],
-        repo=repo_key,
+        resolve_target_repo_id_fn=_resolve_target_repo_id,
     )
 
 
@@ -1608,12 +755,12 @@ def recall(
 @traced("forget")
 def forget(kind: str, key: str, *, ctx: Context) -> ForgetResponse:
     """Delete one project-memory entry."""
-    app = _ctx(ctx)
-    repo_id = _resolve_target_repo_id(app)
-    if repo_id is None:
-        return ForgetResponse(removed=False, kind=kind, key=key)
-    removed = app.storage.forget(repo_id=repo_id, kind=kind, key=key)
-    return ForgetResponse(removed=removed, kind=kind, key=key)
+    return forget_impl(
+        kind,
+        key,
+        _ctx(ctx),
+        resolve_target_repo_id_fn=_resolve_target_repo_id,
+    )
 
 
 # ---- investigation planning (WIN-232, EPIC 1.10 #23) -----------------------
@@ -1688,21 +835,6 @@ def plan_investigation(
 # ---- cross-session cache (WIN-230, EPIC 1.9 #22) ---------------------------
 
 
-class CrossSessionCacheStats(BaseModel):
-    """Cache counters returned by ``cache_stats``."""
-
-    total_entries: int
-    total_hits: int
-    distinct_models: int
-    repo: str | None = None
-
-
-class CrossSessionCachePruneResponse(BaseModel):
-    """Outcome of a ``cache_prune`` call."""
-
-    removed: int
-
-
 @mcp.tool(
     title="Cross-session cache stats",
     description=(
@@ -1717,21 +849,9 @@ class CrossSessionCachePruneResponse(BaseModel):
 @traced("cache_stats")
 def cache_stats(*, ctx: Context) -> CrossSessionCacheStats:
     """Inspect the cross-session cache for the configured target repo."""
-    from .retrieval.cross_session_cache import stats
-
-    app = _ctx(ctx)
-    repo_id = _resolve_target_repo_id(app)
-    if repo_id is None:
-        return CrossSessionCacheStats(
-            total_entries=0, total_hits=0, distinct_models=0,
-            repo=None,
-        )
-    counters = stats(app.storage, repo_id=repo_id)
-    return CrossSessionCacheStats(
-        total_entries=counters["total_entries"],
-        total_hits=counters["total_hits"],
-        distinct_models=counters["distinct_models"],
-        repo=None,  # could resolve normalized_key if needed
+    return cache_stats_impl(
+        _ctx(ctx),
+        resolve_target_repo_id_fn=_resolve_target_repo_id,
     )
 
 
@@ -1752,30 +872,12 @@ def cache_prune(
     older_than_iso: str | None = None,
 ) -> CrossSessionCachePruneResponse:
     """Bulk-delete cache entries with explicit filters."""
-    from .retrieval.cross_session_cache import prune
-
-    app = _ctx(ctx)
-    repo_id = _resolve_target_repo_id(app)
-    if repo_id is None:
-        return CrossSessionCachePruneResponse(removed=0)
-    removed = prune(
-        app.storage,
-        repo_id=repo_id,
+    return cache_prune_impl(
+        _ctx(ctx),
         expired_only=expired_only,
         older_than_iso=older_than_iso,
+        resolve_target_repo_id_fn=_resolve_target_repo_id,
     )
-    return CrossSessionCachePruneResponse(removed=removed)
-
-
-# ---- scratchpad (WIN-229, EPIC 1.9 #21) ------------------------------------
-
-
-class ScratchpadResponse(BaseModel):
-    """Outcome of any scratchpad mutation. Returns the full
-    post-mutation content so the agent can verify the write."""
-
-    content: str
-    char_count: int
 
 
 @mcp.tool(
@@ -1793,11 +895,7 @@ class ScratchpadResponse(BaseModel):
 @traced("scratchpad_read")
 def scratchpad_read(*, ctx: Context) -> ScratchpadResponse:
     """Return the current scratchpad content."""
-    app = _ctx(ctx)
-    return ScratchpadResponse(
-        content=app.scratchpad,
-        char_count=len(app.scratchpad),
-    )
+    return scratchpad_read_impl(_ctx(ctx))
 
 
 @mcp.tool(
@@ -1813,12 +911,10 @@ def scratchpad_read(*, ctx: Context) -> ScratchpadResponse:
 @traced("scratchpad_write")
 def scratchpad_write(content: str, *, ctx: Context) -> ScratchpadResponse:
     """Overwrite the scratchpad with ``content``."""
-    app = _ctx(ctx)
-    app.scratchpad = content
-    _persist_session_state(app)
-    return ScratchpadResponse(
-        content=app.scratchpad,
-        char_count=len(app.scratchpad),
+    return scratchpad_write_impl(
+        content,
+        _ctx(ctx),
+        persist_session_state_fn=_persist_session_state,
     )
 
 
@@ -1834,21 +930,10 @@ def scratchpad_write(content: str, *, ctx: Context) -> ScratchpadResponse:
 @traced("scratchpad_append")
 def scratchpad_append(text: str, *, ctx: Context) -> ScratchpadResponse:
     """Append ``text`` to the scratchpad with newline normalisation."""
-    app = _ctx(ctx)
-    if not text:
-        # Don't dirty the persistence path for a no-op call.
-        return ScratchpadResponse(
-            content=app.scratchpad,
-            char_count=len(app.scratchpad),
-        )
-    if app.scratchpad and not app.scratchpad.endswith("\n"):
-        app.scratchpad = app.scratchpad + "\n" + text
-    else:
-        app.scratchpad = app.scratchpad + text
-    _persist_session_state(app)
-    return ScratchpadResponse(
-        content=app.scratchpad,
-        char_count=len(app.scratchpad),
+    return scratchpad_append_impl(
+        text,
+        _ctx(ctx),
+        persist_session_state_fn=_persist_session_state,
     )
 
 
@@ -1864,44 +949,13 @@ def scratchpad_append(text: str, *, ctx: Context) -> ScratchpadResponse:
 @traced("scratchpad_clear")
 def scratchpad_clear(*, ctx: Context) -> ScratchpadResponse:
     """Empty the scratchpad."""
-    app = _ctx(ctx)
-    app.scratchpad = ""
-    _persist_session_state(app)
-    return ScratchpadResponse(content="", char_count=0)
+    return scratchpad_clear_impl(
+        _ctx(ctx),
+        persist_session_state_fn=_persist_session_state,
+    )
 
 
 # ---- staleness check (WIN-228, EPIC 1.9 #20) -------------------------------
-
-
-class StalenessResponse(BaseModel):
-    """Result of a ``check_staleness`` call."""
-
-    found: bool = Field(
-        description=(
-            "True when the requested memory entry exists. False means "
-            "no entry under that (kind, key) — caller should treat as "
-            "missing, not stale."
-        ),
-    )
-    stale: bool | None = Field(
-        default=None,
-        description=(
-            "True when files changed between the recorded commit and "
-            "HEAD intersect the memory's anchor. False when nothing "
-            "changed. None means we couldn't decide (missing "
-            "provenance, git failure, detached HEAD)."
-        ),
-    )
-    since_commit: str | None = None
-    current_commit: str | None = None
-    changed_files: list[str] = Field(default_factory=list)
-    reason: str | None = Field(
-        default=None,
-        description=(
-            "When stale is None, the textual reason for the unknown "
-            "verdict (no provenance, git failure, etc.)."
-        ),
-    )
 
 
 @mcp.tool(
@@ -1926,65 +980,13 @@ def check_staleness(
     anchor_files: list[str] | None = None,
 ) -> StalenessResponse:
     """Determine if the named ``project_memory`` entry is stale."""
-    from .meta.provenance import staleness_signal
-
-    app = _ctx(ctx)
-    repo_id = _resolve_target_repo_id(app)
-    if repo_id is None:
-        return StalenessResponse(
-            found=False,
-            reason="no indexed repo for target_repo",
-        )
-    rows = app.storage.recall(repo_id=repo_id, kind=kind, key=key, limit=1)
-    if not rows:
-        return StalenessResponse(found=False, reason="entry not found")
-    entry = rows[0]
-    if app.config.target_repo is None:
-        return StalenessResponse(
-            found=True,
-            stale=None,
-            since_commit=entry.provenance_commit,
-            reason="no target_repo configured",
-        )
-    signal = staleness_signal(
-        app.config.target_repo,
-        since_commit=entry.provenance_commit,
+    return check_staleness_impl(
+        kind,
+        key,
+        _ctx(ctx),
         anchor_files=anchor_files,
+        resolve_target_repo_id_fn=_resolve_target_repo_id,
     )
-    return StalenessResponse(
-        found=True,
-        stale=signal.stale,
-        since_commit=signal.since_commit,
-        current_commit=signal.current_commit,
-        changed_files=signal.changed_files,
-        reason=signal.reason,
-    )
-
-
-# ---- bootstrap (WIN-227, EPIC 1.9 #19) -------------------------------------
-
-
-class DetectedStackEntry(BaseModel):
-    """One stack from the bootstrap snapshot exposed to MCP clients."""
-
-    name: str
-    language: str
-    build_command: str | None = None
-    test_command: str | None = None
-    run_command: str | None = None
-    matched_markers: list[str] = Field(default_factory=list)
-
-
-class BootstrapResponse(BaseModel):
-    """Bootstrap payload — warm-start view of the target repo."""
-
-    repo_path: str
-    stacks: list[DetectedStackEntry] = Field(default_factory=list)
-    entry_points: dict[str, list[str]] = Field(default_factory=dict)
-    has_git: bool = False
-    has_tests_dir: bool = False
-    has_docs_dir: bool = False
-    has_graphify_out: bool = False
 
 
 @mcp.tool(
@@ -2003,95 +1005,11 @@ class BootstrapResponse(BaseModel):
 def bootstrap_environment(*, ctx: Context) -> BootstrapResponse:
     """Detect language / build / test / entry-point hints for the
     configured ``target_repo``."""
-    from pathlib import Path as _Path
-
-    from .retrieval.bootstrap import detect_bootstrap
-
-    app = _ctx(ctx)
-    target = app.config.target_repo
-    if target is None:
-        target = _Path.cwd()
-    snapshot = detect_bootstrap(_Path(target))
-    return BootstrapResponse(
-        repo_path=snapshot.repo_path,
-        stacks=[
-            DetectedStackEntry(
-                name=s.name,
-                language=s.language,
-                build_command=s.build_command,
-                test_command=s.test_command,
-                run_command=s.run_command,
-                matched_markers=list(s.matched_markers),
-            )
-            for s in snapshot.stacks
-        ],
-        entry_points=snapshot.entry_points,
-        has_git=snapshot.has_git,
-        has_tests_dir=snapshot.has_tests_dir,
-        has_docs_dir=snapshot.has_docs_dir,
-        has_graphify_out=snapshot.has_graphify_out,
-    )
-
-
-# ---- episodic memory (WIN-225, EPIC 1.9 #17) -------------------------------
-
-
-class EpisodeEntry(BaseModel):
-    """One ``episodes`` row exposed to MCP clients."""
-
-    id: int
-    title: str
-    summary: str = ""
-    session_id: str | None = None
-    touched_files: list[str] = Field(default_factory=list)
-    touched_symbols: list[str] = Field(default_factory=list)
-    created_at: str
-    updated_at: str
-    provenance_commit: str | None = Field(
-        default=None,
-        description=(
-            "Git HEAD SHA at the time the episode was recorded "
-            "(WIN-228). Drives the check_staleness tool."
-        ),
-    )
-
-
-class RecordEpisodeResponse(BaseModel):
-    """Outcome of a ``record_episode`` call."""
-
-    ok: bool
-    entry: EpisodeEntry | None = None
-    error: str | None = None
-
-
-class RecallEpisodesResponse(BaseModel):
-    """Outcome of a ``recall_episodes`` call."""
-
-    entries: list[EpisodeEntry]
-    repo: str | None = None
-
-
-class CoOccurrenceResponse(BaseModel):
-    """Outcome of an ``episode_co_occurrence`` call."""
-
-    key: str
-    files: dict[str, int] = Field(default_factory=dict)
-    symbols: dict[str, int] = Field(default_factory=dict)
-    repo: str | None = None
+    return bootstrap_environment_impl(_ctx(ctx))
 
 
 def _episode_to_entry(rec) -> EpisodeEntry:  # type: ignore[no-untyped-def]
-    return EpisodeEntry(
-        id=rec.id,
-        title=rec.title,
-        summary=rec.summary,
-        session_id=rec.session_id,
-        touched_files=rec.touched_files,
-        touched_symbols=rec.touched_symbols,
-        created_at=rec.created_at,
-        updated_at=rec.updated_at,
-        provenance_commit=getattr(rec, "provenance_commit", None),
-    )
+    return episode_to_entry(rec)
 
 
 @mcp.tool(
@@ -2116,26 +1034,15 @@ def record_episode(
     ctx: Context,
 ) -> RecordEpisodeResponse:
     """Record a single episodic-memory row for the target repo."""
-    app = _ctx(ctx)
-    repo_id = _resolve_target_repo_id(app)
-    if repo_id is None:
-        return RecordEpisodeResponse(
-            ok=False,
-            error=(
-                "no indexed repo for target_repo — run `stropha index` "
-                "first so the episode has a repo to anchor against"
-            ),
-        )
-    rec = app.storage.record_episode(
-        repo_id=repo_id,
-        session_id=app.session_id or None,
-        title=title,
-        summary=summary,
-        touched_files=touched_files or [],
-        touched_symbols=touched_symbols or [],
-        provenance_commit=_current_head_commit(app),
+    return record_episode_impl(
+        title,
+        summary,
+        touched_files,
+        touched_symbols,
+        _ctx(ctx),
+        resolve_target_repo_id_fn=_resolve_target_repo_id,
+        current_head_commit_fn=_current_head_commit,
     )
-    return RecordEpisodeResponse(ok=True, entry=_episode_to_entry(rec))
 
 
 @mcp.tool(
@@ -2158,29 +1065,12 @@ def recall_episodes(
     since: str | None = None,
 ) -> RecallEpisodesResponse:
     """Search past episodes by free-text + optional time window."""
-    app = _ctx(ctx)
-    repo_id = _resolve_target_repo_id(app)
-    if repo_id is None:
-        return RecallEpisodesResponse(entries=[], repo=None)
-    rows = app.storage.recall_episodes(
-        repo_id=repo_id,
+    return recall_episodes_impl(
+        _ctx(ctx),
         query=query,
-        limit=max(1, min(limit, 200)),
-        since_iso=since,
-    )
-    repo_key: str | None = None
-    if rows:
-        try:
-            r = app.storage._conn.execute(
-                "SELECT normalized_key FROM repos WHERE id = ?",
-                (repo_id,),
-            ).fetchone()
-            repo_key = r["normalized_key"] if r else None
-        except Exception:
-            repo_key = None
-    return RecallEpisodesResponse(
-        entries=[_episode_to_entry(r) for r in rows],
-        repo=repo_key,
+        limit=limit,
+        since=since,
+        resolve_target_repo_id_fn=_resolve_target_repo_id,
     )
 
 
@@ -2207,30 +1097,13 @@ def co_occurrence(
     in_symbols: bool = True,
 ) -> CoOccurrenceResponse:
     """Rank co-touched files / symbols for the given key."""
-    app = _ctx(ctx)
-    repo_id = _resolve_target_repo_id(app)
-    if repo_id is None:
-        return CoOccurrenceResponse(key=key, files={}, symbols={}, repo=None)
-    result = app.storage.episode_co_occurrence(
-        repo_id=repo_id,
-        key=key,
+    return co_occurrence_impl(
+        key,
+        _ctx(ctx),
+        limit=limit,
         in_files=in_files,
         in_symbols=in_symbols,
-        limit=max(1, min(limit, 200)),
-    )
-    repo_key: str | None = None
-    try:
-        r = app.storage._conn.execute(
-            "SELECT normalized_key FROM repos WHERE id = ?", (repo_id,),
-        ).fetchone()
-        repo_key = r["normalized_key"] if r else None
-    except Exception:
-        repo_key = None
-    return CoOccurrenceResponse(
-        key=key,
-        files=result.get("files", {}),
-        symbols=result.get("symbols", {}),
-        repo=repo_key,
+        resolve_target_repo_id_fn=_resolve_target_repo_id,
     )
 
 
@@ -2252,10 +1125,15 @@ def find_callers(
     limit: int = 20,
 ) -> dict:
     """Return callers of ``symbol`` (BFS up incoming `calls` edges, depth ≤ 3)."""
-    app = _ctx(ctx)
-    if not graph_loaded(app.storage):
-        return _graph_unavailable() | {"symbol": symbol}
-    return graph_find_callers(app.storage, symbol, depth=depth, limit=limit)
+    return find_callers_impl(
+        symbol,
+        _ctx(ctx),
+        depth=depth,
+        limit=limit,
+        graph_loaded_fn=graph_loaded,
+        unavailable_fn=_graph_unavailable,
+        graph_find_callers_fn=graph_find_callers,
+    )
 
 
 @mcp.tool(
@@ -2277,12 +1155,15 @@ def find_related(
     relations: list[str] | None = None,
 ) -> dict:
     """Return any node connected to ``symbol`` via the graph."""
-    app = _ctx(ctx)
-    if not graph_loaded(app.storage):
-        return _graph_unavailable() | {"symbol": symbol}
-    return graph_find_related(
-        app.storage, symbol, depth=depth, limit=limit,
-        relations=tuple(relations) if relations else None,
+    return find_related_impl(
+        symbol,
+        _ctx(ctx),
+        depth=depth,
+        limit=limit,
+        relations=relations,
+        graph_loaded_fn=graph_loaded,
+        unavailable_fn=_graph_unavailable,
+        graph_find_related_fn=graph_find_related,
     )
 
 
@@ -2303,16 +1184,14 @@ def get_community(
     limit: int = 50,
 ) -> dict:
     """Return the community membership of a symbol or community id."""
-    app = _ctx(ctx)
-    if not graph_loaded(app.storage):
-        return _graph_unavailable() | {"query": symbol_or_community_id}
-    # Accept stringified int as community id
-    query: str | int = symbol_or_community_id
-    try:
-        query = int(symbol_or_community_id)
-    except (ValueError, TypeError):
-        pass
-    return graph_get_community(app.storage, query, limit=limit)
+    return get_community_impl(
+        symbol_or_community_id,
+        _ctx(ctx),
+        limit=limit,
+        graph_loaded_fn=graph_loaded,
+        unavailable_fn=_graph_unavailable,
+        graph_get_community_fn=graph_get_community,
+    )
 
 
 @mcp.tool(
@@ -2332,16 +1211,15 @@ def find_rationale(
     limit: int = 10,
 ) -> dict:
     """Return rationale nodes (docs/ADRs) explaining ``symbol``."""
-    app = _ctx(ctx)
-    if not graph_loaded(app.storage):
-        return _graph_unavailable() | {"symbol": symbol}
-    if not has_rationale_edges(app.storage):
-        return {
-            "symbol": symbol,
-            "rationale": [],
-            "message": "Graph loaded but no `rationale_for` edges present yet.",
-        }
-    return graph_find_rationale(app.storage, symbol, limit=limit)
+    return find_rationale_impl(
+        symbol,
+        _ctx(ctx),
+        limit=limit,
+        graph_loaded_fn=graph_loaded,
+        has_rationale_edges_fn=has_rationale_edges,
+        unavailable_fn=_graph_unavailable,
+        graph_find_rationale_fn=graph_find_rationale,
+    )
 
 
 @mcp.tool(
@@ -2362,16 +1240,14 @@ def find_tests_for(
     test_path_patterns: list[str] | None = None,
 ) -> dict:
     """Return tests that exercise ``symbol`` (path-pattern filtered)."""
-    app = _ctx(ctx)
-    if not graph_loaded(app.storage):
-        return _graph_unavailable() | {"symbol": symbol}
-    patterns = (
-        tuple(test_path_patterns)
-        if test_path_patterns
-        else ("test_", "_test", "/tests/", "/test/", ".spec.", ".test.")
-    )
-    return graph_find_tests_for(
-        app.storage, symbol, limit=limit, test_path_patterns=patterns,
+    return find_tests_for_impl(
+        symbol,
+        _ctx(ctx),
+        limit=limit,
+        test_path_patterns=test_path_patterns,
+        graph_loaded_fn=graph_loaded,
+        unavailable_fn=_graph_unavailable,
+        graph_find_tests_for_fn=graph_find_tests_for,
     )
 
 
@@ -2393,11 +1269,14 @@ def trace_feature(
     max_depth: int = 6,
 ) -> dict:
     """Walk the call graph from feature-matching entry points."""
-    app = _ctx(ctx)
-    if not graph_loaded(app.storage):
-        return _graph_unavailable() | {"feature": feature}
-    return graph_trace_feature(
-        app.storage, feature, max_paths=max_paths, max_depth=max_depth,
+    return trace_feature_impl(
+        feature,
+        _ctx(ctx),
+        max_paths=max_paths,
+        max_depth=max_depth,
+        graph_loaded_fn=graph_loaded,
+        unavailable_fn=_graph_unavailable,
+        graph_trace_feature_fn=graph_trace_feature,
     )
 
 
@@ -3283,48 +2162,6 @@ def apply_task_recipe(
     )
 
 
-# ---- verify_claim (WIN-244) ------------------------------------------------
-
-
-class VerdictResponse(BaseModel):
-    """Outcome of a ``verify_claim`` call."""
-
-    raw_text: str = Field(description="Echo of the claim as received.")
-    parsed: bool = Field(
-        description=(
-            "Whether the claim matched one of the supported "
-            "predicates (calls / called by / uses / references / "
-            "implements / is a <kind> / is in <file> / has tests)."
-        ),
-    )
-    subject: str = Field(default="")
-    predicate: str = Field(default="")
-    object: str = Field(default="")
-    verified: bool | None = Field(
-        default=None,
-        description=(
-            "Tri-state: True (graph confirms) / False (graph "
-            "contradicts) / null (graph unavailable, unknown "
-            "predicate, or subject not resolvable)."
-        ),
-    )
-    reason: str = Field(default="")
-    evidence: list[dict] = Field(
-        default_factory=list,
-        description=(
-            "Supporting graph nodes when verified is True; relevant "
-            "context when verified is False."
-        ),
-    )
-    alternatives: list[dict] = Field(
-        default_factory=list,
-        description=(
-            "When verified is False, the actual edges from the "
-            "subject so the agent can correct its mental model."
-        ),
-    )
-
-
 @mcp.tool(
     title="Verify a claim against the graph",
     description=(
@@ -3344,135 +2181,7 @@ def verify_claim_tool(
     ctx: Context,
 ) -> VerdictResponse:
     """Parse + verify a claim against the graph."""
-    from .retrieval.verify import (
-        parse_claim,
-        verify_claim as _verify,
-    )
-    from .retrieval.graph import (
-        find_callers as _find_callers,
-        find_related as _find_related,
-        find_tests_for as _find_tests_for,
-        resolve_symbol_to_node,
-    )
-
-    app = _ctx(ctx)
-    parsed = parse_claim(claim)
-    if parsed is None:
-        return VerdictResponse(
-            raw_text=claim, parsed=False, verified=None,
-            reason=(
-                "Claim did not match any supported predicate. "
-                "Try 'X calls Y', 'X is a class', 'X is in src/foo.py', "
-                "'X has tests'."
-            ),
-        )
-
-    if not graph_loaded(app.storage):
-        return VerdictResponse(
-            raw_text=parsed.raw_text, parsed=True,
-            subject=parsed.subject, predicate=parsed.predicate,
-            object=parsed.object or "",
-            verified=None,
-            reason=(
-                "graphify mirror is not loaded — cannot verify "
-                "structural claims. Run `graphify .` and re-index."
-            ),
-        )
-
-    # Bind the graph readers as callables.
-    def _callers(symbol: str) -> dict:
-        return _find_callers(app.storage, symbol)
-
-    def _related(symbol: str, relations: list[str] | None) -> dict:
-        return _find_related(
-            app.storage, symbol,
-            relations=tuple(relations) if relations else None,
-        )
-
-    def _tests(symbol: str) -> dict:
-        return _find_tests_for(app.storage, symbol)
-
-    def _resolve(symbol: str) -> dict | None:
-        node_id = resolve_symbol_to_node(app.storage, symbol)
-        if node_id is None:
-            return None
-        # Re-use _fetch_node_rows + _hydrate_node from graph.py.
-        from .retrieval.graph import _fetch_node_rows, _hydrate_node
-        rows = _fetch_node_rows(app.storage, [node_id])
-        if node_id not in rows:
-            return None
-        return _hydrate_node(app.storage, rows[node_id]).as_dict()
-
-    verdict = _verify(
-        parsed,
-        callers_fn=_callers,
-        related_fn=_related,
-        tests_fn=_tests,
-        resolve_fn=_resolve,
-    )
-
-    return VerdictResponse(
-        raw_text=verdict.claim.raw_text,
-        parsed=True,
-        subject=verdict.claim.subject,
-        predicate=verdict.claim.predicate,
-        object=verdict.claim.object or "",
-        verified=verdict.verified,
-        reason=verdict.reason,
-        evidence=list(verdict.evidence),
-        alternatives=list(verdict.alternatives),
-    )
-
-
-# ---- check_symbols (WIN-245) -----------------------------------------------
-
-
-class SymbolCheckEntry(BaseModel):
-    """Per-symbol outcome from ``check_symbols``."""
-
-    symbol: str = Field(description="Echo of the input name.")
-    exists: bool = Field(
-        description=(
-            "True when the index has at least one chunk whose "
-            "``symbol`` column matches (exact / suffix / "
-            "case-insensitive)."
-        ),
-    )
-    suggestions: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Near-miss symbol names — only populated when "
-            "``exists=False``. Sorted by a length-delta proxy for "
-            "edit distance."
-        ),
-    )
-    reason: str = Field(
-        default="",
-        description="Human-readable explanation of the verdict.",
-    )
-
-
-class HallucinationGuardResponse(BaseModel):
-    """Full report from a ``check_symbols`` call."""
-
-    checks: list[SymbolCheckEntry]
-    present_count: int = Field(
-        description="How many input symbols resolved in the index.",
-    )
-    missing_count: int = Field(
-        description=(
-            "How many input symbols failed to resolve — these are "
-            "the suspected hallucinations."
-        ),
-    )
-    notes: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Cross-cutting notes (e.g., skipped-empty-symbol, "
-            "callable exceptions). Surface in addition to the "
-            "per-symbol verdicts."
-        ),
-    )
+    return verify_claim_impl(claim, _ctx(ctx), graph_loaded_fn=graph_loaded)
 
 
 @mcp.tool(
@@ -3494,108 +2203,7 @@ def check_symbols_tool(
     ctx: Context,
 ) -> HallucinationGuardResponse:
     """Run the hallucination guard against the live index."""
-    from .retrieval.hallucination_guard import check_symbols as _check
-
-    app = _ctx(ctx)
-    max_suggestions = max(1, min(int(max_suggestions), 20))
-
-    def _exists(name: str) -> bool:
-        hits = app.storage.lookup_by_symbol(name, limit=1)
-        # Exact / suffix matches return at least one hit; substring-
-        # only matches still count as "exists" for the guard.
-        return bool(hits)
-
-    def _similar(name: str) -> list[str]:
-        # Pull up to 20 substring matches; the primitive ranks + caps.
-        try:
-            hits = app.storage.lookup_by_symbol(name, limit=20)
-        except Exception:
-            return []
-        out: list[str] = []
-        for hit in hits:
-            sym = getattr(hit, "symbol", None)
-            if sym and sym not in out:
-                out.append(str(sym))
-        return out
-
-    report = _check(
-        symbols,
-        exists_fn=_exists,
-        similar_fn=_similar,
-        max_suggestions=max_suggestions,
-    )
-
-    return HallucinationGuardResponse(
-        checks=[
-            SymbolCheckEntry(
-                symbol=c.symbol,
-                exists=c.exists,
-                suggestions=list(c.suggestions),
-                reason=c.reason,
-            )
-            for c in report.checks
-        ],
-        present_count=report.present_count,
-        missing_count=report.missing_count,
-        notes=list(report.notes),
-    )
-
-
-# ---- blast_radius (WIN-246) ------------------------------------------------
-
-
-class PerSymbolCounts(BaseModel):
-    callers: int = 0
-    tests: int = 0
-    related: int = 0
-    rationale: int = 0
-
-
-class BlastRadiusResponse(BaseModel):
-    """Aggregated blast-radius report from ``blast_radius_tool``."""
-
-    changed_symbols: list[str] = Field(
-        default_factory=list,
-        description="Echo of the input symbols after dedup + trim.",
-    )
-    callers: list[dict] = Field(
-        default_factory=list,
-        description="Union of callers across the changed symbols.",
-    )
-    tests: list[dict] = Field(
-        default_factory=list,
-        description="Union of tests that exercise the changed symbols.",
-    )
-    related: list[dict] = Field(
-        default_factory=list,
-        description="Union of symbols related via the graph.",
-    )
-    rationale: list[dict] = Field(
-        default_factory=list,
-        description=(
-            "Union of rationale nodes (docs/ADRs). Empty when the "
-            "graph carries no rationale_for edges yet."
-        ),
-    )
-    per_symbol: dict[str, PerSymbolCounts] = Field(
-        default_factory=dict,
-        description=(
-            "Per-symbol counts (callers / tests / related / "
-            "rationale) so the agent can triage which change has "
-            "the largest blast radius."
-        ),
-    )
-    notes: list[str] = Field(default_factory=list)
-    summary: str = Field(
-        default="",
-        description="One-line summary suitable for a commit message.",
-    )
-    graph_loaded: bool = Field(
-        description=(
-            "False when the graphify mirror is unavailable — every "
-            "section will be empty."
-        ),
-    )
+    return check_symbols_impl(symbols, _ctx(ctx), max_suggestions=max_suggestions)
 
 
 @mcp.tool(
@@ -3616,96 +2224,11 @@ def blast_radius_tool(
     ctx: Context,
 ) -> BlastRadiusResponse:
     """Build a blast-radius report for the changed symbols."""
-    from .retrieval.blast_radius import compute_blast_radius
-    from .retrieval.graph import (
-        find_callers as _find_callers,
-        find_related as _find_related,
-        find_rationale as _find_rationale,
-        find_tests_for as _find_tests_for,
-    )
-
-    app = _ctx(ctx)
-    graph_ok = graph_loaded(app.storage)
-    if not graph_ok:
-        return BlastRadiusResponse(
-            changed_symbols=[s.strip() for s in symbols if s and s.strip()],
-            graph_loaded=False,
-            summary=(
-                "graphify mirror not loaded — cannot compute blast "
-                "radius. Run `graphify .` and re-index."
-            ),
-            notes=["graph_loaded=False"],
-        )
-
-    def _callers(symbol: str) -> dict:
-        return _find_callers(app.storage, symbol)
-
-    def _tests(symbol: str) -> dict:
-        return _find_tests_for(app.storage, symbol)
-
-    def _related(symbol: str) -> dict:
-        return _find_related(app.storage, symbol)
-
-    rationale_fn = None
-    if has_rationale_edges(app.storage):
-        def _rationale(symbol: str) -> dict:
-            return _find_rationale(app.storage, symbol)
-        rationale_fn = _rationale
-
-    report = compute_blast_radius(
+    return blast_radius_impl(
         symbols,
-        callers_fn=_callers,
-        tests_fn=_tests,
-        related_fn=_related,
-        rationale_fn=rationale_fn,
-    )
-
-    return BlastRadiusResponse(
-        changed_symbols=report.changed_symbols,
-        callers=report.callers,
-        tests=report.tests,
-        related=report.related,
-        rationale=report.rationale,
-        per_symbol={
-            sym: PerSymbolCounts(**counts)
-            for sym, counts in report.per_symbol.items()
-        },
-        notes=report.notes,
-        summary=report.summary,
-        graph_loaded=True,
-    )
-
-
-# ---- assert_snippet_freshness (WIN-247) -----------------------------------
-
-
-class FreshnessResponse(BaseModel):
-    """Outcome of ``assert_snippet_freshness_tool``."""
-
-    chunk_id: str
-    fresh: bool | None = Field(
-        description=(
-            "Tri-state: True (chunk present + content matches) / "
-            "False (chunk vanished or content drifted) / null "
-            "(lookup raised — undetermined)."
-        ),
-    )
-    reason: str = Field(default="")
-    current_snippet: str | None = Field(
-        default=None,
-        description=(
-            "Current snippet from the index. Null when the chunk "
-            "vanished; populated on both True and False verdicts so "
-            "the agent can re-quote without another search."
-        ),
-    )
-    expected_snippet: str = Field(default="")
-    drift_details: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Up to 5 diff lines (``-Lxx``/``+Lxx``/``~Lxx``) on a "
-            "False verdict so the agent can spot the drift inline."
-        ),
+        _ctx(ctx),
+        graph_loaded_fn=graph_loaded,
+        has_rationale_edges_fn=has_rationale_edges,
     )
 
 
@@ -3730,66 +2253,11 @@ def assert_snippet_freshness_tool(
     ctx: Context,
 ) -> FreshnessResponse:
     """Verify a cached snippet against the live index."""
-    from .retrieval.freshness import assert_snippet_freshness
-
-    app = _ctx(ctx)
-
-    def _lookup(cid: str):
-        return app.storage.lookup_by_chunk_id(cid)
-
-    verdict = assert_snippet_freshness(
-        chunk_id, expected_snippet,
-        lookup_fn=_lookup,
+    return assert_snippet_freshness_impl(
+        chunk_id,
+        expected_snippet,
+        _ctx(ctx),
         strict=bool(strict),
-    )
-    return FreshnessResponse(
-        chunk_id=verdict.chunk_id,
-        fresh=verdict.fresh,
-        reason=verdict.reason,
-        current_snippet=verdict.current_snippet,
-        expected_snippet=verdict.expected_snippet,
-        drift_details=list(verdict.drift_details),
-    )
-
-
-# ---- test_impact (WIN-248) -------------------------------------------------
-
-
-class ImpactedTestEntry(BaseModel):
-    path: str
-    symbol: str = ""
-    via: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Routes through which this test was reached: 'direct' "
-            "for find_tests_for matches, or the caller symbol name "
-            "for indirect hits."
-        ),
-    )
-
-
-class TestImpactResponse(BaseModel):
-    """Outcome of ``test_impact_tool``."""
-
-    changed_symbols: list[str] = Field(default_factory=list)
-    tests: list[ImpactedTestEntry] = Field(default_factory=list)
-    per_symbol: dict[str, int] = Field(
-        default_factory=dict,
-        description="Per-symbol count of tests unique to that change.",
-    )
-    notes: list[str] = Field(default_factory=list)
-    run_command: str = Field(
-        default="",
-        description=(
-            "One-line invocation that runs exactly the impacted "
-            "tests. Empty when no tests were identified."
-        ),
-    )
-    graph_loaded: bool = Field(
-        description=(
-            "False when the graphify mirror is unavailable — every "
-            "section will be empty."
-        ),
     )
 
 
@@ -3813,93 +2281,16 @@ def test_impact_tool(
     ctx: Context,
 ) -> TestImpactResponse:
     """Compute the impacted test set for the changed symbols."""
-    from .retrieval.test_impact import analyse_test_impact
-    from .retrieval.graph import (
-        find_callers as _find_callers,
-        find_tests_for as _find_tests_for,
-    )
-
-    app = _ctx(ctx)
-    graph_ok = graph_loaded(app.storage)
-    if not graph_ok:
-        return TestImpactResponse(
-            changed_symbols=[s.strip() for s in symbols if s and s.strip()],
-            graph_loaded=False,
-            run_command="",
-            notes=["graph_loaded=False"],
-        )
-
-    def _tests(symbol: str) -> dict:
-        return _find_tests_for(app.storage, symbol)
-
-    def _callers(symbol: str) -> dict:
-        return _find_callers(app.storage, symbol)
-
-    report = analyse_test_impact(
+    return test_impact_impl(
         symbols,
-        tests_fn=_tests,
-        callers_fn=_callers,
-        transitive_depth=max(0, int(transitive_depth)),
-        runner=str(runner) if runner else "pytest",
-    )
-
-    return TestImpactResponse(
-        changed_symbols=report.changed_symbols,
-        tests=[
-            ImpactedTestEntry(path=t.path, symbol=t.symbol, via=list(t.via))
-            for t in report.tests
-        ],
-        per_symbol=dict(report.per_symbol),
-        notes=list(report.notes),
-        run_command=report.run_command,
-        graph_loaded=True,
+        _ctx(ctx),
+        transitive_depth=transitive_depth,
+        runner=runner,
+        graph_loaded_fn=graph_loaded,
     )
 
 
 # ---- audit_citations (WIN-249) --------------------------------------------
-
-
-class CitationEntry(BaseModel):
-    fragment: str
-    kind: str = Field(
-        description="One of 'chunk_id', 'file_line', 'unknown'.",
-    )
-    chunk_id: str = ""
-    path: str = ""
-    start_line: int = 0
-    end_line: int = 0
-    resolved: bool | None = Field(
-        default=None,
-        description=(
-            "Tri-state: True (lookup succeeded) / False (lookup "
-            "failed) / null (unknown kind — never looked up)."
-        ),
-    )
-    reason: str = ""
-
-
-class ClaimAuditEntry(BaseModel):
-    sentence: str
-    citations: list[CitationEntry]
-    valid_count: int
-
-
-class CitationAuditResponse(BaseModel):
-    """Outcome of ``audit_citations_tool``."""
-
-    claims: list[ClaimAuditEntry]
-    total_claims: int = Field(description="Total sentences extracted.")
-    cited_claims: int = Field(
-        description="Sentences carrying at least one citation token.",
-    )
-    uncited_claims: int = Field(
-        description="Sentences with no citation at all.",
-    )
-    broken_citations: list[str] = Field(
-        default_factory=list,
-        description="Citation fragments that failed to resolve.",
-    )
-    notes: list[str] = Field(default_factory=list)
 
 
 @mcp.tool(
@@ -3920,122 +2311,14 @@ def audit_citations_tool(
     ctx: Context,
 ) -> CitationAuditResponse:
     """Audit the agent's text for verifiable citations."""
-    from .retrieval.citation import (
-        Citation,
-        audit_citations as _audit,
-    )
-
-    app = _ctx(ctx)
-
-    def _lookup(cit: Citation) -> bool:
-        if cit.kind == "chunk_id":
-            try:
-                hit = app.storage.lookup_by_chunk_id(cit.chunk_id)
-            except Exception:
-                return False
-            return hit is not None
-        if cit.kind == "file_line":
-            # Resolve via the indexed chunks that touch the file +
-            # whose line range overlaps the citation's range.
-            try:
-                hits = app.storage.lookup_by_symbol(cit.path, limit=20)
-            except Exception:
-                return False
-            for hit in hits or []:
-                if getattr(hit, "rel_path", "") == cit.path:
-                    s = int(getattr(hit, "start_line", 0) or 0)
-                    e = int(getattr(hit, "end_line", 0) or 0)
-                    if s <= cit.end_line and e >= cit.start_line:
-                        return True
-            return False
-        return False
-
-    report = _audit(text, lookup_fn=_lookup)
-
-    return CitationAuditResponse(
-        claims=[
-            ClaimAuditEntry(
-                sentence=c.sentence,
-                citations=[
-                    CitationEntry(
-                        fragment=cit.fragment,
-                        kind=cit.kind,
-                        chunk_id=cit.chunk_id,
-                        path=cit.path,
-                        start_line=cit.start_line,
-                        end_line=cit.end_line,
-                        resolved=cit.resolved,
-                        reason=cit.reason,
-                    )
-                    for cit in c.citations
-                ],
-                valid_count=c.valid_count,
-            )
-            for c in report.claims
-        ],
-        total_claims=report.total_claims,
-        cited_claims=report.cited_claims,
-        uncited_claims=report.uncited_claims,
-        broken_citations=list(report.broken_citations),
-        notes=list(report.notes),
-    )
+    return audit_citations_impl(text, _ctx(ctx))
 
 
 # ---- spec_consistency (WIN-250) -------------------------------------------
 
 
-class SpecInvariantEntry(BaseModel):
-    text: str
-    spec_file: str
-    line: int
-    keyword: str
-    severity: str = Field(description="HIGH / MEDIUM / LOW.")
-
-
-class SpecConflictEntry(BaseModel):
-    invariant: SpecInvariantEntry
-    matched: str = Field(
-        description="The changed symbol / file the invariant mentions.",
-    )
-    severity: str
-    reason: str
-
-
-class SpecConsistencyResponse(BaseModel):
-    """Outcome of ``spec_consistency_tool``."""
-
-    invariants_found: int
-    conflicts: list[SpecConflictEntry] = Field(default_factory=list)
-    notes: list[str] = Field(default_factory=list)
-    spec_files_scanned: list[str] = Field(default_factory=list)
-
-
 def _default_spec_loader(repo_root: str) -> dict[str, str]:
-    """Walk the canonical spec locations under ``repo_root``.
-
-    Reads ``CLAUDE.md`` + every ``*.md`` under
-    ``docs/architecture/`` if present. Skips on any I/O error so
-    the tool stays defensive.
-    """
-    from pathlib import Path
-
-    out: dict[str, str] = {}
-    root = Path(repo_root)
-    candidates = [root / "CLAUDE.md", root / "AGENTS.md"]
-    arch_dir = root / "docs" / "architecture"
-    if arch_dir.is_dir():
-        for path in sorted(arch_dir.glob("*.md")):
-            candidates.append(path)
-    for path in candidates:
-        if not path.is_file():
-            continue
-        try:
-            out[str(path.relative_to(root))] = path.read_text(
-                encoding="utf-8", errors="replace",
-            )
-        except OSError:
-            continue
-    return out
+    return server_default_spec_loader(repo_root)
 
 
 @mcp.tool(
@@ -4058,85 +2341,15 @@ def spec_consistency_tool(
     ctx: Context,
 ) -> SpecConsistencyResponse:
     """Check the changes against documented invariants."""
-    from .retrieval.spec_consistency import check_spec_consistency
-
-    app = _ctx(ctx)
-    # Use the first registered repo's local path as the spec root.
-    try:
-        repos = app.storage.stats().get("repos") or []
-    except Exception:
-        repos = []
-    repo_root = ""
-    for r in repos:
-        path = r.get("local_path") or r.get("path") or ""
-        if path:
-            repo_root = path
-            break
-
-    def _loader() -> dict[str, str]:
-        if not repo_root:
-            return {}
-        return _default_spec_loader(repo_root)
-
-    report = check_spec_consistency(
+    return spec_consistency_impl(
         changed_symbols,
-        changed_files or [],
-        spec_loader=_loader,
-    )
-
-    return SpecConsistencyResponse(
-        invariants_found=report.invariants_found,
-        conflicts=[
-            SpecConflictEntry(
-                invariant=SpecInvariantEntry(
-                    text=c.invariant.text,
-                    spec_file=c.invariant.spec_file,
-                    line=c.invariant.line,
-                    keyword=c.invariant.keyword,
-                    severity=c.invariant.severity,
-                ),
-                matched=c.matched,
-                severity=c.severity,
-                reason=c.reason,
-            )
-            for c in report.conflicts
-        ],
-        notes=list(report.notes),
-        spec_files_scanned=list(report.spec_files_scanned),
+        changed_files,
+        _ctx(ctx),
+        default_spec_loader_fn=_default_spec_loader,
     )
 
 
 # ---- contract_tests (WIN-251) ----------------------------------------------
-
-
-class ContractTestEntry(BaseModel):
-    path: str
-    symbol: str = ""
-    signals: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Heuristic signals that flagged this as a contract "
-            "test: 'path' (path token match), 'symbol' (symbol "
-            "name match), 'tag' (annotation list contained "
-            "'contract'). Empty for non-contract tests."
-        ),
-    )
-
-
-class ContractTestsResponse(BaseModel):
-    """Outcome of ``contract_tests_tool``."""
-
-    target_symbol: str
-    contract_tests: list[ContractTestEntry] = Field(default_factory=list)
-    other_tests: list[ContractTestEntry] = Field(default_factory=list)
-    signal_counts: dict[str, int] = Field(default_factory=dict)
-    notes: list[str] = Field(default_factory=list)
-    graph_loaded: bool = Field(
-        description=(
-            "False when the graphify mirror is unavailable — every "
-            "section will be empty."
-        ),
-    )
 
 
 @mcp.tool(
@@ -4159,40 +2372,7 @@ def contract_tests_tool(
     ctx: Context,
 ) -> ContractTestsResponse:
     """Surface contract tests for ``symbol``."""
-    from .retrieval.contract_tests import surface_contract_tests
-    from .retrieval.graph import find_tests_for as _find_tests_for
-
-    app = _ctx(ctx)
-    graph_ok = graph_loaded(app.storage)
-    if not graph_ok:
-        return ContractTestsResponse(
-            target_symbol=symbol,
-            graph_loaded=False,
-            notes=["graph_loaded=False"],
-        )
-
-    def _tests(s: str) -> dict:
-        return _find_tests_for(app.storage, s)
-
-    report = surface_contract_tests(symbol, tests_fn=_tests)
-    return ContractTestsResponse(
-        target_symbol=report.target_symbol,
-        contract_tests=[
-            ContractTestEntry(
-                path=t.path, symbol=t.symbol, signals=list(t.signals),
-            )
-            for t in report.contract_tests
-        ],
-        other_tests=[
-            ContractTestEntry(
-                path=t.path, symbol=t.symbol, signals=list(t.signals),
-            )
-            for t in report.other_tests
-        ],
-        signal_counts=dict(report.signal_counts),
-        notes=list(report.notes),
-        graph_loaded=True,
-    )
+    return contract_tests_impl(symbol, _ctx(ctx), graph_loaded_fn=graph_loaded)
 
 
 # ---- working_set (WIN-253) -------------------------------------------------
