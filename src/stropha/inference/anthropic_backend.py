@@ -280,7 +280,7 @@ class AnthropicBackend(InferenceBackend):
                 log.warning(
                     "anthropic.generate_failed",
                     error=str(exc),
-                    attempts=attempt,
+                    attempt=attempt,
                 )
                 return None
 

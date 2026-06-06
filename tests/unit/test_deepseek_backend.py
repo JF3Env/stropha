@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import io
 import json
-import os
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -183,8 +182,8 @@ class TestDeepSeekBackend:
             # 401 is permanent — must NOT retry even with retries > 0.
             assert mock.call_count == 1
 
-    def test_generate_does_not_retry_on_4xx(self):
-        """HTTP 4xx is permanent (bad key, bad request, rate limit) — no retry."""
+    def test_generate_does_not_retry_on_permanent_4xx(self):
+        """HTTP 4xx other than 429 (bad key, bad request) is permanent — no retry."""
         from urllib.error import HTTPError
 
         with patch(
@@ -192,14 +191,122 @@ class TestDeepSeekBackend:
         ) as mock:
             mock.side_effect = HTTPError(
                 url="https://api.deepseek.com/v1/chat/completions",
+                code=401,
+                msg="Unauthorized",
+                hdrs=None,
+                fp=io.BytesIO(b'{"error":"bad key"}'),
+            )
+            backend = DeepSeekBackend(api_key="sk-test", max_retries=5)
+            assert backend.generate("x") is None
+            assert mock.call_count == 1  # No retry on permanent 4xx
+
+    def test_generate_retries_on_429_with_exponential_backoff_when_no_header(self):
+        """429 without retry-after header → retry with exponential backoff."""
+        from urllib.error import HTTPError
+
+        good_payload = {"choices": [{"message": {"content": "ok"}}]}
+        with patch(
+            "stropha.inference.deepseek_backend.urllib_request.urlopen"
+        ) as mock, patch(
+            "stropha.inference.deepseek_backend.time.sleep"
+        ) as sleep_mock:
+            mock.side_effect = [
+                HTTPError(
+                    url="https://api.deepseek.com/v1/chat/completions",
+                    code=429,
+                    msg="Too Many Requests",
+                    hdrs=None,  # No retry-after
+                    fp=io.BytesIO(b'{"error":"rate"}'),
+                ),
+                _http_response(good_payload),
+            ]
+            backend = DeepSeekBackend(api_key="sk-test", max_retries=2)
+            result = backend.generate("x")
+            assert result == "ok"
+            assert mock.call_count == 2  # 1 throttle + 1 success
+            sleep_mock.assert_called_once_with(1)  # backoff: 2^0 = 1s
+
+    def test_generate_honours_retry_after_header_on_429(self):
+        """429 with retry-after header → sleep exactly that many seconds."""
+        from email.message import Message
+        from urllib.error import HTTPError
+
+        hdrs = Message()
+        hdrs["retry-after"] = "7"
+
+        good_payload = {"choices": [{"message": {"content": "ok"}}]}
+        with patch(
+            "stropha.inference.deepseek_backend.urllib_request.urlopen"
+        ) as mock, patch(
+            "stropha.inference.deepseek_backend.time.sleep"
+        ) as sleep_mock:
+            mock.side_effect = [
+                HTTPError(
+                    url="https://api.deepseek.com/v1/chat/completions",
+                    code=429,
+                    msg="Too Many Requests",
+                    hdrs=hdrs,
+                    fp=io.BytesIO(b'{"error":"rate"}'),
+                ),
+                _http_response(good_payload),
+            ]
+            backend = DeepSeekBackend(api_key="sk-test", max_retries=2)
+            result = backend.generate("x")
+            assert result == "ok"
+            sleep_mock.assert_called_once_with(7.0)
+
+    def test_generate_caps_retry_after_at_max(self):
+        """A misconfigured server sending retry-after=99999 must not stall us."""
+        from email.message import Message
+        from urllib.error import HTTPError
+
+        hdrs = Message()
+        hdrs["retry-after"] = "99999"
+
+        good_payload = {"choices": [{"message": {"content": "ok"}}]}
+        with patch(
+            "stropha.inference.deepseek_backend.urllib_request.urlopen"
+        ) as mock, patch(
+            "stropha.inference.deepseek_backend.time.sleep"
+        ) as sleep_mock:
+            mock.side_effect = [
+                HTTPError(
+                    url="https://api.deepseek.com/v1/chat/completions",
+                    code=429,
+                    msg="Too Many Requests",
+                    hdrs=hdrs,
+                    fp=io.BytesIO(b""),
+                ),
+                _http_response(good_payload),
+            ]
+            backend = DeepSeekBackend(api_key="sk-test", max_retries=2)
+            backend.generate("x")
+            # Capped at _MAX_RETRY_AFTER_SECONDS = 60.0
+            sleep_mock.assert_called_once_with(60.0)
+
+    def test_generate_gives_up_on_429_after_max_retries(self):
+        """After exhausting retries on 429, returns None — caller falls back."""
+        from urllib.error import HTTPError
+
+        def make_429() -> HTTPError:
+            return HTTPError(
+                url="https://api.deepseek.com/v1/chat/completions",
                 code=429,
                 msg="Too Many Requests",
                 hdrs=None,
                 fp=io.BytesIO(b'{"error":"rate"}'),
             )
-            backend = DeepSeekBackend(api_key="sk-test", max_retries=5)
+
+        with patch(
+            "stropha.inference.deepseek_backend.urllib_request.urlopen"
+        ) as mock, patch(
+            "stropha.inference.deepseek_backend.time.sleep"
+        ) as sleep_mock:
+            mock.side_effect = [make_429(), make_429(), make_429()]
+            backend = DeepSeekBackend(api_key="sk-test", max_retries=2)
             assert backend.generate("x") is None
-            assert mock.call_count == 1  # No retry on 4xx
+            assert mock.call_count == 3  # initial + 2 retries
+            assert sleep_mock.call_count == 2
 
     def test_generate_retries_on_timeout(self):
         """Network timeouts are transient — retry with backoff."""

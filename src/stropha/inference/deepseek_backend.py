@@ -39,12 +39,37 @@ from .backend import InferenceBackend
 log = get_logger(__name__)
 
 # Errors that are worth retrying — network-level transient failures.
-# HTTPError (4xx/5xx) is handled separately because 4xx is permanent.
+# HTTPError (4xx/5xx) is handled separately because 4xx semantics depend
+# on the status code (429 is retryable, 401/400 are not).
 _RETRYABLE_NETWORK_ERRORS: tuple[type[BaseException], ...] = (
     urllib_error.URLError,
     OSError,
     TimeoutError,
 )
+
+# Upper bound for honouring server-sent ``retry-after`` headers. DeepSeek
+# typically returns small values (seconds), but a misconfigured proxy could
+# inject a very large value that would stall the indexer indefinitely.
+_MAX_RETRY_AFTER_SECONDS: float = 60.0
+
+
+def _parse_retry_after(value: str | None) -> float | None:
+    """Parse an HTTP ``retry-after`` header value.
+
+    Per RFC 7231 §7.1.3 the value is either a non-negative decimal integer
+    (seconds) or an HTTP-date. DeepSeek uses the seconds form. Returns
+    ``None`` for missing / malformed input so the caller can fall back to
+    exponential backoff.
+    """
+    if not value:
+        return None
+    try:
+        secs = float(value.strip())
+    except (TypeError, ValueError):
+        return None
+    if secs < 0:
+        return None
+    return min(secs, _MAX_RETRY_AFTER_SECONDS)
 
 
 class DeepSeekBackend(InferenceBackend):
@@ -164,14 +189,37 @@ class DeepSeekBackend(InferenceBackend):
                 return text if text else None
 
             except urllib_error.HTTPError as exc:
-                # 4xx is permanent (bad key, bad request, rate limit hit) —
-                # do NOT retry. 5xx is transient — retry.
+                # Status code policy:
+                #   - 429 (rate limit): transient. Honour ``retry-after``
+                #     header when present; otherwise exponential backoff.
+                #     DeepSeek returns the header in seconds.
+                #   - 5xx (server error): transient. Exponential backoff.
+                #   - Other 4xx (401, 400, 404): permanent. Bad key / bad
+                #     request / wrong model — no amount of retrying fixes it.
                 try:
                     err_body = exc.read().decode("utf-8", errors="replace")
                 except Exception:
                     err_body = ""
-                if exc.code >= 500 and attempt < max_attempts:
-                    backoff = 2 ** (attempt - 1)
+
+                is_rate_limit = exc.code == 429
+                is_server_error = exc.code >= 500
+                is_retryable = is_rate_limit or is_server_error
+
+                if is_retryable and attempt < max_attempts:
+                    if is_rate_limit:
+                        # DeepSeek sets ``retry-after`` in seconds. exc.headers
+                        # is an http.client.HTTPMessage; ``.get`` returns None
+                        # when absent.
+                        header_value = (
+                            exc.headers.get("retry-after") if exc.headers else None
+                        )
+                        backoff = _parse_retry_after(header_value)
+                        if backoff is None:
+                            # Server didn't tell us how long; fall back to
+                            # exponential backoff (1s, 2s, 4s, …).
+                            backoff = 2 ** (attempt - 1)
+                    else:
+                        backoff = 2 ** (attempt - 1)
                     log.warning(
                         "deepseek.generate_retry",
                         attempt=attempt,
@@ -179,6 +227,11 @@ class DeepSeekBackend(InferenceBackend):
                         backoff_s=backoff,
                         status=exc.code,
                         reason=exc.reason,
+                        retry_after_header=(
+                            exc.headers.get("retry-after")
+                            if (is_rate_limit and exc.headers)
+                            else None
+                        ),
                     )
                     time.sleep(backoff)
                     continue
@@ -207,7 +260,7 @@ class DeepSeekBackend(InferenceBackend):
                 log.warning(
                     "deepseek.generate_failed",
                     error=str(exc),
-                    attempts=attempt,
+                    attempt=attempt,
                 )
                 return None
 
