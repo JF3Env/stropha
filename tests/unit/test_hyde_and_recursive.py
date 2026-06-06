@@ -21,7 +21,6 @@ from stropha.retrieval.recursive import (
 )
 from stropha.storage import Storage
 
-
 # --------------------------------------------------------------------------- HyDE
 
 

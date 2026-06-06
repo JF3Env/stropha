@@ -19,8 +19,6 @@ import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from stropha.pipeline.graphify_runner import (
     DEFAULT_TIMEOUT_S,
     GraphifyResult,
@@ -28,7 +26,6 @@ from stropha.pipeline.graphify_runner import (
     run_graphify,
     run_graphify_multi,
 )
-
 
 # ---------------------------------------------------------------------------
 # find_graphify
@@ -338,7 +335,7 @@ class TestRunGraphifyMulti:
 class TestPipelineGraphifyIntegration:
     """Verify Pipeline.run() calls _run_graphify when graphify=True."""
 
-    def _make_pipeline(self, tmp_path: Path, *, graphify: bool):  # noqa: ANN202
+    def _make_pipeline(self, tmp_path: Path, *, graphify: bool):
         """Build a Pipeline with all stubs, return it with run() patchable."""
         from stropha.pipeline.pipeline import Pipeline
 

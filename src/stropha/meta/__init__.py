@@ -108,6 +108,7 @@ from .store import ArtifactStore, ArtifactStoreError, CandidateRecord
 from .trace import TraceRecord, TraceRecorder
 
 __all__ = [
+    "BASELINE_FILENAME",
     "DEFAULT_MANIFEST",
     "DEFAULT_PYTEST_ARGS",
     "DEFAULT_TIMEOUT_S",
@@ -118,7 +119,6 @@ __all__ = [
     "TIER_SCORE",
     "ArtifactStore",
     "ArtifactStoreError",
-    "BASELINE_FILENAME",
     "BadResult",
     "BadResultStore",
     "BaselineError",

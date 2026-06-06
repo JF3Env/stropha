@@ -6,12 +6,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-import pytest
-
 from stropha.eval.tracker import (
-    DEFAULT_EVAL_LOG,
-    REGRESSION_THRESHOLD,
-    REGRESSION_WINDOW,
     append_score,
     check_regression,
     load_scores,
@@ -145,7 +140,7 @@ class TestCheckRegression:
         entries.append(json.dumps({"recall_at_k": 0.57}))
         log_path.write_text("\n".join(entries) + "\n")
 
-        is_reg, msg = check_regression(0.57, log_path=log_path)
+        is_reg, _msg = check_regression(0.57, log_path=log_path)
         assert is_reg is False
 
     def test_improvement_is_not_regression(self, tmp_path: Path) -> None:
@@ -168,5 +163,5 @@ class TestCheckRegression:
         log_path.write_text("\n".join(old + recent + current) + "\n")
 
         # With window=10, rolling mean should be ~0.7, so 0.65 is within threshold
-        is_reg, msg = check_regression(0.65, log_path=log_path, window=10)
+        is_reg, _msg = check_regression(0.65, log_path=log_path, window=10)
         assert is_reg is False

@@ -5,8 +5,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from stropha.adapters.router.escalating import (
     EscalatingRouter,
     EscalatingRouterConfig,
@@ -18,7 +16,6 @@ from stropha.adapters.router.pattern import PatternRouter
 from stropha.pipeline.registry import lookup_adapter
 from stropha.retrieval.query_router import QueryIntent, RoutedQuery
 from stropha.stages.router import RouterStage
-
 
 # ---------------------------------------------------------------------------
 # LLMRouter
@@ -229,7 +226,6 @@ class TestBuildSubrouter:
     def test_fallback_when_no_arg_init_fails(self) -> None:
         """Adapter that doesn't accept no-arg should still build via
         the cls.Config() fallback path."""
-        from stropha.pipeline.registry import lookup_adapter as _la
 
         class _FakeRouter:
             Config = type("C", (), {"__init__": lambda self: None})

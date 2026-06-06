@@ -155,24 +155,25 @@ def clone_repo(url: str, *, refresh: bool = False) -> CachedRepo:
         if result.returncode != 0:
             raise GitUrlError(f"git clone failed: {result.stderr}")
     except subprocess.TimeoutExpired as exc:
-        raise GitUrlError(f"git clone timed out after 5 minutes") from exc
+        raise GitUrlError("git clone timed out after 5 minutes") from exc
     except FileNotFoundError as exc:
         raise GitUrlError("git is not installed or not in PATH") from exc
     
     # Write metadata
     import json
+    cloned_at = time.time()
     meta = {
         "url": url,
-        "cloned_at": time.time(),
+        "cloned_at": cloned_at,
         "last_indexed": None,
     }
     meta_file.write_text(json.dumps(meta))
-    
+
     return CachedRepo(
         url=url,
         local_path=local_path,
         index_path=index_path,
-        cloned_at=meta["cloned_at"],
+        cloned_at=cloned_at,
         last_indexed=None,
     )
 
@@ -187,11 +188,14 @@ def index_cached_repo(cached: CachedRepo) -> None:
     from stropha.pipeline.pipeline import Pipeline
     
     logger.info("indexing_cached_repo", url=cached.url, path=str(cached.local_path))
-    
-    # Set environment for indexing
+
+    # Tell the unified config which repo to walk. The per-cache DB path
+    # used to be propagated via STROPHA_INDEX_PATH but that env var was
+    # never read by any loader (removed in v=9). The cached repo is now
+    # indexed into the unified YAML `paths.index` DB; multi-repo
+    # tracking inside that DB keeps the per-clone chunks separate.
     os.environ["STROPHA_TARGET_REPO"] = str(cached.local_path)
-    os.environ["STROPHA_INDEX_PATH"] = str(cached.index_path)
-    
+
     try:
         resolved = load_pipeline_config()
         built = build_stages(resolved)
@@ -215,8 +219,7 @@ def index_cached_repo(cached: CachedRepo) -> None:
     finally:
         # Clean up environment
         os.environ.pop("STROPHA_TARGET_REPO", None)
-        os.environ.pop("STROPHA_INDEX_PATH", None)
-    
+
     # Update metadata
     meta_file = cached.local_path.parent / ".stropha-meta"
     import json
@@ -255,15 +258,18 @@ def search_git_url(
     # Index if needed
     if cached.needs_index or refresh:
         index_cached_repo(cached)
-        # Reload cached to get updated last_indexed
-        cached = get_cached_repo(url)
-        if cached is None:
+        # Reload to pick up the updated ``last_indexed`` timestamp; the
+        # ``None`` branch maps to a hard failure that no caller should see
+        # in practice (we just wrote the cache entry).
+        reloaded = get_cached_repo(url)
+        if reloaded is None:
             raise GitUrlError("Failed to load cached repo after indexing")
+        cached = reloaded
     
-    # Search
+    # Search (STROPHA_INDEX_PATH removed in v=9 — see note in
+    # index_cached_repo; the unified YAML `paths.index` DB is shared).
     os.environ["STROPHA_TARGET_REPO"] = str(cached.local_path)
-    os.environ["STROPHA_INDEX_PATH"] = str(cached.index_path)
-    
+
     try:
         resolved = load_pipeline_config()
         built = build_stages(resolved)
@@ -272,7 +278,6 @@ def search_git_url(
         return hits
     finally:
         os.environ.pop("STROPHA_TARGET_REPO", None)
-        os.environ.pop("STROPHA_INDEX_PATH", None)
 
 
 def is_git_url(s: str) -> bool:
@@ -302,7 +307,4 @@ def is_git_url(s: str) -> bool:
         return True
     
     # Git protocol
-    if s.startswith("git://"):
-        return True
-    
-    return False
+    return bool(s.startswith("git://"))

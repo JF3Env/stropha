@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import json
 import subprocess
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -66,7 +66,7 @@ def append_score(
     sha = commit or _get_head_sha()
 
     entry: dict[str, Any] = {
-        "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "ts": datetime.now(UTC).isoformat(timespec="seconds"),
         "commit": sha,
         "recall_at_k": round(report.recall_at_k, 4),
         "mrr": round(report.mrr, 4),

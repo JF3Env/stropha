@@ -225,6 +225,40 @@ class Pipeline:
             enricher_id=self._enricher.adapter_id,
             embedder_id=self._embedder.adapter_id,
         )
+
+        # Drift detection: compare the stored adapter ids (written by the
+        # previous run at the bottom of this method) against the current
+        # ones. When they differ, every per-chunk freshness check that
+        # follows will fail and re-embed — surface that intent up-front
+        # so the operator sees the cause, not just the symptom (silent
+        # mass re-embed and the cloud bill that comes with it).
+        if not rebuild:
+            stored_enricher = self._storage.get_meta("active_enricher_id")
+            stored_embedder = self._storage.get_meta("active_embedder_id")
+            drift_enricher = (
+                stored_enricher is not None
+                and stored_enricher != self._enricher.adapter_id
+            )
+            drift_embedder = (
+                stored_embedder is not None
+                and stored_embedder != self._embedder.adapter_id
+            )
+            if drift_enricher or drift_embedder:
+                log.warning(
+                    "pipeline.config_drift_detected",
+                    stored_enricher_id=stored_enricher,
+                    active_enricher_id=self._enricher.adapter_id,
+                    stored_embedder_id=stored_embedder,
+                    active_embedder_id=self._embedder.adapter_id,
+                    enricher_changed=drift_enricher,
+                    embedder_changed=drift_embedder,
+                    hint=(
+                        "every chunk that doesn't match the new triplet "
+                        "will be re-enriched and/or re-embedded. Pass "
+                        "--rebuild --vacuum for a clean recreate."
+                    ),
+                )
+
         # Auto-backfill orphans (v1→v2 upgrade path).
         if not rebuild and self._storage.count_chunks_without_repo() > 0:
             if len(self._repos) == 1:
@@ -318,11 +352,10 @@ class Pipeline:
         # tables don't exist (older schema, custom storage adapter) just
         # skip silently.
         try:
-            from ..ingest.graphify_loader import GraphifyLoader
             from ..ingest.graph_vec_loader import GraphVecLoader
+            from ..ingest.graphify_loader import GraphifyLoader
         except ImportError:  # pragma: no cover — defensive
             return
-        loaded_anything = False
         for repo_path in self._repos:
             # Get repo_id for this repo (required for multi-repo isolation)
             identity = detect_repo(repo_path)
@@ -348,7 +381,6 @@ class Pipeline:
             else:
                 try:
                     loader.load()
-                    loaded_anything = True
                 except Exception as exc:
                     log.warning(
                         "graphify_loader.load_failed",
@@ -725,7 +757,7 @@ class Pipeline:
                 # in ``stropha.stages.enricher`` for why poisoning the cache
                 # is worse than re-attempting next run.
                 for idx, (embed_text, success) in zip(
-                    pending_embed_text_indices, results
+                    pending_embed_text_indices, results, strict=False
                 ):
                     chunk = staged[idx][0]
                     staged[idx] = (chunk, embed_text)
@@ -738,11 +770,15 @@ class Pipeline:
                         stats.chunks_enriched_failed += 1
 
             # Drain ``staged`` into the embedder batch (order-preserving).
-            for chunk, embed_text in staged:
-                assert embed_text is not None  # set by pass 2 if previously None
-                batch_texts.append(embed_text)
+            for chunk, maybe_embed_text in staged:
+                assert maybe_embed_text is not None  # set by pass 2 if previously None
+                # Shadow with a non-Optional alias so the embedder typing is
+                # satisfied without rebinding ``embed_text`` from the outer
+                # ``zip(...)`` loop above (mypy ``no-redef``).
+                drained_embed_text: str = maybe_embed_text
+                batch_texts.append(drained_embed_text)
                 batch_chunks.append(chunk)
-                batch_embed_texts.append(embed_text)
+                batch_embed_texts.append(drained_embed_text)
                 if len(batch_texts) >= batch_size:
                     flush()
             # Record file_meta after the file is fully processed. We use
@@ -818,7 +854,7 @@ class Pipeline:
 
         # Import lazily to avoid a circular import (stages.enricher imports
         # pipeline.base, pipeline.base is sibling of pipeline.pipeline).
-        from ..stages.enricher import enrich_batch_with_status, enrich_with_status
+        from ..stages.enricher import enrich_with_status
 
         # Decide whether to batch. The adapter must expose ``enrich_batch``
         # AND the configured batch size must be > 1. Other enrichers stay
@@ -836,7 +872,7 @@ class Pipeline:
         if self._enricher_concurrency <= 1 or len(chunks) <= 1:
             return [
                 enrich_with_status(self._enricher, chunk, ctx)
-                for chunk, ctx in zip(chunks, contexts)
+                for chunk, ctx in zip(chunks, contexts, strict=False)
             ]
 
         # Parallel path. max_workers is capped at len(chunks) so we never

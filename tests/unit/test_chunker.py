@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 from pathlib import Path
 
 from stropha.ingest.chunker import Chunker
@@ -38,7 +39,7 @@ def test_fallback_oversized_splits(tmp_path: Path) -> None:
     chunks = list(FallbackChunker().chunk(sf, content))
     assert len(chunks) >= 2
     assert all(c.kind == "file_part" for c in chunks)
-    for prev, cur in zip(chunks, chunks[1:]):
+    for prev, cur in itertools.pairwise(chunks):
         assert cur.start_line == prev.end_line + 1
 
 

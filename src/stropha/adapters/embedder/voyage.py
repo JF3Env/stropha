@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterator, Sequence
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -112,7 +113,7 @@ class VoyageEmbedder(EmbedderStage):
         self._voyageai = voyageai
         self._client: object | None = None
 
-    def _get_client(self) -> object:
+    def _get_client(self) -> Any:
         # Lazy: the MCP server constructs every adapter at startup, but the
         # retrieval-only query path may never touch the embedder. Deferring
         # the API-key check + Client construction lets stropha-mcp start

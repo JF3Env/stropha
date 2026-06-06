@@ -89,7 +89,7 @@ class PatternRouter(RouterStage):
                     self._config.use_llm_fallback or None
                 ),
             )
-        except Exception as exc:  # noqa: BLE001 — defensive
+        except Exception as exc:
             # Emergency fallback to SEARCH_CODE with low confidence.
             from ...retrieval.query_router import QueryIntent
 

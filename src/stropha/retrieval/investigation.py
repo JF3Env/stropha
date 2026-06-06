@@ -181,7 +181,7 @@ def plan_investigation(
                 from .graph import graph_loaded
 
                 graph_ok = bool(graph_loaded(storage))
-            except Exception:  # noqa: BLE001 — defensive
+            except Exception:
                 graph_ok = False
         if not graph_ok:
             notes.append(

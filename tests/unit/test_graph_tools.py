@@ -521,7 +521,7 @@ def test_trace_feature_breaks_cycles(tmp_path: Path, storage: Storage) -> None:
     )
     # Should not infinite loop or duplicate.
     result = trace_feature(storage, "submit action", max_depth=10)
-    chain_ids = [n["node_id"] for p in result["paths"] for n in p["chain"]]
+    [n["node_id"] for p in result["paths"] for n in p["chain"]]
     # Each node visited at most once per entry path
     for path in result["paths"]:
         ids = [n["node_id"] for n in path["chain"]]

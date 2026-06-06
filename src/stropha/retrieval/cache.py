@@ -197,7 +197,7 @@ class SemanticCache:
                 symbol=None,
                 snippet="",  # Will be hydrated by caller
             )
-            for i, (cid, score) in enumerate(zip(entry.chunk_ids, entry.scores))
+            for i, (cid, score) in enumerate(zip(entry.chunk_ids, entry.scores, strict=False))
         ]
 
     def set(

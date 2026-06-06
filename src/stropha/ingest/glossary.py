@@ -31,11 +31,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-import yaml
+import yaml  # type: ignore[import-untyped]
 
 from ..logging import get_logger
 from ..models import Chunk
-from ..storage import Storage
+from ..stages.storage import StorageStage
+from ..storage import Storage  # noqa: F401  — keep for backward-compat re-export
 
 log = get_logger(__name__)
 
@@ -92,8 +93,11 @@ class GlossaryStats:
 
 class GlossaryLoader:
     """Load and manage the domain glossary."""
-    
-    def __init__(self, storage: Storage) -> None:
+
+    def __init__(self, storage: StorageStage) -> None:
+        # Accepts the protocol so callers can pass either the concrete
+        # ``Storage`` or any future storage adapter that satisfies the
+        # Stage contract.
         self._storage = storage
     
     def load_yaml(self, yaml_path: Path, repo_id: int | None = None) -> list[GlossaryTerm]:
@@ -175,11 +179,15 @@ class GlossaryLoader:
             # Generate embedding
             embedding_text = chunk.content
             embedding = embedder.embed_query(embedding_text)
-            
-            # Store the chunk
+
+            # Store the chunk — embedding_model + embedding_dim are required
+            # so drift detection (CLAUDE.md §3.1) can tell when the active
+            # embedder changes underneath the glossary.
             self._storage.upsert_chunk(
                 chunk=chunk,
                 embedding=embedding,
+                embedding_model=getattr(embedder, "model_name", "unknown"),
+                embedding_dim=getattr(embedder, "dim", len(embedding)),
                 embedding_text=embedding_text,
                 enricher_id=enricher_id,
                 repo_id=repo_id,

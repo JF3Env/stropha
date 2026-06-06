@@ -14,16 +14,14 @@ from __future__ import annotations
 import time
 from unittest.mock import patch
 
-import pytest
-
 from stropha.models import SearchHit
 from stropha.retrieval.cache import (
-    SemanticCache,
     CacheEntry,
-    _quantize_vector,
+    SemanticCache,
     _filters_hash,
-    get_global_cache,
+    _quantize_vector,
     clear_global_cache,
+    get_global_cache,
 )
 
 

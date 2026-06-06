@@ -29,7 +29,6 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-
 # Keywords that mark an invariant in the spec text. Order matters
 # for severity classification — the first matching keyword wins.
 _KEYWORDS: tuple[tuple[str, str], ...] = (

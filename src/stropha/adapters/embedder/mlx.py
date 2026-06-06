@@ -21,6 +21,7 @@ Performance: ~3-5x faster than fastembed ONNX on M1/M2/M3 Macs.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -70,8 +71,10 @@ class MlxEmbedderConfig(BaseModel):
 def _is_mlx_available() -> bool:
     """Check if mlx-embedding-models is installed and MLX is available."""
     try:
-        import mlx.core  # noqa: F401
-        from mlx_embedding_models.embedding import EmbeddingModel  # noqa: F401
+        import mlx.core  # noqa: F401  # type: ignore[import-untyped,import-not-found]
+        from mlx_embedding_models.embedding import (  # type: ignore[import-untyped]
+            EmbeddingModel,  # noqa: F401
+        )
         return True
     except ImportError:
         return False
@@ -92,7 +95,12 @@ class MlxEmbedder(EmbedderStage):
 
     def __init__(self, config: MlxEmbedderConfig | None = None) -> None:
         self._config = config or MlxEmbedderConfig()
-        self._model_obj = None
+        # ``mlx_lm`` ships without type stubs (see ``# type: ignore`` on the
+        # import). Track the model object as ``Any`` so callers can use
+        # ``.encode`` / ``.tokenizer`` without mypy complaining about ``None``
+        # on the lazy-init field. Runtime safety is enforced by
+        # ``_ensure_loaded`` raising on missing model.
+        self._model_obj: Any = None
         self._dim: int | None = None
 
         # Validate model name
@@ -112,7 +120,9 @@ class MlxEmbedder(EmbedderStage):
             return
 
         try:
-            from mlx_embedding_models.embedding import EmbeddingModel
+            from mlx_embedding_models.embedding import (  # type: ignore[import-untyped]
+                EmbeddingModel,
+            )
         except ImportError as exc:
             raise EmbeddingError(
                 "mlx-embedding-models package is not installed. "
@@ -209,7 +219,7 @@ class MlxEmbedder(EmbedderStage):
 
         # Decode back to text - this gives us properly truncated strings
         truncated = []
-        for i, input_ids in enumerate(encoded["input_ids"]):
+        for _i, input_ids in enumerate(encoded["input_ids"]):
             # Skip special tokens when decoding
             decoded = tokenizer.decode(input_ids, skip_special_tokens=True)
             truncated.append(decoded)

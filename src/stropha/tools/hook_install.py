@@ -69,7 +69,23 @@ log = get_logger(__name__)
 #      runs `stropha eval --track` to append Recall@K/MRR/NDCG to a JSONL
 #      log and alerts on regression. Skippable via STROPHA_HOOK_NO_EVAL=1.
 #      Adds ~2-5s to the bg job (runs the golden set against the index).
-HOOK_VERSION = 8
+# v=9: portable concurrency guard + unified mode + dead-env-var cleanup.
+#      Three changes:
+#      (a) Replace `flock -n 9` with a mkdir-based atomic lock + PID
+#          staleness check. macOS does not ship flock — every v<=8 hook
+#          on macOS silently skipped every commit because the missing
+#          binary returned non-zero, taking the "already running" branch.
+#          mkdir is POSIX-atomic; the PID file lets the next run steal
+#          a stale lock when the previous holder was killed.
+#      (b) Drop `--incremental` from the `stropha index` call. The CLI's
+#          default `auto` mode resolves to incremental when a
+#          `last_indexed_sha` checkpoint exists and full otherwise, so
+#          the hook and the interactive CLI now share one code path.
+#      (c) Drop INDEX_PATH_DEFAULT / INDEX_ENV / STROPHA_HOOK_INDEX_PATH.
+#          The dead `STROPHA_INDEX_PATH` env var was set by 3 sites and
+#          read by 0; the hook's `--index-path` bake never took effect.
+#          The user-level YAML `paths.index` is the single source.
+HOOK_VERSION = 9
 
 START_MARKER = "# stropha-hook-start"
 END_MARKER = "# stropha-hook-end"
@@ -87,7 +103,7 @@ _VERSION_RE = re.compile(rf"{re.escape(START_MARKER)} v=(\d+)")
 # auto-resolution". We tolerate either ASCII " or fancier quotes that some
 # editors might inject during manual fixes.
 _PROJECT_DIR_RE = re.compile(r'PROJECT_DIR_DEFAULT="([^"]*)"')
-_INDEX_PATH_RE = re.compile(r'INDEX_PATH_DEFAULT="([^"]*)"')
+# _INDEX_PATH_RE removed in v=9 — INDEX_PATH_DEFAULT no longer baked.
 _LOG_DEFAULT_RE = re.compile(r'LOG_DEFAULT="([^"]*)"')
 # v=6: integer count of sleep-time meta iterations baked into the script.
 # "0" / empty = disabled (the default), the meta step is a no-op.
@@ -108,7 +124,6 @@ class HookStatus:
     # v=3 baked defaults parsed from the hook file. None when absent or
     # when an older hook version (≤2) lacks the bake.
     project_dir: Path | None = None
-    index_path: Path | None = None
     log_path_default: Path | None = None
     # v=6: sleep-time meta iterations baked into the script. 0 (or None
     # on older hooks) means the meta step is disabled — no bandit loop
@@ -124,7 +139,6 @@ class HookStatus:
             "graphify_cohabit": self.graphify_cohabit,
             "log_path": str(self.log_path),
             "project_dir": str(self.project_dir) if self.project_dir else None,
-            "index_path": str(self.index_path) if self.index_path else None,
             "log_path_default": (
                 str(self.log_path_default) if self.log_path_default else None
             ),
@@ -204,34 +218,44 @@ def _render_hook_block(
     target: Path,
     *,
     project_dir: Path | None = None,
-    index_path: Path | None = None,
     log_path: Path | None = None,
     meta_iterations: int | None = None,
 ) -> str:
     """The script body sandwiched between START and END markers.
 
-    The hook runs ``stropha index --incremental`` in a detached background
-    process protected by flock. Graphify is handled internally by the
-    pipeline (Pipeline._run_graphify) — no separate graphify call.
+    The hook runs ``stropha index`` in a detached background process
+    protected by a mkdir-based atomic lock. Graphify is handled internally
+    by the pipeline (Pipeline._run_graphify) — no separate graphify call.
 
-    v=3 additions: bake ``project_dir`` / ``index_path`` / ``log_path``
-    defaults into the generated script so cross-repo installs (target ≠
-    where stropha lives) work without commit-time env vars. Each baked
-    value is honoured unless overridden by the matching
-    ``STROPHA_HOOK_*`` env var.
+    v=3: bake ``project_dir`` / ``log_path`` defaults into the generated
+    script so cross-repo installs (target ≠ where stropha lives) work
+    without commit-time env vars. Each baked value is honoured unless
+    overridden by the matching ``STROPHA_HOOK_*`` env var.
 
-    v=6 addition: bake ``meta_iterations`` so the post-commit refresh
-    runs N sleep-time bandit iterations after the index/backfill steps
+    v=6: bake ``meta_iterations`` so the post-commit refresh runs N
+    sleep-time bandit iterations after the index/backfill steps
     (WIN-203). ``None`` / ``0`` means disabled — the meta step is a
     no-op and adds nothing to the foreground.
 
     v=7: removed the explicit graphify step — ``stropha index`` already
-    runs graphify internally (CLAUDE.md §3 invariant #3). The hook is
-    now ~15 lines shorter and eliminates the redundant subprocess call.
+    runs graphify internally (CLAUDE.md §3 invariant #3).
+
+    v=9 (this version):
+      * Replace ``flock -n 9`` with a portable mkdir-based atomic lock
+        + PID stale-lock recovery. macOS does not ship ``flock``; v=8
+        silently skipped every commit on macOS because the missing
+        binary returned non-zero, taking the "already running" branch.
+      * Drop ``--incremental``. The CLI's default ``auto`` mode handles
+        both first-run (no checkpoint → full) and subsequent-run
+        (checkpoint exists → incremental), so the hook and the
+        interactive ``stropha index`` now share one code path.
+      * Drop the dead ``INDEX_PATH_DEFAULT`` / ``INDEX_ENV`` /
+        ``STROPHA_HOOK_INDEX_PATH`` plumbing. The hook now relies on the
+        unified YAML ``paths.index`` and never sets ``STROPHA_INDEX_PATH``
+        (which was read by zero call sites).
     """
     target_str = str(target)
     project_dir_default = str(project_dir.resolve()) if project_dir else ""
-    index_path_default = str(index_path.expanduser()) if index_path else ""
     log_default = str(log_path.expanduser()) if log_path else ""
     # ``meta_iterations`` of 0 / None / negative is a no-op in the script.
     # Normalize at install time so the baked value is a plain non-negative
@@ -247,7 +271,7 @@ def _render_hook_block(
     return dedent(
         f"""\
         {START_MARKER} v={HOOK_VERSION}
-        # Post-commit: stropha index (incremental) in background.
+        # Post-commit: stropha index in background.
         # Generated by `stropha hook install`. Edit overrides via env vars only.
         # graphify update is handled internally by `stropha index` via
         # Pipeline._run_graphify() — no separate graphify call needed here.
@@ -259,16 +283,10 @@ def _render_hook_block(
         #   STROPHA_HOOK_UV=<path>      -> override `uv` binary
         #   STROPHA_HOOK_GRAPHIFY=<p>   -> override `graphify` binary path
         #                                  (honoured by Pipeline.find_graphify).
-        #                                  To skip graphify entirely, pass
-        #                                  --no-graphify in stropha.yaml or CLI.
         #   STROPHA_HOOK_PROJECT_DIR=<p> -> `uv run --directory` target (where
         #                                  stropha is installed). Defaults to
         #                                  the baked PROJECT_DIR_DEFAULT, else
         #                                  $TOPLEVEL (legacy dogfooding case).
-        #   STROPHA_HOOK_INDEX_PATH=<p>  -> override STROPHA_INDEX_PATH for the
-        #                                  index step. Defaults to the baked
-        #                                  INDEX_PATH_DEFAULT, else honours
-        #                                  .env in PROJECT_DIR / Config defaults.
         #   STROPHA_HOOK_META_ITERATIONS=<n> -> override the baked sleep-time
         #                                  meta loop count. 0 disables.
         #   STROPHA_HOOK_NO_EVAL=1       -> skip the eval step (WIN-382)
@@ -281,7 +299,6 @@ def _render_hook_block(
         # the appropriate flags to change. Empty string = no default, fall
         # back to legacy auto-resolution.
         PROJECT_DIR_DEFAULT="{project_dir_default}"
-        INDEX_PATH_DEFAULT="{index_path_default}"
         LOG_DEFAULT="{log_default}"
         META_ITERATIONS_DEFAULT="{meta_iterations_default}"
 
@@ -326,10 +343,11 @@ def _render_hook_block(
         # --- 4. Detached background run --------------------------------------
         # Honour commit-time env > install-time baked default > legacy $TOPLEVEL.
         PROJECT_DIR="${{STROPHA_HOOK_PROJECT_DIR:-${{PROJECT_DIR_DEFAULT:-$TOPLEVEL}}}}"
-        INDEX_PATH_OVERRIDE="${{STROPHA_HOOK_INDEX_PATH:-$INDEX_PATH_DEFAULT}}"
 
         LOG="${{STROPHA_HOOK_LOG:-${{LOG_DEFAULT:-${{HOME}}/.cache/stropha-hook.log}}}}"
-        LOCK="/tmp/stropha-hook-$(printf '%s' "$TOPLEVEL" | md5).lock"
+        # v=9: mkdir-based atomic lock dir (POSIX). Replaces v<=8's
+        # flock-based guard, which silently failed on macOS (no flock).
+        LOCK_DIR="/tmp/stropha-hook-$(printf '%s' "$TOPLEVEL" | md5).lock.d"
         mkdir -p "$(dirname "$LOG")"
 
         SHORT_SHA=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
@@ -340,23 +358,13 @@ def _render_hook_block(
             exit 0
         fi
 
-        # Inject STROPHA_TARGET_REPO + STROPHA_INDEX_PATH into the index step
-        # only when the user opted in via --index-path / STROPHA_HOOK_INDEX_PATH.
-        # Empty INDEX_ENV preserves the legacy behaviour (honours .env / Config
-        # defaults from PROJECT_DIR).
-        INDEX_ENV=""
-        if [ -n "$INDEX_PATH_OVERRIDE" ]; then
-            INDEX_ENV="env STROPHA_TARGET_REPO=$TOPLEVEL STROPHA_INDEX_PATH=$INDEX_PATH_OVERRIDE"
-        fi
-
-        # v=4: `--incremental` makes the hook re-chunk + re-embed only the
-        # files that this commit touched. The pipeline gracefully falls
-        # back to a full walk when no `last_indexed_sha` checkpoint
-        # exists yet (e.g. first run after install).
+        # v=9: drop --incremental. CLI's default `auto` mode resolves to
+        # incremental when a `last_indexed_sha` checkpoint exists and full
+        # otherwise, so hook and CLI share one code path.
         if [ -n "$TIMEOUT_BIN" ]; then
-            CMD="$TIMEOUT_BIN ${{STROPHA_HOOK_TIMEOUT:-600}} $INDEX_ENV $UV run --directory $PROJECT_DIR stropha index --repo $TOPLEVEL --incremental"
+            CMD="$TIMEOUT_BIN ${{STROPHA_HOOK_TIMEOUT:-600}} $UV run --directory $PROJECT_DIR stropha index --repo $TOPLEVEL"
         else
-            CMD="$INDEX_ENV $UV run --directory $PROJECT_DIR stropha index --repo $TOPLEVEL --incremental"
+            CMD="$UV run --directory $PROJECT_DIR stropha index --repo $TOPLEVEL"
         fi
 
         # v=5: outcome backfill (WIN-164). The previous commit SHA is the
@@ -366,7 +374,7 @@ def _render_hook_block(
         PREV_SHA=$(git rev-parse HEAD~1 2>/dev/null || true)
         BACKFILL_CMD=""
         if [ -n "$PREV_SHA" ]; then
-            BACKFILL_CMD="$INDEX_ENV $UV run --directory $PROJECT_DIR stropha meta outcome backfill --since $PREV_SHA --repo $TOPLEVEL"
+            BACKFILL_CMD="$UV run --directory $PROJECT_DIR stropha meta outcome backfill --since $PREV_SHA --repo $TOPLEVEL"
         fi
 
         # v=6: sleep-time bandit iterations (WIN-203). Resolved at commit
@@ -380,9 +388,9 @@ def _render_hook_block(
         META_CMD=""
         if [ -n "$META_ITERATIONS" ] && [ "$META_ITERATIONS" -gt 0 ] 2>/dev/null; then
             if [ -n "$TIMEOUT_BIN" ]; then
-                META_CMD="$TIMEOUT_BIN ${{STROPHA_HOOK_TIMEOUT:-600}} $INDEX_ENV $UV run --directory $PROJECT_DIR stropha meta run --iterations $META_ITERATIONS --proposer bandit"
+                META_CMD="$TIMEOUT_BIN ${{STROPHA_HOOK_TIMEOUT:-600}} $UV run --directory $PROJECT_DIR stropha meta run --iterations $META_ITERATIONS --proposer bandit"
             else
-                META_CMD="$INDEX_ENV $UV run --directory $PROJECT_DIR stropha meta run --iterations $META_ITERATIONS --proposer bandit"
+                META_CMD="$UV run --directory $PROJECT_DIR stropha meta run --iterations $META_ITERATIONS --proposer bandit"
             fi
         fi
 
@@ -390,15 +398,34 @@ def _render_hook_block(
         # appends scores to JSONL log, alerts on regression.
         EVAL_CMD=""
         if [ "${{STROPHA_HOOK_NO_EVAL:-0}}" != "1" ]; then
-            EVAL_CMD="$INDEX_ENV $UV run --directory $PROJECT_DIR stropha eval --track"
+            EVAL_CMD="$UV run --directory $PROJECT_DIR stropha eval --track"
         fi
 
         nohup sh -c "
-            exec 9>'$LOCK'
-            if ! flock -n 9 2>/dev/null; then
-                echo '[stropha-hook] skipped (previous run still active, commit ${{SHORT_SHA}})' >> '$LOG'
-                exit 0
+            # v=9: portable atomic lock (macOS lacks flock). mkdir is
+            # POSIX-atomic; the PID file lets the next run steal a stale
+            # lock when the previous holder was killed.
+            if ! mkdir '$LOCK_DIR' 2>/dev/null; then
+                STALE=0
+                if [ -f '$LOCK_DIR/pid' ]; then
+                    OWNER=\\$(cat '$LOCK_DIR/pid' 2>/dev/null)
+                    if [ -n \\"\\$OWNER\\" ] && ! kill -0 \\"\\$OWNER\\" 2>/dev/null; then
+                        STALE=1
+                    fi
+                fi
+                if [ \\"\\$STALE\\" = \\"1\\" ]; then
+                    rm -rf '$LOCK_DIR'
+                    if ! mkdir '$LOCK_DIR' 2>/dev/null; then
+                        echo '[stropha-hook] skipped (lock contention, commit ${{SHORT_SHA}})' >> '$LOG'
+                        exit 0
+                    fi
+                else
+                    echo '[stropha-hook] skipped (previous run still active, commit ${{SHORT_SHA}})' >> '$LOG'
+                    exit 0
+                fi
             fi
+            printf '%s' \\$\\$ > '$LOCK_DIR/pid'
+            trap \\"rm -rf '$LOCK_DIR'\\" EXIT INT TERM
             cd '$TOPLEVEL' || exit 1
 
             $CMD >> '$LOG' 2>&1 \\
@@ -451,7 +478,6 @@ def install(
     *,
     force: bool = False,
     project_dir: Path | None = None,
-    index_path: Path | None = None,
     log_path: Path | None = None,
     meta_iterations: int | None = None,
 ) -> dict:
@@ -465,11 +491,15 @@ def install(
 
     Cross-repo installs (v=3): pass ``project_dir`` to point ``uv run
     --directory`` at the directory where ``stropha`` is actually installed
-    (not the ``target`` repo). Pass ``index_path`` to bake a stable
-    ``STROPHA_INDEX_PATH`` for the index step. Pass ``log_path`` to send
-    refresh logs somewhere other than the default
-    ``~/.cache/stropha-hook.log`` — handy when you maintain hooks for
-    several repos and want per-repo trails.
+    (not the ``target`` repo). Pass ``log_path`` to send refresh logs
+    somewhere other than the default ``~/.cache/stropha-hook.log`` — handy
+    when you maintain hooks for several repos and want per-repo trails.
+
+    Note: the v<=8 ``index_path`` parameter (and the corresponding
+    ``--index-path`` CLI flag / ``STROPHA_HOOK_INDEX_PATH`` env var) is
+    removed in v=9. The hook now relies on the unified
+    ``~/.stropha/config.yaml`` ``paths.index`` key — there is no
+    separate per-hook DB override path.
 
     Sleep-time meta loop (v=6, WIN-203): pass ``meta_iterations=N``
     (N > 0) to bake a ``stropha meta run --iterations N --proposer
@@ -489,7 +519,6 @@ def install(
     block = _render_hook_block(
         target,
         project_dir=project_dir,
-        index_path=index_path,
         log_path=log_path,
         meta_iterations=meta_iterations,
     )
@@ -523,7 +552,6 @@ def install(
         "hook.install", target=str(target), hook=str(hook), action=action,
         version=HOOK_VERSION, graphify_cohabit=has_graphify,
         project_dir=str(project_dir.resolve()) if project_dir else None,
-        index_path=str(index_path.expanduser()) if index_path else None,
         log_path_baked=str(log_path.expanduser()) if log_path else None,
         meta_iterations=baked_meta,
     )
@@ -536,7 +564,6 @@ def install(
         "graphify_cohabit": has_graphify,
         "log_path": str(log_path.expanduser()) if log_path else str(_log_path()),
         "project_dir": str(project_dir.resolve()) if project_dir else None,
-        "index_path": str(index_path.expanduser()) if index_path else None,
         "meta_iterations": baked_meta,
     }
 
@@ -577,9 +604,12 @@ def status(target: Path) -> HookStatus:
     """Inspect whether the hook is installed for ``target``.
 
     For v=3 hooks the baked defaults (``PROJECT_DIR_DEFAULT`` /
-    ``INDEX_PATH_DEFAULT`` / ``LOG_DEFAULT``) are parsed out of the script
-    body so the CLI can render them. Older hooks return ``None`` for
-    those fields.
+    ``LOG_DEFAULT``) are parsed out of the script body so the CLI can
+    render them. Older hooks return ``None`` for those fields.
+
+    The v<=8 ``INDEX_PATH_DEFAULT`` bake is intentionally NOT surfaced —
+    that field was removed in v=9 because its value was never honoured
+    by any code path (see ``_render_hook_block`` docstring).
     """
     target = target.resolve()
     hook = _hook_path(target)
@@ -615,7 +645,6 @@ def status(target: Path) -> HookStatus:
         graphify_cohabit=GRAPHIFY_MARKER in existing,
         log_path=_log_path(),
         project_dir=_parse_baked(_PROJECT_DIR_RE),
-        index_path=_parse_baked(_INDEX_PATH_RE),
         log_path_default=_parse_baked(_LOG_DEFAULT_RE),
         meta_iterations=_parse_meta_iters(),
     )

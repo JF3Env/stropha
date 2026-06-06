@@ -33,10 +33,19 @@ import math
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from ..logging import get_logger
 from ..retrieval.search import SearchEngine
+
+if TYPE_CHECKING:
+    # Late-bound to avoid pulling ``stropha.stages`` into the eager import
+    # chain. ``stages/__init__.py`` aggregates every stage Protocol, which
+    # transitively triggers the pipeline + adapter autoload — fine at
+    # runtime but creates a partially-initialised-module cycle when the
+    # eval harness is imported before the pipeline package finishes
+    # loading (e.g. via ``stropha.meta.evaluator``).
+    from ..stages.retrieval import RetrievalStage
 
 log = get_logger(__name__)
 
@@ -420,11 +429,16 @@ def _symbol_matches(actual: str | None, expected: Iterable[str]) -> str | None:
 
 def run_eval(
     cases: Iterable[EvalCase],
-    engine: SearchEngine,
+    engine: SearchEngine | RetrievalStage,
     *,
     top_k: int = 10,
 ) -> EvalReport:
-    """Execute every case against ``engine`` and aggregate metrics."""
+    """Execute every case against ``engine`` and aggregate metrics.
+
+    Accepts either the legacy ``SearchEngine`` or any object satisfying
+    the ``RetrievalStage`` protocol — both expose
+    ``search(query, *, top_k=...)`` returning ``list[SearchHit]``.
+    """
     import time as _time
 
     report = EvalReport(top_k=top_k)
@@ -445,7 +459,11 @@ def run_eval(
 
         for rank, h in enumerate(hits, 1):
             # Tolerate both real SearchHit (.rel_path) and tests' fake hits (.path).
-            actual_path = getattr(h, "rel_path", None) or getattr(h, "path", "")
+            # ``getattr`` with default is typed as ``Any | None``; widen to ``str``
+            # because both surfaces always materialise a string here.
+            actual_path: str = (
+                getattr(h, "rel_path", None) or getattr(h, "path", "") or ""
+            )
             actual_symbol = getattr(h, "symbol", None)
 
             mp = _path_matches(actual_path, case.expected_paths)

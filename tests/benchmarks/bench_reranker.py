@@ -28,7 +28,6 @@ from stropha.eval.harness import EvalReport, load_golden, run_eval
 from stropha.pipeline.builder import build_stages
 from stropha.pipeline.config import load_pipeline_config
 
-
 # Three reranker configurations to benchmark
 RERANKER_CONFIGS: dict[str, dict[str, Any] | None] = {
     "noop": None,  # No reranker — pure RRF output
@@ -177,7 +176,7 @@ def run_benchmark(
             all_tags.update(r.get("by_tag", {}).keys())
 
         if all_tags:
-            print(f"\nPER-TAG ANALYSIS")
+            print("\nPER-TAG ANALYSIS")
             print("-" * 72)
             for tag in sorted(all_tags):
                 tag_results = []

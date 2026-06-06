@@ -17,7 +17,6 @@ from stropha.retrieval.speculative import (
     prefetch,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -189,7 +188,7 @@ class TestPredictNextQueries:
         preds = predict_next_queries(
             [], hits, max_predictions=5,
         )
-        assert any("imports of src/x.py" == p.query for p in preds)
+        assert any(p.query == "imports of src/x.py" for p in preds)
 
     def test_compound_predicts_clauses(self) -> None:
         preds = predict_next_queries(
@@ -333,7 +332,6 @@ class TestPrefetch:
         """A timeout-cancelled query must surface in ``failed`` with
         the cancellation note (covers outcome.cancelled branch)."""
         import threading
-        import time
 
         cancel_signal = threading.Event()
 

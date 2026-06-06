@@ -14,7 +14,7 @@ Why RRF beats weighted-sum here:
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 
 from ..models import SearchHit
 
@@ -84,7 +84,7 @@ def rrf_fuse(
 
 
 def rrf_fuse_named(
-    ranked_lists: dict[str, Iterable[SearchHit]],
+    ranked_lists: Mapping[str, Iterable[SearchHit]],
     *,
     k: int = DEFAULT_K,
     top_k: int = 10,

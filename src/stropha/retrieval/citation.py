@@ -32,8 +32,6 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
-
 
 # Match `[chunk_id]`, `[file:line]`, `[file:start-end]`.
 # The id is anything that doesn't contain `]`. We then post-process

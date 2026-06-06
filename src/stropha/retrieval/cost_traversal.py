@@ -97,7 +97,7 @@ def _identity_key(node: Any) -> Any:
     return node
 
 
-def cost_budgeted_bfs(
+def cost_budgeted_bfs[NodeT](
     start: NodeT,
     neighbors_fn: Callable[[NodeT], Iterable[NodeT]],
     *,

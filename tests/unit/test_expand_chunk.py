@@ -17,7 +17,6 @@ from stropha.ingest.git_meta import RepoIdentity
 from stropha.models import Chunk, SearchHit
 from stropha.storage.sqlite import Storage
 
-
 # ---------------------------------------------------------------------------
 # Storage.lookup_by_chunk_id
 # ---------------------------------------------------------------------------

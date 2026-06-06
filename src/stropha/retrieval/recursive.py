@@ -119,7 +119,7 @@ def _maybe_merge_parent(
 ) -> SearchHit:
     """If any sibling in ``all_hits`` shares ``hit``'s parent_chunk_id, promote
     the result to the parent chunk (loaded from storage)."""
-    cur = storage._conn.cursor()  # noqa: SLF001
+    cur = storage._conn.cursor()
     row = cur.execute(
         "SELECT parent_chunk_id FROM chunks WHERE chunk_id = ?", (hit.chunk_id,),
     ).fetchone()

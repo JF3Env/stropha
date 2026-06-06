@@ -21,7 +21,6 @@ from stropha.adapters.walker.git_diff import (
 )
 from stropha.errors import WalkerError
 
-
 # --------------------------------------------------------------------------- helpers
 
 

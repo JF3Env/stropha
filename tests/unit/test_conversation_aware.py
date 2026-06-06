@@ -16,8 +16,6 @@ from __future__ import annotations
 from collections import deque
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from stropha.models import SearchHit
 
 

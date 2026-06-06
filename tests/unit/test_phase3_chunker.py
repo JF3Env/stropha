@@ -146,7 +146,9 @@ def test_dispatcher_adapter_id_changes_with_language_override() -> None:
 
 
 def test_dispatcher_unknown_sub_adapter_raises() -> None:
-    with pytest.raises(Exception):
+    from stropha.errors import ConfigError
+
+    with pytest.raises(ConfigError, match="Unknown language-chunker adapter"):
         TreeSitterDispatchChunker(
             TreeSitterDispatchConfig(
                 languages={"python": {"adapter": "no-such-sub"}}

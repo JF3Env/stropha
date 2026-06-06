@@ -35,6 +35,7 @@ from ...models import Chunk
 from ...pipeline.base import StageContext, StageHealth
 from ...pipeline.registry import register_adapter
 from ...stages.enricher import EnricherStage
+from ...stages.storage import StorageStage
 
 _LOC_LINE = re.compile(r"L?(\d+)")
 
@@ -77,13 +78,13 @@ class GraphAwareEnricher(EnricherStage):
         self,
         config: GraphAwareEnricherConfig | None = None,
         *,
-        storage: object | None = None,
+        storage: StorageStage | None = None,
     ) -> None:
         self._config = config or GraphAwareEnricherConfig()
         # Storage is injected by the pipeline builder. When called from the
         # registry without a builder (CLI `pipeline show --no-open`) the
         # adapter still constructs but health() reports a warning.
-        self._storage = storage
+        self._storage: StorageStage | None = storage
 
     @property
     def stage_name(self) -> str:
@@ -177,9 +178,11 @@ class GraphAwareEnricher(EnricherStage):
         """Find the graph node whose source_file matches and whose line falls
         inside the chunk window. Tightest match wins.
         """
+        if self._storage is None:
+            return None
         try:
             # 1. Exact line containment
-            rows = self._storage._conn.execute(  # type: ignore[attr-defined]
+            rows = self._storage._conn.execute(
                 """SELECT label, community_label, source_location
                    FROM graph_nodes
                    WHERE source_file = ?""",
@@ -190,13 +193,21 @@ class GraphAwareEnricher(EnricherStage):
         if not rows:
             return None
         best: sqlite3.Row | None = None
+        best_line: int | None = None
         for r in rows:
             line = _location_to_line(r["source_location"])
             if line is None or not (chunk.start_line <= line <= chunk.end_line):
                 continue
-            # Prefer the line closest to chunk start (most specific node)
-            if best is None or abs(_location_to_line(best["source_location"]) - chunk.start_line) > abs(line - chunk.start_line):  # type: ignore[arg-type]
+            # Prefer the line closest to chunk start (most specific node).
+            # ``best_line`` is the cached numeric location of the current best
+            # so we don't re-parse the source_location string on every loop.
+            if best is None or (
+                best_line is not None
+                and abs(best_line - chunk.start_line)
+                > abs(line - chunk.start_line)
+            ):
                 best = r
+                best_line = line
         # Fallback: any node from this file (when no line match)
         if best is None:
             best = rows[0]

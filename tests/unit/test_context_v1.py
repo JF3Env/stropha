@@ -3,10 +3,6 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
-
-import pytest
-
 from stropha.api.context_v1 import (
     CONTEXT_VERSION,
     ContextRequestV1,
@@ -19,7 +15,6 @@ from stropha.api.context_v1 import (
     _safe_str,
     to_response,
 )
-
 
 # ---------------------------------------------------------------------------
 # Constants

@@ -65,10 +65,12 @@ def _build_embedder(
     """
     if voyageai_module is None:
         voyageai_module, _ = _make_mock_voyageai()
-    with patch.dict("sys.modules", {"voyageai": voyageai_module}):
-        with patch.dict("os.environ", {"VOYAGE_API_KEY": "sk-fake"}):
-            embedder = VoyageEmbedder(config=config)
-            embedder._get_client()  # eager-cache mocked Client for later asserts
+    with (
+        patch.dict("sys.modules", {"voyageai": voyageai_module}),
+        patch.dict("os.environ", {"VOYAGE_API_KEY": "sk-fake"}),
+    ):
+        embedder = VoyageEmbedder(config=config)
+        embedder._get_client()  # eager-cache mocked Client for later asserts
     client = voyageai_module.Client.return_value
     return embedder, client
 
@@ -117,12 +119,14 @@ class TestVoyageEmbedderInit:
     def test_init_with_default_config_uses_env_key(self) -> None:
         """Client construction is lazy: env key is read on first embed call."""
         voyageai_module, _ = _make_mock_voyageai()
-        with patch.dict("sys.modules", {"voyageai": voyageai_module}):
-            with patch.dict("os.environ", {"VOYAGE_API_KEY": "sk-real"}):
-                embedder = VoyageEmbedder()
-                # __init__ must not build the Client — only first use does.
-                voyageai_module.Client.assert_not_called()
-                embedder.embed_query("hi")
+        with (
+            patch.dict("sys.modules", {"voyageai": voyageai_module}),
+            patch.dict("os.environ", {"VOYAGE_API_KEY": "sk-real"}),
+        ):
+            embedder = VoyageEmbedder()
+            # __init__ must not build the Client — only first use does.
+            voyageai_module.Client.assert_not_called()
+            embedder.embed_query("hi")
         voyageai_module.Client.assert_called_once_with(api_key="sk-real")
 
     def test_init_with_explicit_api_key_kwarg(self) -> None:
@@ -142,9 +146,11 @@ class TestVoyageEmbedderInit:
         with patch.dict("sys.modules", {"voyageai": voyageai_module}):
             embedder = VoyageEmbedder()
             voyageai_module.Client.assert_not_called()
-            with patch.dict("os.environ", {}, clear=True):
-                with patch("stropha.config.get_config", return_value=fake_config):
-                    embedder.embed_query("hi")
+            with (
+                patch.dict("os.environ", {}, clear=True),
+                patch("stropha.config.get_config", return_value=fake_config),
+            ):
+                embedder.embed_query("hi")
         voyageai_module.Client.assert_called_once_with(api_key="sk-yaml")
 
     def test_init_legacy_kwargs_path(self) -> None:
@@ -157,20 +163,24 @@ class TestVoyageEmbedderInit:
 
     def test_init_rejects_both_config_and_legacy_kwargs(self) -> None:
         voyageai_module, _ = _make_mock_voyageai()
-        with patch.dict("sys.modules", {"voyageai": voyageai_module}):
-            with pytest.raises(TypeError, match="Pass either config="):
-                VoyageEmbedder(config=VoyageEmbedderConfig(), api_key="sk-fake", model="x")
+        with (
+            patch.dict("sys.modules", {"voyageai": voyageai_module}),
+            pytest.raises(TypeError, match="Pass either config="),
+        ):
+            VoyageEmbedder(config=VoyageEmbedderConfig(), api_key="sk-fake", model="x")
 
     def test_init_without_api_key_does_not_raise(self) -> None:
         """MCP server constructs every adapter at startup; the retrieval-only
         path may never touch the embedder. Missing-key check is deferred to
         first embed call so the server can start without VOYAGE_API_KEY."""
         voyageai_module, _ = _make_mock_voyageai()
-        with patch.dict("sys.modules", {"voyageai": voyageai_module}):
-            with patch.dict("os.environ", {}, clear=True):
-                embedder = VoyageEmbedder()  # must not raise
-                with pytest.raises(EmbeddingError, match="API key is empty"):
-                    embedder.embed_query("hi")
+        with (
+            patch.dict("sys.modules", {"voyageai": voyageai_module}),
+            patch.dict("os.environ", {}, clear=True),
+        ):
+            embedder = VoyageEmbedder()  # must not raise
+            with pytest.raises(EmbeddingError, match="API key is empty"):
+                embedder.embed_query("hi")
 
 
 # ----- Stage contract ---------------------------------------------------------

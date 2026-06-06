@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import yaml
+import yaml  # type: ignore[import-untyped]
 
 from ..logging import get_logger
 from .models import (
@@ -50,6 +50,8 @@ from .models import (
 )
 
 __all__ = [
+    # Introspection metadata (consumed by tests + MCP get_config tool)
+    "_ENV_REGISTRY",
     # Models (re-exported)
     "Config",
     "EmbedderConfig",
@@ -69,8 +71,6 @@ __all__ = [
     "get_config_info",
     "load_config",
     "reset_config",
-    # Introspection metadata (consumed by tests + MCP get_config tool)
-    "_ENV_REGISTRY",
 ]
 
 log = get_logger(__name__)
@@ -106,7 +106,9 @@ _ENV_REGISTRY: tuple[_EnvVar, ...] = (
     _EnvVar("STROPHA_HOOK_GRAPHIFY", "hook", None, "Override `graphify` binary path"),
     _EnvVar("STROPHA_HOOK_NO_GRAPHIFY", "hook", None, "Skip graphify step in hook"),
     _EnvVar("STROPHA_HOOK_PROJECT_DIR", "hook", None, "`uv run --directory` target"),
-    _EnvVar("STROPHA_HOOK_INDEX_PATH", "hook", None, "Per-repo index path override for the hook"),
+    # STROPHA_HOOK_INDEX_PATH removed in v=9 (see HookConfig docstring) —
+    # was wired to cfg.hook.index_path but never propagated to the
+    # storage adapter. Edit ~/.stropha/config.yaml `paths.index` instead.
 )
 
 
@@ -318,7 +320,6 @@ def _parse_hook() -> HookConfig:
         else Path.home() / ".cache" / "stropha-hook.log"
     )
     proj_env = os.environ.get("STROPHA_HOOK_PROJECT_DIR")
-    idx_env = os.environ.get("STROPHA_HOOK_INDEX_PATH")
     return HookConfig(
         log_path=log_path,
         timeout=_int(os.environ.get("STROPHA_HOOK_TIMEOUT"), 600),
@@ -327,7 +328,6 @@ def _parse_hook() -> HookConfig:
         skip=os.environ.get("STROPHA_HOOK_SKIP") is not None,
         no_graphify=os.environ.get("STROPHA_HOOK_NO_GRAPHIFY") is not None,
         project_dir=Path(proj_env).expanduser() if proj_env else None,
-        index_path=Path(idx_env).expanduser() if idx_env else None,
     )
 
 

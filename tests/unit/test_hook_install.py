@@ -268,14 +268,17 @@ def test_install_without_new_args_uses_legacy_toplevel(repo: Path) -> None:
     install(repo)
     body = _read_hook(repo)
     assert 'PROJECT_DIR_DEFAULT=""' in body
-    assert 'INDEX_PATH_DEFAULT=""' in body
     assert 'LOG_DEFAULT=""' in body
     # Runtime fallback chain must point at $TOPLEVEL when default is empty.
     assert 'PROJECT_DIR="${STROPHA_HOOK_PROJECT_DIR:-${PROJECT_DIR_DEFAULT:-$TOPLEVEL}}"' in body
     # And the CMD still uses $PROJECT_DIR for --directory (NOT hardcoded $TOPLEVEL).
     assert "--directory $PROJECT_DIR" in body
-    # No env injection for the index step when no override is baked.
-    assert 'INDEX_ENV=""' in body
+    # v=9: dead env-var plumbing is gone — the install must NOT emit any
+    # of these markers.
+    assert "INDEX_PATH_DEFAULT" not in body
+    assert "INDEX_ENV" not in body
+    assert "STROPHA_INDEX_PATH" not in body
+    assert "STROPHA_HOOK_INDEX_PATH" not in body
 
 
 def test_install_with_project_dir_bakes_it(repo: Path, tmp_path: Path) -> None:
@@ -294,15 +297,21 @@ def test_install_with_project_dir_bakes_it(repo: Path, tmp_path: Path) -> None:
     assert result["project_dir"] == str(venv_dir.resolve())
 
 
-def test_install_with_index_path_bakes_env_injection(repo: Path, tmp_path: Path) -> None:
-    idx = tmp_path / "elsewhere" / "index.db"
+def test_install_v9_drops_index_path_bake(repo: Path, tmp_path: Path) -> None:
+    """v=9 regression guard: the dead INDEX_PATH bake / INDEX_ENV /
+    STROPHA_(HOOK_)INDEX_PATH plumbing must not come back.
 
-    result = install(repo, index_path=idx)
+    These were silently no-ops in v<=8 (the env var was set in 3 sites
+    and read in 0). Removing them simplifies the hook script and the
+    cross-repo install API. Per-repo DB selection now lives in
+    ``~/.stropha/config.yaml`` ``paths.index``.
+    """
+    install(repo)
     body = _read_hook(repo)
-    assert f'INDEX_PATH_DEFAULT="{idx.expanduser()}"' in body
-    # The env injection block must appear and use the override path.
-    assert 'INDEX_ENV="env STROPHA_TARGET_REPO=$TOPLEVEL STROPHA_INDEX_PATH=$INDEX_PATH_OVERRIDE"' in body
-    assert result["index_path"] == str(idx.expanduser())
+    assert "INDEX_PATH_DEFAULT" not in body
+    assert "INDEX_ENV" not in body
+    assert "STROPHA_INDEX_PATH" not in body
+    assert "STROPHA_HOOK_INDEX_PATH" not in body
 
 
 def test_install_with_log_path_bakes_it(repo: Path, tmp_path: Path) -> None:
@@ -320,21 +329,20 @@ def test_status_reports_baked_defaults(repo: Path, tmp_path: Path) -> None:
     project = tmp_path / "host"
     project.mkdir()
     (project / "pyproject.toml").write_text("[project]\nname = 'host'", encoding="utf-8")
-    idx = tmp_path / "i.db"
     logp = tmp_path / "h.log"
 
-    install(repo, project_dir=project, index_path=idx, log_path=logp)
+    install(repo, project_dir=project, log_path=logp)
     s = status(repo)
     assert s.installed is True
     assert s.version == HOOK_VERSION
     assert s.project_dir == project.resolve()
-    assert s.index_path == idx.expanduser()
     assert s.log_path_default == logp.expanduser()
     # Dict serialisation also surfaces them.
     d = s.as_dict()
     assert d["project_dir"] == str(project.resolve())
-    assert d["index_path"] == str(idx.expanduser())
     assert d["log_path_default"] == str(logp.expanduser())
+    # v=9: index_path field removed from HookStatus.as_dict().
+    assert "index_path" not in d
 
 
 def test_install_replaces_older_block_with_current(repo: Path) -> None:
@@ -369,13 +377,57 @@ def test_install_replaces_older_block_with_current(repo: Path) -> None:
     assert body.count(START_MARKER) == 1
 
 
-def test_install_v4_template_uses_incremental_flag(repo: Path) -> None:
-    """Phase B contract: the generated hook v=4 invokes
-    ``stropha index --incremental`` so the post-commit refresh re-chunks
-    only the files touched by the commit."""
+def _exec_lines(body: str) -> list[str]:
+    """Return the body with comments stripped — lines that actually run.
+
+    Used to assert against the executable surface of the hook script
+    without false positives from comments that mention the removed
+    constructs by name (e.g. the v=9 docstring explains the flock and
+    --incremental removal).
+    """
+    out: list[str] = []
+    for line in body.splitlines():
+        stripped = line.lstrip()
+        if stripped.startswith("#"):
+            continue
+        out.append(line)
+    return out
+
+
+def test_install_v9_template_uses_auto_mode(repo: Path) -> None:
+    """v=9: drop ``--incremental``. The CLI's default ``auto`` mode does
+    the right thing (incremental when ``last_indexed_sha`` checkpoint
+    exists, full otherwise), so the hook and the interactive CLI share
+    one code path.
+    """
     install(repo)
     body = _read_hook(repo)
-    assert "stropha index --repo $TOPLEVEL --incremental" in body
+    exec_only = "\n".join(_exec_lines(body))
+    # `stropha index --repo $TOPLEVEL` (no --incremental, no --full) in
+    # the executable surface of the script.
+    assert "stropha index --repo $TOPLEVEL" in exec_only
+    assert "--incremental" not in exec_only
+    assert "--full" not in exec_only
+
+
+def test_install_v9_uses_mkdir_lock(repo: Path) -> None:
+    """v=9: replace flock with mkdir-based atomic lock for macOS portability.
+
+    On macOS ``flock`` is not installed by default; v<=8 hooks silently
+    skipped every commit because the missing binary returned non-zero,
+    taking the "already running" branch. The new lock uses ``mkdir``
+    (POSIX-atomic) + a PID file for stale-lock recovery.
+    """
+    install(repo)
+    body = _read_hook(repo)
+    exec_only = "\n".join(_exec_lines(body))
+    # Old flock-based guard MUST be gone from the executable surface.
+    assert "flock" not in exec_only
+    # New mkdir-based lock MUST be present.
+    assert "LOCK_DIR=" in exec_only
+    assert "mkdir '" in exec_only  # mkdir attempt inside the nohup body
+    assert "kill -0" in exec_only  # stale-PID detection
+    assert "/pid" in exec_only  # PID file written to lock dir
 
 
 # --------------------------------------------------------------------------- v=6 sleep-time meta loop (WIN-203)

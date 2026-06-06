@@ -19,7 +19,6 @@ from stropha.ingest.graphify_loader import GraphifyLoader
 from stropha.models import Chunk
 from stropha.storage import Storage
 
-
 # --------------------------------------------------------------------------- helpers
 
 

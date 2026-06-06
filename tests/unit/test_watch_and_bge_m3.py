@@ -9,12 +9,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from stropha.adapters.embedder.bge_m3 import BgeM3Config, BgeM3Embedder
 from stropha.pipeline.registry import lookup_adapter
-from stropha.watch import _format_changes, _Snapshot, _snapshot, WatchController
-
+from stropha.watch import WatchController, _format_changes, _Snapshot, _snapshot
 
 # --------------------------------------------------------------------------- snapshot diff
 
@@ -30,14 +27,14 @@ def test_snapshot_empty_diff() -> None:
 def test_snapshot_detects_new_files() -> None:
     a = _Snapshot()
     b = _Snapshot(mtimes={Path("/x/a.py"): 1.0})
-    changed, removed = a.diff(b)
+    changed, _removed = a.diff(b)
     assert changed == {Path("/x/a.py")}
 
 
 def test_snapshot_detects_changed_mtimes() -> None:
     a = _Snapshot(mtimes={Path("/x/a.py"): 1.0})
     b = _Snapshot(mtimes={Path("/x/a.py"): 2.0})
-    changed, removed = a.diff(b)
+    changed, _removed = a.diff(b)
     assert changed == {Path("/x/a.py")}
 
 

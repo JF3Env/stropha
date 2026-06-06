@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import pytest
-
-from stropha.server import _apply_filters
 from stropha.models import SearchHit
+from stropha.server import _apply_filters
 
 
 def _make_hit(

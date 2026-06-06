@@ -175,7 +175,7 @@ def build_stages(
     router_name = router_section.get("adapter") or "pattern"
     try:
         router_cls = lookup_adapter("router", router_name)
-    except Exception as exc:  # noqa: BLE001 — adapter may not exist
+    except Exception as exc:
         log.warning(
             "pipeline.router.unavailable",
             adapter=router_name, error=str(exc),

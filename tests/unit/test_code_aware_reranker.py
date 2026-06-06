@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import pytest
-
 from stropha.adapters.retrieval.reranker.code_aware import (
     CodeAwareReranker,
     CodeAwareRerankerConfig,
-    _tokenize_identifier,
     _query_contains_test_keywords,
+    _tokenize_identifier,
 )
 from stropha.models import SearchHit
 from stropha.pipeline.registry import lookup_adapter

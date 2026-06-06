@@ -18,7 +18,7 @@ import copy
 from pathlib import Path
 from typing import Any
 
-import yaml
+import yaml  # type: ignore[import-untyped]
 
 from ..errors import ConfigError
 from ..logging import get_logger
@@ -124,11 +124,44 @@ def load_pipeline_config(
 
     # 1. User YAML (~/.stropha/config.yaml) — the only config file.
     user_yaml = Path.home() / ".stropha" / "config.yaml"
+    yaml_storage_path_explicit: str | None = None
+    yaml_paths_index_explicit: str | None = None
     if user_yaml.is_file():
+        # Read the raw YAML once so we can distinguish "user explicitly
+        # set the storage path key" from "the storage path arrived via
+        # CLI overrides / built-in default". The conflict guard below
+        # only fires when BOTH come from YAML — we don't want to break
+        # the standard CLI / test override path that explicitly passes
+        # a storage path via `overrides`.
+        raw_yaml = _read_raw_yaml(user_yaml)
+        yaml_paths_index_explicit = (
+            (raw_yaml.get("paths") or {}).get("index")
+        )
+        yaml_pipeline_section = raw_yaml.get("pipeline", raw_yaml)
+        if isinstance(yaml_pipeline_section, dict):
+            yaml_storage_path_explicit = (
+                ((yaml_pipeline_section.get("storage") or {}).get("config") or {}).get("path")
+            )
         _merge(cfg, _read_yaml(user_yaml))
         sources.append(str(user_yaml))
 
-    # 2. CLI overrides (highest priority).
+    # 1a. Conflict guard at YAML level only. If the user wrote BOTH
+    # `paths.index` AND `pipeline.storage.config.path` in the YAML and
+    # they disagree, fail loudly — that's the silent split landmine we
+    # hit before v=9 (CLI panel showed one path, storage opened another).
+    if yaml_paths_index_explicit and yaml_storage_path_explicit:
+        p1 = Path(yaml_paths_index_explicit).expanduser().resolve()
+        p2 = Path(yaml_storage_path_explicit).expanduser().resolve()
+        if p1 != p2:
+            raise ConfigError(
+                "Index path conflict in ~/.stropha/config.yaml: "
+                f"paths.index resolves to {p1} but "
+                f"pipeline.storage.config.path resolves to {p2}. "
+                "Pick one (paths.index is preferred; drop the storage override)."
+            )
+
+    # 2. CLI overrides (highest priority). May legitimately override the
+    # storage path for tests, per-repo evaluation, or one-off runs.
     if overrides:
         _merge(cfg, overrides)
         sources.append("cli")
@@ -144,15 +177,37 @@ def load_pipeline_config(
             has_voyage = False
         cfg["embedder"]["adapter"] = "voyage" if has_voyage else "local"
 
-    # 4. Materialize the storage path so it shows up in logs / `pipeline show`.
+    # 4. Materialize the storage path. Default = unified config's
+    # `paths.index` (sourced from YAML or, in its absence, from
+    # `_default_index_path()` which is now cwd-independent).
     storage_cfg = cfg.setdefault("storage", {}).setdefault("config", {})
     if not storage_cfg.get("path"):
-        from ..config.models import _default_index_path
-        storage_cfg["path"] = str(_default_index_path())
-        sources.append("default(_default_index_path)")
+        try:
+            from ..config import get_config
+            unified_index = get_config().resolve_index_path()
+        except Exception:
+            from ..config.models import _default_index_path
+            unified_index = _default_index_path()
+        storage_cfg["path"] = str(unified_index)
+        sources.append("default(paths.index)")
 
     log.debug("pipeline.config.load", sources=sources, resolved=cfg)
     return cfg
+
+
+def _read_raw_yaml(path: Path) -> dict[str, Any]:
+    """Read ``path`` as a YAML mapping with no transformation.
+
+    Used by the index-path conflict guard to peek at the raw user YAML
+    BEFORE the ``pipeline:`` section is unwrapped. Returns ``{}`` on any
+    error so the guard fails open (rather than blocking the load on
+    transient YAML problems that the main loader already handles).
+    """
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except (yaml.YAMLError, OSError):
+        return {}
+    return raw if isinstance(raw, dict) else {}
 
 
 def _read_yaml(path: Path) -> dict[str, Any]:

@@ -35,9 +35,8 @@ ticket; this module is intentionally framework-agnostic.
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from ..logging import get_logger
@@ -199,7 +198,7 @@ def plan_consolidation(
     prune_count = 0
     cutoff_iso: str | None = None
     if prune_after_days is not None and prune_after_days > 0:
-        cutoff = datetime.now(timezone.utc) - timedelta(days=prune_after_days)
+        cutoff = datetime.now(UTC) - timedelta(days=prune_after_days)
         cutoff_iso = cutoff.isoformat()
         # Count without deleting yet (the plan is read-only).
         try:
@@ -209,7 +208,7 @@ def plan_consolidation(
                 (repo_id, cutoff_iso),
             ).fetchone()
             prune_count = int(row["n"] or 0) if row else 0
-        except Exception as exc:  # noqa: BLE001 — defensive
+        except Exception as exc:
             log.warning(
                 "consolidation.prune_count_failed",
                 repo_id=repo_id, error=str(exc),
@@ -268,7 +267,7 @@ def apply_consolidation(
             )
             storage._conn.commit()
             pruned = int(cur.rowcount or 0)
-        except Exception as exc:  # noqa: BLE001 — defensive
+        except Exception as exc:
             log.warning(
                 "consolidation.prune_failed",
                 repo_id=plan.repo_id, error=str(exc),
@@ -284,12 +283,12 @@ def apply_consolidation(
 
 __all__ = [
     "CONSOLIDATED_KIND",
-    "ConsolidationCandidate",
-    "ConsolidationPlan",
-    "apply_consolidation",
-    "plan_consolidation",
     "DEFAULT_MIN_COUNT",
     "DEFAULT_MIN_EPISODES",
     "DEFAULT_PRUNE_AFTER_DAYS",
     "DEFAULT_TOP_N_PER_KEY",
+    "ConsolidationCandidate",
+    "ConsolidationPlan",
+    "apply_consolidation",
+    "plan_consolidation",
 ]

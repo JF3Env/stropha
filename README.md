@@ -508,25 +508,31 @@ pipeline:
         symbol: { adapter: like-tokens, config: { k: 50 } }
 ```
 
-### Useful environment variables
+### Configuration
+
+Stropha is YAML-first: everything lives in `~/.stropha/config.yaml`
+(secrets, paths, embedder/enricher selection, retrieval features,
+inference backend, MCP, hook). There is no project-level config and no
+`.env` overlay — every former `STROPHA_*` env var was removed in v=9
+because the resulting silent CLI/hook divergence was not worth the
+ergonomics. Run `stropha pipeline show` for the live resolved
+configuration.
+
+The only environment variables still honoured at runtime:
 
 | Variable | Effect |
 |---|---|
-| `STROPHA_TARGET_REPO` | Default repo for `index` / `mcp` |
-| `STROPHA_INDEX_PATH` | Path to the SQLite index file |
-| `VOYAGE_API_KEY` | Enables the Voyage embedder |
-| `STROPHA_GRAPH_CONFIDENCE` | Comma-separated tiers to load (`EXTRACTED,INFERRED`) |
-| `STROPHA_GRAPHIFY_OUT` | Override path to `graphify-out/` |
-| `STROPHA_HOOK_SKIP=1` | Skip the post-commit hook (useful during rebases) |
-| `STROPHA_HOOK_TIMEOUT=600` | Hook background process wall-clock timeout |
-| `STROPHA_HOOK_PROJECT_DIR` | Where stropha is installed (the directory with the `uv` venv). Defaults to baked-in value, else `$TOPLEVEL`. |
-| `STROPHA_HOOK_INDEX_PATH` | Override `STROPHA_INDEX_PATH` for the hook's index step. Defaults to baked-in value. |
-| `STROPHA_LOG_LEVEL` | `DEBUG` / `INFO` / `WARNING` |
-| `STROPHA_HYDE_ENABLED=1` | Enable HyDE query rewrite via Ollama on the dense stream |
-| `STROPHA_HYDE_MODEL` | Override the Ollama model used for HyDE (default `qwen2.5-coder:1.5b`) |
-| `STROPHA_RECURSIVE_RETRIEVAL=1` | Enable parent + adjacent-line auto-merge in `search` results |
-| `STROPHA_RECURSIVE_ADJACENCY=5` | Line gap considered "adjacent" for auto-merge (default 5) |
-| `STROPHA_GRAPH_FTS_AUGMENT=1` | Default. When the graph mirror is populated, FTS5 rows pick up community labels |
+| `STROPHA_TARGET_REPO` | Which repo to operate on (runtime argument). Defaults to `cwd`. |
+| `STROPHA_HOOK_SKIP=1` | Skip the post-commit hook (useful during rebases). |
+| `STROPHA_HOOK_TIMEOUT=600` | Hook background process wall-clock timeout. |
+| `STROPHA_HOOK_LOG=<path>` | Override the hook log file. |
+| `STROPHA_HOOK_UV=<path>` | Override the `uv` binary the hook uses. |
+| `STROPHA_HOOK_GRAPHIFY=<path>` | Override the `graphify` binary used by the pipeline. |
+| `STROPHA_HOOK_PROJECT_DIR=<p>` | Where stropha is installed (the directory with the `uv` venv). Defaults to baked-in value, else `$TOPLEVEL`. |
+| `STROPHA_HOOK_NO_EVAL=1` | Skip the eval step in the hook. |
+| `STROPHA_HOOK_NO_META=1` | Panic switch for the sleep-time meta loop. |
+| `STROPHA_HOOK_META_ITERATIONS=<n>` | Override the baked meta loop count. |
+| `VOYAGE_API_KEY` | Optional: env-level fallback for the Voyage embedder. The YAML `secrets.voyage_api_key` is the canonical source. |
 
 ## Post-commit automation
 
@@ -548,13 +554,11 @@ flowchart TB
 
     BG --> SKIP{rebase /<br/>merge /<br/>cherry-pick?}
     SKIP -->|yes| EXIT[exit silently]
-    SKIP -->|no| LOCK[acquire flock]
-    LOCK --> GU[graphify update --no-cluster<br/>AST only, no LLM<br/>~2s]
-    GU --> SI[stropha index<br/>incremental via drift detection<br/>~5-30s]
+    SKIP -->|no| LOCK[acquire mkdir lock<br/>portable, macOS-safe]
+    LOCK --> SI[stropha index<br/>auto mode = incremental when checkpoint<br/>exists, else full · graphify runs inside]
     SI --> LOG["~/.cache/stropha-hook.log"]
 
     style BG fill:#fff3e0
-    style GU fill:#e8f5e9
     style SI fill:#e3f2fd
 ```
 
@@ -570,28 +574,30 @@ stropha hook uninstall                # cleanly remove
 The hook coexists with `husky` / `lefthook` (it honours `core.hooksPath`)
 and with the `graphify hook` (warns and respects `--force`).
 
-### Cross-repo installs (v=3)
+### Cross-repo installs
 
 Indexing **another repo** with this stropha install requires telling the
-hook where stropha actually lives (so `uv run` finds it). All three paths
-get baked into the hook at install time — no commit-time env vars
-needed:
+hook where stropha actually lives (so `uv run` finds it). The paths get
+baked into the hook at install time — no commit-time env vars needed:
 
 ```bash
 # Index Mimoria from this stropha checkout, each repo with its own log:
 stropha hook install \
     --target /Users/jonatas/sources/mimoria \
     --project-dir /Users/jonatas/sources/rag \
-    --index-path /Users/jonatas/sources/mimoria/.stropha/index.db \
     --log-path ~/.cache/stropha-hook-mimoria.log
 
 # Confirm the bakes
 stropha hook status --target /Users/jonatas/sources/mimoria
 ```
 
-Same flags exist as env-var overrides (`STROPHA_HOOK_PROJECT_DIR`,
-`STROPHA_HOOK_INDEX_PATH`, `STROPHA_HOOK_LOG`) for one-off experiments
-without rewriting the hook.
+Both flags also exist as runtime env-var overrides
+(`STROPHA_HOOK_PROJECT_DIR`, `STROPHA_HOOK_LOG`) for one-off experiments
+without rewriting the hook. The index DB path is taken from
+`~/.stropha/config.yaml` `paths.index` — multi-repo state is tracked
+inside that shared SQLite file (`stropha hook install --index-path`,
+`STROPHA_INDEX_PATH`, and `STROPHA_HOOK_INDEX_PATH` were removed in v=9
+because no code path read them).
 
 ## Evaluation
 

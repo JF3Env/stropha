@@ -25,7 +25,6 @@ without requiring a separate ``stropha watch`` command. Disable with
 
 from __future__ import annotations
 
-import os
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -37,20 +36,32 @@ from . import __version__
 from .config import Config, get_config, get_config_info
 from .errors import StrophaError
 from .logging import configure_logging, get_logger
+from .meta.decorator import traced
 from .pipeline import build_stages, load_pipeline_config
 from .retrieval.graph import (
     find_callers as graph_find_callers,
+)
+from .retrieval.graph import (
     find_rationale as graph_find_rationale,
+)
+from .retrieval.graph import (
     find_related as graph_find_related,
+)
+from .retrieval.graph import (
     find_tests_for as graph_find_tests_for,
+)
+from .retrieval.graph import (
     get_community as graph_get_community,
+)
+from .retrieval.graph import (
     graph_loaded,
     has_rationale_edges,
+)
+from .retrieval.graph import (
     trace_feature as graph_trace_feature,
 )
 from .retrieval.savings import track_search_savings
-from .retrieval.smart_search import SmartSearchResult, smart_search
-from .meta.decorator import traced
+from .retrieval.smart_search import smart_search
 from .server_discovery_tools import (
     get_file_outline_impl,
     get_symbol_impl,
@@ -63,7 +74,6 @@ from .server_graph_tools import (
     blast_radius_impl,
     check_symbols_impl,
     contract_tests_impl,
-    default_spec_loader as server_default_spec_loader,
     find_callers_impl,
     find_rationale_impl,
     find_related_impl,
@@ -74,6 +84,9 @@ from .server_graph_tools import (
     trace_feature_impl,
     verify_claim_impl,
 )
+from .server_graph_tools import (
+    default_spec_loader as server_default_spec_loader,
+)
 from .server_http import RestartTolerantFastMCP
 from .server_memory_tools import (
     bootstrap_environment_impl,
@@ -81,7 +94,6 @@ from .server_memory_tools import (
     cache_stats_impl,
     check_staleness_impl,
     co_occurrence_impl,
-    current_head_commit as server_current_head_commit,
     entry_from_record,
     episode_to_entry,
     forget_impl,
@@ -89,37 +101,35 @@ from .server_memory_tools import (
     recall_impl,
     record_episode_impl,
     remember_impl,
-    resolve_target_repo_id as server_resolve_target_repo_id,
     scratchpad_append_impl,
     scratchpad_clear_impl,
     scratchpad_read_impl,
     scratchpad_write_impl,
 )
+from .server_memory_tools import (
+    current_head_commit as server_current_head_commit,
+)
+from .server_memory_tools import (
+    resolve_target_repo_id as server_resolve_target_repo_id,
+)
 from .server_models import (
-    BootstrapResponse,
     BlastRadiusResponse,
+    BootstrapResponse,
     CitationAuditResponse,
-    CitationEntry,
-    ClaimAuditEntry,
-    CoOccurrenceResponse,
-    ContractTestEntry,
     ContractTestsResponse,
+    CoOccurrenceResponse,
     CrossSessionCachePruneResponse,
     CrossSessionCacheStats,
-    DetectedStackEntry,
     EpisodeEntry,
+    ExpandChunkResponse,
+    ExpandChunksResponse,
+    FacetCounts,  # noqa: F401 — re-exported for test_search_filters.py
     ForgetResponse,
     FreshnessResponse,
     HallucinationGuardResponse,
-    ImpactedTestEntry,
-    ExpandChunkResponse,
-    ExpandChunksResponse,
-    FacetCounts,
-    MemoryEntry,
     ListPinsResponse,
+    MemoryEntry,
     OutlineEntry,
-    PerSymbolCounts,
-    PinListEntry,
     PinResponse,
     RecallEpisodesResponse,
     RecallResponse,
@@ -131,24 +141,23 @@ from .server_models import (
     ScratchpadResponse,
     SearchResponse,
     SearchResult,
-    SpecConflictEntry,
-    SpecConsistencyResponse,
-    SpecInvariantEntry,
-    StalenessResponse,
-    SymbolCheckEntry,
     SmartSearchResponse,
+    SpecConsistencyResponse,
+    StalenessResponse,
     StatsPayload,
     TestImpactResponse,
     VerdictResponse,
 )
-from .server_search import apply_filters as server_apply_filters
-from .server_search import search_code_impl
 from .server_runtime import (
     AppContext,
     ctx_from_mcp,
-    lifespan as server_lifespan,
     persist_session_state,
 )
+from .server_runtime import (
+    lifespan as server_lifespan,
+)
+from .server_search import apply_filters as server_apply_filters
+from .server_search import search_code_impl
 from .server_session_tools import (
     expand_chunk_impl,
     expand_chunks_impl,
@@ -223,14 +232,17 @@ to bootstrap.
 mcp = RestartTolerantFastMCP(
     name="stropha_rag",
     instructions=_INSTRUCTIONS,
-    lifespan=_lifespan,
+    # FastMCP types ``lifespan`` against ``Callable[[FastMCP[Any]], ...]`` —
+    # our ``_lifespan`` is narrower (``RestartTolerantFastMCP``, our
+    # subclass). The runtime contract is identical; the cast is a no-op.
+    lifespan=_lifespan,  # type: ignore[arg-type]
 )
 
 
 # ---- health endpoint (SSE/HTTP transports only) ----------------------------
 
 @mcp.custom_route("/health", methods=["GET"])
-async def _health_check(request):  # noqa: ANN001, ARG001
+async def _health_check(request):
     """Liveness probe. Returns 200 when the server is accepting connections."""
     from starlette.responses import JSONResponse
     return JSONResponse({"status": "ok", "version": __version__})
@@ -1968,10 +1980,7 @@ def suggest_next_tool_mcp(
 
     # Resolve which chunks to inspect: explicit list wins; otherwise
     # fall back to the most recent ones the agent has seen.
-    if chunk_ids:
-        ids = list(chunk_ids)
-    else:
-        ids = list(app.seen_chunk_ids)[-10:]
+    ids = list(chunk_ids) if chunk_ids else list(app.seen_chunk_ids)[-10:]
 
     hits: list = []
     for cid in ids:

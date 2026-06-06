@@ -7,9 +7,7 @@ every inference failure path falls back to raw content.
 
 from __future__ import annotations
 
-from unittest.mock import patch, MagicMock
-
-import pytest
+from unittest.mock import MagicMock, patch
 
 from stropha.adapters.enricher.contextual import (
     ContextualEnricher,
@@ -359,7 +357,7 @@ def test_enrich_batch_whole_call_fails_falls_back_per_chunk() -> None:
     assert mock_gen.call_count == 5
     assert len(results) == 4
     assert all(not success for _, success in results)
-    for chunk, (text, _) in zip(chunks, results):
+    for chunk, (text, _) in zip(chunks, results, strict=False):
         assert text == chunk.content  # raw fallback
 
 

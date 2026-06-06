@@ -474,8 +474,6 @@ class TestPublicExports:
     def test_defaults_exposed(self) -> None:
         from stropha.meta.consolidation import (
             CONSOLIDATED_KIND,
-            DEFAULT_MIN_COUNT,
-            DEFAULT_MIN_EPISODES,
             DEFAULT_PRUNE_AFTER_DAYS,
             DEFAULT_TOP_N_PER_KEY,
         )

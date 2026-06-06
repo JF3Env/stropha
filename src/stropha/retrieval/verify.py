@@ -38,7 +38,6 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-
 # ---------------------------------------------------------------------------
 # Data types
 # ---------------------------------------------------------------------------
@@ -322,7 +321,7 @@ def _verify_outgoing(
     subject = claim.subject
     target = claim.object or ""
     payload = related_fn(subject, [relation])
-    edges = payload.get("edges") or []
+    payload.get("edges") or []
     related = payload.get("related") or []
 
     # Build a quick "neighbour symbol" set to test against the target.

@@ -12,7 +12,6 @@ import pytest
 
 from stropha.models import SearchHit
 from stropha.retrieval.compression import (
-    CompressedSnippet,
     compress_extractive,
     compress_hits,
 )
@@ -388,7 +387,7 @@ class TestCompressHits:
         ]
         compressed = compress_hits(hits, "target")
         # Each hit's snippet is shorter than the original.
-        for original, c in zip(hits, compressed):
+        for original, c in zip(hits, compressed, strict=False):
             assert len(c.snippet) <= len(original.snippet)
 
     def test_returns_new_list_does_not_mutate_input(self) -> None:
@@ -418,7 +417,7 @@ class TestCompressHits:
             "    a = 1", "    b = 2", "    c = 3",
             "    target()", "    d = 4", "    return d",
         ]))
-        out = compress_hits([stub], "target")
+        compress_hits([stub], "target")
         # Snippet was rewritten in place (no model_copy available).
         assert "target" in stub.snippet
 

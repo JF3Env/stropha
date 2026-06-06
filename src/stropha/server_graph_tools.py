@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import contextlib
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from .server_models import (
     BlastRadiusResponse,
@@ -79,10 +81,8 @@ def get_community_impl(
     if not graph_loaded_fn(app.storage):
         return unavailable_fn() | {"query": symbol_or_community_id}
     query: str | int = symbol_or_community_id
-    try:
+    with contextlib.suppress(ValueError, TypeError):
         query = int(symbol_or_community_id)
-    except (ValueError, TypeError):
-        pass
     return graph_get_community_fn(app.storage, query, limit=limit)
 
 

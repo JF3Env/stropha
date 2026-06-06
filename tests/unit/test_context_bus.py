@@ -9,7 +9,6 @@ import pytest
 
 from stropha.api.context_bus import BusEntry, BusSnapshot, ContextBus
 
-
 # ---------------------------------------------------------------------------
 # Dataclass surface
 # ---------------------------------------------------------------------------

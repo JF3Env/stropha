@@ -37,7 +37,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-
 # Kinds that count as "callable / referenceable code" for the
 # ``find_callers`` / ``find_tests_for`` suggestion.
 CODE_KINDS = frozenset({"class", "function", "method", "interface", "trait"})

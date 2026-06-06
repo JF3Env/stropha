@@ -14,7 +14,6 @@ from stropha.retrieval.budget_allocator import (
     allocate_budget,
 )
 
-
 # ---------------------------------------------------------------------------
 # BudgetAllocation dataclass
 # ---------------------------------------------------------------------------

@@ -31,7 +31,7 @@ MCP Integration:
 
 from __future__ import annotations
 
-import os
+import contextlib
 import signal
 import threading
 import time
@@ -42,7 +42,6 @@ from pathlib import Path
 from .errors import StrophaError
 from .ingest.walker import Walker
 from .logging import get_logger
-from .models import Chunk
 from .pipeline import Pipeline, build_stages, load_pipeline_config
 
 log = get_logger(__name__)
@@ -57,7 +56,7 @@ class _Snapshot:
 
     mtimes: dict[Path, float] = field(default_factory=dict)
 
-    def diff(self, fresh: "_Snapshot") -> tuple[set[Path], set[Path]]:
+    def diff(self, fresh: _Snapshot) -> tuple[set[Path], set[Path]]:
         """Return ``(changed_or_added, removed)`` since the previous snapshot."""
         changed: set[Path] = set()
         for p, m in fresh.mtimes.items():
@@ -198,10 +197,8 @@ def _reindex(repo: Path, *, full_refresh: bool) -> None:
         )
     finally:
         if built.storage is not None:
-            try:
+            with contextlib.suppress(Exception):
                 built.storage.close()
-            except Exception:
-                pass
 
 
 # ---------------------------------------------------------------------------

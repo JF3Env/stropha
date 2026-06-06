@@ -6,7 +6,6 @@ import pytest
 
 from stropha.retrieval.streaming import StreamBatch, stream_batches
 
-
 # ---------------------------------------------------------------------------
 # Dataclass surface
 # ---------------------------------------------------------------------------

@@ -10,12 +10,11 @@ We care about three guarantees:
 
 from __future__ import annotations
 
-import os
 import textwrap
 
 import pytest
 
-from stropha.config import _ENV_REGISTRY, get_config_info, load_config, reset_config
+from stropha.config import get_config_info, load_config, reset_config
 
 
 @pytest.fixture(autouse=True)
@@ -36,7 +35,13 @@ def _write_config(tmp_path, content: str) -> None:
 
 
 def test_registry_covers_hook_and_target_repo(tmp_path):
-    """The registry must cover STROPHA_TARGET_REPO and all STROPHA_HOOK_* vars."""
+    """The registry must cover STROPHA_TARGET_REPO and all STROPHA_HOOK_* vars.
+
+    Note: STROPHA_HOOK_INDEX_PATH was removed in v=9 — it was wired to
+    ``cfg.hook.index_path`` but never propagated to the storage adapter,
+    so the override silently did nothing. The unified YAML
+    ``paths.index`` is the single source.
+    """
     _write_config(tmp_path, "")
     info = get_config_info()
 
@@ -44,10 +49,12 @@ def test_registry_covers_hook_and_target_repo(tmp_path):
         "STROPHA_TARGET_REPO",
         "STROPHA_HOOK_LOG", "STROPHA_HOOK_TIMEOUT", "STROPHA_HOOK_SKIP",
         "STROPHA_HOOK_UV", "STROPHA_HOOK_GRAPHIFY", "STROPHA_HOOK_NO_GRAPHIFY",
-        "STROPHA_HOOK_PROJECT_DIR", "STROPHA_HOOK_INDEX_PATH",
+        "STROPHA_HOOK_PROJECT_DIR",
     }
     missing = expected - set(info["sources"])
     assert not missing, f"Missing from registry: {sorted(missing)}"
+    # Regression guard: the dead env var must NOT come back.
+    assert "STROPHA_HOOK_INDEX_PATH" not in info["sources"]
 
 
 def test_secrets_from_yaml_are_redacted(tmp_path):

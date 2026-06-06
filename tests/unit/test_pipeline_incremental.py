@@ -19,14 +19,12 @@ from pathlib import Path
 
 import pytest
 
-from stropha.adapters.enricher.hierarchical import HierarchicalEnricher
 from stropha.adapters.enricher.noop import NoopEnricher
 from stropha.embeddings.base import Embedder
 from stropha.ingest.git_meta import RepoIdentity
 from stropha.models import Chunk
 from stropha.pipeline import Pipeline
 from stropha.storage import Storage
-
 
 # --------------------------------------------------------------------------- helpers
 
@@ -421,18 +419,17 @@ def test_incremental_renames_chunks_without_re_embed(tmp_path: Path) -> None:
 
     with Storage(tmp_path / "idx.db", embedding_dim=4) as s:
         embedder = _StubEmbedder()
-        s1 = Pipeline(
+        Pipeline(
             storage=s, embedder=embedder, enricher=NoopEnricher(),
             repos=[repo],
         ).run(rebuild=True)
-        embedded_before = s1.chunks_embedded
 
         # Pure rename, no content change.
         subprocess.run(["git", "mv", "old_name.py", "new_name.py"],
                        cwd=repo, check=True)
         subprocess.run(["git", "commit", "-qm", "rename"], cwd=repo, check=True)
 
-        s2 = Pipeline(
+        Pipeline(
             storage=s, embedder=embedder, enricher=NoopEnricher(),
             repos=[repo],
         ).run(mode="incremental")
@@ -569,7 +566,7 @@ def test_pipeline_evicts_stale_files_at_end_of_run(tmp_path: Path) -> None:
     """A file present at run 1 but deleted before run 2 has its chunks +
     file_meta evicted (Phase A passive stale cleanup)."""
     repo = tmp_path / "repo"
-    keep = _git_init_with_file(repo, "keep.py", "x = 1\n")
+    _git_init_with_file(repo, "keep.py", "x = 1\n")
     transient = repo / "transient.py"
     transient.write_text("y = 2\n", encoding="utf-8")
     import subprocess

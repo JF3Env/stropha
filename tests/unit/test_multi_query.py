@@ -10,17 +10,14 @@ Tests cover:
 
 from __future__ import annotations
 
-from unittest.mock import patch, MagicMock
-
-import pytest
+from unittest.mock import patch
 
 from stropha.retrieval.multi_query import (
-    generate_paraphrases,
     MultiQueryExpander,
-    clear_cache,
     _cache_key,
+    clear_cache,
+    generate_paraphrases,
 )
-
 
 # --------------------------------------------------------------------------- Basic
 
@@ -155,7 +152,7 @@ def test_cache_clear() -> None:
     # Now should call LLM again
     with patch("stropha.inference.generate") as mock_gen:
         mock_gen.return_value = "new result"
-        result = generate_paraphrases("cached query", force_enabled=True)
+        generate_paraphrases("cached query", force_enabled=True)
         assert mock_gen.called  # Had to call LLM
 
 
@@ -225,7 +222,7 @@ retrieval_features:
     
     with patch("stropha.inference.generate") as mock_gen:
         mock_gen.return_value = "p1\np2\np3\np4\np5"
-        result = generate_paraphrases("test query")
+        generate_paraphrases("test query")
         
         # Should use 5 paraphrases
         mock_gen.assert_called_once()

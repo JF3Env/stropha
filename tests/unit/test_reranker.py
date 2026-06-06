@@ -78,7 +78,9 @@ class TestCrossEncoderReranker:
         # Model should not be loaded until first rerank call
         assert not reranker._model_loaded
         health = reranker.health()
-        assert health.detail["loaded"] is False
+        # ``StageHealth.detail`` is ``dict[str, str]`` — bool is rendered
+        # to its lowercase string form so the JSON shape stays uniform.
+        assert health.detail["loaded"] == "false"
 
     def test_cross_encoder_adapter_id_includes_model(self) -> None:
         from stropha.adapters.retrieval.reranker.cross_encoder import (

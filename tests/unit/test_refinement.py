@@ -7,10 +7,9 @@ from typing import Any
 import pytest
 
 from stropha.retrieval.refinement import (
-    DOMINANCE_THRESHOLD,
+    SPARSE_THRESHOLD,
     RefinementResult,
     RefinementStep,
-    SPARSE_THRESHOLD,
     _dominant_file,
     _has_code_anchor,
     _has_tests,
@@ -20,7 +19,6 @@ from stropha.retrieval.refinement import (
     _split_compound,
     refine_results,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers

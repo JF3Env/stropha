@@ -361,8 +361,8 @@ def _merge_unique(
 
 __all__ = [
     "DOMINANCE_THRESHOLD",
+    "SPARSE_THRESHOLD",
     "RefinementResult",
     "RefinementStep",
-    "SPARSE_THRESHOLD",
     "refine_results",
 ]

@@ -5,8 +5,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
-
 from stropha.cost import aggregate, default_log_paths, render_json, render_table
 
 

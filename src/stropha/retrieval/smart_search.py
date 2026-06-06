@@ -40,8 +40,8 @@ class SmartSearchResult:
 
 def smart_search(
     query: str,
-    storage: "Storage",
-    embedder: "Embedder",
+    storage: Storage,
+    embedder: Embedder,
     *,
     top_k: int = 10,
     use_router: bool = True,
@@ -92,7 +92,7 @@ def smart_search(
         # internal failure.
         try:
             routed = router.route(query)
-        except Exception as exc:  # noqa: BLE001 — defensive
+        except Exception as exc:
             log.warning(
                 "smart_search.router_failed",
                 error=str(exc),
@@ -114,20 +114,19 @@ def smart_search(
         routed = route_query(query, use_llm=use_llm_router)
     
     # Check if graph is required and available
-    if is_graph_intent(routed.intent):
-        if not graph.graph_loaded(storage):
-            log.info(
-                "smart_search.graph_not_loaded_fallback",
-                intent=routed.intent.value,
-            )
-            # Fall back to search_code
-            routed = RoutedQuery(
-                intent=QueryIntent.SEARCH_CODE,
-                symbol=routed.symbol,
-                original_query=query,
-                confidence=routed.confidence * 0.5,
-                reason=f"graph not loaded, fallback from {routed.intent.value}",
-            )
+    if is_graph_intent(routed.intent) and not graph.graph_loaded(storage):
+        log.info(
+            "smart_search.graph_not_loaded_fallback",
+            intent=routed.intent.value,
+        )
+        # Fall back to search_code
+        routed = RoutedQuery(
+            intent=QueryIntent.SEARCH_CODE,
+            symbol=routed.symbol,
+            original_query=query,
+            confidence=routed.confidence * 0.5,
+            reason=f"graph not loaded, fallback from {routed.intent.value}",
+        )
     
     # Dispatch to appropriate tool
     if routed.intent == QueryIntent.FIND_CALLERS and routed.symbol:
@@ -205,7 +204,7 @@ def smart_search(
 
 def _graph_nodes_to_hits(
     nodes: list[dict[str, Any]],
-    storage: "Storage",
+    storage: Storage,
 ) -> list[SearchHit]:
     """Convert graph node dicts to SearchHit objects."""
     hits = []
@@ -227,7 +226,9 @@ def _graph_nodes_to_hits(
             language=_guess_language(rel_path),
             kind=node.get("kind", "symbol"),
             symbol=node.get("symbol") or node.get("node_id", "").split(":")[-1],
-            content=snippet,
+            # SearchHit only carries the truncated ``snippet`` (Pydantic
+            # model has no separate ``content`` field). Truncate from the
+            # full graph-node label / chunk snippet here.
             snippet=snippet[:200] if snippet else "",
             score=1.0 - (i * 0.05),  # rank-based score
             rank=i + 1,

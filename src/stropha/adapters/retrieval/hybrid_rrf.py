@@ -32,6 +32,7 @@ the symbol stream while keeping dense + sparse).
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 from typing import Any
 
@@ -43,9 +44,9 @@ from ...pipeline.base import StageHealth
 from ...pipeline.registry import lookup_adapter, register_adapter
 from ...retrieval.rrf import DEFAULT_K, rrf_fuse, rrf_fuse_named
 from ...stages.embedder import EmbedderStage
+from ...stages.reranker import RerankerStage
 from ...stages.retrieval import RetrievalStage
 from ...stages.retrieval_stream import RetrievalStreamStage
-from ...stages.reranker import RerankerStage
 from ...stages.storage import StorageStage
 
 # Legacy single-stream defaults — preserves Phase 1/2 behavior.
@@ -199,7 +200,7 @@ class HybridRrfRetrieval(RetrievalStage):
         detail = {name: s.adapter_id for name, s in self._streams.items()}
         if self._reranker:
             detail["reranker"] = self._reranker.adapter_id
-        reranker_msg = f" + reranker" if self._reranker else ""
+        reranker_msg = " + reranker" if self._reranker else ""
         return StageHealth(
             status="ready",
             message=f"hybrid-rrf with {len(self._streams)} streams{reranker_msg}",
@@ -281,7 +282,7 @@ class HybridRrfRetrieval(RetrievalStage):
         
         # RRF fusion with adaptive weighting
         if len(ranked_by_name) == 1:
-            fused = list(ranked_by_name.values())[0]
+            fused = next(iter(ranked_by_name.values()))
         else:
             # Get more candidates if we have a reranker
             fusion_k = self._config.candidate_k if self._reranker else k
@@ -403,10 +404,8 @@ class HybridRrfRetrieval(RetrievalStage):
         adjacency = self._config.recursive_adjacency
         env_adjacency = os.environ.get("STROPHA_RECURSIVE_ADJACENCY")
         if env_adjacency:
-            try:
+            with contextlib.suppress(ValueError):
                 adjacency = int(env_adjacency)
-            except ValueError:
-                pass
         
         return merge_hits(
             hits,

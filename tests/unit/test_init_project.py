@@ -5,14 +5,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
-
 from stropha.tools.init_project import (
-    DEFAULT_STROPHAIGNORE,
     MCPClient,
     configure_mcp_client,
     create_stropha_dir,
-    detect_mcp_clients,
     generate_mcp_entry,
     print_next_steps,
 )
@@ -103,7 +99,7 @@ class TestConfigureMCPClient:
             key="mcpServers",
         )
 
-        success, msg = configure_mcp_client(client)
+        success, _msg = configure_mcp_client(client)
 
         assert success is True
         assert config_path.is_file()
@@ -122,7 +118,7 @@ class TestConfigureMCPClient:
             key="mcpServers",
         )
 
-        success, msg = configure_mcp_client(client)
+        success, _msg = configure_mcp_client(client)
 
         assert success is True
         config = json.loads(config_path.read_text())
@@ -158,7 +154,7 @@ class TestConfigureMCPClient:
             key="mcpServers",
         )
 
-        success, msg = configure_mcp_client(client)
+        success, _msg = configure_mcp_client(client)
 
         assert success is False
 

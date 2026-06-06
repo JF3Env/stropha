@@ -23,6 +23,7 @@ import os
 import subprocess
 from collections.abc import Iterable
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -118,7 +119,7 @@ class GitDiffWalker:
 
     # ---- discovery surface ------------------------------------------------
 
-    def discover(self, repo: Path) -> Iterable:  # noqa: ARG002
+    def discover(self, repo: Path) -> Iterable:
         """Not supported — use :meth:`discover_deltas` with a since SHA."""
         raise WalkerError(
             "GitDiffWalker.discover() is delta-only; "
@@ -214,10 +215,16 @@ class GitDiffWalker:
                 i += 1
                 if not self._is_supported(path):
                     continue
-                action = (
-                    "delete" if code == "D"
-                    else ("add" if code in ("A", "T") else "modify")
-                )
+                # Narrow to the FileDelta.action Literal so mypy is satisfied
+                # — ``code`` is whatever git printed, but the conditional below
+                # collapses it onto a fixed three-way enum.
+                action: Literal["add", "modify", "delete"]
+                if code == "D":
+                    action = "delete"
+                elif code in ("A", "T"):
+                    action = "add"
+                else:
+                    action = "modify"
                 yield FileDelta(action=action, rel_path=path)
             else:
                 # Unknown status code — skip the matching path token

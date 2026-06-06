@@ -41,7 +41,6 @@ from .context_v1 import (
     to_response,
 )
 
-
 # Canonical task states. Kept as module-level constants (not an
 # Enum) so the wire-format is plain strings and a future spec
 # bump can add states without breaking the constant import.
@@ -199,12 +198,12 @@ def needs_input(task: A2ATask, *, reason: str = "") -> A2ATask:
 
 __all__ = [
     "ALL_STATES",
-    "A2ATask",
     "STATE_COMPLETED",
     "STATE_FAILED",
     "STATE_INPUT_REQUIRED",
     "STATE_SUBMITTED",
     "STATE_WORKING",
+    "A2ATask",
     "dispatch_task",
     "needs_input",
     "new_task",

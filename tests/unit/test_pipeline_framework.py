@@ -7,8 +7,8 @@ from collections.abc import Sequence
 import pytest
 from pydantic import BaseModel
 
-from stropha.config import reset_config
 from stropha import adapters  # noqa: F401  triggers auto-import
+from stropha.config import reset_config
 from stropha.errors import AdapterError, ConfigError
 from stropha.ingest.graph_vec_loader import GraphVecLoader
 from stropha.pipeline import (
@@ -205,10 +205,6 @@ def test_config_yaml_invalid_raises_config_error(tmp_path, monkeypatch) -> None:
 
 
 def test_build_stages_yields_working_enricher() -> None:
-    resolved = {
-        "embedder": {"adapter": "local", "config": {}},
-        "enricher": {"adapter": "noop", "config": {}},
-    }
     # We don't need a real embedder for the enricher assertion below — but
     # building local IS heavy (ONNX load), so skip embedder validation in
     # this test by patching it with a known-cheap subclass would require

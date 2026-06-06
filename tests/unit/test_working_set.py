@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -17,7 +16,6 @@ from stropha.retrieval.working_set import (
     _to_entry,
     build_working_set,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers

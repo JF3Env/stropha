@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -100,7 +100,7 @@ def _baseline_path(meta_dir: Path) -> Path:
 
 
 def _now_utc_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 def read_baseline(meta_dir: Path) -> BaselineRecord | None:
@@ -202,13 +202,10 @@ def compare_candidates(
     scores rewritten by a re-evaluation since promotion); the stored
     baseline fitness is authoritative for the "what got promoted" view.
     """
-    if baseline.fitness is None:
-        # No fitness on the baseline — the operator promoted blind.
-        # We still surface comparisons, but the delta is 0 for everyone
-        # so the UI can fall back to "no baseline scoring available".
-        baseline_fitness = float("-inf")
-    else:
-        baseline_fitness = baseline.fitness
+    # ``float("-inf")`` sentinel when the operator promoted blind (no fitness on
+    # the baseline). Surfacing comparisons still works; the delta is 0 for
+    # everyone so the UI can fall back to "no baseline scoring available".
+    baseline_fitness = float("-inf") if baseline.fitness is None else baseline.fitness
 
     out: list[Comparison] = []
     for cand in candidates:

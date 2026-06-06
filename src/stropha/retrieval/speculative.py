@@ -305,7 +305,13 @@ def prefetch(
 
     tasks: dict[str, Callable[[], object]] = {}
     for q in queries:
-        tasks[q.query] = lambda q=q.query: search_fn(q)
+        # Capture ``q.query`` by default-argument so the closure binds the
+        # value at iteration time, not at call time. The ``str`` annotation
+        # is explicit so mypy can resolve the lambda return type.
+        def _make_task(query: str = q.query) -> object:
+            return search_fn(query)
+
+        tasks[q.query] = _make_task
 
     fanout = parallel_fanout(
         tasks,
@@ -323,7 +329,11 @@ def prefetch(
         if outcome.cancelled:
             failed[name] = "cancelled (timeout or pool teardown)"
             continue
-        results[name] = list(outcome.result or [])
+        # ``outcome.result`` is ``object`` because the parallel-fanout helper
+        # is generic; coerce defensively at this seam — the contract here is
+        # that ``search_fn`` returns an iterable of result rows.
+        raw = outcome.result if outcome.result is not None else []
+        results[name] = list(raw)  # type: ignore[call-overload]
 
     cached: list[str] = []
     if cache_put is not None:

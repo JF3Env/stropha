@@ -33,7 +33,6 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-
 # Path tokens that mark a file as a contract-test artefact.
 _PATH_PATTERNS: tuple[str, ...] = (
     "/contracts/",

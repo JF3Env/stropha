@@ -41,7 +41,7 @@ class StreamBatch:
     note: str = ""
 
 
-def stream_batches(
+def stream_batches[T](
     items: Iterable[T],
     *,
     batch_size: int = 5,

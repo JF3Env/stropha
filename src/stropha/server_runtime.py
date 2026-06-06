@@ -11,14 +11,19 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-Context = Any
-FastMCP = Any
-
 from .config import Config
 from .embeddings.base import Embedder
 from .logging import get_logger
+from .pipeline import BuiltStages
 from .retrieval import SearchEngine
 from .storage import Storage
+
+# Lightweight type aliases for FastMCP types that depend on an optional
+# install of the ``mcp`` package. Keeping them as ``Any`` lets the runtime
+# stay import-cheap without forcing every consumer of this module to pull
+# the FastMCP stub graph.
+Context = Any
+FastMCP = Any
 
 log = get_logger(__name__)
 
@@ -31,7 +36,7 @@ class AppContext:
     storage: Storage
     embedder: Embedder
     search_engine: SearchEngine
-    built: object
+    built: BuiltStages
     session_id: str = ""
     trace_recorder: object = None
     bad_result_store: object = None
@@ -64,7 +69,7 @@ def persist_session_state(app: AppContext) -> None:
             pinned_chunk_ids=app.pinned_chunk_ids,
             scratchpad=app.scratchpad,
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         log.warning(
             "mcp.sessions.persist_failed",
             session_id=app.session_id,
@@ -137,7 +142,7 @@ async def lifespan(
     if client_id:
         try:
             prior_sessions = storage.list_sessions(client_id=client_id, limit=1)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             log.warning("mcp.sessions.list_failed", error=str(exc))
             prior_sessions = []
         if prior_sessions:
@@ -181,7 +186,7 @@ async def lifespan(
         if trace_recorder is not None:
             try:
                 trace_recorder.close()  # type: ignore[attr-defined]
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 log.warning("mcp.trace_recorder.close_failed", error=str(exc))
         try:
             storage.upsert_session(
@@ -191,7 +196,7 @@ async def lifespan(
                 pinned_chunk_ids=app_ctx.pinned_chunk_ids,
                 scratchpad=app_ctx.scratchpad,
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             log.warning("mcp.sessions.persist_failed", error=str(exc))
         log.info("mcp.shutdown", session_id=session_id)
         storage.close()

@@ -10,11 +10,8 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-import pytest
-
 from stropha.adapters.walker.filesystem import FilesystemWalker, FilesystemWalkerConfig
 from stropha.adapters.walker.nested_git import NestedGitWalker, NestedGitWalkerConfig
-
 
 # --------------------------------------------------------------------------- helpers
 

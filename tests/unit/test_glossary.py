@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -11,13 +10,10 @@ import yaml
 
 from stropha.ingest.glossary import (
     GlossaryLoader,
-    GlossaryStats,
     GlossaryTerm,
     find_glossary_yaml,
 )
-from stropha.models import Chunk
 from stropha.storage import Storage
-
 
 # --------------------------------------------------------------------------- #
 #                           GlossaryTerm Tests                                #

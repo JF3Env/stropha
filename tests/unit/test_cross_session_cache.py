@@ -17,15 +17,14 @@ import pytest
 
 from stropha.ingest.git_meta import RepoIdentity
 from stropha.retrieval.cross_session_cache import (
-    CacheEntry,
     DEFAULT_SIMILARITY_THRESHOLD,
+    CacheEntry,
     find_similar,
     prune,
     stats,
     store,
 )
 from stropha.storage.sqlite import SCHEMA_VERSION, Storage
-
 
 # ---------------------------------------------------------------------------
 # Schema migration
@@ -583,7 +582,7 @@ class TestToolRegistration:
 
 class TestPublicSurface:
     def test_default_threshold_constant(self) -> None:
-        assert DEFAULT_SIMILARITY_THRESHOLD == pytest.approx(0.92)
+        assert pytest.approx(0.92) == DEFAULT_SIMILARITY_THRESHOLD
 
     def test_cache_entry_immutable(self) -> None:
         entry = CacheEntry(

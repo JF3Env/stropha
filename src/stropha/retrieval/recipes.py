@@ -26,7 +26,6 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-
 # Placeholder pattern: matches ``{name}`` but NOT ``{{name}}`` (escape
 # for literal braces). Reuses Python's str.format conventions.
 _PLACEHOLDER_RE = re.compile(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}")
@@ -366,7 +365,7 @@ def apply_recipe(
     for step in recipe.steps:
         resolved_args = _resolve_args(step.args_template, context)
         share = max(0.0, float(step.budget_share))
-        step_budget = int(round(share * budget))
+        step_budget = round(share * budget)
         out.append(RecipeInvocation(
             tool=step.tool,
             args=resolved_args,

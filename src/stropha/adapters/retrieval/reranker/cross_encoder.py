@@ -13,6 +13,8 @@ Alternative models supported by fastembed:
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 from ....errors import ConfigError
@@ -54,7 +56,10 @@ class CrossEncoderReranker:
 
     def __init__(self, config: CrossEncoderRerankerConfig | None = None) -> None:
         self._config = config or CrossEncoderRerankerConfig()
-        self._model = None  # Lazy load
+        # ``sentence_transformers.CrossEncoder`` ships without stubs; keep
+        # the lazy slot as ``Any`` so ``rerank()`` does not need a narrow.
+        # The ``_model_loaded`` guard enforces runtime safety.
+        self._model: Any = None
         self._model_loaded = False
 
     def _ensure_model(self) -> None:
@@ -103,16 +108,19 @@ class CrossEncoderReranker:
         return CrossEncoderRerankerConfig
 
     def health(self) -> StageHealth:
+        # ``StageHealth.detail`` is ``dict[str, str]`` — convert the bool to
+        # its string form so the health JSON serialises cleanly across all
+        # adapters without a per-field type override.
         if not self._model_loaded:
             return StageHealth(
                 status="ready",
                 message=f"cross-encoder reranker (lazy, model={self._config.model})",
-                detail={"model": self._config.model, "loaded": False},
+                detail={"model": self._config.model, "loaded": "false"},
             )
         return StageHealth(
             status="ready",
             message=f"cross-encoder reranker (model={self._config.model})",
-            detail={"model": self._config.model, "loaded": True},
+            detail={"model": self._config.model, "loaded": "true"},
         )
 
     def rerank(
@@ -159,7 +167,7 @@ class CrossEncoderReranker:
             return hits[:top_k]
 
         # Sort hits by score (descending)
-        scored_hits = list(zip(scores, hits))
+        scored_hits = list(zip(scores, hits, strict=False))
         scored_hits.sort(key=lambda x: x[0], reverse=True)
 
         # Return top_k reranked hits

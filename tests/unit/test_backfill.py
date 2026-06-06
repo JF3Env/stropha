@@ -349,15 +349,27 @@ class TestHookV5:
         assert "if [ -n '$BACKFILL_CMD' ]" in text
 
     def test_template_keeps_existing_steps(self, tmp_path: Path) -> None:
-        """v=5 must NOT regress the v=2/3/4 features."""
+        """v=5 backfill must NOT regress the still-present v=2/3/4 features.
+
+        Three features tested here have evolved past v=5:
+          * graphify-as-an-explicit-step was removed in v=7 (the pipeline
+            calls it internally).
+          * ``--incremental`` was dropped in v=9 (the CLI's default
+            ``auto`` mode handles incremental and full cases).
+          * ``flock -n 9`` was replaced by a mkdir-based atomic lock
+            in v=9 because macOS does not ship ``flock``.
+        We assert the v=9-equivalent surfaces instead.
+        """
         text = _render_hook_block(tmp_path)
-        # graphify update step still there
-        assert "graphify update" in text
-        # incremental index still there
-        assert "--incremental" in text
-        # nohup + flock background still there
+        # Background launch still there.
         assert "nohup sh" in text
-        assert "flock -n 9" in text
+        # v=9: mkdir-based atomic lock replaces flock.
+        assert "LOCK_DIR=" in text
+        assert "mkdir '$LOCK_DIR'" in text
+        # v=9: auto-mode index call still present (drops --incremental).
+        assert "stropha index --repo $TOPLEVEL" in text
+        # v=5 backfill survives.
+        assert "meta outcome backfill" in text
 
 
 # ---------------------------------------------------------------------------

@@ -14,7 +14,7 @@ import sqlite3
 import struct
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import sqlite_vec  # type: ignore[import-untyped]
 
@@ -22,6 +22,12 @@ from ..errors import StorageError
 from ..ingest.git_meta import RepoIdentity
 from ..logging import get_logger
 from ..models import Chunk, RepoRef, RepoStats, SearchHit
+
+if TYPE_CHECKING:
+    # These are imported inline at call sites to avoid pulling memory/session
+    # models into the storage import graph at runtime. Listed here so type
+    # annotations on the public storage methods resolve cleanly.
+    from ..models import EpisodeRecord, ProjectMemoryRecord, SessionRecord
 
 log = get_logger(__name__)
 
@@ -89,10 +95,7 @@ def _extract_file_stem(rel_path: str) -> str:
     parts = rel_path.replace("\\", "/").split("/")
     filename = parts[-1] if parts else ""
     # Remove extension
-    if "." in filename:
-        stem = filename.rsplit(".", 1)[0]
-    else:
-        stem = filename
+    stem = filename.rsplit(".", 1)[0] if "." in filename else filename
     return stem
 
 
@@ -1020,9 +1023,10 @@ class Storage:
             return False
         if enricher_id is not None and row["last_enricher_id"] != enricher_id:
             return False
-        if embedder_model is not None and row["last_embedder_model"] != embedder_model:
-            return False
-        return True
+        return not (
+            embedder_model is not None
+            and row["last_embedder_model"] != embedder_model
+        )
 
     def upsert_file_meta(
         self,
@@ -1656,7 +1660,7 @@ class Storage:
 
     # ----- sessions (v8) -----
 
-    def get_session(self, session_id: str) -> "SessionRecord | None":
+    def get_session(self, session_id: str) -> SessionRecord | None:
         """Load a session row by id. Returns ``None`` when unknown.
 
         WIN-221 / EPIC 1.9: this is the read side of the sessions
@@ -1702,7 +1706,7 @@ class Storage:
             scratchpad=scratchpad,
         )
 
-    def get_latest_session(self) -> "SessionRecord | None":
+    def get_latest_session(self) -> SessionRecord | None:
         """Return the most-recently-updated session row, or ``None``
         when the table is empty.
 
@@ -1728,7 +1732,7 @@ class Storage:
         pinned_chunk_ids: set[str] | None = None,
         meta: dict[str, Any] | None = None,
         scratchpad: str | None = None,
-    ) -> "SessionRecord":
+    ) -> SessionRecord:
         """Insert or update a session row. Idempotent.
 
         First call creates the row with ``created_at = updated_at =
@@ -1813,7 +1817,7 @@ class Storage:
 
     def list_sessions(
         self, *, client_id: str | None = None, limit: int = 50,
-    ) -> list["SessionRecord"]:
+    ) -> list[SessionRecord]:
         """Enumerate sessions, optionally filtered by ``client_id``.
 
         Used by WIN-228 (TTL cleanup) + WIN-222 (cross-session memory).
@@ -1907,7 +1911,7 @@ class Storage:
         source: str | None = None,
         expires_at: str | None = None,
         provenance_commit: str | None = None,
-    ) -> "ProjectMemoryRecord":
+    ) -> ProjectMemoryRecord:
         """Upsert a project-memory entry. Idempotent.
 
         Args:
@@ -1980,7 +1984,7 @@ class Storage:
         key: str | None = None,
         limit: int = 50,
         include_expired: bool = False,
-    ) -> list["ProjectMemoryRecord"]:
+    ) -> list[ProjectMemoryRecord]:
         """Fetch project-memory entries for a repo.
 
         Filter cascade: ``repo_id`` (required) → ``kind`` (optional) →
@@ -2060,7 +2064,7 @@ class Storage:
         touched_files: list[str] | None = None,
         touched_symbols: list[str] | None = None,
         provenance_commit: str | None = None,
-    ) -> "EpisodeRecord":
+    ) -> EpisodeRecord:
         """Insert one episodic-memory row. Always creates a new row;
         episodes are append-only by design (the timeline matters).
 
@@ -2108,7 +2112,7 @@ class Storage:
         query: str | None = None,
         limit: int = 10,
         since_iso: str | None = None,
-    ) -> list["EpisodeRecord"]:
+    ) -> list[EpisodeRecord]:
         """Fetch episodes for a repo, optionally filtered.
 
         ``query`` is matched against ``title`` and ``summary`` via
@@ -2120,7 +2124,6 @@ class Storage:
 
         Sorted by ``created_at`` DESC so the freshest episode is row 0.
         """
-        from ..models import EpisodeRecord
 
         clauses = ["repo_id = ?"]
         params: list[Any] = [repo_id]

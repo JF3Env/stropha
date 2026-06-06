@@ -15,6 +15,7 @@ Optional fast mode: ``pip install model2vec[fast]`` (uses optimized tokenizer)
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -57,7 +58,11 @@ class Model2VecEmbedder(EmbedderStage):
         if config is None:
             config = Model2VecEmbedderConfig()
         self._config = config
-        self._model_obj = None
+        # ``StaticModel`` ships without type stubs, so ``_model_obj`` lives as
+        # ``Any``. ``_load_model`` is invoked from ``__init__`` below and will
+        # either populate this slot or raise — there is no observable ``None``
+        # window after construction.
+        self._model_obj: Any = None
         self._dim: int = 0
         
         # Lazy load to avoid import overhead when not used
@@ -66,7 +71,7 @@ class Model2VecEmbedder(EmbedderStage):
     def _load_model(self) -> None:
         """Load the Model2Vec model."""
         try:
-            from model2vec import StaticModel  # type: ignore[import-untyped]
+            from model2vec import StaticModel  # type: ignore[import-untyped,import-not-found]
         except ImportError as exc:
             raise EmbeddingError(
                 "model2vec package is not installed. "

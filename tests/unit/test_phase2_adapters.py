@@ -211,11 +211,14 @@ class _DummyStorage:
 
 
 def test_builder_assembles_full_pipeline(tmp_path: Path) -> None:
+    # ``environ`` is ignored by load_pipeline_config in v=9 but kept as
+    # a no-op kwarg for backward compatibility. Pass the values that
+    # used to be env-var aliases via ``overrides`` instead.
     resolved = load_pipeline_config(
         project_root=tmp_path,
-        environ={
-            "STROPHA_INDEX_PATH": str(tmp_path / "x.db"),
-            "STROPHA_LOCAL_EMBED_MODEL": "BAAI/bge-small-en-v1.5",
+        overrides={
+            "storage": {"config": {"path": str(tmp_path / "x.db")}},
+            "embedder": {"config": {"model": "BAAI/bge-small-en-v1.5"}},
         },
     )
     # Skip storage open to avoid loading fastembed in this assertion-focused test.
@@ -250,22 +253,23 @@ def test_storage_default_path_matches_config_resolve(
 ) -> None:
     """Regression: pipeline storage default MUST match Config.resolve_index_path().
 
-    Before the fix, ``SqliteVecStorageConfig.path`` defaulted to a static
-    ``"~/.stropha/index.db"`` while ``Config.resolve_index_path()`` returned
-    a cwd-aware path via ``_default_index_path()``. The CLI silently wrote
-    to ``~/.stropha`` while the MCP's ``get_config`` reported
-    ``./.stropha`` — splitting the index across two files. This test pins
-    the convergence.
+    v=9: ``_default_index_path()`` is now cwd-independent — it always
+    returns ``~/.stropha/index.db``. This kills the silent CLI/hook
+    divergence that used to happen when the user's shell cwd differed
+    from the post-commit hook's ``uv run --directory`` cwd. The CLI's
+    pipeline storage default and the storage adapter's own default
+    factory still agree (pinned here); both pick the home path.
     """
     from stropha.config.models import _default_index_path
 
-    # cwd that has a `.stropha/` dir → local resolution wins.
+    # cwd is irrelevant for the default; even when the cwd does have a
+    # `.stropha/` dir, the helper returns the user-level path.
     (tmp_path / ".stropha").mkdir()
     monkeypatch.chdir(tmp_path)
 
-    # 1. The model's helper picks the local path.
+    # 1. The model's helper always picks the user-level path.
     helper_path = _default_index_path()
-    assert helper_path == tmp_path / ".stropha" / "index.db"
+    assert helper_path == Path.home() / ".stropha" / "index.db"
 
     # 2. The storage adapter's default factory MUST produce the same path.
     adapter_default = SqliteVecStorageConfig().path
@@ -273,17 +277,16 @@ def test_storage_default_path_matches_config_resolve(
 
     # 3. load_pipeline_config (with no env / yaml override) must materialize
     # the same path into storage.config.path so it's visible in `pipeline show`.
-    resolved = load_pipeline_config(project_root=tmp_path, environ={})
+    resolved = load_pipeline_config(project_root=tmp_path)
     assert resolved["storage"]["config"]["path"] == str(helper_path)
 
 
 def test_storage_default_path_falls_back_to_home(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """When cwd has no .stropha/ dir, the default falls back to ~/.stropha/index.db."""
+    """The default is ALWAYS ``~/.stropha/index.db`` regardless of cwd."""
     from stropha.config.models import _default_index_path
 
-    # cwd without `.stropha/` → home fallback.
     monkeypatch.chdir(tmp_path)
     helper_path = _default_index_path()
     assert helper_path == Path.home() / ".stropha" / "index.db"

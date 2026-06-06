@@ -10,7 +10,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from stropha.tools.git_url import (
-    CACHE_DIR,
     CachedRepo,
     GitUrlError,
     clone_repo,
@@ -238,10 +237,12 @@ class TestCloneRepo:
         mock_result = MagicMock()
         mock_result.returncode = 0
         
-        with patch.dict(os.environ, {"STROPHA_GIT_URL_CACHE": str(tmp_path)}):
-            with patch("subprocess.run", return_value=mock_result) as mock_run:
-                result = clone_repo(url)
-                
+        with (
+            patch.dict(os.environ, {"STROPHA_GIT_URL_CACHE": str(tmp_path)}),
+            patch("subprocess.run", return_value=mock_result) as mock_run,
+        ):
+            result = clone_repo(url)
+
         assert result.url == url
         mock_run.assert_called_once()
 
@@ -252,10 +253,12 @@ class TestCloneRepo:
         mock_result.returncode = 1
         mock_result.stderr = "fatal: repository not found"
         
-        with patch.dict(os.environ, {"STROPHA_GIT_URL_CACHE": str(tmp_path)}):
-            with patch("subprocess.run", return_value=mock_result):
-                with pytest.raises(GitUrlError, match="git clone failed"):
-                    clone_repo(url)
+        with (
+            patch.dict(os.environ, {"STROPHA_GIT_URL_CACHE": str(tmp_path)}),
+            patch("subprocess.run", return_value=mock_result),
+            pytest.raises(GitUrlError, match="git clone failed"),
+        ):
+            clone_repo(url)
 
     def test_refresh_reclones(self, tmp_path: Path):
         import time
@@ -276,9 +279,11 @@ class TestCloneRepo:
         mock_result = MagicMock()
         mock_result.returncode = 0
         
-        with patch.dict(os.environ, {"STROPHA_GIT_URL_CACHE": str(tmp_path)}):
-            with patch("subprocess.run", return_value=mock_result) as mock_run:
-                result = clone_repo(url, refresh=True)
-                
+        with (
+            patch.dict(os.environ, {"STROPHA_GIT_URL_CACHE": str(tmp_path)}),
+            patch("subprocess.run", return_value=mock_result) as mock_run,
+        ):
+            clone_repo(url, refresh=True)
+
         # Should have called git clone because refresh=True
         mock_run.assert_called_once()

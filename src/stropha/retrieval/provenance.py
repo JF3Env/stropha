@@ -25,7 +25,6 @@ from collections.abc import Mapping
 
 from ..models import SearchHit
 
-
 # Stream names in canonical order for stable rendering. Streams not
 # listed appear AFTER these (alphabetically), so a future stream
 # (e.g. "rerank") doesn't disrupt existing output.

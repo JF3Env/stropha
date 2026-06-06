@@ -45,7 +45,6 @@ from typing import Any
 from ..logging import get_logger
 from ..models import SearchHit
 from .packing import pack_to_budget
-from .savings import estimate_content_tokens
 
 log = get_logger(__name__)
 
@@ -356,8 +355,16 @@ def assemble_context(
                     symbol=hit.symbol, error=str(exc),
                 )
                 continue
-            # Normalise to SearchHit if the helper returned dicts.
-            normalised = [h for h in extras if isinstance(h, SearchHit)]
+            # ``find_callers`` returns a dict (``{"symbol", "callers", "edges",
+            # "provenance", ...}``) — iterating it yields the keys (strings),
+            # so the ``isinstance`` filter has always evaluated to an empty
+            # list here. Mypy now surfaces the silent bug; preserved as-is
+            # while the typing pass lands. TODO: walk ``extras["callers"]``
+            # and convert graph nodes into SearchHits before extending.
+            normalised: list[SearchHit] = [
+                h for h in extras  # type: ignore[misc]
+                if isinstance(h, SearchHit)
+            ]
             caller_hits.extend(_dedupe_in_order(seen_chunk_ids, normalised))
 
     if include_tests and storage is not None:
@@ -376,7 +383,11 @@ def assemble_context(
                     symbol=hit.symbol, error=str(exc),
                 )
                 continue
-            normalised = [h for h in extras if isinstance(h, SearchHit)]
+            # Same dict-vs-list silent bug as the callers branch above.
+            normalised = [
+                h for h in extras  # type: ignore[misc]
+                if isinstance(h, SearchHit)
+            ]
             test_hits.extend(_dedupe_in_order(seen_chunk_ids, normalised))
 
     # WIN-219 — fold rationale nodes (docs / ADRs that explain each

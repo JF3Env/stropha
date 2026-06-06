@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 log = get_logger(__name__)
 
 # Cached backend instance
-_BACKEND: "InferenceBackend | None" = None
+_BACKEND: InferenceBackend | None = None
 
 
 class InferenceBackend(ABC):
@@ -157,17 +157,19 @@ def get_backend(prefer: str | None = None) -> InferenceBackend:
         if config_prefer:
             prefer = config_prefer.lower()
 
-    if _BACKEND is not None:
-        # Return cached if preference matches or no preference
-        if prefer is None or _BACKEND.name == prefer:
-            return _BACKEND
+    # Return cached backend if it exists and matches preference (or none asked).
+    if _BACKEND is not None and (prefer is None or _BACKEND.name == prefer):
+        return _BACKEND
 
     from .anthropic_backend import AnthropicBackend
     from .deepseek_backend import DeepSeekBackend
     from .mlx_backend import MlxBackend
     from .ollama_backend import OllamaBackend
 
-    # Try preferred backend first
+    # Try preferred backend first. The local ``backend`` slot is the
+    # abstract base so mypy doesn't pin it to the first concrete class
+    # we touch on a given branch.
+    backend: InferenceBackend
     if prefer == "mlx":
         backend = MlxBackend()
         if backend.is_available:

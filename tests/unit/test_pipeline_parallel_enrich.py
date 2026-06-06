@@ -8,15 +8,12 @@ fallback covers concurrency=1 and the single-chunk-pending edge case.
 from __future__ import annotations
 
 import time
-from collections.abc import Sequence
-from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
 from stropha.models import Chunk
 from stropha.pipeline.base import StageContext, StageHealth
 from stropha.pipeline.pipeline import Pipeline
-
 
 # ---------------------------------------------------------------------------
 # Test doubles
@@ -87,7 +84,7 @@ def _make_pipeline_shell(concurrency: int, latency_s: float = 0.1) -> tuple[Pipe
 
 def test_parallel_enrichment_speedup_is_real():
     """8 chunks × 100ms with concurrency=8 must complete in ~100ms, not 800ms."""
-    pipe, enricher = _make_pipeline_shell(concurrency=8, latency_s=0.1)
+    pipe, _enricher = _make_pipeline_shell(concurrency=8, latency_s=0.1)
     chunks = [_make_chunk(f"c{i}") for i in range(8)]
     contexts = [StageContext(repo_key="test") for _ in chunks]
 
@@ -103,7 +100,7 @@ def test_parallel_enrichment_speedup_is_real():
 
 def test_parallel_enrichment_preserves_order():
     """Even though workers complete out of order, results MUST come back in input order."""
-    pipe, enricher = _make_pipeline_shell(concurrency=8, latency_s=0.05)
+    pipe, _enricher = _make_pipeline_shell(concurrency=8, latency_s=0.05)
     # Reverse-ordered chunk IDs to make any unintended reordering obvious.
     chunks = [_make_chunk(f"c{i}") for i in [7, 3, 5, 1, 0, 6, 2, 4]]
     contexts = [StageContext(repo_key="test") for _ in chunks]
@@ -147,7 +144,7 @@ def test_concurrency_one_uses_serial_path():
     assert len(thread_ids) == 1, f"Serial path must use one thread, saw {thread_ids}"
 
     # Serial timing: 4 × 50ms ≈ 200ms+, never under 150ms.
-    pipe2, enricher2 = _make_pipeline_shell(concurrency=1, latency_s=0.05)
+    pipe2, _enricher2 = _make_pipeline_shell(concurrency=1, latency_s=0.05)
     t0 = time.time()
     pipe2._enrich_chunks(chunks, contexts)
     elapsed = time.time() - t0
@@ -193,8 +190,9 @@ def test_mismatched_lengths_raise_value_error():
 
 def test_invalid_concurrency_rejected_at_pipeline_init():
     """concurrency < 1 is a config error caught at Pipeline.__init__."""
-    from stropha.pipeline.pipeline import Pipeline
     from unittest.mock import MagicMock
+
+    from stropha.pipeline.pipeline import Pipeline
 
     storage = MagicMock()
     embedder = MagicMock(batch_size=64, dim=512, model_name="m")

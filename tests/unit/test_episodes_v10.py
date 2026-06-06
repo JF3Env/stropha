@@ -19,7 +19,6 @@ from stropha.ingest.git_meta import RepoIdentity
 from stropha.models import EpisodeRecord
 from stropha.storage.sqlite import SCHEMA_VERSION, Storage
 
-
 # ---------------------------------------------------------------------------
 # Schema migration
 # ---------------------------------------------------------------------------
@@ -392,7 +391,7 @@ class TestMCPRecordEpisode:
     ) -> None:
         from stropha.server import record_episode
 
-        s, repo_id, _ = storage_with_target
+        s, _repo_id, _ = storage_with_target
         app = _make_app(s, fake_repo_path)
         result = record_episode(
             "Refactored FSRS",

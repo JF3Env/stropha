@@ -47,8 +47,9 @@ already worth a lot.
 
 from __future__ import annotations
 
+import contextlib
 import re
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from ..logging import get_logger
@@ -108,10 +109,7 @@ def _is_signature(line: str) -> bool:
     stripped = line.lstrip()
     if not stripped:
         return False
-    for pattern in _SIGNATURE_PATTERNS:
-        if pattern.match(line):
-            return True
-    return False
+    return any(pattern.match(line) for pattern in _SIGNATURE_PATTERNS)
 
 
 def _is_pure_comment(line: str) -> bool:
@@ -363,10 +361,8 @@ def compress_hits(
         else:
             # Defensive: a non-SearchHit-shaped input still works,
             # just less efficiently. Used by tests with bare objects.
-            try:
+            with contextlib.suppress(AttributeError):
                 hit.snippet = result.text
-            except AttributeError:
-                pass
             out.append(hit)
     if total_original > 0:
         log.info(

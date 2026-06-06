@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -14,7 +13,6 @@ from stropha.retrieval.contract_tests import (
     classify_test,
     surface_contract_tests,
 )
-
 
 # ---------------------------------------------------------------------------
 # Dataclass surface

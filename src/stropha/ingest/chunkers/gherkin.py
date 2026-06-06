@@ -38,9 +38,14 @@ class GherkinChunker:
         # Feature-level chunk: from line 1 to start of first section (or EOF).
         first_section_line = starts[0][0] if starts else total_lines + 1
         feature_text = "".join(lines[: max(0, first_section_line - 1)])
+        # ``feature_chunk_id`` is only emitted when the feature header is
+        # substantial enough to be its own chunk. Scenario/Background/Rule
+        # chunks below carry it as their ``parent_chunk_id`` — ``None`` when
+        # the feature header was trimmed.
+        feature_chunk_id: str | None = None
         if len(feature_text.strip()) >= MIN_CHARS_PER_CHUNK:
             h = sha256_hex(feature_text)
-            feature_chunk_id: str | None = make_chunk_id(
+            feature_chunk_id = make_chunk_id(
                 file.rel_path, 1, max(1, first_section_line - 1), h
             )
             yield Chunk(
@@ -54,8 +59,6 @@ class GherkinChunker:
                 content=feature_text,
                 content_hash=h,
             )
-        else:
-            feature_chunk_id = None
 
         # Scenario / Background / Rule chunks.
         for idx, (start_line, kind_raw, title) in enumerate(starts):

@@ -63,7 +63,7 @@ _NATURAL_WORDS = frozenset({
     "than", "too", "very", "just", "but", "and", "or", "if", "because",
     "what", "which", "who", "this", "that", "these", "those", "it",
     "find", "get", "set", "add", "remove", "delete", "create", "update",
-    "where", "how", "does", "work", "function", "method", "class", "file",
+    "work", "function", "method", "class", "file",
     "code", "implement", "call", "use", "return", "handle", "process",
 })
 
@@ -93,10 +93,7 @@ def _is_symbol_token(token: str) -> bool:
         return True
     
     # Check for underscores or dots in middle of word
-    if "_" in token[1:-1] or "." in token:
-        return True
-    
-    return False
+    return bool("_" in token[1:-1] or "." in token)
 
 
 def _tokenize_query(query: str) -> list[str]:

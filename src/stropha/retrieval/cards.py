@@ -37,6 +37,7 @@ applies; if the caller wants a compressed full card they wire
 
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass
 from typing import Literal
 
@@ -181,10 +182,8 @@ def apply_level_to_snippets(
         if hasattr(hit, "model_copy"):
             out.append(hit.model_copy(update={"snippet": new_snippet}))
         else:
-            try:
+            with contextlib.suppress(AttributeError):
                 hit.snippet = new_snippet
-            except AttributeError:
-                pass
             out.append(hit)
     return out
 
@@ -214,7 +213,7 @@ class DecaySchedule:
     """Cumulative number of top hits rendered at ``paragraph`` or better.
     Default 3 = ranks 0, 1, 2 get full+paragraph; rank 3+ get line."""
 
-    def level_for(self, rank: int) -> "CardLevel":
+    def level_for(self, rank: int) -> CardLevel:
         """Return the card level for the given rank."""
         if rank < self.full_through:
             return "full"
@@ -249,10 +248,8 @@ def apply_relevance_decay(
         if hasattr(hit, "model_copy"):
             out.append(hit.model_copy(update={"snippet": new_snippet}))
         else:
-            try:
+            with contextlib.suppress(AttributeError):
                 hit.snippet = new_snippet
-            except AttributeError:
-                pass
             out.append(hit)
     return out
 

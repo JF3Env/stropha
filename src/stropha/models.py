@@ -190,7 +190,7 @@ class SessionRecord(BaseModel):
         default_factory=set,
         description="Chunks the agent pinned — drives WIN-218 prepend.",
     )
-    meta: dict[str, "object"] = Field(
+    meta: dict[str, object] = Field(
         default_factory=dict,
         description=(
             "Catchall for future EPIC-1.9 stories (project memory, "

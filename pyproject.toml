@@ -118,7 +118,26 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
-ignore = ["E501"]
+# E501: line length handled by `line-length = 100` above (formatter only).
+# RUF001/002/003: this codebase uses typographic em-dashes (—), en-dashes
+#   (–) and multiplication signs (×) intentionally in docstrings and
+#   comments (architecture writing, ranges like "10³–10⁴", "2× faster").
+#   They are not ambiguous in context.
+ignore = ["E501", "RUF001", "RUF002", "RUF003"]
+
+[tool.ruff.lint.per-file-ignores]
+# sqlite3.Row supports ``"key" in row.keys()`` but NOT ``"key" in row``
+# (the latter iterates VALUES, not column names). Same for ``.get()`` —
+# sqlite3.Row has neither, so SIM118 must not auto-rewrite these idioms.
+"src/stropha/storage/sqlite.py" = ["SIM118"]
+"src/stropha/retrieval/graph.py" = ["SIM118"]
+"src/stropha/retrieval/recursive.py" = ["SIM118"]
+"src/stropha/adapters/retrieval/streams/graph_vec.py" = ["SIM118"]
+# Typer subcommands rely on ``typer.Option(...)`` / ``typer.Argument(...)``
+# as default values — that's the idiomatic Typer API surface, same shape
+# as FastAPI dependencies. B008 has no model for these decorator-bound
+# defaults, so suppress in the CLI composition root only.
+"src/stropha/cli.py" = ["B008"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

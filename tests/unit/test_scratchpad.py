@@ -20,7 +20,6 @@ import pytest
 from stropha.models import SessionRecord
 from stropha.storage.sqlite import SCHEMA_VERSION, Storage
 
-
 # ---------------------------------------------------------------------------
 # Schema migration
 # ---------------------------------------------------------------------------

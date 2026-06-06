@@ -55,8 +55,9 @@ _start() {
         exit 1
     fi
 
+    # STROPHA_INDEX_PATH removed in v=9 (read by no code path). The DB
+    # location comes from ~/.stropha/config.yaml `paths.index`.
     STROPHA_TARGET_REPO="${STROPHA_TARGET_REPO:-$PROJECT_DIR}" \
-    STROPHA_INDEX_PATH="${STROPHA_INDEX_PATH:-${HOME}/.stropha/index.db}" \
     STROPHA_LOG_LEVEL="${STROPHA_LOG_LEVEL:-WARNING}" \
     nohup "$UV" run --directory "$PROJECT_DIR" stropha-mcp \
         --host "$HOST" \

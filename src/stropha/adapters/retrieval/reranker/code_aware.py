@@ -402,7 +402,7 @@ class CodeAwareReranker:
         seen_files: set[str] = set()
         result: list[tuple[float, SearchHit]] = []
         
-        for score, hit in scored_hits:
+        for _score, hit in scored_hits:
             path = hit.rel_path or ""
             if path not in seen_files:
                 seen_files.add(path)

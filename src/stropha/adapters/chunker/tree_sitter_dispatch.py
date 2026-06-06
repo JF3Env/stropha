@@ -135,9 +135,11 @@ class TreeSitterDispatchChunker:
             if sub is None:
                 log.warning("chunker.no_fallback", path=sf.rel_path)
                 continue
+            # Materialise to a list so the inner ``for`` can iterate after the
+            # outer ``try`` exits. The sub-adapter returns an Iterator[Chunk];
+            # ``emitted`` is annotated as the concrete list to keep mypy happy.
             try:
-                emitted = sub.chunk(sf, content)
-                emitted = list(emitted)
+                emitted: list[Chunk] = list(sub.chunk(sf, content))
             except Exception as exc:
                 log.warning(
                     "chunker.error_fallback",

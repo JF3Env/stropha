@@ -82,9 +82,15 @@ via `STROPHA_MCP_HOST` / `STROPHA_MCP_PORT`). Health probe: `GET /health`.
 
 ## Key architecture
 
-Configuration is YAML-first (`stropha.yaml`). See `get_config` MCP tool
-for live runtime state. Env vars still work for core settings
-(`STROPHA_TARGET_REPO`, `STROPHA_INDEX_PATH`, `VOYAGE_API_KEY`, etc.).
+Configuration lives in **`~/.stropha/config.yaml`** — single source of
+truth. No project-level `stropha.yaml`, no `.env` overlay, no
+`STROPHA_*_*` env vars for settings. The only env vars still honoured
+at runtime are `STROPHA_TARGET_REPO` (a runtime argument: *which* repo
+to operate on) and `STROPHA_HOOK_*` (escape hatches for the detached
+post-commit hook subprocess; see `src/stropha/config/__init__.py`
+`_ENV_REGISTRY` for the canonical list). API keys (`voyage_api_key`,
+`anthropic_api_key`, `deepseek_api_key`) live under `secrets:` in the
+YAML. See `get_config` MCP tool for live runtime state.
 
 Adapters register via `@register_adapter(stage=..., name=...)` across
 6 stages: walker, chunker, enricher, embedder, storage, retrieval.

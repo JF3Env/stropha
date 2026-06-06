@@ -85,7 +85,7 @@ class GraphVecLoader:
 
     def needs_run(self) -> bool:
         """True iff at least one node lacks an embedding for the active model."""
-        cur = self._storage._conn.cursor()  # noqa: SLF001
+        cur = self._storage._conn.cursor()
         try:
             row = cur.execute(
                 """SELECT 1 FROM graph_nodes
@@ -100,7 +100,7 @@ class GraphVecLoader:
     def load(self, *, batch_size: int = _BATCH) -> VecLoadResult:
         """Embed every node whose stored embedding model is not current."""
         start = datetime.now(UTC)
-        cur = self._storage._conn.cursor()  # noqa: SLF001
+        cur = self._storage._conn.cursor()
         rows = cur.execute(
             """SELECT node_id, label, community_label
                FROM graph_nodes
@@ -167,7 +167,7 @@ class GraphVecLoader:
 
     def _count_current(self) -> int:
         return int(
-            self._storage._conn.execute(  # noqa: SLF001
+            self._storage._conn.execute(
                 """SELECT COUNT(*) AS n FROM graph_nodes
                    WHERE embedding IS NOT NULL AND embedding_model = ?""",
                 (self.embedding_model,),

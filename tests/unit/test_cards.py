@@ -405,7 +405,7 @@ class TestApplyRelevanceDecay:
     def test_preserves_other_fields(self) -> None:
         hits = self._make_ranked_hits(3)
         out = apply_relevance_decay(hits)
-        for orig, decayed in zip(hits, out):
+        for orig, decayed in zip(hits, out, strict=False):
             assert decayed.chunk_id == orig.chunk_id
             assert decayed.rank == orig.rank
             assert decayed.score == orig.score
@@ -414,7 +414,7 @@ class TestApplyRelevanceDecay:
         hits = self._make_ranked_hits(3)
         originals = [h.snippet for h in hits]
         apply_relevance_decay(hits)
-        for h, orig in zip(hits, originals):
+        for h, orig in zip(hits, originals, strict=False):
             assert h.snippet == orig  # immutable, untouched
 
     def test_handles_stub_with_writable_snippet(self) -> None:
@@ -439,7 +439,7 @@ class TestApplyRelevanceDecay:
         append unchanged, no crash."""
 
         class Frozen:
-            __slots__ = ("_s", "_r")
+            __slots__ = ("_r", "_s")
 
             def __init__(self, snippet: str, rank: int) -> None:
                 self._s = snippet

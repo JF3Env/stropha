@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -328,8 +327,9 @@ class TestPerBackendBatchSizeYAMLParsing:
     ``ollama_batch_size`` / ``mlx_batch_size`` flow through ``_parse_inference``."""
 
     def test_deepseek_batch_size_parsed_from_yaml(self, tmp_path, monkeypatch):
-        import stropha.config as cfg_mod
         from pathlib import Path
+
+        import stropha.config as cfg_mod
 
         cfg_dir = tmp_path / ".stropha"
         cfg_dir.mkdir()
@@ -349,8 +349,9 @@ class TestPerBackendBatchSizeYAMLParsing:
         assert cfg.inference.effective_batch_size() == 5
 
     def test_absent_per_backend_override_stays_none(self, tmp_path, monkeypatch):
-        import stropha.config as cfg_mod
         from pathlib import Path
+
+        import stropha.config as cfg_mod
 
         cfg_dir = tmp_path / ".stropha"
         cfg_dir.mkdir()
@@ -370,8 +371,9 @@ class TestPerBackendBatchSizeYAMLParsing:
         self, tmp_path, monkeypatch
     ):
         """A non-integer value parses to None → uses global enricher_batch_size."""
-        import stropha.config as cfg_mod
         from pathlib import Path
+
+        import stropha.config as cfg_mod
 
         cfg_dir = tmp_path / ".stropha"
         cfg_dir.mkdir()

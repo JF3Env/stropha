@@ -5,15 +5,14 @@ from __future__ import annotations
 import pytest
 
 from stropha.retrieval.query_classify import (
+    NATURAL_WEIGHTS,
+    SYMBOL_WEIGHTS,
     QueryClassification,
     QueryType,
     StreamWeights,
+    _interpolate_weights,
     classify_query,
     get_adaptive_weights,
-    _interpolate_weights,
-    SYMBOL_WEIGHTS,
-    NATURAL_WEIGHTS,
-    MIXED_WEIGHTS,
 )
 
 
@@ -303,7 +302,7 @@ class TestWeightedRRF:
         ]
 
         # Without weights (equal)
-        result_equal = rrf_fuse(hits1, hits2, k=60, top_k=3)
+        rrf_fuse(hits1, hits2, k=60, top_k=3)
         
         # With weights (second list boosted)
         result_weighted = rrf_fuse(hits1, hits2, k=60, top_k=3, weights=[0.5, 1.5])

@@ -4,11 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-import pytest
-
 from stropha.api.a2a import (
     ALL_STATES,
-    A2ATask,
     STATE_COMPLETED,
     STATE_FAILED,
     STATE_INPUT_REQUIRED,
@@ -21,7 +18,6 @@ from stropha.api.a2a import (
 )
 from stropha.api.context_v1 import ContextRequestV1
 
-
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -29,10 +25,10 @@ from stropha.api.context_v1 import ContextRequestV1
 
 class TestStateConstants:
     def test_all_states_set(self) -> None:
-        assert ALL_STATES == frozenset({
+        assert frozenset({
             STATE_SUBMITTED, STATE_WORKING, STATE_INPUT_REQUIRED,
             STATE_COMPLETED, STATE_FAILED,
-        })
+        }) == ALL_STATES
 
 
 # ---------------------------------------------------------------------------

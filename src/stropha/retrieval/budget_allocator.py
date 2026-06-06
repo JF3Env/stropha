@@ -41,7 +41,6 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Literal
 
-
 AllocationStrategy = Literal["uniform", "weighted", "length"]
 
 

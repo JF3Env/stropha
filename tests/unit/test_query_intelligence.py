@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-import os
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from stropha.retrieval.hyde import maybe_hyde_rewrite, _enabled as hyde_enabled
-from stropha.retrieval.query_rewrite import maybe_rewrite_query, _enabled as rewrite_enabled
+from stropha.retrieval.hyde import _enabled as hyde_enabled
+from stropha.retrieval.hyde import maybe_hyde_rewrite
+from stropha.retrieval.query_rewrite import _enabled as rewrite_enabled
+from stropha.retrieval.query_rewrite import maybe_rewrite_query
 
 
 class TestHyDE:
@@ -252,8 +253,9 @@ class TestHybridRrfSearchIntegration:
     @pytest.fixture
     def recording_embedder(self):
         """Embedder stub that records which text was embedded."""
-        from stropha.pipeline.base import StageHealth
         from pydantic import BaseModel
+
+        from stropha.pipeline.base import StageHealth
         
         class _Config(BaseModel):
             pass

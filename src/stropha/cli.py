@@ -11,6 +11,7 @@ Subcommands:
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import typer
 from rich.console import Console
@@ -858,7 +859,7 @@ def init(
     
     # Step 1: Create .stropha/ directory
     console.print("[dim]Step 1:[/dim] Creating .stropha/ directory...")
-    created, messages = create_stropha_dir(target)
+    _created, messages = create_stropha_dir(target)
     for msg in messages:
         console.print(f"  {msg}")
     
@@ -922,15 +923,21 @@ def init(
         
         import os
         os.environ["STROPHA_TARGET_REPO"] = str(target)
-        os.environ["STROPHA_INDEX_PATH"] = str(target / ".stropha" / "index.db")
-        
+        # STROPHA_INDEX_PATH removed: dead env var (read by no code path).
+        # The unified YAML `paths.index` controls the DB location.
+
         resolved = load_pipeline_config()
         try:
             built = build_stages(resolved)
             pipeline = Pipeline(
-                built.walker, built.chunker, built.enricher, built.embedder, built.storage
+                storage=built.storage,
+                embedder=built.embedder,
+                enricher=built.enricher,
+                walker=built.walker,
+                chunker=built.chunker,
+                repos=[target],
             )
-            with built.storage:  # type: ignore[union-attr]
+            with built.storage:
                 stats_result = pipeline.run(rebuild=False)
             console.print(
                 f"  [green]Indexed {stats_result.files_visited} files, "
@@ -1083,7 +1090,12 @@ def pipeline_show(
     table.add_column("Status")
     table.add_column("Notes", overflow="fold")
 
-    rows: list[tuple[str, object | None]] = [
+    # ``Any`` here because each row's runtime type is a different Stage
+    # subclass; they all share the ``adapter_name`` / ``adapter_id`` /
+    # ``health`` surface (enforced by the registry at build time) but
+    # there is no common nominal supertype to express that statically
+    # without dragging every Stage Protocol into a Union.
+    rows: list[tuple[str, Any]] = [
         ("walker", built.walker),
         ("chunker", built.chunker),
         ("enricher", built.enricher),
@@ -1095,18 +1107,18 @@ def pipeline_show(
         if instance is None:
             table.add_row(stage_name, "(skipped)", "—", "—", "use without --no-open to probe")
             continue
-        h = instance.health()  # type: ignore[union-attr]
+        h = instance.health()
         marker = {"ready": "✓", "warning": "⚠", "error": "✗"}.get(h.status, "?")
         table.add_row(
             stage_name,
-            instance.adapter_name,  # type: ignore[union-attr]
-            instance.adapter_id,  # type: ignore[union-attr]
+            instance.adapter_name,
+            instance.adapter_id,
             f"{marker} {h.status}",
             h.message,
         )
     console.print(table)
     if built.storage is not None:
-        built.storage.close()  # type: ignore[union-attr]
+        built.storage.close()
 
 
 @pipeline_app.command("validate")
@@ -1472,14 +1484,9 @@ def hook_install_cmd(
             "env vars. Defaults to --target (dogfooding case)."
         ),
     ),
-    index_path: Path = typer.Option(
-        None, "--index-path",
-        help=(
-            "Bake STROPHA_INDEX_PATH into the hook so the index step doesn't "
-            "inherit from --project-dir/.env. Recommended when --project-dir "
-            "differs from --target."
-        ),
-    ),
+    # --index-path removed in v=9 (hook v=9 / config v=9). The hook now
+    # honours the unified ~/.stropha/config.yaml `paths.index` — there
+    # is no separate per-hook DB override.
     log_path: Path = typer.Option(
         None, "--log-path",
         help=(
@@ -1524,7 +1531,6 @@ def hook_install_cmd(
         result = install(
             repo, force=force,
             project_dir=project_dir,
-            index_path=index_path,
             log_path=log_path,
             meta_iterations=meta_iterations,
         )
@@ -1541,8 +1547,6 @@ def hook_install_cmd(
     baked_lines: list[str] = []
     if result.get("project_dir"):
         baked_lines.append(f"  • project_dir: [cyan]{result['project_dir']}[/cyan]")
-    if result.get("index_path"):
-        baked_lines.append(f"  • index_path:  [cyan]{result['index_path']}[/cyan]")
     if log_path is not None:
         baked_lines.append(f"  • log_path:    [cyan]{result['log_path']}[/cyan]")
     if result.get("meta_iterations"):
@@ -1615,10 +1619,9 @@ def hook_status_cmd(
         table.add_row("Installed", "no")
     table.add_row("Graphify cohabit", "yes" if s.graphify_cohabit else "no")
     # v=3 baked defaults — show only the ones actually populated.
+    # (v=9 dropped the index_path bake; see hook_install._render_hook_block.)
     if s.project_dir:
         table.add_row("Baked project_dir", str(s.project_dir))
-    if s.index_path:
-        table.add_row("Baked index_path", str(s.index_path))
     if s.log_path_default:
         table.add_row("Baked log_path", str(s.log_path_default))
     # v=6: sleep-time meta loop visibility. Show the value when present —
@@ -2085,6 +2088,11 @@ def meta_run_cmd(
     meta_dir = meta_dir.expanduser().resolve()
 
     space = load_search_space()
+    # ``prop`` holds whichever concrete proposer the user picked; all three
+    # implement the ``ProposerFn`` shape (``proposer(archive) -> dict``) but
+    # they don't share a nominal supertype, so widen via ``Any`` instead of
+    # union-typing every concrete class at this seam.
+    prop: Any
     if proposer == "bandit":
         prop = make_bandit_proposer(space, seed=seed)
     elif proposer == "local-agentic":

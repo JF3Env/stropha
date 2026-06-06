@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-import pytest
-
 from stropha.ingest.anchors import (
-    AnchorDetector,
-    AnchorMatch,
-    AnchorPattern,
     DEFAULT_PATTERNS,
+    AnchorDetector,
+    AnchorPattern,
     get_anchor_categories,
     get_anchor_pattern_names,
 )

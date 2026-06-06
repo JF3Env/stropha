@@ -28,6 +28,7 @@ for one-line summaries on M-series).
 from __future__ import annotations
 
 import hashlib
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -65,12 +66,14 @@ class MlxEnricher(EnricherStage):
 
     def __init__(self, config: MlxEnricherConfig | None = None) -> None:
         self._config = config or MlxEnricherConfig()
-        # Lazy state — populated on first successful generate.
+        # Lazy state — populated on first successful generate. ``mlx_lm``
+        # has no type stubs so the slots stay as ``Any``. Use ``_loaded``
+        # as the runtime gate before touching ``_model`` / ``_tokenizer``.
         self._loaded: bool = False
-        self._mlx_load = None  # type: ignore[assignment]
-        self._mlx_generate = None  # type: ignore[assignment]
-        self._model = None
-        self._tokenizer = None
+        self._mlx_load: Any = None
+        self._mlx_generate: Any = None
+        self._model: Any = None
+        self._tokenizer: Any = None
 
     @property
     def stage_name(self) -> str:
@@ -130,7 +133,9 @@ class MlxEnricher(EnricherStage):
             from mlx_lm import generate, load
             self._mlx_load = load
             self._mlx_generate = generate
-            self._model, self._tokenizer = load(self._config.model)
+            # ``mlx_lm.load`` shipped without type stubs and its return shape
+            # widens (2-tuple → 3-tuple) across versions; unpack defensively.
+            self._model, self._tokenizer = load(self._config.model)  # type: ignore[misc]
             self._loaded = True
             return True
         except ImportError:

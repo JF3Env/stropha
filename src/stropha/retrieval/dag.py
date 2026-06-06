@@ -55,7 +55,6 @@ What we don't do
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from typing import Any
 
 from ..logging import get_logger
@@ -144,7 +143,7 @@ def execute_plan(
             top_k = int(step.args.get("top_k", 5))
             try:
                 hits = search_engine.search(query, top_k=top_k)
-            except Exception as exc:  # noqa: BLE001 — defensive
+            except Exception as exc:
                 log.warning(
                     "dag.search_code_failed",
                     error=str(exc), step_order=step.order,
@@ -200,7 +199,7 @@ def execute_plan(
                     rationale_hits.append(h)
             # Unknown step.tool values are silently ignored — the
             # plan may evolve faster than the executor.
-        except Exception as exc:  # noqa: BLE001 — defensive
+        except Exception as exc:
             log.warning(
                 f"dag.{step.tool}_failed",
                 symbol=symbol, error=str(exc), step_order=step.order,

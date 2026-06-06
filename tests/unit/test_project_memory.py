@@ -17,7 +17,6 @@ from stropha.ingest.git_meta import RepoIdentity
 from stropha.models import ProjectMemoryRecord
 from stropha.storage.sqlite import SCHEMA_VERSION, Storage
 
-
 # ---------------------------------------------------------------------------
 # Schema migration
 # ---------------------------------------------------------------------------

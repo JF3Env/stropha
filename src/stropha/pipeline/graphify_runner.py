@@ -25,7 +25,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from ..logging import get_logger
@@ -110,11 +110,9 @@ def run_graphify(
     graph_json = repo / "graphify-out" / "graph.json"
     had_graph = graph_json.is_file()
 
-    if no_cluster is None:
-        # Incremental: skip clustering (fast).  First run: cluster.
-        use_no_cluster = had_graph
-    else:
-        use_no_cluster = no_cluster
+    # Incremental: skip clustering when a graph already exists (fast).
+    # First run: cluster. Explicit override always wins.
+    use_no_cluster = had_graph if no_cluster is None else no_cluster
 
     # 3. Build command.
     cmd: list[str] = [binary, "update", str(repo)]

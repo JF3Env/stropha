@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import math
 import struct
-from datetime import UTC, datetime
 
 from pydantic import BaseModel, Field
 
@@ -101,7 +100,7 @@ class GraphVecStream:
     def health(self) -> StageHealth:
         try:
             n = int(
-                self._storage._conn.execute(  # noqa: SLF001
+                self._storage._conn.execute(
                     "SELECT COUNT(*) AS n FROM graph_nodes WHERE embedding IS NOT NULL"
                 ).fetchone()["n"]
             )
@@ -126,7 +125,7 @@ class GraphVecStream:
     def search(self, query: str, query_vec: list[float] | None) -> list[SearchHit]:
         if query_vec is None:
             return []
-        rows = self._storage._conn.execute(  # noqa: SLF001
+        rows = self._storage._conn.execute(
             """SELECT node_id, label, source_file, source_location,
                       community_label, embedding
                FROM graph_nodes WHERE embedding IS NOT NULL"""
@@ -158,7 +157,7 @@ class GraphVecStream:
         if not rel_path:
             return None
         line = self._location_to_line(node.get("source_location"))
-        cur = self._storage._conn.cursor()  # noqa: SLF001
+        cur = self._storage._conn.cursor()
         chunk = None
         if line is not None:
             chunk = cur.execute(

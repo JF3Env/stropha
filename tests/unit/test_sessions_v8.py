@@ -14,7 +14,6 @@ Covers:
 
 from __future__ import annotations
 
-import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -23,7 +22,6 @@ import pytest
 
 from stropha.models import SessionRecord
 from stropha.storage.sqlite import SCHEMA_VERSION, Storage
-
 
 # ---------------------------------------------------------------------------
 # Schema migration

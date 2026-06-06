@@ -25,7 +25,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-
 # ---------------------------------------------------------------------------
 # Section: retrieval features (query-time toggles, no re-index required)
 # ---------------------------------------------------------------------------
@@ -92,9 +91,11 @@ class InferenceConfig:
     # 60s is tight under load — 120s gives generous headroom while still
     # bounding the worst-case per-chunk wait.
     deepseek_timeout: float = 120.0
-    # Retry on URLError / OSError / TimeoutError / HTTP 5xx with
-    # exponential backoff (1s, 2s, 4s). HTTP 4xx (bad key, bad request,
-    # rate limit) is permanent and short-circuits without retry.
+    # Retry on URLError / OSError / TimeoutError / HTTP 429 (rate limit) /
+    # HTTP 5xx with exponential backoff (1s, 2s, 4s). 429 honours the
+    # ``retry-after`` header when present, capped at 60s. Other HTTP 4xx
+    # (bad key, bad request, wrong model) is permanent and short-circuits
+    # without retry.
     deepseek_max_retries: int = 2
     # Anthropic Messages API (https://api.anthropic.com/v1/messages).
     # Default is claude-haiku-4-5 — fast + cheap, good fit for the
@@ -181,10 +182,16 @@ class GraphConfig:
 
 
 def _default_index_path() -> Path:
-    """Default index path: ``.stropha/index.db`` relative to cwd, or ``~/.stropha/index.db``."""
-    local = Path.cwd() / ".stropha" / "index.db"
-    if local.parent.exists():
-        return local
+    """Default index path: always ``~/.stropha/index.db``.
+
+    Historically this inspected ``Path.cwd() / ".stropha"`` first and only
+    fell back to ``~`` when absent. That branch was a silent landmine: the
+    CLI ran in the user's shell cwd while the post-commit hook ran in
+    ``uv run --directory $PROJECT_DIR`` cwd, so the two could resolve to
+    different DB files. Now both paths converge on the same user-level
+    index. To use a project-local DB, set ``paths.index`` explicitly in
+    ``~/.stropha/config.yaml`` (or ``pipeline.storage.config.path``).
+    """
     return Path.home() / ".stropha" / "index.db"
 
 
@@ -312,6 +319,11 @@ class HookConfig:
     These values are baked into the generated hook script at install time
     or read from ENV at runtime by the hook itself (which runs as a
     subprocess and cannot read the YAML config).
+
+    Note: ``index_path`` removed in v=9. The hook always uses the YAML
+    ``paths.index`` (resp. ``pipeline.storage.config.path``) — there is
+    no separate per-hook DB. ``STROPHA_HOOK_INDEX_PATH`` is no longer
+    honoured.
     """
 
     log_path: Path = field(default_factory=_default_hook_log)
@@ -321,7 +333,6 @@ class HookConfig:
     skip: bool = False
     no_graphify: bool = False
     project_dir: Path | None = None
-    index_path: Path | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -420,7 +431,7 @@ class Config:
     # Functional updates (used by config_override context manager).
     # -----------------------------------------------------------------
 
-    def merge(self, **section_overrides: object) -> "Config":
+    def merge(self, **section_overrides: object) -> Config:
         """Return a new Config with the given sections replaced.
 
         Each kwarg must be one of the section names (e.g.

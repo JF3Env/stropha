@@ -42,8 +42,8 @@ from __future__ import annotations
 
 import json
 import struct
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 from ..logging import get_logger
@@ -95,7 +95,7 @@ def _unpack_embedding(blob: bytes, dim: int) -> list[float]:
 
 
 def _now_utc_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _cosine(a: list[float], b: list[float]) -> float:
@@ -299,8 +299,8 @@ def stats(storage: Any, *, repo_id: int | None = None) -> dict[str, int]:
 
 
 __all__ = [
-    "CacheEntry",
     "DEFAULT_SIMILARITY_THRESHOLD",
+    "CacheEntry",
     "find_similar",
     "prune",
     "stats",

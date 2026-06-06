@@ -28,7 +28,6 @@ from stropha.meta.provenance import (
 )
 from stropha.storage.sqlite import SCHEMA_VERSION, Storage
 
-
 # ---------------------------------------------------------------------------
 # Schema migration
 # ---------------------------------------------------------------------------

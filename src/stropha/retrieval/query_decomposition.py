@@ -77,10 +77,7 @@ def _is_compound_query(query: str) -> bool:
         return True
     
     # Conjunction before a question word
-    if _CONJUNCTIONS.search(query):
-        return True
-    
-    return False
+    return bool(_CONJUNCTIONS.search(query))
 
 
 def _pattern_decompose(query: str) -> list[str] | None:

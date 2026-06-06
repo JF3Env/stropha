@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any
 
 from .server_models import (
     BootstrapResponse,
@@ -23,8 +24,8 @@ from .server_models import (
 )
 from .server_runtime import AppContext
 
-ResolveTargetRepoId = Callable[[AppContext], Optional[int]]
-CurrentHeadCommit = Callable[[AppContext], Optional[str]]
+ResolveTargetRepoId = Callable[[AppContext], int | None]
+CurrentHeadCommit = Callable[[AppContext], str | None]
 PersistSessionState = Callable[[AppContext], None]
 
 
@@ -35,7 +36,7 @@ def resolve_target_repo_id(app: AppContext, *, log: Any) -> int | None:
         return None
     try:
         identity = detect_repo(app.config.target_repo)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         log.warning("mcp.memory.detect_repo_failed", error=str(exc))
         return None
     return app.storage.lookup_repo_id(identity.normalized_key)

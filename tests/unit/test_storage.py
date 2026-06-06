@@ -483,7 +483,7 @@ def test_dim_mismatch_without_force_rebuild_raises(tmp_path: Path) -> None:
     s.close()
 
     # Reopen at dim=512 (e.g. voyage-code-3 era) without force_rebuild.
-    with pytest.raises(StorageError, match="dim=1024.*dim=512"):
+    with pytest.raises(StorageError, match=r"dim=1024.*dim=512"):
         Storage(db, embedding_dim=512)
 
 

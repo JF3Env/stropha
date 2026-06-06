@@ -21,7 +21,6 @@ from stropha.pipeline.registry import lookup_adapter
 from stropha.retrieval.query_router import QueryIntent, RoutedQuery
 from stropha.stages.router import RouterStage
 
-
 # ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------

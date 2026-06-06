@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import pytest
 
 from stropha.retrieval.cost_traversal import (
@@ -12,17 +14,16 @@ from stropha.retrieval.cost_traversal import (
     cost_budgeted_bfs,
 )
 
-
 # ---------------------------------------------------------------------------
 # Test graph helpers
 # ---------------------------------------------------------------------------
 
 
-def _make_neighbors(graph: dict[str, list[str]]) -> "function":
+def _make_neighbors(graph: dict[str, list[str]]) -> Callable[[str], list[str]]:
     """Return a neighbors_fn over the given adjacency dict."""
     def _fn(node: str) -> list[str]:
         return list(graph.get(node, ()))
-    return _fn  # type: ignore[return-value]
+    return _fn
 
 
 # ---------------------------------------------------------------------------

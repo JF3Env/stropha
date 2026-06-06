@@ -31,7 +31,6 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-
 CONTEXT_VERSION = "v1"
 
 

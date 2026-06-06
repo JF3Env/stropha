@@ -72,9 +72,14 @@ class AstGenericChunker:
             return
 
         try:
+            # ``tree_sitter_language_pack`` exports ``ProcessConfig`` twice:
+            # ``options.ProcessConfig`` (typed dataclass) is what we want to
+            # construct, but the native ``process()`` wrapper is typed
+            # against ``_native.ProcessConfig`` from the C extension. They
+            # are layout-compatible at runtime; the cast is a no-op.
             result = tslp.process(
                 content,
-                tslp.ProcessConfig(
+                tslp.ProcessConfig(  # type: ignore[arg-type]
                     language=self._language,
                     structure=True,
                     imports=False,

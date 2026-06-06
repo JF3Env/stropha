@@ -535,7 +535,7 @@ def find_tests_for(
     rel_set = ("calls", "references", "implements", "tests")
     rel_placeholders = ",".join("?" * len(rel_set))
 
-    rows = storage._conn.execute(  # noqa: SLF001
+    rows = storage._conn.execute(
         f"""SELECT n.*, e.relation, e.confidence, e.confidence_score
             FROM graph_edges e
             JOIN graph_nodes n ON n.node_id = e.source
@@ -582,7 +582,7 @@ def has_rationale_edges(storage: Storage) -> bool:
     Used to conditionally register the ``find_rationale`` tool — RFC §2.2 OBJ-6.
     """
     try:
-        row = storage._conn.execute(  # noqa: SLF001
+        row = storage._conn.execute(
             "SELECT 1 FROM graph_edges WHERE relation = 'rationale_for' LIMIT 1"
         ).fetchone()
     except sqlite3.OperationalError:
@@ -623,7 +623,7 @@ def trace_feature(
     max_paths = max(1, min(max_paths, 20))
     max_depth = max(1, min(max_depth, 10))
 
-    cur = storage._conn.cursor()  # noqa: SLF001
+    cur = storage._conn.cursor()
 
     # 1. Find candidate entry-point nodes. Token-overlap scoring is more
     #    forgiving than the exact `resolve_symbol_to_node` because feature
@@ -641,8 +641,8 @@ def trace_feature(
     ).fetchall()
 
     def score(label: str) -> int:
-        l = label.lower()
-        return sum(1 for t in feature_tokens if t in l)
+        lower_label = label.lower()
+        return sum(1 for t in feature_tokens if t in lower_label)
 
     scored = [(score(r["label"]), r) for r in rows]
     scored = [t for t in scored if t[0] > 0]

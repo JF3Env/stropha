@@ -195,7 +195,7 @@ class EscalatingRouter(RouterStage):
 
         try:
             return router.route(query)
-        except Exception as exc:  # noqa: BLE001 — defensive
+        except Exception as exc:
             log.warning(
                 "escalating_router.subrouter_failed",
                 adapter=getattr(router, "adapter_name", "?"),

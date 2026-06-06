@@ -29,20 +29,15 @@ from __future__ import annotations
 import os
 import platform
 import subprocess
-import sys
 import time
 from pathlib import Path
 
 import pytest
 
 from stropha.tools.hook_install import (
-    END_MARKER,
-    HOOK_VERSION,
-    START_MARKER,
     _render_hook_block,
     install,
 )
-
 
 # Wall-clock budget. §3.5 specifies <100ms; we use 200ms in the gate
 # so CI jitter (cold Python interpreter, GC pause, slow disk on a

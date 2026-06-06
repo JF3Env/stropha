@@ -62,7 +62,10 @@ class MlxBackend(InferenceBackend):
             self._generate_fn = generate
 
             log.info("mlx.loading_model", model=model)
-            self._model, self._tokenizer = load(model)
+            # ``mlx_lm.load`` has no type stubs; newer versions return
+            # ``(model, tokenizer, config)`` triples while older ones return
+            # 2-tuples. Both are unpacked into the two slots we care about.
+            self._model, self._tokenizer = load(model)  # type: ignore[misc]
             self._loaded_model = model
             log.info("mlx.model_loaded", model=model)
             return True

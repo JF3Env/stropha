@@ -66,7 +66,7 @@ class EnricherStage(Protocol):
 
 
 def enrich_with_status(
-    enricher: "EnricherStage", chunk: Chunk, ctx: StageContext
+    enricher: EnricherStage, chunk: Chunk, ctx: StageContext
 ) -> tuple[str, bool]:
     """Run ``enricher.enrich`` and return ``(text, success)``.
 
@@ -91,7 +91,7 @@ def enrich_with_status(
 
 
 def enrich_batch_with_status(
-    enricher: "EnricherStage",
+    enricher: EnricherStage,
     chunks: Sequence[Chunk],
     contexts: Sequence[StageContext],
 ) -> list[tuple[str, bool]]:

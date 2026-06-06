@@ -11,7 +11,6 @@ import pytest
 
 from stropha.models import SearchHit
 from stropha.retrieval.packing import (
-    PackingResult,
     pack_to_budget,
 )
 

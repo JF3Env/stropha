@@ -13,11 +13,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-import pytest
-
 from stropha.models import SearchHit
 from stropha.retrieval.pinning import (
-    ResolvedPin,
     prepend_pins,
     resolve_pins,
 )

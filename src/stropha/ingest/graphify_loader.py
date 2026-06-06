@@ -42,7 +42,8 @@ from pathlib import Path
 
 from ..config import get_config
 from ..logging import get_logger
-from ..storage.sqlite import Storage
+from ..stages.storage import StorageStage
+from ..storage.sqlite import Storage  # noqa: F401  — keep for backward-compat re-export
 
 log = get_logger(__name__)
 
@@ -132,7 +133,7 @@ class GraphifyLoader:
 
     def __init__(
         self,
-        storage: Storage,
+        storage: StorageStage,
         repo_root: Path,
         *,
         repo_id: int | None = None,

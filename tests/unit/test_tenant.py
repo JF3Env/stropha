@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 import pytest
 
 from stropha.api.tenant import (
@@ -13,7 +11,6 @@ from stropha.api.tenant import (
     filter_hits,
     is_repo_allowed,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers

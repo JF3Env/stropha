@@ -9,9 +9,7 @@ from __future__ import annotations
 
 import sys
 import types
-from unittest.mock import MagicMock, patch
-
-import pytest
+from unittest.mock import MagicMock
 
 from stropha.adapters.enricher.mlx import MlxEnricher, MlxEnricherConfig
 from stropha.models import Chunk

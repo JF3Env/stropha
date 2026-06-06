@@ -18,12 +18,10 @@ from stropha.adapters.retrieval.streams.graph_vec import (
     GraphVecStream,
     _cosine,
 )
-from stropha.embeddings.base import Embedder
 from stropha.ingest.graph_vec_loader import GraphVecLoader, _pack_vec, _unpack_vec
 from stropha.ingest.graphify_loader import GraphifyLoader
 from stropha.models import Chunk
 from stropha.storage import Storage
-
 
 # --------------------------------------------------------------------------- helpers
 
