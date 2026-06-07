@@ -112,8 +112,13 @@ def graph_loaded(storage: Storage) -> bool:
     appear in ``tools/list`` when the graph is absent (RFC §8 MUST NOT).
     """
     try:
+        # The graphify loader writes per-repo suffixed meta keys in multi-repo
+        # mode (``last_loaded_at:{repo_id}``) and the bare key in single-repo
+        # mode, so accept either — otherwise a multi-repo index would report
+        # "no graph" despite a fully populated mirror.
         row = storage._conn.execute(
-            "SELECT 1 FROM graph_meta WHERE key = 'last_loaded_at' LIMIT 1"
+            "SELECT 1 FROM graph_meta WHERE key = ? OR key LIKE ? LIMIT 1",
+            ("last_loaded_at", "last_loaded_at:%"),
         ).fetchone()
     except sqlite3.OperationalError:
         return False
