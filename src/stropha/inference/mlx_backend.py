@@ -120,10 +120,17 @@ class MlxBackend(InferenceBackend):
                     # Older mlx_lm version without make_sampler, use default
                     pass
 
+            # Apply the model's chat template. Instruct models (Qwen2.5-Coder-
+            # Instruct, etc.) are fine-tuned on ChatML and degenerate into
+            # emitting ``<|im_start|>`` tokens when fed a raw prompt. Wrapping
+            # the prompt as a user turn (with the generation prompt appended)
+            # makes the model answer normally and stop at ``<|im_end|>``.
+            formatted = self._apply_chat_template(prompt)
+
             text = self._generate_fn(
                 self._model,
                 self._tokenizer,
-                prompt,
+                formatted,
                 **kwargs,
             )
 
@@ -134,6 +141,26 @@ class MlxBackend(InferenceBackend):
         except Exception as exc:
             log.warning("mlx.generate_failed", error=str(exc))
             return None
+
+    def _apply_chat_template(self, prompt: str) -> str:
+        """Wrap ``prompt`` as a single user turn via the tokenizer's chat
+        template. Falls back to the raw prompt when the tokenizer has no
+        chat template (base/non-instruct models)."""
+        tok = self._tokenizer
+        try:
+            if (
+                tok is not None
+                and getattr(tok, "chat_template", None)
+                and hasattr(tok, "apply_chat_template")
+            ):
+                return tok.apply_chat_template(
+                    [{"role": "user", "content": prompt}],
+                    add_generation_prompt=True,
+                    tokenize=False,
+                )
+        except Exception as exc:  # pragma: no cover - defensive
+            log.warning("mlx.chat_template_failed", error=str(exc))
+        return prompt
 
     def health_check(self) -> tuple[bool, str]:
         """Check MLX backend health."""
