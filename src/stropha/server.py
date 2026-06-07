@@ -674,12 +674,12 @@ def _graph_unavailable() -> dict:
 # ---- remember / recall / forget (WIN-223, EPIC 1.9 #15) ---------------------
 
 
-def _resolve_target_repo_id(app: AppContext) -> int | None:
-    return server_resolve_target_repo_id(app, log=log)
+def _resolve_target_repo_id(app: AppContext, *, repo: str | None = None) -> int | None:
+    return server_resolve_target_repo_id(app, repo=repo, log=log)
 
 
-def _current_head_commit(app: AppContext) -> str | None:
-    return server_current_head_commit(app)
+def _current_head_commit(app: AppContext, *, repo: str | None = None) -> str | None:
+    return server_current_head_commit(app, repo=repo)
 
 
 def _entry_from_record(rec) -> MemoryEntry:  # type: ignore[no-untyped-def]
@@ -710,8 +710,14 @@ def remember(
     *,
     ctx: Context,
     expires_at: str | None = None,
+    repo: str | None = None,
 ) -> RememberResponse:
-    """Upsert a project-memory entry for the configured target repo."""
+    """Upsert a project-memory entry.
+
+    ``repo`` (normalized key like ``github.com/org/name`` or a local path)
+    anchors the entry to a specific repo in a multi-repo index; defaults to
+    the server's configured target repo.
+    """
     return remember_impl(
         kind,
         key,
@@ -720,6 +726,7 @@ def remember(
         expires_at=expires_at,
         resolve_target_repo_id_fn=_resolve_target_repo_id,
         current_head_commit_fn=_current_head_commit,
+        repo=repo,
     )
 
 
@@ -743,8 +750,9 @@ def recall(
     key: str | None = None,
     limit: int = 50,
     include_expired: bool = False,
+    repo: str | None = None,
 ) -> RecallResponse:
-    """Fetch project-memory entries for the configured target repo."""
+    """Fetch project-memory entries (``repo`` = key/path; default target repo)."""
     return recall_impl(
         _ctx(ctx),
         kind=kind,
@@ -752,6 +760,7 @@ def recall(
         limit=limit,
         include_expired=include_expired,
         resolve_target_repo_id_fn=_resolve_target_repo_id,
+        repo=repo,
     )
 
 
@@ -765,13 +774,16 @@ def recall(
     ),
 )
 @traced("forget")
-def forget(kind: str, key: str, *, ctx: Context) -> ForgetResponse:
-    """Delete one project-memory entry."""
+def forget(
+    kind: str, key: str, *, ctx: Context, repo: str | None = None,
+) -> ForgetResponse:
+    """Delete one project-memory entry (``repo`` = key/path; default target)."""
     return forget_impl(
         kind,
         key,
         _ctx(ctx),
         resolve_target_repo_id_fn=_resolve_target_repo_id,
+        repo=repo,
     )
 
 
@@ -990,14 +1002,21 @@ def check_staleness(
     *,
     ctx: Context,
     anchor_files: list[str] | None = None,
+    repo: str | None = None,
 ) -> StalenessResponse:
-    """Determine if the named ``project_memory`` entry is stale."""
+    """Determine if the named ``project_memory`` entry is stale.
+
+    ``repo`` (key/path) selects which repo the entry belongs to; the diff runs
+    against THAT repo's tree + commit (not the server's target). Defaults to
+    the target repo.
+    """
     return check_staleness_impl(
         kind,
         key,
         _ctx(ctx),
         anchor_files=anchor_files,
         resolve_target_repo_id_fn=_resolve_target_repo_id,
+        repo=repo,
     )
 
 
@@ -1044,8 +1063,9 @@ def record_episode(
     touched_symbols: list[str] | None = None,
     *,
     ctx: Context,
+    repo: str | None = None,
 ) -> RecordEpisodeResponse:
-    """Record a single episodic-memory row for the target repo."""
+    """Record an episodic-memory row (``repo`` = key/path; default target)."""
     return record_episode_impl(
         title,
         summary,
@@ -1054,6 +1074,7 @@ def record_episode(
         _ctx(ctx),
         resolve_target_repo_id_fn=_resolve_target_repo_id,
         current_head_commit_fn=_current_head_commit,
+        repo=repo,
     )
 
 
@@ -1075,14 +1096,16 @@ def recall_episodes(
     *,
     ctx: Context,
     since: str | None = None,
+    repo: str | None = None,
 ) -> RecallEpisodesResponse:
-    """Search past episodes by free-text + optional time window."""
+    """Search past episodes (``repo`` = key/path; default target repo)."""
     return recall_episodes_impl(
         _ctx(ctx),
         query=query,
         limit=limit,
         since=since,
         resolve_target_repo_id_fn=_resolve_target_repo_id,
+        repo=repo,
     )
 
 
@@ -1107,8 +1130,9 @@ def co_occurrence(
     limit: int = 10,
     in_files: bool = True,
     in_symbols: bool = True,
+    repo: str | None = None,
 ) -> CoOccurrenceResponse:
-    """Rank co-touched files / symbols for the given key."""
+    """Rank co-touched files / symbols (``repo`` = key/path; default target)."""
     return co_occurrence_impl(
         key,
         _ctx(ctx),
@@ -1116,6 +1140,7 @@ def co_occurrence(
         in_files=in_files,
         in_symbols=in_symbols,
         resolve_target_repo_id_fn=_resolve_target_repo_id,
+        repo=repo,
     )
 
 

@@ -6,6 +6,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from .logging import get_logger
 from .server_models import (
     BootstrapResponse,
     CoOccurrenceResponse,
@@ -24,30 +25,84 @@ from .server_models import (
 )
 from .server_runtime import AppContext
 
-ResolveTargetRepoId = Callable[[AppContext], int | None]
-CurrentHeadCommit = Callable[[AppContext], str | None]
+_log = get_logger(__name__)
+
+# These accept an optional keyword ``repo`` (Problem 2): a normalized key, a
+# local path, or None (→ the configured target_repo). Typed loosely so the
+# server.py wrappers can forward ``repo``.
+ResolveTargetRepoId = Callable[..., int | None]
+CurrentHeadCommit = Callable[..., str | None]
 PersistSessionState = Callable[[AppContext], None]
 
 
-def resolve_target_repo_id(app: AppContext, *, log: Any) -> int | None:
+def _repo_root_path(storage: Any, repo_id: int) -> str | None:
+    """Local filesystem path of a repo by id (``repos.root_path``)."""
+    try:
+        row = storage._conn.execute(
+            "SELECT root_path FROM repos WHERE id = ?", (repo_id,)
+        ).fetchone()
+        return row["root_path"] if row else None
+    except Exception:
+        return None
+
+
+def _resolve_repo(
+    app: AppContext, repo: str | None, *, log: Any = None
+) -> tuple[int | None, Path | None]:
+    """Resolve ``repo`` to ``(repo_id, local_path)``.
+
+    ``repo`` may be a normalized key (``github.com/org/name``), a local path,
+    or ``None`` → the server's configured ``target_repo`` (legacy single-repo
+    behaviour). An explicit ``repo`` lets multi-repo callers anchor memory to
+    the repo they're actually reasoning about, instead of always the server's
+    target (Problem 2 in docs/persisting-problems-2026-06-07.md).
+    """
+    log = log or _log
     from .ingest.git_meta import detect as detect_repo
 
-    if app.config.target_repo is None:
-        return None
+    if repo is not None:
+        cand = repo.strip()
+        if not cand:
+            return None, None
+        p = Path(cand).expanduser()
+        if cand.startswith(("/", ".", "~")) or p.exists():
+            # local path → detect its normalized key
+            try:
+                key = detect_repo(p).normalized_key
+            except Exception as exc:
+                log.warning("mcp.memory.detect_repo_failed", repo=cand, error=str(exc))
+                return None, None
+            return app.storage.lookup_repo_id(key), p
+        # otherwise treat as an already-normalized key
+        rid = app.storage.lookup_repo_id(cand)
+        root = _repo_root_path(app.storage, rid) if rid is not None else None
+        return rid, (Path(root) if root else None)
+
+    # default: the configured target repo
+    target = app.config.target_repo
+    if target is None:
+        return None, None
     try:
-        identity = detect_repo(app.config.target_repo)
+        key = detect_repo(target).normalized_key
     except Exception as exc:
         log.warning("mcp.memory.detect_repo_failed", error=str(exc))
-        return None
-    return app.storage.lookup_repo_id(identity.normalized_key)
+        return None, None
+    return app.storage.lookup_repo_id(key), Path(target)
 
 
-def current_head_commit(app: AppContext) -> str | None:
-    if app.config.target_repo is None:
-        return None
+def resolve_target_repo_id(
+    app: AppContext, *, repo: str | None = None, log: Any
+) -> int | None:
+    return _resolve_repo(app, repo, log=log)[0]
+
+
+def current_head_commit(app: AppContext, *, repo: str | None = None) -> str | None:
     from .meta.provenance import current_head_commit as current_head_commit_impl
 
-    return current_head_commit_impl(app.config.target_repo)
+    _, local = _resolve_repo(app, repo)
+    if local is None:
+        return None
+    return current_head_commit_impl(local)
 
 
 def entry_from_record(rec: Any) -> MemoryEntry:
@@ -97,14 +152,16 @@ def remember_impl(
     expires_at: str | None,
     resolve_target_repo_id_fn: ResolveTargetRepoId,
     current_head_commit_fn: CurrentHeadCommit,
+    repo: str | None = None,
 ) -> RememberResponse:
-    repo_id = resolve_target_repo_id_fn(app)
+    repo_id = resolve_target_repo_id_fn(app, repo=repo)
     if repo_id is None:
         return RememberResponse(
             ok=False,
             error=(
-                "no indexed repo for target_repo — run `stropha index` "
-                "first so the memory entry has a repo to anchor against"
+                "no indexed repo for the requested repo (or target_repo) — "
+                "run `stropha index` first so the memory entry has a repo to "
+                "anchor against"
             ),
         )
     rec = app.storage.remember(
@@ -114,7 +171,7 @@ def remember_impl(
         value=value,
         source=app.session_id or None,
         expires_at=expires_at,
-        provenance_commit=current_head_commit_fn(app),
+        provenance_commit=current_head_commit_fn(app, repo=repo),
     )
     return RememberResponse(ok=True, entry=entry_from_record(rec))
 
@@ -127,8 +184,9 @@ def recall_impl(
     limit: int,
     include_expired: bool,
     resolve_target_repo_id_fn: ResolveTargetRepoId,
+    repo: str | None = None,
 ) -> RecallResponse:
-    repo_id = resolve_target_repo_id_fn(app)
+    repo_id = resolve_target_repo_id_fn(app, repo=repo)
     if repo_id is None:
         return RecallResponse(entries=[], repo=None)
     rows = app.storage.recall(
@@ -151,8 +209,9 @@ def forget_impl(
     app: AppContext,
     *,
     resolve_target_repo_id_fn: ResolveTargetRepoId,
+    repo: str | None = None,
 ) -> ForgetResponse:
-    repo_id = resolve_target_repo_id_fn(app)
+    repo_id = resolve_target_repo_id_fn(app, repo=repo)
     if repo_id is None:
         return ForgetResponse(removed=False, kind=kind, key=key)
     removed = app.storage.forget(repo_id=repo_id, kind=kind, key=key)
@@ -247,25 +306,31 @@ def check_staleness_impl(
     *,
     anchor_files: list[str] | None,
     resolve_target_repo_id_fn: ResolveTargetRepoId,
+    repo: str | None = None,
 ) -> StalenessResponse:
     from .meta.provenance import staleness_signal
 
-    repo_id = resolve_target_repo_id_fn(app)
+    repo_id = resolve_target_repo_id_fn(app, repo=repo)
     if repo_id is None:
-        return StalenessResponse(found=False, reason="no indexed repo for target_repo")
+        return StalenessResponse(found=False, reason="no indexed repo (target or repo arg)")
     rows = app.storage.recall(repo_id=repo_id, kind=kind, key=key, limit=1)
     if not rows:
         return StalenessResponse(found=False, reason="entry not found")
     entry = rows[0]
-    if app.config.target_repo is None:
+    # Diff the entry's OWN repo tree (resolved from its repo_id), NOT
+    # app.config.target_repo. In a multi-repo index a mimoria memory must be
+    # diffed against the mimoria tree + its commit, else the changed-file
+    # intersection can never match (Problem 2).
+    local = _repo_root_path(app.storage, repo_id)
+    if not local:
         return StalenessResponse(
             found=True,
             stale=None,
             since_commit=entry.provenance_commit,
-            reason="no target_repo configured",
+            reason="repo local path unknown; cannot diff",
         )
     signal = staleness_signal(
-        app.config.target_repo,
+        Path(local),
         since_commit=entry.provenance_commit,
         anchor_files=anchor_files,
     )
@@ -316,14 +381,16 @@ def record_episode_impl(
     *,
     resolve_target_repo_id_fn: ResolveTargetRepoId,
     current_head_commit_fn: CurrentHeadCommit,
+    repo: str | None = None,
 ) -> RecordEpisodeResponse:
-    repo_id = resolve_target_repo_id_fn(app)
+    repo_id = resolve_target_repo_id_fn(app, repo=repo)
     if repo_id is None:
         return RecordEpisodeResponse(
             ok=False,
             error=(
-                "no indexed repo for target_repo — run `stropha index` "
-                "first so the episode has a repo to anchor against"
+                "no indexed repo for the requested repo (or target_repo) — "
+                "run `stropha index` first so the episode has a repo to "
+                "anchor against"
             ),
         )
     rec = app.storage.record_episode(
@@ -333,7 +400,7 @@ def record_episode_impl(
         summary=summary,
         touched_files=touched_files or [],
         touched_symbols=touched_symbols or [],
-        provenance_commit=current_head_commit_fn(app),
+        provenance_commit=current_head_commit_fn(app, repo=repo),
     )
     return RecordEpisodeResponse(ok=True, entry=episode_to_entry(rec))
 
@@ -345,8 +412,9 @@ def recall_episodes_impl(
     limit: int,
     since: str | None,
     resolve_target_repo_id_fn: ResolveTargetRepoId,
+    repo: str | None = None,
 ) -> RecallEpisodesResponse:
-    repo_id = resolve_target_repo_id_fn(app)
+    repo_id = resolve_target_repo_id_fn(app, repo=repo)
     if repo_id is None:
         return RecallEpisodesResponse(entries=[], repo=None)
     rows = app.storage.recall_episodes(
@@ -370,8 +438,9 @@ def co_occurrence_impl(
     in_files: bool,
     in_symbols: bool,
     resolve_target_repo_id_fn: ResolveTargetRepoId,
+    repo: str | None = None,
 ) -> CoOccurrenceResponse:
-    repo_id = resolve_target_repo_id_fn(app)
+    repo_id = resolve_target_repo_id_fn(app, repo=repo)
     if repo_id is None:
         return CoOccurrenceResponse(key=key, files={}, symbols={}, repo=None)
     result = app.storage.episode_co_occurrence(

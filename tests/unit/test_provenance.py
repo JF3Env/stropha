@@ -446,11 +446,18 @@ class TestMCPCheckStaleness:
     ) -> None:
         from stropha.server import check_staleness
 
-        s, repo_id = storage_with_repo
-        # Init a real git repo for the staleness check.
+        s, _ = storage_with_repo
+        # Init a real git repo and register it as the entry's OWN repo:
+        # staleness must diff the entry's repo tree, not target_repo.
         repo = tmp_path / "r"
         repo.mkdir()
         sha = _init_git_repo(repo)
+        repo_id = s.register_repo(
+            RepoIdentity(
+                normalized_key="fresh", remote_url=None, root_path=repo,
+                default_branch=None, head_commit=None,
+            )
+        )
         s.remember(
             repo_id=repo_id, kind="fact", key="x", value="y",
             provenance_commit=sha,
@@ -465,9 +472,11 @@ class TestMCPCheckStaleness:
         assert result.since_commit == sha
         assert result.current_commit == sha
 
-    def test_no_target_repo_returns_unknown(
+    def test_repo_path_unknown_returns_unknown(
         self, tmp_path: Path, storage_with_repo,
     ) -> None:
+        """When the entry's repo has no resolvable local path, staleness is
+        unknown (can't diff). target_repo is irrelevant now (Problem 2)."""
         from stropha.server import check_staleness
 
         s, repo_id = storage_with_repo
@@ -475,20 +484,20 @@ class TestMCPCheckStaleness:
             repo_id=repo_id, kind="fact", key="x", value="y",
             provenance_commit="abc123",
         )
-        ctx = MagicMock()
-        app = MagicMock()
-        app.config = MagicMock()
-        app.config.target_repo = None  # ← key
-        app.session_id = "sess"
-        app.storage = s
-        ctx.request_context.lifespan_context = app
-        with patch(
-            "stropha.server._resolve_target_repo_id", return_value=repo_id
+        ctx = _make_ctx(s, tmp_path)
+        with (
+            patch(
+                "stropha.server._resolve_target_repo_id", return_value=repo_id
+            ),
+            patch(
+                "stropha.server_memory_tools._repo_root_path", return_value=None
+            ),
         ):
             result = check_staleness("fact", "x", ctx=ctx)
         assert result.found is True
         assert result.stale is None
-        assert "target_repo" in (result.reason or "")
+        assert "local path unknown" in (result.reason or "")
+        assert result.since_commit == "abc123"
 
     def test_unindexed_repo_returns_found_false(
         self, tmp_path: Path,
