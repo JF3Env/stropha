@@ -1366,6 +1366,14 @@ class AssembleContextResponse(BaseModel):
     """One-shot context bundle ready for the agent to paste."""
 
     task: str
+    trace_id: str | None = Field(
+        default=None,
+        description=(
+            "Trace id for this call (WIN-160). Pass it to report_bad_result to "
+            "flag a weak/duplicate bundle — auto-stamped by @traced; matches the "
+            "JSONL trace record."
+        ),
+    )
     bundle: str = Field(
         description=(
             "Markdown-formatted context bundle: file:line:symbol headers + "

@@ -24,6 +24,26 @@ class _Hit:
         self.snippet = snippet
 
 
+class _Repo:
+    def __init__(self, local_path: str) -> None:
+        self.local_path = local_path
+
+
+class _SrcHit:
+    """Hit that carries enough to read the real source slice from disk."""
+
+    def __init__(
+        self, *, snippet: str, rel_path: str, start_line: int, end_line: int,
+        local_path: str, kind: str = "class",
+    ) -> None:
+        self.snippet = snippet
+        self.rel_path = rel_path
+        self.start_line = start_line
+        self.end_line = end_line
+        self.kind = kind
+        self.repo = _Repo(local_path)
+
+
 # ---------------------------------------------------------------------------
 # Dataclass surface
 # ---------------------------------------------------------------------------
@@ -160,8 +180,9 @@ class TestAssertFreshness:
         )
         assert verdict.fresh is True
 
-    def test_missing_snippet_attribute_treated_as_empty(self) -> None:
-        """Hit object without a ``snippet`` attribute defaults to ''."""
+    def test_missing_snippet_and_no_source_is_undetermined(self) -> None:
+        """Hit with neither a snippet nor readable source → fresh=None
+        (undetermined), not a misleading False."""
         class _Bare:
             pass
 
@@ -169,8 +190,56 @@ class TestAssertFreshness:
             "c1", "expected",
             lookup_fn=lambda _: _Bare(),
         )
-        assert verdict.fresh is False
-        assert verdict.current_snippet == ""
+        assert verdict.fresh is None
+        assert "no source or stored snippet" in verdict.reason
+
+    def test_container_card_fresh_when_source_unchanged(self, tmp_path) -> None:
+        """The Problem-3 case: a class chunk's stored snippet is an outline
+        card, but the agent cached the real SOURCE. With the file unchanged on
+        disk, freshness verifies against source → fresh=True (was false drift)."""
+        f = tmp_path / "T.java"
+        f.write_text("class T {\n  int a;\n  int b;\n}\n", encoding="utf-8")
+        hit = _SrcHit(
+            snippet="class T / Members: a, b",  # the misleading card
+            rel_path="T.java", start_line=1, end_line=4,
+            local_path=str(tmp_path), kind="class",
+        )
+        v = assert_snippet_freshness(
+            "c1", "class T {\n  int a;\n  int b;\n}", lookup_fn=lambda _: hit,
+        )
+        assert v.fresh is True
+        assert (v.current_snippet or "").startswith("class T {")  # source, not the card
+
+    def test_source_drift_detected(self, tmp_path) -> None:
+        f = tmp_path / "T.java"
+        f.write_text("class T {\n  int a;\n  int c;\n}\n", encoding="utf-8")  # b -> c
+        hit = _SrcHit(
+            snippet="class T / Members: a, b",
+            rel_path="T.java", start_line=1, end_line=4,
+            local_path=str(tmp_path), kind="class",
+        )
+        v = assert_snippet_freshness(
+            "c1", "class T {\n  int a;\n  int b;\n}", lookup_fn=lambda _: hit,
+        )
+        assert v.fresh is False
+        assert "drifted" in v.reason
+
+    def test_cached_card_still_matches_card_without_source(self) -> None:
+        """When the agent cached the card itself and no source is available,
+        the card still matches → fresh=True (no false drift)."""
+        hit = _Hit("class T / Members: a, b")
+        v = assert_snippet_freshness(
+            "c1", "class T / Members: a, b", lookup_fn=lambda _: hit,
+        )
+        assert v.fresh is True
+
+    def test_subspan_containment_is_fresh(self) -> None:
+        """A cached sub-span of a larger chunk body is fresh (containment)."""
+        hit = _Hit("def foo():\n    x = 1\n    return x")
+        v = assert_snippet_freshness(
+            "c1", "x = 1", lookup_fn=lambda _: hit,
+        )
+        assert v.fresh is True
 
 
 # ---------------------------------------------------------------------------

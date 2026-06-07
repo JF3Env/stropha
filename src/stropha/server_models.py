@@ -209,6 +209,10 @@ class ExpandChunkResponse(BaseModel):
         default=None,
         description="The resolved chunk as a SearchResult, or null when missing.",
     )
+    trace_id: str | None = Field(
+        default=None,
+        description="Trace id (WIN-160); pass to report_bad_result. Auto-stamped by @traced.",
+    )
 
 
 class ExpandChunksResponse(BaseModel):
@@ -217,6 +221,10 @@ class ExpandChunksResponse(BaseModel):
     results: list[ExpandChunkResponse]
     found_count: int = Field(description="How many chunk_ids resolved successfully.")
     missing_count: int = Field(description="How many chunk_ids could not be resolved.")
+    trace_id: str | None = Field(
+        default=None,
+        description="Trace id (WIN-160); pass to report_bad_result. Auto-stamped by @traced.",
+    )
 
 
 class MemoryEntry(BaseModel):
