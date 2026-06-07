@@ -8,9 +8,12 @@
 # (reranker / hyde / recursive / candidate_k / k) reuse that index for free.
 # So cost ≈ (#indexing combos) × (one re-embed); query combos are cheap.
 #
-# This default = embedder(2) × enricher(3) = 6 indexes, swept by
-# reranker(3) × hyde(2) × recursive(2) = 12 query variants → 72 cells.
-# Trim axes for a quick run; add values / axes for a multi-day sweep.
+# This default = embedder(4) × enricher(3) = 12 indexes, swept by
+# reranker(3) × hyde(2) × recursive(2) = 12 query variants → 144 cells.
+# The embedder axis sweeps Voyage's Matryoshka dims (256→2048) end-to-end:
+# the API bills per token, not per dim, so the dim sweep is ~free beyond the
+# 4 re-embeds. Trim axes for a quick run; uncomment the "go deeper" axes
+# below for a multi-day sweep.
 
 repo: .
 golden: tests/eval/golden.jsonl
@@ -19,18 +22,27 @@ top_k: 10
 axes:
   # --- indexing axes (drive re-embedding) ---
   embedder:
-    - {adapter: voyage, dim: 512}      # needs VOYAGE_API_KEY; costs $ per index
+    # voyage-4-large emits Matryoshka vectors truncated to `dim`; sweeping
+    # the dim is the headline quality/footprint tradeoff. Needs VOYAGE_API_KEY.
+    - {adapter: voyage, dim: 256}
+    - {adapter: voyage, dim: 512}
     - {adapter: voyage, dim: 1024}
-    # - {adapter: mlx}                  # local, free, slower; 1024-dim
-    # - {adapter: model2vec}            # local, deterministic, 256-dim, fastest
+    - {adapter: voyage, dim: 2048}
+    # - {adapter: model2vec}           # local, deterministic, 256-dim, fastest
+    # - {adapter: mlx}                 # local, free, slower; heavy on RAM
   enricher: [noop, hierarchical, contextual]   # contextual needs an LLM backend
+  # graph-aware enricher is intentionally omitted: bench builds indexes with
+  # graphify OFF (hermetic), so it would have no graph to read.
 
-  # --- query-time axes (reuse each index) ---
+  # --- query-time axes (reuse each index, ~free) ---
   reranker: [null, code-aware, cross-encoder]
   hyde: [false, true]
   recursive: [false, true]
-  # candidate_k: [20, 50, 100]
-  # k: [40, 60, 100]
+
+  # --- go deeper (uncomment; all query-time = cheap, no re-embed) ---
+  # candidate_k: [50, 100]             # candidate pool depth (matters w/ reranker)
+  # adaptive_weighting: [false, true]  # per-query stream-weight interpolation
+  # k: [40, 60, 100]                   # RRF fusion depth
 
 # Diff every cell against this one (paired bootstrap CI in the report).
 baseline:
@@ -42,5 +54,5 @@ baseline:
 
 # Optional: skip uninteresting / invalid combos.
 # constraints:
-#   - skip_when: {embedder: {adapter: voyage, dim: 1024}, enricher: contextual}
+#   - skip_when: {embedder: {adapter: voyage, dim: 2048}, enricher: contextual}
 constraints: []
