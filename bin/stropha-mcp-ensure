@@ -7,6 +7,16 @@
 #   bin/stropha-mcp-ensure          # start if not running
 #   bin/stropha-mcp-ensure --stop   # stop the running server
 #   bin/stropha-mcp-ensure --status # check if running
+#
+# Local Postgres (pgvector) is provisioned AUTOMATICALLY when the stropha
+# config (~/.stropha/config.yaml) selects the `postgres` storage adapter — the
+# default for this install — so `bin/stropha-mcp-ensure` alone brings up both
+# the database and the MCP server. Overrides:
+#   STROPHA_USE_POSTGRES=0 bin/stropha-mcp-ensure   # force-skip Postgres
+#   STROPHA_USE_POSTGRES=1 bin/stropha-mcp-ensure   # force-on regardless of config
+# Connection params (port/user/password/db) are read from the config `dsn:` so
+# the container always matches what stropha connects to; STROPHA_PG_* override.
+# Data persists in a named Docker volume across restarts.
 
 set -e
 
@@ -14,6 +24,54 @@ PORT="${STROPHA_MCP_PORT:-9741}"
 HOST="${STROPHA_MCP_HOST:-127.0.0.1}"
 PIDFILE="${HOME}/.cache/stropha/mcp-server.pid"
 LOGFILE="${HOME}/.cache/stropha/mcp-server.log"
+
+# --- Postgres (pgvector) bring-up --------------------------------------------
+# Default behavior: bring up Postgres whenever the stropha config selects the
+# `postgres` storage adapter. STROPHA_USE_POSTGRES forces on/off. Managed as a
+# Docker container (no system Postgres install); data lives in a named volume.
+STROPHA_CONFIG_FILE="${STROPHA_CONFIG_FILE:-${HOME}/.stropha/config.yaml}"
+
+_config_selects_postgres() {
+    [ -f "$STROPHA_CONFIG_FILE" ] || return 1
+    grep -Eq '^[[:space:]]*adapter:[[:space:]]*postgres([[:space:]]|$)' "$STROPHA_CONFIG_FILE"
+}
+
+case "${STROPHA_USE_POSTGRES:-auto}" in
+    1|true|yes|on)  USE_POSTGRES=1 ;;
+    0|false|no|off) USE_POSTGRES=0 ;;
+    *)              if _config_selects_postgres; then USE_POSTGRES=1; else USE_POSTGRES=0; fi ;;
+esac
+
+# Connection defaults (the local container). Overridden by the config `dsn:`
+# so the container always matches what stropha connects to.
+PG_PORT_CFG="54329"; PG_USER_CFG="stropha"; PG_PASSWORD_CFG="stropha"; PG_DB_CFG="stropha"
+if [ "$USE_POSTGRES" = "1" ] && [ -f "$STROPHA_CONFIG_FILE" ]; then
+    _dsn=$(grep -E '^[[:space:]]*dsn:[[:space:]]*' "$STROPHA_CONFIG_FILE" | head -1 \
+        | sed -E "s/^[[:space:]]*dsn:[[:space:]]*//; s/[\"']//g; s/[[:space:]]*\$//")
+    case "$_dsn" in
+        postgres://*|postgresql://*)
+            _rest=${_dsn#*://}                 # user:pass@host:port/db?params
+            _userpass=${_rest%%@*}
+            _hostportdb=${_rest#*@}
+            case "$_userpass" in
+                *:*) PG_USER_CFG=${_userpass%%:*}; PG_PASSWORD_CFG=${_userpass#*:} ;;
+                *)   [ -n "$_userpass" ] && PG_USER_CFG=${_userpass} ;;
+            esac
+            _hostport=${_hostportdb%%/*}
+            _db=${_hostportdb#*/}; _db=${_db%%\?*}
+            [ -n "$_db" ] && PG_DB_CFG="$_db"
+            case "$_hostport" in *:*) PG_PORT_CFG=${_hostport##*:} ;; esac
+            ;;
+    esac
+fi
+
+PG_CONTAINER="${STROPHA_PG_CONTAINER:-stropha-pg}"
+PG_IMAGE="${STROPHA_PG_IMAGE:-pgvector/pgvector:pg17}"
+PG_PORT="${STROPHA_PG_PORT:-$PG_PORT_CFG}"
+PG_USER="${STROPHA_PG_USER:-$PG_USER_CFG}"
+PG_PASSWORD="${STROPHA_PG_PASSWORD:-$PG_PASSWORD_CFG}"
+PG_DB="${STROPHA_PG_DB:-$PG_DB_CFG}"
+PG_VOLUME="${STROPHA_PG_VOLUME:-stropha-pgdata}"
 
 # Auto-detect the stropha project dir from the script's location: this
 # script lives at <project>/bin/stropha-mcp-ensure, so the project root
@@ -31,7 +89,95 @@ _is_running() {
     curl -sf "http://${HOST}:${PORT}/health" >/dev/null 2>&1
 }
 
+# --- Postgres helpers --------------------------------------------------------
+# Each is a no-op unless STROPHA_USE_POSTGRES=1, and each fails soft (never
+# aborts the MCP lifecycle) since the DB is not yet on the read path.
+
+_pg_container_running() {
+    docker ps --filter "name=^/${PG_CONTAINER}$" --filter "status=running" \
+        --format '{{.Names}}' 2>/dev/null | grep -q "^${PG_CONTAINER}$"
+}
+
+_pg_container_exists() {
+    docker ps -a --filter "name=^/${PG_CONTAINER}$" \
+        --format '{{.Names}}' 2>/dev/null | grep -q "^${PG_CONTAINER}$"
+}
+
+_pg_start() {
+    [ "$USE_POSTGRES" = "1" ] || return 0
+
+    if ! command -v docker >/dev/null 2>&1; then
+        echo "[stropha-pg] STROPHA_USE_POSTGRES=1 but 'docker' not found; skipping" >&2
+        return 0
+    fi
+
+    if _pg_container_running; then
+        echo "[stropha-pg] already running (container ${PG_CONTAINER}, port ${PG_PORT})"
+    elif _pg_container_exists; then
+        echo "[stropha-pg] starting existing container ${PG_CONTAINER}..."
+        docker start "$PG_CONTAINER" >/dev/null \
+            || { echo "[stropha-pg] failed to start container ${PG_CONTAINER}" >&2; return 0; }
+    else
+        echo "[stropha-pg] creating container ${PG_CONTAINER} from ${PG_IMAGE}..."
+        docker run -d \
+            --name "$PG_CONTAINER" \
+            -e POSTGRES_USER="$PG_USER" \
+            -e POSTGRES_PASSWORD="$PG_PASSWORD" \
+            -e POSTGRES_DB="$PG_DB" \
+            -p "${PG_PORT}:5432" \
+            -v "${PG_VOLUME}:/var/lib/postgresql/data" \
+            "$PG_IMAGE" >/dev/null \
+            || { echo "[stropha-pg] 'docker run' failed (is the image pullable?)" >&2; return 0; }
+    fi
+
+    # Wait for readiness (up to 30s), then ensure the pgvector extension.
+    i=0
+    while [ "$i" -lt 30 ]; do
+        if docker exec "$PG_CONTAINER" pg_isready -U "$PG_USER" -d "$PG_DB" >/dev/null 2>&1; then
+            if docker exec "$PG_CONTAINER" psql -U "$PG_USER" -d "$PG_DB" \
+                -c 'CREATE EXTENSION IF NOT EXISTS vector;' >/dev/null 2>&1; then
+                echo "[stropha-pg] ready — postgresql://${PG_USER}:***@${HOST}:${PG_PORT}/${PG_DB} (pgvector enabled)"
+            else
+                echo "[stropha-pg] ready, but failed to CREATE EXTENSION vector" >&2
+            fi
+            return 0
+        fi
+        i=$((i + 1))
+        sleep 1
+    done
+    echo "[stropha-pg] warning: not ready after 30s — check 'docker logs ${PG_CONTAINER}'" >&2
+    return 0
+}
+
+_pg_stop() {
+    [ "$USE_POSTGRES" = "1" ] || return 0
+    command -v docker >/dev/null 2>&1 || return 0
+    if _pg_container_running; then
+        docker stop "$PG_CONTAINER" >/dev/null 2>&1 \
+            && echo "[stropha-pg] stopped (container ${PG_CONTAINER}; data kept in volume ${PG_VOLUME})"
+    else
+        echo "[stropha-pg] not running"
+    fi
+}
+
+_pg_status() {
+    [ "$USE_POSTGRES" = "1" ] || return 0
+    if ! command -v docker >/dev/null 2>&1; then
+        echo "[stropha-pg] docker not found"
+        return 0
+    fi
+    if _pg_container_running; then
+        echo "[stropha-pg] running (container ${PG_CONTAINER}, port ${PG_PORT})"
+    else
+        echo "[stropha-pg] not running"
+    fi
+}
+
 _start() {
+    # Bring up Postgres first (no-op unless STROPHA_USE_POSTGRES=1) so it is
+    # ready even when the MCP server is already up.
+    _pg_start
+
     if _is_running; then
         echo "[stropha-mcp] already running (pid $(cat "$PIDFILE"), port $PORT)"
         return 0
@@ -80,19 +226,21 @@ _start() {
 }
 
 _stop() {
-    if [ ! -f "$PIDFILE" ]; then
+    if [ -f "$PIDFILE" ]; then
+        PID=$(cat "$PIDFILE")
+        if kill -0 "$PID" 2>/dev/null; then
+            kill "$PID"
+            echo "[stropha-mcp] stopped (pid $PID)"
+        fi
+        rm -f "$PIDFILE"
+    else
         echo "[stropha-mcp] not running"
-        return 0
     fi
-    PID=$(cat "$PIDFILE")
-    if kill -0 "$PID" 2>/dev/null; then
-        kill "$PID"
-        echo "[stropha-mcp] stopped (pid $PID)"
-    fi
-    rm -f "$PIDFILE"
+    _pg_stop
 }
 
 _status() {
+    _pg_status
     if _is_running; then
         echo "[stropha-mcp] running (pid $(cat "$PIDFILE"), port $PORT)"
     else
