@@ -43,8 +43,8 @@ class TestIsolation:
             cfg = pipeline_config_from_dict({})
         finally:
             os.chdir(old_cwd)
-        # Default enricher is 'noop', not the 'contextual' the project YAML asks for.
-        assert cfg["enricher"]["adapter"] == "noop"
+        # Default enricher is 'hierarchical', not the 'contextual' the project YAML asks for.
+        assert cfg["enricher"]["adapter"] == "hierarchical"
 
     def test_ignores_voyage_api_key_env(
         self, monkeypatch: pytest.MonkeyPatch
@@ -67,8 +67,8 @@ class TestOverridesApplied:
         cfg = pipeline_config_from_dict({
             "enricher": {"config": {"flag": True}},
         })
-        # enricher.adapter wasn't set so it stays default ('noop').
-        assert cfg["enricher"]["adapter"] == "noop"
+        # enricher.adapter wasn't set so it stays default ('hierarchical').
+        assert cfg["enricher"]["adapter"] == "hierarchical"
         assert cfg["enricher"]["config"] == {"flag": True}
 
     def test_storage_path_materialised_by_default(self) -> None:
@@ -90,7 +90,7 @@ class TestOverridesApplied:
         # The full default skeleton is materialised even without overrides.
         assert cfg["walker"]["adapter"] == "git-ls-files"
         assert cfg["chunker"]["adapter"] == "tree-sitter-dispatch"
-        assert cfg["enricher"]["adapter"] == "noop"
+        assert cfg["enricher"]["adapter"] == "hierarchical"
         assert cfg["embedder"]["adapter"] == "local"
         assert cfg["storage"]["adapter"] == "sqlite-vec"
         assert cfg["retrieval"]["adapter"] == "hybrid-rrf"

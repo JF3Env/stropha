@@ -31,7 +31,13 @@ log = get_logger(__name__)
 _DEFAULTS: dict[str, dict[str, Any]] = {
     "walker": {"adapter": "git-ls-files", "config": {}},
     "chunker": {"adapter": "tree-sitter-dispatch", "config": {}},
-    "enricher": {"adapter": "noop", "config": {}},
+    # `hierarchical` prepends a ~30-token parent skeleton (e.g.
+    # `# in class Foo (path:line)`) before embedding. Deterministic, no LLM.
+    # Measured on the golden set: consistent ranking gain with zero
+    # regressions (voyage Δmrr +0.021 / Δmap +0.052; mlx Δmrr +0.075, P=1.0).
+    # NOTE: only effective with the parent_chunk_id repo-key fix; switching
+    # from `noop` changes enricher_id, so the next `index` re-embeds all chunks.
+    "enricher": {"adapter": "hierarchical", "config": {}},
     "embedder": {"adapter": None, "config": {}},  # `None` => auto (voyage if key, else local)
     "storage": {"adapter": "sqlite-vec", "config": {}},
     "retrieval": {

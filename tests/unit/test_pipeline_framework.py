@@ -115,7 +115,7 @@ def test_stage_health_ready() -> None:
 def test_config_defaults_pick_local_when_no_voyage_key(tmp_path) -> None:
     cfg = load_pipeline_config(project_root=tmp_path)
     assert cfg["embedder"]["adapter"] == "local"
-    assert cfg["enricher"]["adapter"] == "noop"
+    assert cfg["enricher"]["adapter"] == "hierarchical"
 
 
 def test_config_picks_voyage_when_api_key_set(tmp_path, monkeypatch) -> None:

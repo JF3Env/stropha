@@ -224,7 +224,7 @@ def test_builder_assembles_full_pipeline(tmp_path: Path) -> None:
     # Skip storage open to avoid loading fastembed in this assertion-focused test.
     built = build_stages(resolved, open_storage=False)
     assert built.walker.adapter_name == "git-ls-files"
-    assert built.enricher.adapter_name == "noop"
+    assert built.enricher.adapter_name == "hierarchical"
     # embedder is built (loads ONNX) — that's OK for a single shot.
     assert built.embedder.adapter_name in ("local", "voyage")
     assert built.storage is None
