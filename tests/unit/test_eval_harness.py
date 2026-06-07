@@ -174,7 +174,7 @@ def test_shipped_golden_file_parses() -> None:
     if not p.is_file():
         pytest.skip("golden file not present")
     cases = load_golden(p)
-    assert len(cases) >= 20  # we ship ~30
+    assert len(cases) >= 20  # we ship ~50
     # Every case has at least one expected_paths or expected_symbols entry
     for c in cases:
         assert c.expected_paths or c.expected_symbols, f"case {c.id} has no expectations"
