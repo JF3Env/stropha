@@ -37,14 +37,26 @@ _DEFAULTS: dict[str, dict[str, Any]] = {
     "retrieval": {
         "adapter": "hybrid-rrf",
         "config": {
-            # WIN-296: cross-encoder reranker is default. Benchmark shows +26.7%
-            # Recall@10 (0.50 → 0.63) over noop, with ~1.4s added latency per
-            # query. Model is local ONNX (~1GB, downloaded on first use). Set
-            # reranker: null in ~/.stropha/config.yaml to disable.
-            "reranker": {
-                "adapter": "cross-encoder",
-                "config": {"model": "BAAI/bge-reranker-base"},
-            },
+            # Reranking is OFF by default.
+            #
+            # WIN-296 made the cross-encoder (bge-reranker-base) the default on
+            # a +26.7% Recall@10 win (0.50 -> 0.63). That win held when
+            # first-stage recall was weak (~0.50). With the current setup
+            # first-stage recall@10 is ~0.80-0.87, and re-measuring on the
+            # golden set across three embedders (voyage / mlx / model2vec,
+            # HyDE off, deterministic) shows the cross-encoder now HURTS code
+            # retrieval — it drops recall@10 by 0.13-0.20 and roughly halves
+            # MRR by demoting exact code matches (it is NL-trained). The
+            # `code-aware` heuristic reranker is less harmful but still trailed
+            # no-reranker on every metric on the voyage embedder. So the
+            # net-best default is no reranker.
+            #
+            # Re-enable per-repo in ~/.stropha/config.yaml, e.g.:
+            #   pipeline.retrieval.config.reranker:
+            #     adapter: code-aware        # or: cross-encoder
+            # (the adapters are unchanged; only the default is flipped). Also
+            # adds ~1.4s/query latency for the cross-encoder.
+            "reranker": None,
             "candidate_k": 50,
         },
     },
