@@ -105,6 +105,13 @@ model2vec = [
     "model2vec>=0.3",
 ]
 
+# PostgreSQL + pgvector storage backend (MVCC: concurrent index + serve).
+# Pair with a running Postgres that has the `vector` extension — e.g.
+# `STROPHA_USE_POSTGRES=1 bin/stropha-mcp-ensure` brings one up via Docker.
+postgres = [
+    "psycopg[binary]>=3.2",
+]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
