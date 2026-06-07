@@ -77,21 +77,41 @@ class Chunker:
                     error=str(exc),
                 )
                 emitted = self._fallback.chunk(sf, content)
-            for chunk in emitted:
-                yield self._with_repo_key(chunk, repo_key)
+            yield from self._apply_repo_key(list(emitted), repo_key)
 
     @staticmethod
-    def _with_repo_key(chunk: Chunk, repo_key: str | None) -> Chunk:
-        """Re-derive chunk_id with repo discriminator (no-op when repo_key is None)."""
+    def _apply_repo_key(
+        emitted: list[Chunk], repo_key: str | None
+    ) -> Iterator[Chunk]:
+        """Namespace a file's chunks with ``repo_key``, rewriting BOTH
+        ``chunk_id`` and ``parent_chunk_id``.
+
+        Sub-chunkers build ``parent_chunk_id`` from the un-namespaced
+        ``make_chunk_id``. Rewriting only ``chunk_id`` (the old behaviour)
+        left every child's ``parent_chunk_id`` dangling, silently disabling
+        the hierarchical enricher and recursive-merge parent promotion.
+        Parents live in the same file, so the per-file id map is complete.
+        """
         if not repo_key:
-            return chunk
-        new_id = make_chunk_id(
-            chunk.rel_path,
-            chunk.start_line,
-            chunk.end_line,
-            chunk.content_hash,
-            repo_key=repo_key,
-        )
-        if new_id == chunk.chunk_id:
-            return chunk
-        return chunk.model_copy(update={"chunk_id": new_id})
+            yield from emitted
+            return
+        id_map: dict[str, str] = {
+            c.chunk_id: make_chunk_id(
+                c.rel_path, c.start_line, c.end_line, c.content_hash,
+                repo_key=repo_key,
+            )
+            for c in emitted
+        }
+        for c in emitted:
+            new_id = id_map[c.chunk_id]
+            new_parent = (
+                id_map.get(c.parent_chunk_id, c.parent_chunk_id)
+                if c.parent_chunk_id
+                else None
+            )
+            if new_id == c.chunk_id and new_parent == c.parent_chunk_id:
+                yield c
+            else:
+                yield c.model_copy(
+                    update={"chunk_id": new_id, "parent_chunk_id": new_parent}
+                )

@@ -201,3 +201,43 @@ def test_dispatcher_unreadable_file_raises_chunker_error(tmp_path: Path) -> None
     chunker = TreeSitterDispatchChunker()
     with pytest.raises(ChunkerError):
         list(chunker.chunk([sf]))
+
+
+# ---------------------------------------------------------------------------
+# Parent linkage under repo-key namespacing
+#
+# Regression: ``_with_repo_key`` rewrote ``chunk_id`` with the repo_key prefix
+# but left ``parent_chunk_id`` pointing at the pre-namespacing id, so every
+# child's parent was dangling. That silently turned the hierarchical enricher
+# (``ctx.parent_chunk`` always None) and recursive-merge parent promotion into
+# no-ops whenever a repo_key was set — i.e. in all real indexing.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("repo_key", [None, "github.com/acme/widget"])
+def test_parent_chunk_id_resolves(py_file: SourceFile, repo_key: str | None) -> None:
+    chunks = list(TreeSitterDispatchChunker().chunk([py_file], repo_key=repo_key))
+    ids = {c.chunk_id for c in chunks}
+    parented = [c for c in chunks if c.parent_chunk_id]
+    # Greeter's methods carry a parent — otherwise the assertion is vacuous.
+    assert parented, "expected at least one chunk with a parent_chunk_id"
+    dangling = [c for c in parented if c.parent_chunk_id not in ids]
+    assert not dangling, (
+        f"{len(dangling)} chunk(s) have a dangling parent_chunk_id "
+        f"(repo_key={repo_key!r}): "
+        f"{[(c.symbol, c.parent_chunk_id) for c in dangling]}"
+    )
+
+
+def test_parent_chunk_id_points_at_enclosing_class_with_repo_key(
+    py_file: SourceFile,
+) -> None:
+    chunks = list(
+        TreeSitterDispatchChunker().chunk([py_file], repo_key="github.com/acme/widget")
+    )
+    by_id = {c.chunk_id: c for c in chunks}
+    methods = [c for c in chunks if c.symbol and c.symbol.startswith("Greeter.")]
+    assert methods, "expected Greeter.* method chunks"
+    for m in methods:
+        assert m.parent_chunk_id in by_id, f"{m.symbol} has a dangling parent"
+        assert by_id[m.parent_chunk_id].symbol == "Greeter"

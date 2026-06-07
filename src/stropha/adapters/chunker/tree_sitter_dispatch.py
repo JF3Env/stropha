@@ -150,8 +150,7 @@ class TreeSitterDispatchChunker:
                 if fallback is None:
                     continue
                 emitted = list(fallback.chunk(sf, content))
-            for chunk in emitted:
-                yield self._with_repo_key(chunk, repo_key)
+            yield from self._apply_repo_key(emitted, repo_key)
 
     # ----- helpers --------------------------------------------------------
 
@@ -186,16 +185,41 @@ class TreeSitterDispatchChunker:
         return out
 
     @staticmethod
-    def _with_repo_key(chunk: Chunk, repo_key: str | None) -> Chunk:
+    def _apply_repo_key(
+        emitted: list[Chunk], repo_key: str | None
+    ) -> Iterator[Chunk]:
+        """Namespace a file's chunks with ``repo_key``, rewriting BOTH
+        ``chunk_id`` and ``parent_chunk_id`` consistently.
+
+        Sub-adapters build ``parent_chunk_id`` from the *un-namespaced*
+        ``make_chunk_id`` (no ``repo_key``). If we only rewrite ``chunk_id``
+        (as the old per-chunk path did), every child's ``parent_chunk_id``
+        is left pointing at the pre-namespacing id and never resolves to a
+        real ``chunk_id`` — silently breaking the hierarchical enricher
+        (``ctx.parent_chunk`` is always ``None``) and recursive-merge parent
+        promotion. Parents always live in the same file, so the per-file
+        ``old_id -> new_id`` map below is complete.
+        """
         if not repo_key:
-            return chunk
-        new_id = make_chunk_id(
-            chunk.rel_path,
-            chunk.start_line,
-            chunk.end_line,
-            chunk.content_hash,
-            repo_key=repo_key,
-        )
-        if new_id == chunk.chunk_id:
-            return chunk
-        return chunk.model_copy(update={"chunk_id": new_id})
+            yield from emitted
+            return
+        id_map: dict[str, str] = {
+            c.chunk_id: make_chunk_id(
+                c.rel_path, c.start_line, c.end_line, c.content_hash,
+                repo_key=repo_key,
+            )
+            for c in emitted
+        }
+        for c in emitted:
+            new_id = id_map[c.chunk_id]
+            new_parent = (
+                id_map.get(c.parent_chunk_id, c.parent_chunk_id)
+                if c.parent_chunk_id
+                else None
+            )
+            if new_id == c.chunk_id and new_parent == c.parent_chunk_id:
+                yield c
+            else:
+                yield c.model_copy(
+                    update={"chunk_id": new_id, "parent_chunk_id": new_parent}
+                )
