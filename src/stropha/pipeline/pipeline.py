@@ -294,14 +294,21 @@ class Pipeline:
         # mirror.  This makes ``stropha index`` a self-contained entry point:
         # even on first run, the graph tools will have structural data.
         # Gracefully skipped when the graphify binary is not installed.
-        if self._graphify:
+        # The graphify mirror writes to the backend's graph tables. A storage
+        # backend that does not implement the graph subsystem can advertise
+        # ``graph_capable = False`` to skip the mirror so indexing still
+        # succeeds (graph-gated MCP tools then report no graph). Both shipped
+        # backends (sqlite-vec, postgres) support it; this is a framework hook.
+        graph_capable = getattr(self._storage, "graph_capable", True)
+        if self._graphify and graph_capable:
             self._run_graphify()
 
         # Optional graphify graph mirror — populates graph_nodes/graph_edges
         # for the find_callers / find_related / get_community / find_rationale
         # MCP tools. No-op when graphify-out/graph.json is absent. Only
         # reload when the file mtime is newer than our last load.
-        self._refresh_graphify_mirror()
+        if graph_capable:
+            self._refresh_graphify_mirror()
         return stats
 
     def _run_graphify(self) -> None:

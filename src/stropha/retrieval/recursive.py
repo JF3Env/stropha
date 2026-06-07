@@ -118,35 +118,29 @@ def _maybe_merge_parent(
     used_chunk_ids: set[str],
 ) -> SearchHit:
     """If any sibling in ``all_hits`` shares ``hit``'s parent_chunk_id, promote
-    the result to the parent chunk (loaded from storage)."""
-    cur = storage._conn.cursor()
-    row = cur.execute(
-        "SELECT parent_chunk_id FROM chunks WHERE chunk_id = ?", (hit.chunk_id,),
-    ).fetchone()
-    if row is None or not row["parent_chunk_id"]:
+    the result to the parent chunk (loaded from storage).
+
+    Backend-agnostic: uses the typed ``get_chunk_by_id`` / ``lookup_by_chunk_id``
+    StorageStage methods (implemented by both the sqlite-vec and postgres
+    backends) instead of reaching into the SQLite-specific ``_conn`` handle.
+    """
+    rec = storage.get_chunk_by_id(hit.chunk_id)
+    if rec is None or not rec.get("parent_chunk_id"):
         return hit
-    parent_id = row["parent_chunk_id"]
+    parent_id = rec["parent_chunk_id"]
     # Look for any other hit in the result set sharing this parent.
     has_sibling = any(
         h.chunk_id != hit.chunk_id
-        and cur.execute(
-            "SELECT 1 FROM chunks WHERE chunk_id = ? AND parent_chunk_id = ? LIMIT 1",
-            (h.chunk_id, parent_id),
-        ).fetchone() is not None
+        and (sib := storage.get_chunk_by_id(h.chunk_id)) is not None
+        and sib.get("parent_chunk_id") == parent_id
         for h in all_hits
     )
     if not has_sibling:
         return hit
-    parent = cur.execute(
-        """SELECT c.*, r.normalized_key, r.remote_url, r.root_path,
-                  r.default_branch, r.head_commit
-           FROM chunks c LEFT JOIN repos r ON c.repo_id = r.id
-           WHERE c.chunk_id = ? LIMIT 1""",
-        (parent_id,),
-    ).fetchone()
-    if parent is None:
+    parent_hit = storage.lookup_by_chunk_id(parent_id)
+    if parent_hit is None:
         return hit
-    return _row_to_hit(parent, score=hit.score, rank=hit.rank)
+    return parent_hit.model_copy(update={"score": hit.score, "rank": hit.rank})
 
 
 def _adjacent_or_overlap(a: SearchHit, b: SearchHit, gap: int) -> bool:
@@ -178,31 +172,3 @@ def _absorb(host: SearchHit, other: SearchHit, storage: Storage) -> SearchHit:
         # Keep the higher of the two scores so RRF semantics aren't lost.
         "score": max(host.score, other.score),
     })
-
-
-def _row_to_hit(row, *, score: float, rank: int) -> SearchHit:
-    from ..models import RepoRef
-
-    repo: RepoRef | None = None
-    if row["normalized_key"]:
-        repo = RepoRef(
-            normalized_key=row["normalized_key"],
-            url=row["remote_url"],
-            local_path=row["root_path"] if "root_path" in row.keys() else None,
-            default_branch=row["default_branch"],
-            head_commit=row["head_commit"],
-        )
-    snippet = (row["content"] or "")[:480]
-    return SearchHit(
-        rank=rank,
-        score=score,
-        rel_path=row["rel_path"],
-        language=row["language"],
-        kind=row["kind"],
-        symbol=row["symbol"],
-        start_line=int(row["start_line"]),
-        end_line=int(row["end_line"]),
-        snippet=snippet,
-        chunk_id=row["chunk_id"],
-        repo=repo,
-    )
