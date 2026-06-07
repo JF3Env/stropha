@@ -1828,6 +1828,187 @@ def glossary_stats_cmd() -> None:
 
 
 # ============================================================================ #
+#                       BENCH (config matrix) SUB-APP                          #
+# ============================================================================ #
+
+bench_app = typer.Typer(
+    name="bench",
+    help="Structured configuration-matrix benchmark (enumerate configs + compare).",
+    no_args_is_help=True,
+)
+app.add_typer(bench_app, name="bench")
+
+
+def _default_matrix_path() -> Path:
+    from . import bench as _bench
+
+    return Path(_bench.__file__).resolve().parent / "default_matrix.yaml"
+
+
+@bench_app.command("run")
+def bench_run_cmd(
+    matrix: Path = typer.Option(
+        None, "--matrix", "-m",
+        help="Matrix YAML (default: bundled default_matrix.yaml).",
+    ),
+    out: Path = typer.Option(
+        Path(".stropha/bench/results.jsonl"), "--out", "-o",
+        help="Append-only results JSONL (resumable).",
+    ),
+    index_dir: Path = typer.Option(
+        None, "--index-dir",
+        help="Where per-index sqlite DBs live (default: <out dir>/indexes).",
+    ),
+    limit: int | None = typer.Option(
+        None, "--limit", help="Stop after evaluating N new cells (smoke runs).",
+    ),
+    resume: bool = typer.Option(
+        True, "--resume/--no-resume",
+        help="Skip cells already present in the results file.",
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run",
+        help="Print the plan (cells + unique indexes) without running.",
+    ),
+) -> None:
+    """Run a configuration matrix; append one result line per cell."""
+    from .bench import load_matrix
+    from .bench.matrix import MatrixError
+    from .bench.runner import run_matrix
+
+    mpath = matrix or _default_matrix_path()
+    try:
+        m = load_matrix(mpath)
+    except MatrixError as exc:
+        console.print(f"[red]Matrix error:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    if dry_run:
+        plan = run_matrix(m, out, index_dir=index_dir, dry_run=True)
+        console.print(
+            f"[bold]Plan:[/bold] {plan['total_cells']} cells · "
+            f"{plan['unique_indexes']} unique indexes · "
+            f"{plan['already_done']} already done"
+        )
+        for sig, labels in plan["groups"].items():
+            console.print(f"  [cyan]{sig}[/cyan] — {len(labels)} query variants")
+        return
+
+    def _on_cell(seen: int, total: int, rec: dict) -> None:
+        if rec.get("ok"):
+            met = rec.get("metrics", {})
+            shown = "  ".join(
+                f"{k}={v:.3f}"
+                for k, v in met.items()
+                if isinstance(v, (int, float)) and "latency" not in k
+            )
+            console.print(f"[green]✓[/green] [{seen}/{total}] {rec['label']}  {shown}")
+        else:
+            console.print(
+                f"[red]✗[/red] [{seen}/{total}] {rec.get('label', '?')} "
+                f"— {str(rec.get('error', ''))[:80]}"
+            )
+
+    try:
+        summary = run_matrix(
+            m, out, index_dir=index_dir, resume=resume, limit=limit, on_cell=_on_cell,
+        )
+    except StrophaError as exc:
+        console.print(f"[red]Bench failed:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+    console.print(
+        f"[bold green]Done.[/bold green] evaluated={summary['evaluated']} "
+        f"failed={summary['failed']} skipped={summary['skipped']} → {summary['out']}"
+    )
+
+
+@bench_app.command("report")
+def bench_report_cmd(
+    results: Path = typer.Argument(..., help="Results JSONL produced by `bench run`."),
+    metric: str = typer.Option("recall@10", "--metric", help="Metric to rank / marginalise by."),
+    baseline: str | None = typer.Option(
+        None, "--baseline", help="cell_id to diff against (paired bootstrap CI).",
+    ),
+    top: int = typer.Option(20, "--top", help="How many ranked rows to show."),
+    csv: Path | None = typer.Option(None, "--csv", help="Also write a flat CSV here."),
+    marginals: bool = typer.Option(True, "--marginals/--no-marginals"),
+) -> None:
+    """Rank cells, show per-axis marginals, and optionally diff vs a baseline."""
+    from .bench import BenchReport, load_results
+    from .bench.report import ReportError, to_csv
+
+    try:
+        recs = load_results(results)
+    except ReportError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    if not recs:
+        console.print("[yellow]No successful cells in results.[/yellow]")
+        raise typer.Exit(code=1)
+
+    rep = BenchReport(recs)
+    metrics = rep.metric_names()
+    if metric not in metrics:
+        console.print(f"[yellow]metric {metric!r} not found; have: {metrics}[/yellow]")
+        raise typer.Exit(code=1)
+
+    table = Table(title=f"Top {top} of {len(recs)} cells by {metric}")
+    table.add_column("id", style="dim")
+    table.add_column("config", overflow="fold")
+    for mn in metrics:
+        table.add_column(mn, justify="right")
+    for r in rep.rank_table(metric)[:top]:
+        met = r.get("metrics", {})
+        cells = [
+            f"{met[mn]:.3f}" if isinstance(met.get(mn), (int, float)) else "-"
+            for mn in metrics
+        ]
+        table.add_row(str(r.get("cell_id", ""))[:8], r.get("label", ""), *cells)
+    console.print(table)
+
+    if marginals:
+        mt = Table(title=f"Per-axis marginal {metric} (mean over the other axes)")
+        mt.add_column("axis", style="cyan")
+        mt.add_column("value")
+        mt.add_column(metric, justify="right")
+        mt.add_column("n", justify="right")
+        for axis, vals in rep.marginals(metric).items():
+            for label, d in sorted(vals.items(), key=lambda kv: kv[1]["mean"], reverse=True):
+                mt.add_row(axis, label, f"{d['mean']:.3f}", str(int(d["n"])))
+        console.print(mt)
+
+    if baseline:
+        try:
+            deltas = rep.baseline_deltas(baseline)
+        except ReportError as exc:
+            console.print(f"[yellow]{exc}[/yellow]")
+            deltas = []
+        if deltas:
+            dt = Table(title=f"Δ vs baseline {baseline[:8]} (paired bootstrap, 95% CI)")
+            dt.add_column("config", overflow="fold")
+            dt.add_column("Δrecall", justify="right")
+            dt.add_column("95% CI")
+            dt.add_column("P>0", justify="right")
+            dt.add_column("Δmrr", justify="right")
+            dt.add_column("95% CI")
+            dt.add_column("P>0", justify="right")
+            for d in sorted(deltas, key=lambda x: x["d_recall"][0], reverse=True):
+                pr, lor, hir, fpr = d["d_recall"]
+                pm, lom, him, fpm = d["d_mrr"]
+                dt.add_row(
+                    d["label"],
+                    f"{pr:+.3f}", f"[{lor:+.3f},{hir:+.3f}]", f"{fpr:.2f}",
+                    f"{pm:+.3f}", f"[{lom:+.3f},{him:+.3f}]", f"{fpm:.2f}",
+                )
+            console.print(dt)
+
+    if csv:
+        csv.parent.mkdir(parents=True, exist_ok=True)
+        csv.write_text(to_csv(recs), encoding="utf-8")
+        console.print(f"[green]CSV →[/green] {csv}")
+
+
+# ============================================================================ #
 #                          META / OUTCOME SUB-APP                              #
 # ============================================================================ #
 
