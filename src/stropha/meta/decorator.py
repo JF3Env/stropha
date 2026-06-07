@@ -28,12 +28,34 @@ from __future__ import annotations
 
 import functools
 import time
+import uuid
 from collections.abc import Callable
 from typing import Any
 
 from ..logging import get_logger
 
 log = get_logger(__name__)
+
+
+def _attach_trace_id(result: Any, trace_id: str) -> None:
+    """Best-effort: stamp ``trace_id`` onto a tool's response so the agent can
+    cite it in ``report_bad_result``.
+
+    Only responses that declare a ``trace_id`` field (pydantic) or already
+    carry the key (dict) receive it; everything else is left untouched. Never
+    raises — surfacing the id is a convenience, not business logic.
+    """
+    try:
+        fields = getattr(type(result), "model_fields", None)
+        if fields is not None and "trace_id" in fields:
+            # Only fill an empty slot. Tools like report_bad_result echo a
+            # *different* trace_id (the reported call) and must not be clobbered.
+            if getattr(result, "trace_id", None) is None:
+                result.trace_id = trace_id
+        elif isinstance(result, dict) and result.get("trace_id") is None and "trace_id" in result:
+            result["trace_id"] = trace_id
+    except Exception as exc:  # pragma: no cover - defensive
+        log.debug("traced.attach_trace_id_failed", error=str(exc))
 
 
 def _extract_results(value: Any) -> list[dict[str, Any]]:
@@ -105,6 +127,7 @@ def _record_safely(
     latency_ms: float,
     returned_tokens: int,
     session_id: str | None,
+    trace_id: str | None = None,
 ) -> None:
     """Hand the event to the recorder; swallow any failure."""
     if recorder is None:
@@ -120,6 +143,8 @@ def _record_safely(
         }
         if session_id is not None:
             event["session_id"] = session_id
+        if trace_id is not None:
+            event["trace_id"] = trace_id
         recorder.record(event)
     except Exception as exc:
         # Defensive: tracing is observability, never break a tool call.
@@ -160,6 +185,10 @@ def traced(tool_name: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]
         def wrapper(*args: Any, **kwargs: Any) -> Any:
             start = time.perf_counter()
             ctx = kwargs.get("ctx")
+            # Mint the trace_id up-front so the SAME id is both stamped on the
+            # response (so the agent can cite it) and written to the JSONL
+            # trace record (so report_bad_result resolves to this call).
+            trace_id = uuid.uuid4().hex
             try:
                 result = fn(*args, **kwargs)
             except Exception as exc:
@@ -188,6 +217,7 @@ def traced(tool_name: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]
                     latency_ms=latency_ms,
                     returned_tokens=0,
                     session_id=getattr(app, "session_id", None) if app else None,
+                    trace_id=trace_id,
                 )
                 raise
 
@@ -203,7 +233,9 @@ def traced(tool_name: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]
                 latency_ms=latency_ms,
                 returned_tokens=_extract_returned_tokens(results),
                 session_id=getattr(app, "session_id", None) if app else None,
+                trace_id=trace_id,
             )
+            _attach_trace_id(result, trace_id)
             return result
 
         return wrapper

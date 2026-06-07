@@ -1299,8 +1299,9 @@ def trace_feature(
         "the Meta-Harness outcome labeler (WIN-162). Use this when a result "
         "from search_code / smart_search / get_symbol / find_* was clearly "
         "wrong: irrelevant, the wrong symbol, stale, a duplicate, too verbose, "
-        "or other. The trace_id comes from the trace stream WIN-160 attaches "
-        "to every tool call (also visible in the meta traces directory)."
+        "or other. Pass the `trace_id` from the offending response — search_code "
+        "and smart_search return it as a top-level `trace_id` field (WIN-160); "
+        "it matches the JSONL trace record so the labeler resolves the chunks."
     ),
 )
 @traced("report_bad_result")

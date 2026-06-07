@@ -27,6 +27,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from stropha.meta.decorator import (
+    _attach_trace_id,
     _extract_results,
     _extract_returned_tokens,
     _record_safely,
@@ -181,6 +182,42 @@ class TestRecordSafely:
         # Must not raise.
         _record_safely(rec, "x", "q", {}, [], 0.0, 0, None)
 
+    def test_includes_trace_id_when_provided(self) -> None:
+        rec = _FakeRecorder()
+        _record_safely(rec, "x", "q", {}, [], 0.0, 0, "s", trace_id="abc123")
+        assert rec.calls[0]["trace_id"] == "abc123"
+
+    def test_omits_trace_id_when_none(self) -> None:
+        rec = _FakeRecorder()
+        _record_safely(rec, "x", "q", {}, [], 0.0, 0, "s")
+        assert "trace_id" not in rec.calls[0]
+
+
+class TestAttachTraceId:
+    """``_attach_trace_id`` surfaces the id on responses that declare it."""
+
+    def test_sets_on_model_with_field(self) -> None:
+        from stropha.server_models import SearchResponse
+
+        r = SearchResponse(results=[], total_candidates=0, query="q")
+        _attach_trace_id(r, "tid")
+        assert r.trace_id == "tid"
+
+    def test_ignores_model_without_field(self) -> None:
+        from stropha.server_models import ResetDedupResponse
+
+        r = ResetDedupResponse(cleared=0)
+        _attach_trace_id(r, "tid")  # must not raise
+        assert not hasattr(r, "trace_id")
+
+    def test_sets_on_dict_with_key(self) -> None:
+        d: dict[str, Any] = {"trace_id": None, "ok": True}
+        _attach_trace_id(d, "tid")
+        assert d["trace_id"] == "tid"
+
+    def test_ignores_none(self) -> None:
+        _attach_trace_id(None, "tid")  # must not raise
+
 
 class TestResolveApp:
     def test_returns_lifespan_context(self) -> None:
@@ -266,6 +303,36 @@ class TestTracedDecoratorHappyPath:
         # ~10ms call; allow generous slop on CI.
         assert latency >= 8.0
         assert latency < 500.0
+
+
+class TestTracedTraceIdSurfacing:
+    """The decorator stamps a trace_id on the response AND records the same
+    id, so report_bad_result can resolve the offending call (WIN-160)."""
+
+    def test_stamps_trace_id_on_response_and_matches_record(self) -> None:
+        from stropha.server_models import SearchResponse
+
+        @traced("search_code")
+        def f(query: str, *, ctx: Any) -> SearchResponse:
+            return SearchResponse(results=[], total_candidates=0, query=query)
+
+        rec = _FakeRecorder()
+        app = MagicMock(trace_recorder=rec, session_id="s")
+        resp = f(query="q", ctx=_ctx_with(app))
+        assert resp.trace_id is not None
+        # The id on the response equals the id written to the trace stream.
+        assert rec.calls[0]["trace_id"] == resp.trace_id
+
+    def test_response_without_field_untouched_but_still_traced(self) -> None:
+        @traced("noop")
+        def f(*, ctx: Any) -> dict:
+            return {"value": 1}
+
+        rec = _FakeRecorder()
+        app = MagicMock(trace_recorder=rec, session_id="s")
+        out = f(ctx=_ctx_with(app))
+        assert out == {"value": 1}  # plain dict not mutated
+        assert "trace_id" in rec.calls[0]  # but server-side trace still has one
 
 
 class TestTracedDecoratorDegradation:

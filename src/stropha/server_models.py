@@ -90,6 +90,15 @@ class SearchResponse(BaseModel):
             "and was returned anyway (escape hatch to avoid empty result)."
         ),
     )
+    trace_id: str | None = Field(
+        default=None,
+        description=(
+            "Trace id for this call (WIN-160). Pass it to report_bad_result "
+            "to flag bad / duplicate / low-signal ranking — that's how the "
+            "Meta-Harness feedback loop learns. Auto-stamped by the @traced "
+            "decorator; matches the JSONL trace record for this search."
+        ),
+    )
 
 
 class OutlineEntry(BaseModel):
@@ -182,6 +191,13 @@ class SmartSearchResponse(BaseModel):
     tool_used: str = Field(description="The actual tool invoked (find_callers, search_code, etc.)")
     confidence: float = Field(description="Routing confidence (0.0-1.0)")
     graph_available: bool = Field(default=True, description="Whether the graph is loaded")
+    trace_id: str | None = Field(
+        default=None,
+        description=(
+            "Trace id for this call (WIN-160). Pass it to report_bad_result "
+            "to flag bad/duplicate/low-signal ranking. Auto-stamped by @traced."
+        ),
+    )
 
 
 class ExpandChunkResponse(BaseModel):
