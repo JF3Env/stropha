@@ -330,6 +330,39 @@ def test_parent_chunk_promotion(storage: Storage) -> None:
     assert any(h.chunk_id == "parent" for h in out)
 
 
+def test_parent_promotion_dedups_siblings(storage: Storage) -> None:
+    """Regression: when N siblings share a parent, the parent chunk must be
+    emitted exactly ONCE — not once per sibling (the 'same chunk at ranks
+    1,2,3,6' duplication)."""
+    parent = Chunk(
+        chunk_id="parent", rel_path="x.py", language="python",
+        kind="class", symbol="MyClass", parent_chunk_id=None,
+        start_line=1, end_line=80, content="class MyClass body",
+        content_hash="parent",
+    )
+    storage.upsert_chunk(parent, embedding=[0.0] * 4,
+                         embedding_model="stub", embedding_dim=4)
+    for cid, s, e in [("m1", 5, 12), ("m2", 20, 28), ("m3", 35, 44), ("m4", 50, 60)]:
+        c = Chunk(
+            chunk_id=cid, rel_path="x.py", language="python",
+            kind="function", symbol=None, parent_chunk_id="parent",
+            start_line=s, end_line=e, content="method body", content_hash=cid,
+        )
+        storage.upsert_chunk(c, embedding=[0.0] * 4,
+                             embedding_model="stub", embedding_dim=4)
+
+    hits = [
+        _hit(chunk_id="m1", rel_path="x.py", start=5, end=12, score=0.9, rank=1),
+        _hit(chunk_id="m2", rel_path="x.py", start=20, end=28, score=0.8, rank=2),
+        _hit(chunk_id="m3", rel_path="x.py", start=35, end=44, score=0.7, rank=3),
+        _hit(chunk_id="m4", rel_path="x.py", start=50, end=60, score=0.6, rank=4),
+    ]
+    out = merge_hits(hits, storage, enabled=True, adjacency_lines=0)
+    ids = [h.chunk_id for h in out]
+    assert len(ids) == len(set(ids)), f"duplicate hits emitted: {ids}"
+    assert ids.count("parent") == 1
+
+
 # --------------------------------------------------------------------------- _adjacent_or_overlap
 
 

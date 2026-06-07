@@ -73,6 +73,16 @@ def merge_hits(
         if h.chunk_id in used_chunk_ids:
             continue
         merged = _maybe_merge_parent(h, hits, storage, used_chunk_ids)
+        # Dedup on the *emitted* chunk_id, not just the input id. When several
+        # sibling hits share a parent, each promotes to the SAME parent chunk;
+        # without this guard that parent is appended once per sibling and
+        # surfaces at multiple ranks (the "same chunk at ranks 1,2,3,6"
+        # duplication). Emit the parent once; mark the consumed sibling so the
+        # top-of-loop guard skips it if it recurs.
+        if merged.chunk_id in used_chunk_ids:
+            used_chunk_ids.add(h.chunk_id)
+            continue
+        used_chunk_ids.add(h.chunk_id)
         used_chunk_ids.add(merged.chunk_id)
         by_path.setdefault(merged.rel_path, []).append(merged)
         out.append(merged)
