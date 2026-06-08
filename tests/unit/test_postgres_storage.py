@@ -266,6 +266,23 @@ def test_graph_loaders_and_traversal_via_conn_shim(store: PostgresStorage) -> No
     assert gstats is not None and gstats["nodes"] == 2 and gstats["edges_total"] == 1
 
 
+def test_index_advisory_lock_serializes_writers(pg_dsn: str) -> None:
+    """Two concurrent indexers must not both hold the index lock (prevents the
+    chunks/files deadlock). The second try-acquire returns False until the
+    first releases."""
+    a = PostgresStorage(PostgresStorageConfig(dsn=pg_dsn), embedding_dim=DIM)
+    b = PostgresStorage(PostgresStorageConfig(dsn=pg_dsn), embedding_dim=DIM)
+    try:
+        assert a.try_acquire_index_lock() is True
+        assert b.try_acquire_index_lock() is False  # a holds it
+        a.release_index_lock()
+        assert b.try_acquire_index_lock() is True  # now free
+        b.release_index_lock()
+    finally:
+        a.close()
+        b.close()
+
+
 def test_sql_shim_translation() -> None:
     from stropha.adapters.storage.postgres import _translate_sqlite_sql
 

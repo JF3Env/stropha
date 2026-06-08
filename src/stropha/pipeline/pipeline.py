@@ -18,6 +18,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ..errors import StrophaError
 from ..ingest.git_meta import detect as detect_repo
 from ..logging import get_logger
 from ..models import Chunk
@@ -221,6 +222,22 @@ class Pipeline:
         if mode not in ("auto", "full", "incremental"):
             raise ValueError(f"unknown pipeline mode: {mode!r}")
 
+        # Serialize concurrent index writers. Two `stropha index` runs writing
+        # to chunks/files at once can deadlock on Postgres (SQLite serialized
+        # writers implicitly). The storage advisory lock makes the second run
+        # abort cleanly instead of deadlocking. No-op for backends that don't
+        # implement it; released in the matching block before ``return`` and
+        # by ``storage.close()`` on the error path.
+        _acquire_lock = getattr(self._storage, "try_acquire_index_lock", None)
+        if _acquire_lock is not None and not _acquire_lock():
+            raise StrophaError(
+                "Another `stropha index` run is already writing to this index "
+                "(advisory lock held). Wait for it to finish — or stop it — "
+                "before starting another. Tip: a `git commit` triggers the "
+                "post-commit hook's index, which can collide with a manual "
+                "`--rebuild`."
+            )
+
         stats = PipelineStats(
             enricher_id=self._enricher.adapter_id,
             embedder_id=self._embedder.adapter_id,
@@ -309,6 +326,10 @@ class Pipeline:
         # reload when the file mtime is newer than our last load.
         if graph_capable:
             self._refresh_graphify_mirror()
+
+        _release_lock = getattr(self._storage, "release_index_lock", None)
+        if _release_lock is not None:
+            _release_lock()
         return stats
 
     def _run_graphify(self) -> None:

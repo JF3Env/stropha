@@ -140,6 +140,10 @@ _UPSERT_PK: dict[str, list[str]] = {
     "graph_meta": ["key"],
 }
 
+# Session advisory-lock key that serializes concurrent index writers so two
+# `stropha index` runs can't deadlock on chunks/files. Arbitrary constant.
+_INDEX_LOCK_KEY = 0x53545250  # "STRP"
+
 
 def _translate_sqlite_sql(sql: str) -> str | None:
     """Translate a SQLite-dialect statement to Postgres. ``None`` = swallow."""
@@ -355,6 +359,7 @@ class PostgresStorage:
         self._adapter_config = config
         self._dsn = config.dsn
         self._dim = embedding_dim
+        self._index_lock_held = False
 
         try:
             import psycopg
@@ -762,9 +767,35 @@ class PostgresStorage:
         row = self._raw.execute("SELECT pg_database_size(current_database()) AS n;").fetchone()
         return int(row["n"]) if row else 0
 
+    def try_acquire_index_lock(self) -> bool:
+        """Serialize concurrent index writers via a Postgres session advisory
+        lock. Returns ``False`` when another connection already holds it
+        (another ``stropha index`` is running) — which prevents the
+        chunks/files deadlock two concurrent indexers would otherwise hit.
+        Readers/search are unaffected (advisory locks don't block queries).
+        """
+        row = self._raw.execute(
+            "SELECT pg_try_advisory_lock(%s) AS ok;", (_INDEX_LOCK_KEY,)
+        ).fetchone()
+        self._raw.commit()
+        self._index_lock_held = bool(row and row["ok"])
+        return self._index_lock_held
+
+    def release_index_lock(self) -> None:
+        if not self._index_lock_held:
+            return
+        try:
+            self._raw.execute("SELECT pg_advisory_unlock(%s);", (_INDEX_LOCK_KEY,))
+            self._raw.commit()
+        except Exception:  # pragma: no cover - defensive
+            pass
+        self._index_lock_held = False
+
     def close(self) -> None:
         import contextlib
 
+        with contextlib.suppress(Exception):
+            self.release_index_lock()
         with contextlib.suppress(Exception):
             self._raw.close()
 
