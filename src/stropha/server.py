@@ -1934,6 +1934,27 @@ def get_config_tool(*, ctx: Context) -> dict:
     return info
 
 
+@mcp.tool(
+    name="index_health",
+    description=(
+        "Index self-check (WIN-348): per-repo coverage% (indexed files / git-"
+        "tracked files), last-index lag in seconds, commits behind HEAD, and "
+        "config drift (active embedder/enricher vs what last wrote the index). "
+        "Use this to decide HOW MUCH TO TRUST the index before relying on "
+        "search results — e.g. if a repo is many commits behind HEAD or the "
+        "embedder config has drifted, results may be stale and a `stropha "
+        "index` run is due. Git-derived fields are null when the repo is not a "
+        "git tree or git is unavailable."
+    ),
+)
+@traced("index_health")
+def index_health_tool(*, ctx: Context) -> dict:
+    """Return freshness / coverage / drift signals for every indexed repo."""
+    from .server_health_tools import index_health_impl
+
+    return index_health_impl(_ctx(ctx))
+
+
 @mcp.resource("stropha://stats")
 def index_stats_resource() -> StatsPayload:
     """Index statistics. Exposed as both a Tool and a Resource for discovery."""
