@@ -1669,7 +1669,14 @@ def _pipeline_snapshot(app: AppContext) -> dict:
         },
         "storage": {
             **(_stage(built.storage) or {}),
-            "path": str(cfg.resolve_index_path()),
+            # Report the ACTIVE backend's real target — the Postgres DSN
+            # (password-redacted) when postgres is the storage adapter, the
+            # SQLite file path otherwise. Falls back to the configured index
+            # path for adapters that don't expose ``storage_target``.
+            "path": (
+                getattr(built.storage, "storage_target", None)
+                or str(cfg.resolve_index_path())
+            ),
         },
         "retrieval": retrieval_info,
     }

@@ -735,6 +735,16 @@ class PostgresStorage:
 
         return re.sub(r"://([^:/@]+):[^@]*@", r"://\1:***@", self._dsn)
 
+    @property
+    def storage_target(self) -> str:
+        """Where this backend persists data: the (password-redacted) DSN.
+
+        Surfaced by the ``get_config`` MCP tool (``pipeline.storage.path``)
+        so callers see the real Postgres target instead of the unused
+        SQLite ``index.db`` path.
+        """
+        return self._sanitized_dsn()
+
     # ----- Lifecycle ------------------------------------------------------
 
     def commit(self) -> None:

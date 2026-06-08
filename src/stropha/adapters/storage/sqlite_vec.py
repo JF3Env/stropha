@@ -88,6 +88,15 @@ class SqliteVecStorage(Storage):
         return f"sqlite-vec:dim={self._dim}"
 
     @property
+    def storage_target(self) -> str:
+        """Where this backend persists data: the resolved SQLite file path.
+
+        Mirror of :attr:`PostgresStorage.storage_target` so the ``get_config``
+        MCP tool can report each backend's real target uniformly.
+        """
+        return str(self._db_path)
+
+    @property
     def config_schema(self) -> type[BaseModel]:
         return SqliteVecStorageConfig
 

@@ -127,6 +127,16 @@ def test_migrate_and_stats(store: PostgresStorage) -> None:
     assert "***" in s["db_path"]  # password redacted
 
 
+def test_storage_target_is_redacted_dsn(store: PostgresStorage) -> None:
+    """get_config surfaces this as pipeline.storage.path — for the postgres
+    backend it must be the DSN (password-redacted), never a SQLite file path."""
+    target = store.storage_target
+    assert target.startswith("postgresql://")
+    assert "***" in target  # password redacted
+    assert ":stropha@" not in target  # raw password not leaked
+    assert not target.endswith(".db")  # not the unused SQLite index path
+
+
 def test_search_dense_orders_by_similarity(store: PostgresStorage) -> None:
     _seed(store)
     hits = store.search_dense(_emb(0), k=3)

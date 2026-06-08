@@ -291,3 +291,14 @@ def test_storage_default_path_falls_back_to_home(
     helper_path = _default_index_path()
     assert helper_path == Path.home() / ".stropha" / "index.db"
     assert SqliteVecStorageConfig().path == str(helper_path)
+
+
+def test_sqlite_storage_target_is_db_path(tmp_path: Path) -> None:
+    """get_config surfaces pipeline.storage.path from ``storage_target``; for
+    the sqlite-vec backend it must be the resolved SQLite file path."""
+    db = tmp_path / "idx.db"
+    store = SqliteVecStorage(SqliteVecStorageConfig(path=str(db)), embedding_dim=4)
+    try:
+        assert store.storage_target == str(db)
+    finally:
+        store.close()
