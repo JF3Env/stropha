@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 from uuid import uuid4
 
@@ -43,16 +44,84 @@ class RestartTolerantSessionManager(StreamableHTTPSessionManager):
 
         if request_mcp_session_id is not None:
             logger.info("Recovering stale MCP session %s with a fresh transport", request_mcp_session_id)
-            await self._serve_with_new_session(
-                scope,
-                receive,
-                send,
-                server_stateless=True,
-                session_id=request_mcp_session_id,
+            await self._recover_stale_session(
+                scope, receive, send, session_id=request_mcp_session_id,
             )
             return
 
         await self._serve_with_new_session(scope, receive, send, server_stateless=False, session_id=None)
+
+    async def _recover_stale_session(self, scope, receive, send, *, session_id: str) -> None:
+        """Serve a request whose ``mcp-session-id`` we no longer know — typically
+        a client reusing a session id from before a daemon restart (WIN-427).
+
+        We attempt the transparent stateless recovery, but GUARANTEE the HTTP
+        response is completed so the client never hangs. The streamable-http
+        transport can tear down mid-flight on this path and leave the ASGI
+        response unfinished ("ASGI callable returned without completing
+        response"); when that happens we close the stream with a spec-aligned
+        404 + JSON-RPC error telling the client to re-initialize. Successful
+        recoveries are untouched (the fallback only fires when the response
+        did not finish).
+        """
+        state = {"started": False, "finished": False}
+
+        async def tracking_send(message: dict[str, Any]) -> None:
+            mtype = message.get("type")
+            if mtype == "http.response.start":
+                state["started"] = True
+            elif mtype == "http.response.body" and not message.get("more_body", False):
+                state["finished"] = True
+            await send(message)
+
+        try:
+            await self._serve_with_new_session(
+                scope, receive, tracking_send,
+                server_stateless=True, session_id=session_id,
+            )
+        except Exception:
+            logger.exception("Stale-session recovery for %s failed mid-flight", session_id)
+
+        if not state["finished"]:
+            await self._complete_expired_session(
+                send, started=state["started"], session_id=session_id,
+            )
+
+    @staticmethod
+    async def _complete_expired_session(
+        send, *, started: bool, session_id: str,
+    ) -> None:
+        """Finish an HTTP response the recovery path left dangling so the client
+        gets a clean result instead of hanging."""
+        if started:
+            # Response already opened but never closed — send the terminating
+            # empty body chunk so the client sees EOF rather than hanging.
+            await send({"type": "http.response.body", "body": b"", "more_body": False})
+            return
+        body = json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": None,
+                "error": {
+                    "code": -32600,
+                    "message": (
+                        f"MCP session {session_id} is unknown (server restarted). "
+                        "Re-initialize the session and retry."
+                    ),
+                },
+            }
+        ).encode("utf-8")
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 404,
+                "headers": [
+                    (b"content-type", b"application/json"),
+                    (b"content-length", str(len(body)).encode("ascii")),
+                ],
+            }
+        )
+        await send({"type": "http.response.body", "body": body, "more_body": False})
 
     @staticmethod
     def _header(scope, name: str) -> str | None:
