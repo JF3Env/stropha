@@ -24,7 +24,7 @@ from typing import Any, Protocol, runtime_checkable
 from pydantic import BaseModel
 
 from ..ingest.git_meta import RepoIdentity
-from ..models import Chunk, RepoStats, SearchHit
+from ..models import Chunk, RepoStats, SearchHit, StoredFileMeta
 from ..pipeline.base import StageHealth
 
 
@@ -112,6 +112,8 @@ class StorageStage(Protocol):
         enricher_id: str | None = None,
         embedder_model: str | None = None,
     ) -> bool: ...
+
+    def load_file_meta_map(self, repo_id: int) -> dict[str, StoredFileMeta]: ...
 
     def upsert_file_meta(
         self,

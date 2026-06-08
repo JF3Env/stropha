@@ -600,3 +600,147 @@ def test_pipeline_evicts_stale_files_at_end_of_run(tmp_path: Path) -> None:
         assert s._conn.execute(
             "SELECT 1 FROM files WHERE rel_path = 'transient.py' LIMIT 1"
         ).fetchone() is None
+
+
+# --------------------------------------------------------------------------- WIN-425 — hash-based reconcile (auto default)
+
+
+class _StubEmbedderV2(_StubEmbedder):
+    """Same dim as _StubEmbedder, different model_name — simulates an
+    embedder *config change* (drift) that needs no schema rebuild."""
+
+    @property
+    def model_name(self) -> str:
+        return "stub:v2"
+
+    @property
+    def adapter_id(self) -> str:
+        return "stub:v2"
+
+    def embed_documents(self, texts: Sequence[str]) -> list[list[float]]:
+        return [[0.5, 0.6, 0.7, 0.8] for _ in texts]
+
+
+def test_auto_mode_routes_to_reconcile(tmp_path: Path) -> None:
+    """auto (the default) reconciles by hash: first run indexes, second
+    run on an unchanged tree skips every file as fresh (no re-chunk)."""
+    repo = tmp_path / "repo"
+    _git_init_with_file(repo, "main.py", "x = 1\n")
+    with Storage(tmp_path / "idx.db", embedding_dim=4) as s:
+        emb = _StubEmbedder()
+        s1 = Pipeline(
+            storage=s, embedder=emb, enricher=NoopEnricher(), repos=[repo],
+        ).run()  # default mode == "auto" -> reconcile
+        assert s1.chunks_embedded >= 1
+        s2 = Pipeline(
+            storage=s, embedder=emb, enricher=NoopEnricher(), repos=[repo],
+        ).run()
+        assert s2.files_skipped_fresh >= 1
+        assert s2.chunks_seen == 0  # nothing re-chunked
+
+
+def test_reconcile_detects_uncommitted_edit(tmp_path: Path) -> None:
+    """Headline WIN-425 win: a tracked file edited but NOT committed is
+    re-indexed by auto mode. git-diff incremental would never see it."""
+    repo = tmp_path / "repo"
+    main = _git_init_with_file(repo, "main.py", "x = 1\n")
+    with Storage(tmp_path / "idx.db", embedding_dim=4) as s:
+        emb = _StubEmbedder()
+        Pipeline(
+            storage=s, embedder=emb, enricher=NoopEnricher(), repos=[repo],
+        ).run()
+
+        # Edit WITHOUT committing; bump mtime so the (mtime,size) fast-path fires.
+        main.write_text("x = 2\ny = 3\n", encoding="utf-8")
+        os.utime(main, (1_000_000_000, 1_000_000_000))
+
+        stats = Pipeline(
+            storage=s, embedder=emb, enricher=NoopEnricher(), repos=[repo],
+        ).run()
+        assert stats.files_skipped_fresh == 0
+        assert stats.chunks_seen >= 1
+        assert stats.chunks_embedded >= 1
+
+
+def test_reconcile_recovers_from_interrupted_index(tmp_path: Path) -> None:
+    """Simulate a full index that died mid-pass: one file's chunks +
+    files-meta row never got written. The next auto run re-indexes exactly
+    that file — no --rebuild, independent of the git checkpoint."""
+    import subprocess
+
+    repo = tmp_path / "repo"
+    _git_init_with_file(repo, "a.py", "a = 1\n")
+    (repo / "b.py").write_text("b = 2\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "add b"], cwd=repo, check=True)
+
+    with Storage(tmp_path / "idx.db", embedding_dim=4) as s:
+        emb = _StubEmbedder()
+        Pipeline(
+            storage=s, embedder=emb, enricher=NoopEnricher(), repos=[repo],
+        ).run()
+        repo_id = s._conn.execute("SELECT id FROM repos LIMIT 1").fetchone()["id"]
+
+        # Simulate the interruption: drop b.py's index state entirely.
+        s.delete_chunks_by_repo_paths(repo_id, ["b.py"])
+        s.delete_file_meta(repo_id, ["b.py"])
+        s.commit()
+
+        stats = Pipeline(
+            storage=s, embedder=emb, enricher=NoopEnricher(), repos=[repo],
+        ).run()
+        # a.py is fresh (skipped); b.py had no meta -> reconciled.
+        assert stats.files_skipped_fresh == 1
+        assert stats.chunks_seen >= 1
+        assert s._conn.execute(
+            "SELECT 1 FROM chunks WHERE rel_path = 'b.py' LIMIT 1"
+        ).fetchone() is not None
+
+
+def test_reconcile_evicts_git_removed_file(tmp_path: Path) -> None:
+    """A file removed from the tree is evicted on the next auto run."""
+    import subprocess
+
+    repo = tmp_path / "repo"
+    _git_init_with_file(repo, "keep.py", "k = 1\n")
+    (repo / "drop.py").write_text("d = 2\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "add drop"], cwd=repo, check=True)
+
+    with Storage(tmp_path / "idx.db", embedding_dim=4) as s:
+        emb = _StubEmbedder()
+        Pipeline(
+            storage=s, embedder=emb, enricher=NoopEnricher(), repos=[repo],
+        ).run()
+
+        (repo / "drop.py").unlink()
+        subprocess.run(["git", "rm", "drop.py", "-q"], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-qm", "drop"], cwd=repo, check=True)
+
+        stats = Pipeline(
+            storage=s, embedder=emb, enricher=NoopEnricher(), repos=[repo],
+        ).run()
+        assert stats.files_evicted == 1
+        assert s._conn.execute(
+            "SELECT 1 FROM chunks WHERE rel_path = 'drop.py' LIMIT 1"
+        ).fetchone() is None
+
+
+def test_reconcile_reindexes_on_embedder_config_change(tmp_path: Path) -> None:
+    """Config-drift contract (CLAUDE.md 3.1): swapping the embedder
+    (model_name) forces reprocessing through reconcile even though the file
+    content is byte-identical. Proves config changes still drive indexing."""
+    repo = tmp_path / "repo"
+    _git_init_with_file(repo, "main.py", "x = 1\n")
+    with Storage(tmp_path / "idx.db", embedding_dim=4) as s:
+        Pipeline(
+            storage=s, embedder=_StubEmbedder(), enricher=NoopEnricher(),
+            repos=[repo],
+        ).run()
+        # Identical content, different embedder config -> must NOT skip.
+        stats = Pipeline(
+            storage=s, embedder=_StubEmbedderV2(), enricher=NoopEnricher(),
+            repos=[repo],
+        ).run()
+        assert stats.files_skipped_fresh == 0
+        assert stats.chunks_embedded >= 1

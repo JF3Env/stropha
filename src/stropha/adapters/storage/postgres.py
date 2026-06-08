@@ -52,6 +52,7 @@ from ...models import (
     RepoStats,
     SearchHit,
     SessionRecord,
+    StoredFileMeta,
 )
 from ...pipeline.base import StageHealth
 from ...pipeline.registry import register_adapter
@@ -1000,6 +1001,28 @@ class PostgresStorage:
         if enricher_id is not None and row["last_enricher_id"] != enricher_id:
             return False
         return not (embedder_model is not None and row["last_embedder_model"] != embedder_model)
+
+    def load_file_meta_map(self, repo_id: int) -> dict[str, StoredFileMeta]:
+        """Bulk-load freshness columns for every ``files`` row of a repo.
+
+        Postgres mirror of ``Storage.load_file_meta_map`` (WIN-425): one
+        query for the whole repo so the reconcile path diffs the working
+        tree in memory instead of one ``file_is_fresh`` SELECT per file.
+        """
+        rows = self._raw.execute(
+            "SELECT rel_path, mtime, size_bytes, last_enricher_id, last_embedder_model "
+            "FROM files WHERE repo_id = %s;",
+            (repo_id,),
+        ).fetchall()
+        return {
+            r["rel_path"]: StoredFileMeta(
+                mtime=float(r["mtime"]),
+                size_bytes=int(r["size_bytes"]),
+                enricher_id=r["last_enricher_id"],
+                embedder_model=r["last_embedder_model"],
+            )
+            for r in rows
+        }
 
     def upsert_file_meta(
         self,

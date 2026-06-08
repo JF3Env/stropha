@@ -203,23 +203,28 @@ class Pipeline:
         Args:
             rebuild: Wipe chunks before indexing (does NOT drop repos).
                 Forces ``mode="full"`` internally.
-            mode: One of ``"auto"`` (default), ``"full"``, or
-                ``"incremental"``.
+            mode: One of ``"auto"`` (default), ``"reconcile"``, ``"full"``,
+                or ``"incremental"``.
 
-                - ``auto`` — incremental when ``meta['last_indexed_sha_<id>']``
-                  exists for each repo AND the repo is a real git tree;
-                  otherwise full.
-                - ``full`` — always walks every file via the configured
-                  walker (legacy behaviour pre-Phase B).
-                - ``incremental`` — uses ``GitDiffWalker`` against
-                  ``since_sha`` (defaults to the stored last sha; errors
-                  if absent).
+                - ``auto`` — hash-based reconcile (WIN-425). The default.
+                  Git-independent and crash-resilient.
+                - ``reconcile`` — walk the full file set and (re)index only
+                  files whose content hash (via mtime+size fast-path) changed
+                  vs the ``files`` cache; evict deleted. Source of truth is
+                  the content hash, not git, so uncommitted edits and files
+                  left behind by an interrupted index are always caught.
+                - ``full`` — walk every file via the configured walker; the
+                  per-file freshness cache still skips unchanged files.
+                - ``incremental`` — git fast-path: ``GitDiffWalker`` against
+                  ``since_sha`` (defaults to the stored last sha). Only sees
+                  committed deltas; falls back to ``reconcile`` when no
+                  checkpoint exists.
             since_sha: Override the stored last_indexed_sha. Useful for
                 debugging or re-running against a known checkpoint.
         """
         if rebuild:
             mode = "full"
-        if mode not in ("auto", "full", "incremental"):
+        if mode not in ("auto", "full", "incremental", "reconcile"):
             raise ValueError(f"unknown pipeline mode: {mode!r}")
 
         # Serialize concurrent index writers. Two `stropha index` runs writing
@@ -466,23 +471,24 @@ class Pipeline:
 
         effective_mode = mode
         if mode == "auto":
-            if since_sha and head_sha and (repo_path / ".git").exists():
-                effective_mode = "incremental"
-            else:
-                effective_mode = "full"
+            # WIN-425: hash-based reconcile is the default change detector.
+            # Git is no longer the source of truth — content hashes (via the
+            # mtime+size fast-path) are — so uncommitted edits and files left
+            # behind by an interrupted index are always picked up, and a
+            # non-git directory still indexes incrementally.
+            effective_mode = "reconcile"
         elif mode == "incremental" and not since_sha:
-            # Caller explicitly asked for incremental but we have no
-            # checkpoint. Fall back to a full walk with a clear log
-            # entry — this is the expected case on the first run after
-            # `stropha hook install` (v=4 always passes --incremental
-            # so it can self-document its intent, even though we have
-            # to bootstrap with a full walk).
+            # Caller explicitly asked for the git fast-path but we have no
+            # checkpoint — expected on the first run after `stropha hook
+            # install` (the hook always passes --incremental to self-document
+            # intent). Reconcile is the safe bootstrap: it indexes everything
+            # via hashes and leaves a checkpoint for later incremental runs.
             log.info(
                 "pipeline.incremental_no_checkpoint",
                 repo=identity.normalized_key,
-                action="falling back to full walk",
+                action="falling back to hash reconcile",
             )
-            effective_mode = "full"
+            effective_mode = "reconcile"
 
         log.info(
             "pipeline.mode_resolved",
@@ -496,6 +502,8 @@ class Pipeline:
             self._index_one_repo_incremental(
                 repo_path, identity, repo_id, rstats, since_sha,  # type: ignore[arg-type]
             )
+        elif effective_mode == "reconcile":
+            self._index_one_repo_reconcile(repo_path, identity, repo_id, rstats)
         else:
             self._index_one_repo_full(repo_path, identity, repo_id, rstats)
 
@@ -541,6 +549,85 @@ class Pipeline:
             rstats.files_evicted = len(stale)
             log.info(
                 "pipeline.stale_files_evicted",
+                repo=identity.normalized_key,
+                evicted_files=len(stale),
+                evicted_chunks=evicted,
+                examples=stale[:5],
+            )
+            self._storage.commit()
+
+    def _index_one_repo_reconcile(
+        self, repo_path: Path, identity, repo_id: int, rstats: RepoStats,
+    ) -> None:
+        """Hash-based reconciliation (WIN-425) — git-independent change
+        detection that is crash-resilient by construction.
+
+        Walk the full current file set, then diff each file against the
+        stored ``files`` cache in memory (one bulk read, not one SELECT
+        per file). A file is (re)indexed when it is new OR its
+        ``(mtime, size)`` changed OR — honouring the ADR-004 / CLAUDE.md
+        §3.1 drift contract — the active ``(enricher_id, embedder_model)``
+        differs from what last indexed it. So a config change that alters
+        the enricher ``adapter_id`` or the embedder ``model_name`` forces
+        every file to be reprocessed, exactly like ``file_is_fresh``.
+
+        Crash-resilience: a run interrupted mid-pass leaves changed/new
+        files without a fresh ``files`` row, so the next reconcile picks
+        them up — regardless of the git checkpoint. Uncommitted edits are
+        seen too, because detection never consults git.
+        """
+        source_files = list(self._walker.discover(repo_path))
+        stored = self._storage.load_file_meta_map(repo_id)
+        # Same identifiers file_is_fresh / _index_files use, so the drift
+        # contract is enforced identically on the reconcile fast-path.
+        enricher_id = self._enricher.adapter_id
+        embedder_model = self._embedder.model_name
+
+        changed: list = []
+        for sf in source_files:
+            try:
+                st = sf.path.stat()
+            except OSError:
+                # Vanished between walk and stat — stale-cleanup evicts it.
+                continue
+            meta = stored.get(sf.rel_path)
+            if (
+                meta is not None
+                and meta.mtime == st.st_mtime
+                and meta.size_bytes == st.st_size
+                and meta.enricher_id == enricher_id
+                and meta.embedder_model == embedder_model
+            ):
+                rstats.files_skipped_fresh += 1
+                continue
+            changed.append(sf)
+
+        log.info(
+            "pipeline.reconcile_scan",
+            repo=identity.normalized_key,
+            total=len(source_files),
+            changed=len(changed),
+            fresh=rstats.files_skipped_fresh,
+        )
+
+        # Index new/changed files. ``_index_files`` re-checks chunk-level
+        # freshness, so unchanged chunks inside a touched file are not
+        # re-embedded.
+        if changed:
+            self._index_files(
+                changed, rstats,
+                repo_id=repo_id, repo_key=identity.normalized_key,
+            )
+
+        # Deletions: files tracked in the index but no longer on disk.
+        current_paths = [sf.rel_path for sf in source_files]
+        stale = self._storage.list_stale_files(repo_id, current_paths)
+        if stale:
+            evicted = self._storage.delete_chunks_by_repo_paths(repo_id, stale)
+            self._storage.delete_file_meta(repo_id, stale)
+            rstats.files_evicted = len(stale)
+            log.info(
+                "pipeline.reconcile_evicted",
                 repo=identity.normalized_key,
                 evicted_files=len(stale),
                 evicted_chunks=evicted,

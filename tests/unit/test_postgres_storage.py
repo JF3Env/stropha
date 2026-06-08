@@ -127,6 +127,24 @@ def test_migrate_and_stats(store: PostgresStorage) -> None:
     assert "***" in s["db_path"]  # password redacted
 
 
+def test_load_file_meta_map_roundtrip(store: PostgresStorage) -> None:
+    """WIN-425 reconcile relies on this batch read mirroring file_is_fresh:
+    one query returns every file's (mtime, size, enricher, embedder)."""
+    repo_id = _seed(store)
+    store.upsert_file_meta(
+        repo_id=repo_id, rel_path="auth.py", content_hash="h", size_bytes=10,
+        mtime=123.5, chunk_count=2, enricher_id="noop", embedder_model="m1",
+    )
+    store.commit()
+    m = store.load_file_meta_map(repo_id)
+    assert "auth.py" in m
+    assert m["auth.py"].mtime == 123.5
+    assert m["auth.py"].size_bytes == 10
+    assert m["auth.py"].enricher_id == "noop"
+    assert m["auth.py"].embedder_model == "m1"
+    assert store.load_file_meta_map(999999) == {}  # unknown repo -> empty
+
+
 def test_storage_target_is_redacted_dsn(store: PostgresStorage) -> None:
     """get_config surfaces this as pipeline.storage.path — for the postgres
     backend it must be the DSN (password-redacted), never a SQLite file path."""

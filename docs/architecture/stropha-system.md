@@ -598,13 +598,29 @@ Comentários explicam intenção; código explica mecanismo. Indexar como chunks
 
 ### 8.1 Detecção de mudança
 
-Fonte de verdade: **Git**.
+Fonte de verdade: **hash de conteúdo** (WIN-425). O modo `auto` (default)
+reconcilia o working tree contra o cache `files` (`content_hash`, via
+fast-path `mtime`+`size`), independente do Git:
+
+- Caminha o conjunto atual de arquivos (walker configurado).
+- (Re)indexa arquivo novo, com `(mtime,size)` alterado, OU cujo par de
+  drift ativo `(enricher_id, embedder_model)` difere do que o indexou
+  (ver §3.1 / ADR-004 — troca de config força reprocessamento).
+- Evicta arquivos presentes no índice mas ausentes em disco.
+
+Propriedades: resiliente a índice interrompido (arquivos sem linha `files`
+fresca são re-pegos no próximo run, **sem** `--rebuild`), enxerga edições
+não-commitadas e funciona em diretórios não-git. Implementação:
+`Pipeline._index_one_repo_reconcile()` + `Storage.load_file_meta_map()`.
+
+Git é uma **otimização opt-in** (`--incremental`), não a fronteira de
+correção:
 
 ```
 git diff --name-status <last_indexed_commit>..HEAD
 ```
 
-Para cada arquivo:
+Para cada arquivo (caminho git-diff):
 
 - `A` (added): chunk + embed + index.
 - `M` (modified): rechunk; comparar `content_hash` por chunk; reembed só os mudados.
@@ -642,8 +658,9 @@ Schema migrations + lazy backfill: adicionar coluna nullable, preencher em backg
 | **A** | v6 (`files` table) | File-level dirty cache keyed by `(repo_id, rel_path)` storing `mtime`, `size_bytes`, `content_hash`, `last_enricher_id`, `last_embedder_model`. 10x faster no-op runs (14.7s → 1.4s empirically). `Storage.file_is_fresh()` + `upsert_file_meta()`. |
 | **B** | — | Git-diff aware ingestion. `git diff --name-status <last_indexed_sha>..HEAD` drives the walker; only touched files re-chunked/embedded. `FileDelta` dataclass with `action: add|modify|delete|rename`. Hook v=4 passes `--incremental`. Auto-fallback to full walk when no checkpoint. |
 | **C** | — | Rename-resilient `chunk_id`. `Storage.rename_chunks()` recomputes `chunk_id` via `make_chunk_id(new_path, ...)` + regenerates FTS5 rows. Zero re-embed cost for renames. `GraphifyLoader` diff-loads (deltas only, not full DELETE+INSERT). |
+| **D** | — | Hash-based reconcile (WIN-425, 2026-06-08). `auto` (default) diffs the working tree against the `files` cache via `Storage.load_file_meta_map()` — git-independent, crash-resilient (interrupted runs self-heal), sees uncommitted edits, works on non-git dirs. Git-diff (`--incremental`) demoted to an opt-in fast-path. `Pipeline._index_one_repo_reconcile()`. |
 
-CLI flags: `--full` (force full walk), `--incremental` (force diff mode, errors if no checkpoint), `--since <sha>` (override checkpoint).
+CLI flags: `--full` (force full walk), `--incremental` (force git-diff fast-path, falls back to reconcile if no checkpoint), `--since <sha>` (override checkpoint). Default (no flag) = `auto` = hash reconcile.
 
 Env: `STROPHA_RENAME_THRESHOLD` (default 80) controls `git diff --find-renames=<N>` sensitivity.
 

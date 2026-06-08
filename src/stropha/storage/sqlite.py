@@ -21,7 +21,7 @@ import sqlite_vec  # type: ignore[import-untyped]
 from ..errors import StorageError
 from ..ingest.git_meta import RepoIdentity
 from ..logging import get_logger
-from ..models import Chunk, RepoRef, RepoStats, SearchHit
+from ..models import Chunk, RepoRef, RepoStats, SearchHit, StoredFileMeta
 
 if TYPE_CHECKING:
     # These are imported inline at call sites to avoid pulling memory/session
@@ -1027,6 +1027,30 @@ class Storage:
             embedder_model is not None
             and row["last_embedder_model"] != embedder_model
         )
+
+    def load_file_meta_map(self, repo_id: int) -> dict[str, StoredFileMeta]:
+        """Bulk-load the freshness columns for every ``files`` row of a repo.
+
+        One query for the whole repo, vs ``file_is_fresh`` which is one
+        query per file. The hash-based reconcile path (WIN-425) uses this
+        to diff the working tree against the index in memory — O(files)
+        stats + a dict lookup, no per-file SQL round-trip.
+        """
+        rows = self._conn.execute(
+            """SELECT rel_path, mtime, size_bytes,
+                      last_enricher_id, last_embedder_model
+               FROM files WHERE repo_id = ?""",
+            (repo_id,),
+        ).fetchall()
+        return {
+            r["rel_path"]: StoredFileMeta(
+                mtime=float(r["mtime"]),
+                size_bytes=int(r["size_bytes"]),
+                enricher_id=r["last_enricher_id"],
+                embedder_model=r["last_embedder_model"],
+            )
+            for r in rows
+        }
 
     def upsert_file_meta(
         self,

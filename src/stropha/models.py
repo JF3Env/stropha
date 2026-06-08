@@ -41,6 +41,24 @@ class FileDelta:
     similarity: int | None = None
 
 
+@dataclass(frozen=True)
+class StoredFileMeta:
+    """The freshness-relevant columns of one ``files`` row.
+
+    Returned in bulk by ``Storage.load_file_meta_map`` so the hash-based
+    reconcile path (WIN-425) can decide which files changed with a single
+    query + in-memory comparison, instead of one ``file_is_fresh`` SELECT
+    per file. Mirrors the comparison done by ``file_is_fresh``:
+    ``(mtime, size_bytes)`` plus the ADR-004 drift pair
+    ``(enricher_id, embedder_model)``.
+    """
+
+    mtime: float
+    size_bytes: int
+    enricher_id: str | None = None
+    embedder_model: str | None = None
+
+
 class Chunk(BaseModel):
     """An indexable unit. Phase 0 = whole file. Phase 1 adds AST kinds.
 
