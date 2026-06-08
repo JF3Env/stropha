@@ -701,3 +701,61 @@ def test_multi_repo_stats_shows_per_repo_counts(tmp_path: Path, storage: Storage
     assert stats_b["nodes"] == 1
     assert stats_b["edges_total"] == 0
     assert stats_b["repo_id"] == repo_b_id
+
+
+# --------------------------------------------------------------------------- WIN-345 / WIN-351 E2E regression
+
+
+def test_e2e_duplicate_extracted_edges_collapse_not_zeroed(
+    tmp_path: Path, storage: Storage
+) -> None:
+    """Regression guard for WIN-351: a real graph emits the SAME edge key many
+    times (one link per occurrence). Those duplicate EXTRACTED links must
+    collapse to the unique-edge-key count via the PRIMARY KEY — and the loaded
+    edge total must NOT be zero. INFERRED links are filtered by the default.
+
+    Production reality (2026-06-08): graph.json had 989,686 EXTRACTED links
+    that deduped to exactly 29,540 rows in graph_edges — this test asserts that
+    collapse-but-not-zero behaviour on a small synthetic snapshot.
+    """
+    graph_path = tmp_path / "graphify-out" / "graph.json"
+    # Edge key = (source, target, relation, source_file, source_location).
+    dup = {
+        "source": "a", "target": "b", "relation": "calls",
+        "confidence": "EXTRACTED", "source_file": "src/a.py", "source_location": "L10",
+    }
+    edges = (
+        [dict(dup) for _ in range(5)]  # 5 copies of the SAME edge key
+        + [{"source": "a", "target": "c", "relation": "calls",
+            "confidence": "EXTRACTED", "source_file": "src/a.py", "source_location": "L20"}]
+        + [{"source": "b", "target": "c", "relation": "references",
+            "confidence": "INFERRED", "source_file": "src/b.py", "source_location": "L5"}]
+        + [{"source": "a", "target": "c", "relation": "references",
+            "confidence": "INFERRED", "source_file": "src/a.py", "source_location": "L9"}]
+    )
+    _write_graph(
+        graph_path,
+        nodes=[{"id": "a", "label": "A"}, {"id": "b", "label": "B"}, {"id": "c", "label": "C"}],
+        edges=edges,
+    )
+
+    loader = GraphifyLoader(storage, tmp_path)
+    res = loader.load()
+    assert res is not None
+    # edges_loaded counts every KEPT row (duplicates included): 5 dup + 1 distinct.
+    assert res.edges_loaded == 6
+    # INFERRED dropped by the default EXTRACTED filter.
+    assert res.edges_filtered == 2
+
+    # The table holds only the UNIQUE EXTRACTED edge keys, and is NOT zero.
+    g = storage.stats()["graph"]
+    assert g is not None
+    assert g["nodes"] == 3
+    assert g["edges_total"] == 2  # {(a,b,calls,...), (a,c,calls,...)}
+    assert g["edges_total"] > 0  # the WIN-351 regression guard
+    assert g["edges_by_confidence"] == {"EXTRACTED": 2}
+
+    # Idempotent: re-loading the same snapshot does not change the edge total.
+    res2 = loader.load()
+    assert res2 is not None
+    assert storage.stats()["graph"]["edges_total"] == 2
