@@ -7,7 +7,11 @@ from types import SimpleNamespace
 from typing import Any
 
 from stropha.models import RepoStats
-from stropha.server_health_tools import _lag_seconds, index_health_impl
+from stropha.server_health_tools import (
+    _lag_seconds,
+    build_index_watermark,
+    index_health_impl,
+)
 
 
 def _repo(**kw: Any) -> RepoStats:
@@ -133,3 +137,31 @@ def test_lag_seconds_handles_bad_input() -> None:
     assert _lag_seconds(_now(), "not-a-date") is None
     # naive timestamp is assumed UTC
     assert _lag_seconds(_now(), "2026-06-08T07:00:00") == 3600.0
+
+
+def test_build_index_watermark_stamps_only_repos_in_results() -> None:
+    st = _FakeStorage(
+        [
+            _repo(),  # github.com/x/repo, indexed 07:00, HEAD1
+            _repo(
+                normalized_key="github.com/x/other",
+                head_commit="OTHER1",
+                last_indexed_at="2026-06-08T06:00:00+00:00",
+            ),
+        ],
+        meta={},
+        ids={},
+    )
+    wm = build_index_watermark(st, {"github.com/x/repo"}, now_fn=_now)
+    assert len(wm) == 1
+    assert wm[0].repo == "github.com/x/repo"
+    assert wm[0].indexed_commit == "HEAD1"
+    assert wm[0].last_indexed_at == "2026-06-08T07:00:00+00:00"
+    assert wm[0].age_seconds == 3600.0
+
+
+def test_build_index_watermark_empty_when_no_keys() -> None:
+    st = _FakeStorage([_repo()], meta={}, ids={})
+    assert build_index_watermark(st, set(), now_fn=_now) == []
+    # falsy keys are ignored
+    assert build_index_watermark(st, {None, ""}, now_fn=_now) == []

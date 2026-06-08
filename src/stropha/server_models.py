@@ -66,6 +66,20 @@ class FacetCounts(BaseModel):
     )
 
 
+class IndexWatermark(BaseModel):
+    """Per-repo index freshness stamp on search responses (WIN-349) so the
+    agent can tell whether results reflect current code. The deep
+    commits-behind check lives in the ``index_health`` tool (WIN-348)."""
+
+    repo: str
+    indexed_commit: str | None = None
+    last_indexed_at: str | None = None
+    age_seconds: float | None = Field(
+        default=None,
+        description="Seconds since this repo was last indexed (None if unknown).",
+    )
+
+
 class SearchResponse(BaseModel):
     results: list[SearchResult]
     total_candidates: int = Field(
@@ -97,6 +111,15 @@ class SearchResponse(BaseModel):
             "to flag bad / duplicate / low-signal ranking — that's how the "
             "Meta-Harness feedback loop learns. Auto-stamped by the @traced "
             "decorator; matches the JSONL trace record for this search."
+        ),
+    )
+    index_watermark: list[IndexWatermark] = Field(
+        default_factory=list,
+        description=(
+            "WIN-349: per-repo index freshness for the repos represented in "
+            "these results — indexed_commit + last_indexed_at + age_seconds. "
+            "Lets you tell whether results reflect current code; if they look "
+            "stale, call index_health for the full commits-behind check."
         ),
     )
 

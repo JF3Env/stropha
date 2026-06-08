@@ -205,6 +205,22 @@ def search_code_impl(
             pinned=len(app.pinned_chunk_ids),
         )
 
+    # WIN-349: stamp each response with per-repo index freshness so the agent
+    # can tell whether results reflect current code. Best-effort — a watermark
+    # failure must never break the search itself.
+    watermark: list[Any] = []
+    try:
+        from .server_health_tools import build_index_watermark
+
+        repo_keys: set[str] = set()
+        for hit in hits:
+            repo = getattr(hit, "repo", None)
+            if repo is not None:
+                repo_keys.add(repo.normalized_key)
+        watermark = build_index_watermark(app.storage, repo_keys)
+    except Exception:
+        log.debug("search.watermark.failed", exc_info=True)
+
     return SearchResponse(
         results=[to_result(hit) for hit in hits],
         total_candidates=len(hits),
@@ -212,4 +228,5 @@ def search_code_impl(
         facets=facets,
         spilled_count=spilled_count,
         truncated_oversize=truncated_oversize,
+        index_watermark=watermark,
     )

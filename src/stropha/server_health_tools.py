@@ -154,3 +154,36 @@ def index_health_impl(
         "repos": repos_out,
         "notes": notes,
     }
+
+
+def build_index_watermark(
+    storage: Any,
+    repo_keys: Any,
+    *,
+    now_fn: Callable[[], datetime] | None = None,
+) -> list[Any]:
+    """Per-repo freshness stamps (WIN-349) for the repos in a search result set.
+
+    Cheap by design: one ``list_repos()`` read, no git per query. Returns
+    ``IndexWatermark`` rows only for the repos in ``repo_keys``; empty when
+    there is nothing to stamp. The deep commits-behind check stays in
+    ``index_health``.
+    """
+    wanted = {k for k in repo_keys if k}
+    if not wanted:
+        return []
+    from .server_models import IndexWatermark
+
+    now = (now_fn or _utcnow)()
+    out: list[Any] = []
+    for r in storage.list_repos():
+        if r.normalized_key in wanted:
+            out.append(
+                IndexWatermark(
+                    repo=r.normalized_key,
+                    indexed_commit=r.head_commit,
+                    last_indexed_at=r.last_indexed_at,
+                    age_seconds=_lag_seconds(now, r.last_indexed_at),
+                )
+            )
+    return out
