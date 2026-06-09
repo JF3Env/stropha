@@ -85,8 +85,39 @@ _is_running() {
     [ -f "$PIDFILE" ] || return 1
     PID=$(cat "$PIDFILE")
     kill -0 "$PID" 2>/dev/null || { rm -f "$PIDFILE"; return 1; }
-    # Verify it's actually responding
-    curl -sf "http://${HOST}:${PORT}/health" >/dev/null 2>&1
+    # Liveness only: process is up and the event loop answers /health. NOTE
+    # this does NOT prove the MCP endpoint works — a deadlocked session path
+    # keeps /health green while /mcp hangs (use _mcp_responsive for that). We
+    # keep this cheap because _start uses it as the double-start guard.
+    curl -sf -m 5 "http://${HOST}:${PORT}/health" >/dev/null 2>&1
+}
+
+# Probe that the MCP *protocol* endpoint actually serves a request — not just
+# that /health is up. A wedged daemon (event loop alive, session-handling path
+# deadlocked) keeps /health green while POST /mcp never returns headers, so a
+# /health-only check reports a false "running". We send a real ``initialize``
+# and require HTTP response headers within the timeout, then best-effort
+# terminate the throwaway session so probes don't leak sessions.
+# Tunable: STROPHA_MCP_PROBE_TIMEOUT (seconds, default 8).
+_mcp_responsive() {
+    _probe_to="${STROPHA_MCP_PROBE_TIMEOUT:-8}"
+    _hdrs=$(curl -s -m "$_probe_to" -D - -o /dev/null \
+        -X POST "http://${HOST}:${PORT}/mcp" \
+        -H 'Content-Type: application/json' \
+        -H 'Accept: application/json, text/event-stream' \
+        -d '{"jsonrpc":"2.0","id":"stropha-healthprobe","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"stropha-mcp-ensure","version":"0"}}}' \
+        2>/dev/null) || return 1
+    # No HTTP status line => no response headers => wedged or unreachable.
+    printf '%s\n' "$_hdrs" | grep -qi '^HTTP/' || return 1
+    # Best-effort: terminate the throwaway session so the probe leaks nothing.
+    _sid=$(printf '%s\n' "$_hdrs" | grep -i '^mcp-session-id:' | head -1 \
+        | tr -d '\r' | sed -E 's/^[Mm][Cc][Pp]-[Ss]ession-[Ii]d:[[:space:]]*//')
+    if [ -n "$_sid" ]; then
+        curl -s -m "$_probe_to" -o /dev/null -X DELETE \
+            "http://${HOST}:${PORT}/mcp" \
+            -H "mcp-session-id: ${_sid}" >/dev/null 2>&1 || true
+    fi
+    return 0
 }
 
 # --- Postgres helpers --------------------------------------------------------
@@ -212,16 +243,19 @@ _start() {
 
     echo $! > "$PIDFILE"
     
-    # Wait for it to become healthy (up to 30s for model loading)
+    # Wait for it to become healthy (up to 30s for model loading). /health
+    # alone is not enough — confirm the MCP protocol endpoint actually serves
+    # a request before declaring readiness, so a health-green-but-wedged start
+    # is reported as a warning rather than a false "ready".
     for i in $(seq 1 30); do
-        if curl -sf "http://${HOST}:${PORT}/health" >/dev/null 2>&1; then
-            echo "[stropha-mcp] ready (pid $(cat "$PIDFILE"), port $PORT)"
+        if curl -sf -m 5 "http://${HOST}:${PORT}/health" >/dev/null 2>&1 && _mcp_responsive; then
+            echo "[stropha-mcp] ready (pid $(cat "$PIDFILE"), port $PORT) — /mcp responsive"
             return 0
         fi
         sleep 1
     done
 
-    echo "[stropha-mcp] warning: started but health check not yet passing" >&2
+    echo "[stropha-mcp] warning: started but /mcp not responding to an MCP request" >&2
     echo "[stropha-mcp] check $LOGFILE for details" >&2
 }
 
@@ -242,7 +276,13 @@ _stop() {
 _status() {
     _pg_status
     if _is_running; then
-        echo "[stropha-mcp] running (pid $(cat "$PIDFILE"), port $PORT)"
+        if _mcp_responsive; then
+            echo "[stropha-mcp] running (pid $(cat "$PIDFILE"), port $PORT) — /mcp responsive"
+        else
+            echo "[stropha-mcp] WEDGED: pid $(cat "$PIDFILE") alive and /health OK, but /mcp is not responding (port $PORT)" >&2
+            echo "[stropha-mcp] recover with: $0 --stop && $0" >&2
+            return 2
+        fi
     else
         echo "[stropha-mcp] not running"
         return 1
