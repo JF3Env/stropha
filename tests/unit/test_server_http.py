@@ -13,7 +13,11 @@ from __future__ import annotations
 import asyncio
 import json
 from typing import Any
+from unittest.mock import patch
 
+import anyio
+
+from stropha import server_http
 from stropha.server_http import RestartTolerantSessionManager
 
 
@@ -133,3 +137,62 @@ def test_known_session_uses_existing_transport_no_recovery() -> None:
     sent = asyncio.run(_drive(mgr, session_id="live-1", serve_impl=serve_must_not_run))
     assert calls == ["handled"]
     assert _starts(sent)[0]["status"] == 200
+
+
+def test_handle_request_runs_outside_session_creation_lock() -> None:
+    """Regression for the /mcp deadlock: ``_session_creation_lock`` must be
+    RELEASED before ``handle_request`` runs. Holding it across the full request
+    serialises every new/stale-session request, so one slow/stuck request — or
+    a burst of clients reconnecting with stale session ids after a daemon
+    restart or Postgres bounce — piles up on the lock and wedges the whole /mcp
+    endpoint while /health stays green."""
+    observed: dict[str, Any] = {}
+
+    class FakeTransport:
+        is_terminated = False
+        idle_scope = None
+
+        def __init__(self, *, mcp_session_id: str, **_kwargs: Any) -> None:
+            self.mcp_session_id = mcp_session_id
+
+        async def handle_request(self, scope, receive, send) -> None:
+            observed["locked_during_handle"] = mgr._session_creation_lock.locked()
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b"{}", "more_body": False})
+
+    class FakeTaskGroup:
+        async def start(self, _func, **_kwargs) -> None:
+            # Simulate the server task having started without standing up the
+            # real transport connect()/app.run() machinery.
+            return None
+
+    mgr = _bare_manager()
+    mgr.json_response = True
+    mgr.event_store = None
+    mgr.security_settings = None
+    mgr.retry_interval = None
+    mgr._session_creation_lock = anyio.Lock()
+    mgr._task_group = FakeTaskGroup()  # type: ignore[assignment]
+
+    async def _run() -> list[dict[str, Any]]:
+        sent: list[dict[str, Any]] = []
+
+        async def send(msg: dict[str, Any]) -> None:
+            sent.append(msg)
+
+        async def receive() -> dict[str, Any]:
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        scope = {"type": "http", "headers": []}
+        with patch.object(server_http, "RestartTolerantTransport", FakeTransport):
+            await mgr._serve_with_new_session(
+                scope, receive, send, server_stateless=False, session_id=None,
+            )
+        return sent
+
+    sent = asyncio.run(_run())
+
+    assert observed["locked_during_handle"] is False  # the core regression guard
+    assert mgr._session_creation_lock.locked() is False
+    assert _starts(sent)[0]["status"] == 200
+    assert _bodies(sent)[-1]["more_body"] is False

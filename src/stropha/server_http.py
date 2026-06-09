@@ -195,7 +195,18 @@ class RestartTolerantSessionManager(StreamableHTTPSessionManager):
                             del self._server_instances[http_transport.mcp_session_id]
 
             await self._task_group.start(run_server)
-            await http_transport.handle_request(scope, receive, send)
+
+        # Serve the request OUTSIDE ``_session_creation_lock``. The lock only
+        # needs to guard transport creation + registration + task start — the
+        # stateless path (StreamableHTTPSessionManager._handle_stateless_request)
+        # holds no lock during ``handle_request`` either. Holding it across
+        # ``handle_request`` serialises the FULL request lifetime, so a single
+        # slow/stuck request — or a burst of clients reconnecting with stale
+        # session ids after a daemon restart or a Postgres bounce — piles up on
+        # the lock and deadlocks the whole /mcp endpoint while /health stays
+        # green. The transport is already registered in ``_server_instances``
+        # and its server task has started, so serving here is safe.
+        await http_transport.handle_request(scope, receive, send)
 
 
 class RestartTolerantFastMCP(FastMCP[Any]):
