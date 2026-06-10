@@ -1750,7 +1750,9 @@ def _graph_snapshot(app: AppContext) -> dict:
         if graph_stats:
             summary["loaded"] = True
             summary["node_count"] = graph_stats.get("nodes", 0)
-            summary["edge_count"] = graph_stats.get("edges", 0)
+            # ``_graph_stats``/``GraphifyLoader.stats`` expose the edge count as
+            # ``edges_total`` (``edges`` was a stale key that silently read 0).
+            summary["edge_count"] = graph_stats.get("edges_total", 0)
             summary["last_loaded_at"] = graph_stats.get("last_loaded_at")
             summary["embedding_model"] = graph_stats.get("embedding_model")
             summary["embedding_dim"] = graph_stats.get("embedding_dim")

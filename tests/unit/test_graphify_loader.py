@@ -703,6 +703,56 @@ def test_multi_repo_stats_shows_per_repo_counts(tmp_path: Path, storage: Storage
     assert stats_b["repo_id"] == repo_b_id
 
 
+def test_multi_repo_storage_stats_graph_aggregates_suffixed_keys(
+    tmp_path: Path, storage: Storage,
+) -> None:
+    """Regression: ``Storage.stats()['graph']`` must surface a populated graph
+    in multi-repo mode.
+
+    Multi-repo loads write per-repo-suffixed meta keys
+    (``last_loaded_at:{repo_id}``) — there is NO bare ``last_loaded_at`` row.
+    The aggregate ``_graph_stats`` used to query only the bare key, so
+    ``stats()['graph']`` returned ``None`` even with a fully loaded mirror.
+    That made ``get_config`` report ``graph_traversal_available: false`` while
+    the ``find_*`` tools (which use ``retrieval.graph.graph_loaded``, already
+    suffix-aware) worked fine — a confusing false "graph is down" signal.
+    """
+    repo_a_id = _register_repo(storage, 1, "test:repo_a")
+    repo_b_id = _register_repo(storage, 2, "test:repo_b")
+
+    repo_a_root = tmp_path / "repo_a"
+    repo_a_root.mkdir()
+    _write_graph(
+        repo_a_root / "graphify-out" / "graph.json",
+        nodes=[{"id": "a1", "label": "A1"}, {"id": "a2", "label": "A2"}],
+        edges=[{"source": "a1", "target": "a2", "relation": "calls",
+                "confidence": "EXTRACTED"}],
+    )
+
+    repo_b_root = tmp_path / "repo_b"
+    repo_b_root.mkdir()
+    _write_graph(
+        repo_b_root / "graphify-out" / "graph.json",
+        nodes=[{"id": "b1", "label": "B1"}],
+        edges=[],
+    )
+
+    GraphifyLoader(storage, repo_a_root, repo_id=repo_a_id).load()
+    GraphifyLoader(storage, repo_b_root, repo_id=repo_b_id).load()
+
+    # Precondition: no bare key exists — only per-repo suffixed keys.
+    bare = storage._conn.execute(
+        "SELECT COUNT(*) AS n FROM graph_meta WHERE key = 'last_loaded_at'"
+    ).fetchone()["n"]
+    assert bare == 0
+
+    g = storage.stats()["graph"]
+    assert g is not None, "multi-repo graph must not report as 'no graph'"
+    assert g["nodes"] == 3  # 2 (repo A) + 1 (repo B), aggregate
+    assert g["edges_total"] == 1  # aggregate across repos
+    assert g["last_loaded_at"]  # truthy ISO string (most recent across repos)
+
+
 # --------------------------------------------------------------------------- WIN-345 / WIN-351 E2E regression
 
 

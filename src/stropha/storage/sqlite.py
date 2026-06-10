@@ -2466,9 +2466,18 @@ class Storage:
         """Aggregate graphify mirror state. Returns None when never loaded."""
         cur = self._conn.cursor()
         # graph_meta is created at v4 but the row only exists after a load.
+        # Multi-repo mode stores per-repo-suffixed keys
+        # (``last_loaded_at:{repo_id}``); single-repo mode uses the bare key
+        # (see ``GraphifyLoader`` in ingest/graphify_loader.py). Accept either
+        # so a populated multi-repo mirror is NOT misreported as "no graph" —
+        # this mirrors ``retrieval.graph.graph_loaded``. We surface the most
+        # recent ``last_loaded_at`` (ISO strings sort chronologically) and
+        # aggregate node/edge counts across every repo.
         try:
             row = cur.execute(
-                "SELECT value FROM graph_meta WHERE key = 'last_loaded_at'"
+                "SELECT value FROM graph_meta WHERE key = ? OR key LIKE ? "
+                "ORDER BY value DESC LIMIT 1",
+                ("last_loaded_at", "last_loaded_at:%"),
             ).fetchone()
         except sqlite3.OperationalError:
             return None
@@ -2486,10 +2495,12 @@ class Storage:
             "SELECT COUNT(DISTINCT community_id) AS n FROM graph_nodes WHERE community_id IS NOT NULL"
         ).fetchone()["n"]
         path_row = cur.execute(
-            "SELECT value FROM graph_meta WHERE key = 'graph_path'"
+            "SELECT value FROM graph_meta WHERE key = ? OR key LIKE ? LIMIT 1",
+            ("graph_path", "graph_path:%"),
         ).fetchone()
         conf_row = cur.execute(
-            "SELECT value FROM graph_meta WHERE key = 'confidence_filter'"
+            "SELECT value FROM graph_meta WHERE key = ? OR key LIKE ? LIMIT 1",
+            ("confidence_filter", "confidence_filter:%"),
         ).fetchone()
         return {
             "nodes": int(n_nodes),

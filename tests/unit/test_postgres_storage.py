@@ -294,6 +294,53 @@ def test_graph_loaders_and_traversal_via_conn_shim(store: PostgresStorage) -> No
     assert gstats is not None and gstats["nodes"] == 2 and gstats["edges_total"] == 1
 
 
+def test_graph_stats_multi_repo_suffixed_meta_keys(store: PostgresStorage) -> None:
+    """Regression: ``stats()['graph']`` must surface a populated graph when the
+    loader wrote per-repo-suffixed meta keys (multi-repo mode).
+
+    Multi-repo loads write ``last_loaded_at:{repo_id}`` (no bare key). The
+    aggregate ``_graph_stats`` previously queried only the bare key, so on a
+    real multi-repo index ``get_config`` reported ``graph_traversal_available:
+    false`` while the ``find_*`` tools (suffix-aware via
+    ``retrieval.graph.graph_loaded``) worked — a false "graph is down" signal.
+    """
+    repo_id = _seed(store)
+    conn = store._conn  # the compatibility shim
+    # Start from a clean graph mirror: the module-scoped DB is shared across
+    # tests and ``store.clear()`` does not wipe the graph tables, so an earlier
+    # test may have left a bare ``last_loaded_at`` row that would mask the bug.
+    for tbl in ("graph_meta", "graph_nodes", "graph_edges"):
+        store._raw.execute(f"DELETE FROM {tbl};")
+    store._raw.commit()
+    conn.execute(
+        "INSERT OR REPLACE INTO graph_nodes "
+        "(node_id, label, source_file, source_location, repo_id) VALUES (?, ?, ?, ?, ?)",
+        (f"{repo_id}:n1", "auth.validate_token", "auth.py", "2:4", repo_id),
+    )
+    # Only a per-repo SUFFIXED meta key — deliberately no bare 'last_loaded_at'.
+    conn.execute(
+        "INSERT OR REPLACE INTO graph_meta (key, value) VALUES (?, ?)",
+        (f"last_loaded_at:{repo_id}", "2026-02-02T00:00:00+00:00"),
+    )
+    conn.execute(
+        "INSERT OR REPLACE INTO graph_meta (key, value) VALUES (?, ?)",
+        (f"graph_path:{repo_id}", "/fake/graphify-out/graph.json"),
+    )
+    conn.commit()
+
+    # Sanity: there is no bare key, only the suffixed one.
+    bare = store._raw.execute(
+        "SELECT COUNT(*) AS n FROM graph_meta WHERE key = 'last_loaded_at';"
+    ).fetchone()["n"]
+    assert bare == 0
+
+    gstats = store.stats()["graph"]
+    assert gstats is not None, "multi-repo graph must not report as 'no graph'"
+    assert gstats["nodes"] == 1
+    assert gstats["last_loaded_at"] == "2026-02-02T00:00:00+00:00"
+    assert gstats["graph_path"] == "/fake/graphify-out/graph.json"
+
+
 def test_index_advisory_lock_serializes_writers(pg_dsn: str) -> None:
     """Two concurrent indexers must not both hold the index lock (prevents the
     chunks/files deadlock). The second try-acquire returns False until the
