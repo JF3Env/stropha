@@ -1,0 +1,107 @@
+"""Unit tests for once-per-process schema migration (lock-wedge fix).
+
+The MCP daemon builds a fresh PostgresStorage per transport session. Before
+the ``_MIGRATED_DSNS`` memo, every session re-ran the migration DDL, and
+``CREATE INDEX IF NOT EXISTS`` takes a SHARE lock on its table even when the
+index already exists — queueing behind any in-flight ``stropha index`` write
+transaction and wedging MCP session creation until the indexer committed.
+
+These tests bypass ``__init__`` (no real Postgres needed) and drive
+``_migrate`` directly: the memo must short-circuit repeat runs, and a lock
+timeout must retry with bounded attempts instead of hanging or memoizing a
+failed migration.
+"""
+
+from __future__ import annotations
+
+import psycopg
+import pytest
+
+from stropha.adapters.storage import postgres as pg_mod
+from stropha.adapters.storage.postgres import PostgresStorage, _CompatConn
+from stropha.errors import StorageError
+
+_TEST_DSN = "postgresql://u:p@127.0.0.1:1/migrate-once-test"
+
+
+class _PoisonedRaw:
+    """Connection stand-in that fails the test if the memo path touches it."""
+
+    def cursor(self) -> None:
+        raise AssertionError("memoized DSN must not touch the connection")
+
+    def rollback(self) -> None:
+        self.rolled_back = getattr(self, "rolled_back", 0) + 1
+
+
+def _bare_storage(dsn: str = _TEST_DSN) -> PostgresStorage:
+    st = object.__new__(PostgresStorage)
+    st._dsn = dsn
+    st._index_lock_held = False
+    st._raw = _PoisonedRaw()
+    st._conn = _CompatConn(st._raw)
+    return st
+
+
+@pytest.fixture(autouse=True)
+def _clean_memo():
+    pg_mod._MIGRATED_DSNS.discard(_TEST_DSN)
+    yield
+    pg_mod._MIGRATED_DSNS.discard(_TEST_DSN)
+
+
+def test_migrate_skipped_for_memoized_dsn() -> None:
+    st = _bare_storage()
+    pg_mod._MIGRATED_DSNS.add(_TEST_DSN)
+
+    st._migrate()  # must return before any connection use
+
+
+def test_migrate_runs_once_then_memoizes() -> None:
+    st = _bare_storage()
+    calls: list[int] = []
+    st._run_migration_ddl = lambda: calls.append(1)  # type: ignore[method-assign]
+
+    st._migrate()
+    st._migrate()
+
+    assert calls == [1]
+    assert _TEST_DSN in pg_mod._MIGRATED_DSNS
+
+
+def test_migrate_retries_lock_timeout_then_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    st = _bare_storage()
+    attempts: list[int] = []
+
+    def _always_locked() -> None:
+        attempts.append(1)
+        raise psycopg.errors.LockNotAvailable("canceling statement due to lock timeout")
+
+    st._run_migration_ddl = _always_locked  # type: ignore[method-assign]
+    monkeypatch.setattr("time.sleep", lambda _s: None)
+
+    with pytest.raises(StorageError, match="indexing"):
+        st._migrate()
+
+    assert len(attempts) == pg_mod._MIGRATE_LOCK_RETRIES
+    assert st._raw.rolled_back == pg_mod._MIGRATE_LOCK_RETRIES
+    # A failed migration must not be memoized — the next instance retries.
+    assert _TEST_DSN not in pg_mod._MIGRATED_DSNS
+
+
+def test_migrate_recovers_when_lock_clears(monkeypatch: pytest.MonkeyPatch) -> None:
+    st = _bare_storage()
+    attempts: list[int] = []
+
+    def _locked_once() -> None:
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise psycopg.errors.LockNotAvailable("canceling statement due to lock timeout")
+
+    st._run_migration_ddl = _locked_once  # type: ignore[method-assign]
+    monkeypatch.setattr("time.sleep", lambda _s: None)
+
+    st._migrate()
+
+    assert len(attempts) == 2
+    assert _TEST_DSN in pg_mod._MIGRATED_DSNS

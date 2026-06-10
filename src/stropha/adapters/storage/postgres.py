@@ -145,6 +145,20 @@ _UPSERT_PK: dict[str, list[str]] = {
 # `stropha index` runs can't deadlock on chunks/files. Arbitrary constant.
 _INDEX_LOCK_KEY = 0x53545250  # "STRP"
 
+# DSNs whose schema this process has already ensured. The MCP daemon builds a
+# fresh Storage per transport session; without this memo every session re-runs
+# ~25 idempotent DDL statements, and CREATE INDEX IF NOT EXISTS takes a SHARE
+# lock on its table *even when the index already exists* — queueing behind any
+# in-flight `stropha index` write transaction and wedging session creation
+# until the indexer commits.
+_MIGRATED_DSNS: set[str] = set()
+
+# A cold-start migration can still collide with a concurrent indexing run, so
+# bound each attempt's lock wait and retry instead of hanging indefinitely.
+_MIGRATE_LOCK_TIMEOUT = "5s"
+_MIGRATE_LOCK_RETRIES = 3
+_MIGRATE_LOCK_RETRY_DELAY_S = 2.0
+
 
 def _translate_sqlite_sql(sql: str) -> str | None:
     """Translate a SQLite-dialect statement to Postgres. ``None`` = swallow."""
@@ -364,7 +378,6 @@ class PostgresStorage:
 
         try:
             import psycopg
-            from psycopg.rows import dict_row
         except ModuleNotFoundError as exc:  # pragma: no cover - optional dep
             raise StorageError(
                 "PostgresStorage needs psycopg. Install the extra: "
@@ -373,7 +386,7 @@ class PostgresStorage:
             ) from exc
 
         try:
-            self._raw = psycopg.connect(self._dsn, row_factory=dict_row, autocommit=False)
+            self._raw = self._connect()
         except psycopg.Error as exc:
             raise StorageError(
                 f"Could not connect to Postgres at {self._dsn!r}: {exc}. Is it "
@@ -391,10 +404,93 @@ class PostgresStorage:
             self._reset_dim_dependent_tables_if_needed()
         self._check_dimension_consistency()
 
+    # ----- connection lifecycle -------------------------------------------
+
+    def _connect(self) -> Any:
+        """Open a fresh psycopg connection using the configured DSN."""
+        import psycopg
+        from psycopg.rows import dict_row
+
+        return psycopg.connect(self._dsn, row_factory=dict_row, autocommit=False)
+
+    def _reconnect(self) -> None:
+        """Replace a dead connection with a fresh one, rebinding the
+        SQLite-dialect shim (``self._conn``) so every downstream consumer
+        (search, graph traversal, session store) transparently uses the new
+        connection — they all reach Postgres through ``self._raw``."""
+        import contextlib
+
+        with contextlib.suppress(Exception):  # old connection already broken
+            self._raw.close()
+        self._raw = self._connect()
+        self._conn._raw = self._raw
+        log.warning("postgres.reconnected")
+
+    def ensure_connected(self) -> None:
+        """Best-effort connection heal, safe to call at every request boundary.
+
+        The backend holds a single long-lived psycopg connection. When the
+        Postgres container is bounced out from under a running daemon (e.g. a
+        Colima/Docker VM restart on laptop sleep), that connection dies and —
+        without this — every subsequent query fails on a dead socket until the
+        daemon is restarted. Here we cheaply detect the drop (one ``SELECT 1``)
+        and reconnect. Never raises: a real outage simply surfaces later as the
+        usual ``StorageError`` from the actual query.
+        """
+        # Don't disturb an in-flight indexing transaction (advisory lock held).
+        if self._index_lock_held:
+            return
+        import psycopg
+
+        try:
+            if self._raw.closed:
+                self._reconnect()
+                return
+            with self._raw.cursor() as cur:
+                cur.execute("SELECT 1")
+            self._raw.rollback()
+        except (psycopg.OperationalError, psycopg.InterfaceError):
+            try:
+                self._reconnect()
+            except Exception as exc:  # reconnect failed; the real query surfaces it
+                log.warning("postgres.reconnect_failed", error=str(exc))
+
     # ----- schema ---------------------------------------------------------
 
     def _migrate(self) -> None:
+        if self._dsn in _MIGRATED_DSNS:
+            return
+        import time
+
+        import psycopg
+
+        for attempt in range(_MIGRATE_LOCK_RETRIES):
+            try:
+                self._run_migration_ddl()
+                break
+            except psycopg.errors.LockNotAvailable as exc:
+                self._raw.rollback()
+                if attempt == _MIGRATE_LOCK_RETRIES - 1:
+                    raise StorageError(
+                        "Schema migration timed out waiting for a table lock "
+                        "(a concurrent indexing run is probably holding a "
+                        "long write transaction). Retry once indexing "
+                        "finishes."
+                    ) from exc
+                log.warning(
+                    "postgres.migrate_lock_retry",
+                    attempt=attempt + 1,
+                    retries=_MIGRATE_LOCK_RETRIES,
+                )
+                time.sleep(_MIGRATE_LOCK_RETRY_DELAY_S)
+        _MIGRATED_DSNS.add(self._dsn)
+
+    def _run_migration_ddl(self) -> None:
         with self._raw.cursor() as cur:
+            # SET LOCAL scopes the timeout to this transaction (psycopg opened
+            # one implicitly: autocommit=False), so the bounded lock wait never
+            # leaks into the search/index paths sharing this connection.
+            cur.execute(f"SET LOCAL lock_timeout = '{_MIGRATE_LOCK_TIMEOUT}';")
             cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
             cur.execute(
                 """
@@ -1193,8 +1289,17 @@ class PostgresStorage:
         return {"augmented": augmented, "unchanged": 0, "missing_graph": 0}
 
     def _graph_stats(self) -> dict[str, Any] | None:
+        # Multi-repo mode stores per-repo-suffixed meta keys
+        # (``last_loaded_at:{repo_id}``); single-repo mode uses the bare key
+        # (see ``GraphifyLoader`` in ingest/graphify_loader.py). Accept either
+        # so a populated multi-repo mirror is NOT misreported as "no graph" —
+        # this mirrors ``retrieval.graph.graph_loaded``. We surface the most
+        # recent ``last_loaded_at`` (ISO strings sort chronologically) and
+        # aggregate node/edge counts across every repo.
         row = self._raw.execute(
-            "SELECT value FROM graph_meta WHERE key = 'last_loaded_at';"
+            "SELECT value FROM graph_meta "
+            "WHERE key = %s OR key LIKE %s ORDER BY value DESC LIMIT 1;",
+            ("last_loaded_at", "last_loaded_at:%"),
         ).fetchone()
         if row is None:
             return None
@@ -1211,10 +1316,12 @@ class PostgresStorage:
             "WHERE community_id IS NOT NULL;"
         ).fetchone()["n"]
         path_row = self._raw.execute(
-            "SELECT value FROM graph_meta WHERE key = 'graph_path';"
+            "SELECT value FROM graph_meta WHERE key = %s OR key LIKE %s LIMIT 1;",
+            ("graph_path", "graph_path:%"),
         ).fetchone()
         conf_row = self._raw.execute(
-            "SELECT value FROM graph_meta WHERE key = 'confidence_filter';"
+            "SELECT value FROM graph_meta WHERE key = %s OR key LIKE %s LIMIT 1;",
+            ("confidence_filter", "confidence_filter:%"),
         ).fetchone()
         return {
             "nodes": int(n_nodes),

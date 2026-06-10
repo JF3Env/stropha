@@ -50,6 +50,13 @@ class AppContext:
 def ctx_from_mcp(mcp_ctx: Context) -> AppContext:
     """Pull the AppContext out of an MCP Context and bind session_id to logs."""
     app: AppContext = mcp_ctx.request_context.lifespan_context
+    # Self-heal a dropped DB connection (e.g. the Postgres container bounced by
+    # a Colima/Docker VM restart on laptop sleep) before the tool touches
+    # storage. Best-effort + cheap (one ``SELECT 1``); a no-op for backends
+    # (e.g. sqlite) that don't expose ``ensure_connected``.
+    ensure_connected = getattr(app.storage, "ensure_connected", None)
+    if callable(ensure_connected):
+        ensure_connected()
     if app.session_id:
         import structlog
 

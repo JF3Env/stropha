@@ -92,6 +92,15 @@ _is_running() {
     curl -sf -m 5 "http://${HOST}:${PORT}/health" >/dev/null 2>&1
 }
 
+# PIDs actually LISTENING on the MCP port. The pidfile tracks the `uv run`
+# wrapper, and killing the wrapper orphans the python server (PPID 1), which
+# keeps the port: /health then looks green from the orphan while a freshly
+# started server dies on EADDRINUSE. Stop/start must therefore reconcile
+# against the real listener, not just the pidfile.
+_port_listeners() {
+    lsof -tnP -iTCP:"${PORT}" -sTCP:LISTEN 2>/dev/null
+}
+
 # Probe that the MCP *protocol* endpoint actually serves a request — not just
 # that /health is up. A wedged daemon (event loop alive, session-handling path
 # deadlocked) keeps /health green while POST /mcp never returns headers, so a
@@ -152,6 +161,7 @@ _pg_start() {
         echo "[stropha-pg] creating container ${PG_CONTAINER} from ${PG_IMAGE}..."
         docker run -d \
             --name "$PG_CONTAINER" \
+            --restart unless-stopped \
             -e POSTGRES_USER="$PG_USER" \
             -e POSTGRES_PASSWORD="$PG_PASSWORD" \
             -e POSTGRES_DB="$PG_DB" \
@@ -160,6 +170,12 @@ _pg_start() {
             "$PG_IMAGE" >/dev/null \
             || { echo "[stropha-pg] 'docker run' failed (is the image pullable?)" >&2; return 0; }
     fi
+
+    # Auto-recover the DB after a Colima/Docker VM bounce (e.g. laptop sleep)
+    # WITHOUT a manual restart. `unless-stopped` still honours an explicit
+    # `--stop`. Reconcile on every start so it also applies to a pre-existing
+    # container created before this flag existed (metadata-only; no recreate).
+    docker update --restart=unless-stopped "$PG_CONTAINER" >/dev/null 2>&1 || true
 
     # Wait for readiness (up to 30s), then ensure the pgvector extension.
     i=0
@@ -213,6 +229,15 @@ _start() {
         echo "[stropha-mcp] already running (pid $(cat "$PIDFILE"), port $PORT)"
         return 0
     fi
+
+    # Not running per the pidfile, but the port may still be held by an
+    # orphaned server from an earlier stop (see _port_listeners). Starting on
+    # top of it would EADDRINUSE-crash the new server while the orphan keeps
+    # answering /health — a false "ready" on stale code. Clear it first.
+    for _lp in $(_port_listeners); do
+        echo "[stropha-mcp] killing orphaned server on port ${PORT} (pid $_lp)" >&2
+        kill "$_lp" 2>/dev/null || true
+    done
 
     echo "[stropha-mcp] starting on ${HOST}:${PORT}..."
 
@@ -270,6 +295,12 @@ _stop() {
     else
         echo "[stropha-mcp] not running"
     fi
+    # Killing the uv wrapper does not reach the python server it spawned —
+    # take down whatever still holds the port so the next start can bind.
+    for _lp in $(_port_listeners); do
+        kill "$_lp" 2>/dev/null && \
+            echo "[stropha-mcp] stopped orphaned server on port ${PORT} (pid $_lp)"
+    done
     _pg_stop
 }
 
