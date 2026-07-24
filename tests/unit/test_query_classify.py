@@ -150,6 +150,7 @@ class TestStreamWeights:
         assert weights.sparse == 1.0
         assert weights.symbol == 1.0
         assert weights.graph_vec == 1.0
+        assert weights.model2vec == 1.0
 
     def test_custom_weights(self):
         weights = StreamWeights(dense=0.5, sparse=1.5)
@@ -159,7 +160,13 @@ class TestStreamWeights:
     def test_to_dict(self):
         weights = StreamWeights(dense=0.5, sparse=1.5, symbol=2.0, graph_vec=0.8)
         d = weights.to_dict()
-        assert d == {"dense": 0.5, "sparse": 1.5, "symbol": 2.0, "graph_vec": 0.8}
+        assert d == {
+            "dense": 0.5,
+            "sparse": 1.5,
+            "symbol": 2.0,
+            "graph_vec": 0.8,
+            "model2vec": 1.0,
+        }
 
 
 class TestGetAdaptiveWeights:
@@ -201,6 +208,7 @@ class TestContinuousInterpolation:
         assert weights.sparse == NATURAL_WEIGHTS.sparse
         assert weights.symbol == NATURAL_WEIGHTS.symbol
         assert weights.graph_vec == NATURAL_WEIGHTS.graph_vec
+        assert weights.model2vec == NATURAL_WEIGHTS.model2vec
 
     def test_ratio_one_gives_symbol_weights(self):
         """symbol_ratio=1 should produce exactly SYMBOL_WEIGHTS."""
@@ -209,6 +217,7 @@ class TestContinuousInterpolation:
         assert weights.sparse == SYMBOL_WEIGHTS.sparse
         assert weights.symbol == SYMBOL_WEIGHTS.symbol
         assert weights.graph_vec == SYMBOL_WEIGHTS.graph_vec
+        assert weights.model2vec == SYMBOL_WEIGHTS.model2vec
 
     def test_ratio_half_is_midpoint(self):
         """symbol_ratio=0.5 should be the exact midpoint."""

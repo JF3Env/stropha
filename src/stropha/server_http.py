@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
+from collections.abc import Callable
 from typing import Any
 from uuid import uuid4
 
@@ -30,6 +32,20 @@ class RestartTolerantTransport(StreamableHTTPServerTransport):
 
 class RestartTolerantSessionManager(StreamableHTTPSessionManager):
     """Recover from stale ``mcp-session-id`` headers after daemon restart."""
+
+    shutdown_callback: Callable[[], None] | None = None
+
+    @contextlib.asynccontextmanager
+    async def run(self):  # type: ignore[override]
+        try:
+            async with super().run():
+                yield
+        finally:
+            if self.shutdown_callback is not None:
+                try:
+                    self.shutdown_callback()
+                except Exception:
+                    logger.exception("MCP process-level shutdown callback failed")
 
     async def _handle_stateful_request(self, scope, receive, send) -> None:  # type: ignore[override]
         request_mcp_session_id = self._header(scope, MCP_SESSION_ID_HEADER)
@@ -214,7 +230,7 @@ class RestartTolerantFastMCP(FastMCP[Any]):
 
     def streamable_http_app(self) -> Starlette:
         if self._session_manager is None:
-            self._session_manager = RestartTolerantSessionManager(
+            manager = RestartTolerantSessionManager(
                 app=self._mcp_server,
                 event_store=self._event_store,
                 retry_interval=self._retry_interval,
@@ -222,4 +238,8 @@ class RestartTolerantFastMCP(FastMCP[Any]):
                 stateless=self.settings.stateless_http,
                 security_settings=self.settings.transport_security,
             )
+            from .server_runtime import close_shared_runtime
+
+            manager.shutdown_callback = lambda: close_shared_runtime(self)
+            self._session_manager = manager
         return super().streamable_http_app()

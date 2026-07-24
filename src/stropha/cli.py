@@ -533,6 +533,7 @@ def index(
             pipeline = Pipeline(
                 storage=storage,
                 embedder=built.embedder,
+                secondary_embedder=built.secondary_embedder,
                 enricher=built.enricher,
                 walker=built.walker,
                 chunker=built.chunker,
@@ -932,6 +933,7 @@ def init(
             pipeline = Pipeline(
                 storage=built.storage,
                 embedder=built.embedder,
+                secondary_embedder=built.secondary_embedder,
                 enricher=built.enricher,
                 walker=built.walker,
                 chunker=built.chunker,
@@ -1100,6 +1102,7 @@ def pipeline_show(
         ("chunker", built.chunker),
         ("enricher", built.enricher),
         ("embedder", built.embedder),
+        ("secondary-embedder", built.secondary_embedder),
         ("storage", built.storage),
         ("retrieval", built.retrieval),
     ]
@@ -1137,6 +1140,7 @@ def pipeline_validate() -> None:
         built.chunker,
         built.enricher,
         built.embedder,
+        built.secondary_embedder,
         built.storage,
         built.retrieval,
     ):

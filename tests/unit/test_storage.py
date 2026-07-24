@@ -10,6 +10,7 @@ from stropha.errors import StorageError
 from stropha.ingest.git_meta import RepoIdentity
 from stropha.models import Chunk
 from stropha.storage import Storage
+from stropha.storage.sqlite import SCHEMA_VERSION
 
 
 def _identity(key: str = "github.com/example/repo", url: str | None = None) -> RepoIdentity:
@@ -47,6 +48,10 @@ def _vec(value: float, dim: int = 4) -> list[float]:
     v = [0.0] * dim
     v[int(value) % dim] = 1.0
     return v
+
+
+def _secondary_vec(axis: int) -> list[float]:
+    return _vec(float(axis), dim=256)
 
 
 @pytest.fixture
@@ -288,6 +293,141 @@ def test_backfill_refuses_when_paths_dont_match(tmp_path: Path) -> None:
     assert s.count_chunks_without_repo() == 1
 
 
+# ---- independent secondary embeddings (schema v14 / WIN-300) ------------
+
+
+def test_schema_v14_secondary_table_migrates_idempotently(tmp_path: Path) -> None:
+    db = tmp_path / "v14.db"
+    storage = Storage(db, embedding_dim=4)
+    storage.set_meta("schema_version", "13")
+    storage.commit()
+    storage.close()
+
+    upgraded = Storage(db, embedding_dim=4)
+    assert SCHEMA_VERSION == 14
+    assert upgraded.get_meta("schema_version") == "14"
+    table = upgraded._conn.execute(
+        "SELECT sql FROM sqlite_master WHERE name = 'vec_chunks_secondary'"
+    ).fetchone()
+    assert table is not None and "float[256]" in table["sql"]
+    upgraded.close()
+
+    reopened = Storage(db, embedding_dim=4)
+    assert reopened.get_meta("schema_version") == "14"
+
+
+def test_secondary_embedding_batch_freshness_search_and_identity(
+    storage: Storage,
+) -> None:
+    chunks = [
+        _make_chunk("sha256:secondary-a", "A.java", "class A {}"),
+        _make_chunk("sha256:secondary-b", "B.java", "class B {}"),
+    ]
+    for index, chunk in enumerate(chunks):
+        storage.upsert_chunk(chunk, _vec(float(index)), "primary", 4)
+
+    pending = storage.list_chunks_needing_secondary_embeddings("model2vec:v1")
+    assert [item["chunk_id"] for item in pending] == [chunk.chunk_id for chunk in chunks]
+    assert storage.upsert_secondary_embeddings(
+        [
+            {
+                "chunk_id": chunk.chunk_id,
+                "content_hash": chunk.content_hash,
+                "embedding": _secondary_vec(index),
+            }
+            for index, chunk in enumerate(chunks)
+        ],
+        "model2vec:v1",
+    ) == 2
+    storage.commit()
+
+    assert storage.list_chunks_needing_secondary_embeddings("model2vec:v1") == []
+    assert storage.count_secondary_embeddings("model2vec:v1") == 2
+    hits = storage.search_secondary_embeddings(
+        _secondary_vec(0), "model2vec:v1", k=2
+    )
+    assert [hit.chunk_id for hit in hits] == [
+        "sha256:secondary-a",
+        "sha256:secondary-b",
+    ]
+
+    assert storage.count_secondary_embeddings("model2vec:v2") == 0
+    assert storage.search_secondary_embeddings(_secondary_vec(0), "model2vec:v2") == []
+    assert len(storage.list_chunks_needing_secondary_embeddings("model2vec:v2")) == 2
+
+
+def test_secondary_embedding_rejects_stale_batch_item(storage: Storage) -> None:
+    chunk = _make_chunk("sha256:secondary-stale", "Stale.java", "class Stale {}")
+    storage.upsert_chunk(chunk, _vec(0), "primary", 4)
+
+    assert storage.upsert_secondary_embeddings(
+        [{"chunk_id": chunk.chunk_id, "content_hash": "old", "embedding": _secondary_vec(0)}],
+        "model2vec:v1",
+    ) == 0
+    assert storage.count_secondary_embeddings("model2vec:v1") == 0
+
+    assert storage.upsert_secondary_embeddings(
+        [
+            {
+                "chunk_id": chunk.chunk_id,
+                "content_hash": chunk.content_hash,
+                "embedding": _secondary_vec(0),
+            }
+        ],
+        "model2vec:v1",
+    ) == 1
+    storage._conn.execute(
+        "UPDATE chunks SET content_hash = 'new-content' WHERE chunk_id = ?",
+        (chunk.chunk_id,),
+    )
+    assert storage.count_secondary_embeddings("model2vec:v1") == 0
+    assert storage.search_secondary_embeddings(_secondary_vec(0), "model2vec:v1") == []
+    pending = storage.list_chunks_needing_secondary_embeddings("model2vec:v1")
+    assert pending[0]["content_hash"] == "new-content"
+
+
+def test_secondary_embedding_delete_clear_and_rename_lifecycle(storage: Storage) -> None:
+    repo_id = storage.register_repo(_identity("github.com/secondary/lifecycle"))
+    chunk = _make_chunk("sha256:secondary-life", "Old.java", "class Life {}")
+    storage.upsert_chunk(chunk, _vec(0), "primary", 4, repo_id=repo_id)
+    storage.upsert_secondary_embeddings(
+        [
+            {
+                "chunk_id": chunk.chunk_id,
+                "content_hash": chunk.content_hash,
+                "embedding": _secondary_vec(0),
+            }
+        ],
+        "model2vec:v1",
+    )
+
+    assert storage.rename_chunks(repo_id, "Old.java", "New.java") == 1
+    assert storage.count_secondary_embeddings("model2vec:v1") == 1
+    renamed_hit = storage.search_secondary_embeddings(
+        _secondary_vec(0), "model2vec:v1", k=1
+    )[0]
+    assert renamed_hit.rel_path == "New.java"
+    assert renamed_hit.chunk_id != chunk.chunk_id
+
+    assert storage.delete_chunk(renamed_hit.chunk_id) is True
+    assert storage.count_secondary_embeddings("model2vec:v1") == 0
+
+    replacement = _make_chunk("sha256:secondary-clear", "Clear.java", "class Clear {}")
+    storage.upsert_chunk(replacement, _vec(1), "primary", 4, repo_id=repo_id)
+    storage.upsert_secondary_embeddings(
+        [
+            {
+                "chunk_id": replacement.chunk_id,
+                "content_hash": replacement.content_hash,
+                "embedding": _secondary_vec(1),
+            }
+        ],
+        "model2vec:v1",
+    )
+    storage.clear()
+    assert storage.count_secondary_embeddings("model2vec:v1") == 0
+
+
 # ---- faceted search tests ----
 
 
@@ -479,6 +619,10 @@ def test_dim_mismatch_without_force_rebuild_raises(tmp_path: Path) -> None:
         embedding_text="x = 1",
         enricher_id="noop",
     )
+    s.upsert_secondary_embeddings(
+        [{"chunk_id": "c1", "content_hash": "c1", "embedding": _secondary_vec(0)}],
+        "model2vec:v1",
+    )
     s.commit()
     s.close()
 
@@ -511,6 +655,10 @@ def test_dim_mismatch_with_force_rebuild_recreates_vec_chunks(tmp_path: Path) ->
         embedding_text="x = 1",
         enricher_id="noop",
     )
+    s.upsert_secondary_embeddings(
+        [{"chunk_id": "c1", "content_hash": "c1", "embedding": _secondary_vec(0)}],
+        "model2vec:v1",
+    )
     s.commit()
     chunks_before = s._conn.execute("SELECT COUNT(*) AS n FROM chunks").fetchone()["n"]
     assert chunks_before == 1
@@ -523,6 +671,7 @@ def test_dim_mismatch_with_force_rebuild_recreates_vec_chunks(tmp_path: Path) ->
 
     # All dim-coupled data is now cleared.
     assert s2._conn.execute("SELECT COUNT(*) AS n FROM chunks").fetchone()["n"] == 0
+    assert s2.count_secondary_embeddings("model2vec:v1") == 0
 
     # The vec_chunks table is now keyed at the new dim — inserting a
     # 512-vector works, while a 1024-vector would have failed.
@@ -560,6 +709,10 @@ def test_force_rebuild_is_noop_when_dim_unchanged(tmp_path: Path) -> None:
         embedding_text="x = 1",
         enricher_id="noop",
     )
+    s.upsert_secondary_embeddings(
+        [{"chunk_id": "c1", "content_hash": "c1", "embedding": _secondary_vec(0)}],
+        "model2vec:v1",
+    )
     s.commit()
     s.close()
 
@@ -567,3 +720,4 @@ def test_force_rebuild_is_noop_when_dim_unchanged(tmp_path: Path) -> None:
     # (Pipeline.run will call clear() separately when rebuild=True.)
     s2 = Storage(db, embedding_dim=4, force_rebuild=True)
     assert s2._conn.execute("SELECT COUNT(*) AS n FROM chunks").fetchone()["n"] == 1
+    assert s2.count_secondary_embeddings("model2vec:v1") == 1

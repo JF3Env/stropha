@@ -26,6 +26,11 @@ from pydantic import BaseModel
 from ..ingest.git_meta import RepoIdentity
 from ..models import Chunk, RepoStats, SearchHit, StoredFileMeta
 from ..pipeline.base import StageHealth
+from ..secondary_embeddings import (
+    SECONDARY_EMBEDDING_DIM,
+    SecondaryEmbeddingChunk,
+    SecondaryEmbeddingVector,
+)
 
 
 @runtime_checkable
@@ -153,6 +158,36 @@ class StorageStage(Protocol):
     def get_chunk_by_id(self, chunk_id: str) -> dict[str, Any] | None: ...
 
     def delete_chunk(self, chunk_id: str) -> bool: ...
+
+    # ----- Independent secondary embeddings ------------------------------
+
+    def list_chunks_needing_secondary_embeddings(
+        self,
+        embedder_id: str,
+        embedding_dim: int = SECONDARY_EMBEDDING_DIM,
+        limit: int = 1000,
+    ) -> list[SecondaryEmbeddingChunk]: ...
+
+    def upsert_secondary_embeddings(
+        self,
+        vectors: list[SecondaryEmbeddingVector],
+        embedder_id: str,
+        embedding_dim: int = SECONDARY_EMBEDDING_DIM,
+    ) -> int: ...
+
+    def search_secondary_embeddings(
+        self,
+        query_vec: list[float],
+        embedder_id: str,
+        embedding_dim: int = SECONDARY_EMBEDDING_DIM,
+        k: int = 10,
+    ) -> list[SearchHit]: ...
+
+    def count_secondary_embeddings(
+        self,
+        embedder_id: str,
+        embedding_dim: int = SECONDARY_EMBEDDING_DIM,
+    ) -> int: ...
 
     # ----- Context manager (lets ``with storage:`` work) ------------------
 

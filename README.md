@@ -67,7 +67,7 @@ embedder if you want premium quality.
 |---|---|
 | Tree-sitter AST chunking (Python, TS/JS, Java, Kotlin, Go, Rust) | ✅ |
 | Custom chunkers (Vue SFC, Markdown headings, Gherkin features) | ✅ |
-| Hybrid retrieval — **4 streams** (dense + BM25 + symbol + graph-vec) fused via RRF | ✅ |
+| Hybrid retrieval — up to **5 streams** (dense + BM25 + symbol + graph-vec + Model2Vec) fused via RRF | ✅ |
 | Optional HyDE query rewrite via Ollama (`STROPHA_HYDE_ENABLED=1`) | ✅ |
 | Recursive retrieval / auto-merging by parent + adjacent lines (`STROPHA_RECURSIVE_RETRIEVAL=1`) | ✅ |
 | Retroactive FTS5 augmentation with graph community labels | ✅ |
@@ -77,7 +77,7 @@ embedder if you want premium quality.
 | Pluggable adapter framework — every stage swappable via YAML | ✅ |
 | Walkers: `git-ls-files`, `filesystem`, `nested-git` (monorepos) | ✅ |
 | Enrichers: `noop`, `hierarchical`, `graph-aware`, `ollama`, `mlx` | ✅ |
-| Embedders: `local` (mxbai-embed-large-v1), `voyage`, `bge-m3` | ✅ |
+| Embedders: `local`, `voyage`, `bge-m3`, `mlx`, `model2vec` | ✅ |
 | Graphify mirror + **6 graph traversal MCP tools** (`find_callers`, `find_tests_for`, `find_related`, `get_community`, `find_rationale`, `trace_feature`) | ✅ |
 | Soft index — `stropha watch <repo>` auto-reindexes on file save | ✅ |
 | Cost dashboard — `stropha cost` aggregates structlog by adapter / repo | ✅ |
@@ -151,6 +151,7 @@ stropha --help
 | Component | Install | Purpose |
 |---|---|---|
 | Voyage AI embedder | export `VOYAGE_API_KEY=...` | premium code embeddings (`voyage-code-3`) |
+| Model2Vec secondary lane | `uv sync --extra model2vec` | optional 256-d static-embedding retrieval stream |
 | Graphify | `pipx install graphifyy` | symbol graph for `find_callers` / `find_rationale` / `trace_feature` |
 | Ollama | `brew install ollama` + `ollama pull qwen2.5-coder:1.5b` | local LLM enricher via HTTP — works on any platform |
 | MLX (Apple Silicon) | `uv sync --extra mlx` | native LLM enricher in-process, ~1.5-2× faster than Ollama on M-series |
@@ -171,8 +172,10 @@ flowchart LR
     A --> W[walker<br/>git-ls-files]
     W -->|SourceFile| C[chunker<br/>tree-sitter-dispatch]
     C -->|Chunk| E[enricher<br/>noop / hierarchical /<br/>graph-aware / ollama]
-    E -->|embedding_text| EM[embedder<br/>local fastembed /<br/>voyage]
+    E -->|embedding_text| EM[primary embedder<br/>local fastembed /<br/>voyage]
     EM -->|float vector| S[(storage<br/>sqlite + sqlite-vec + FTS5)]
+    E -.->|when enabled| M2V[secondary embedder<br/>Model2Vec 256-d]
+    M2V -.->|independent vector| S
     S -.->|on demand| R[retrieval<br/>hybrid-rrf]
     R --> CLI[stropha CLI]
     R --> MCP[stropha-mcp<br/>MCP server]
@@ -193,7 +196,7 @@ chunks** (drift detection, ADR-004).
 
 ### Hybrid retrieval
 
-Every query can hit up to **four streams in parallel** and the results
+Every query can hit up to **five streams in parallel** and the results
 are fused with Reciprocal Rank Fusion (RRF). No single stream dominates.
 
 ```mermaid
@@ -204,10 +207,12 @@ flowchart TB
     Q --> B[sparse stream<br/>fts5-bm25<br/>FTS5 BM25]
     Q --> SYM[symbol stream<br/>like-tokens<br/>identifier LIKE]
     EMB --> GV[graph-vec stream<br/>cosine over graph<br/>node embeddings]
+    Q -.-> M2V[optional Model2Vec stream<br/>static 256-d embedding<br/>independent ANN]
     D --> RRF{RRF fuse<br/>k=60}
     B --> RRF
     SYM --> RRF
     GV --> RRF
+    M2V --> RRF
     RRF --> TOP["top-K SearchHit<br/>with rel_path, symbol,<br/>snippet, repo info"]
 
     style D fill:#e3f2fd
@@ -217,7 +222,7 @@ flowchart TB
     style RRF fill:#c8e6c9
 ```
 
-Why four streams:
+Why five streams:
 
 - **Dense** — semantic similarity over chunks, catches paraphrases ("retry policy" vs "exponential backoff")
 - **BM25** — exact phrase matching, handles literal terms the embedder smooths over
@@ -225,6 +230,9 @@ Why four streams:
 - **Graph-vec** — semantic match against the graphify node labels (one
   per function/class), boosts recall for queries that name a concept the
   graph already labelled. Auto-disabled when no graph is loaded.
+- **Model2Vec** — optional static code embedding lane with its own 256-d
+  vectors. It is independently backfilled and drift-checked, so enabling it
+  never changes or rebuilds the primary embedding space.
 
 ### Graphify integration
 
@@ -464,14 +472,11 @@ Drop it in, restart the CLI, `stropha adapters list` will show it.
 
 ## Configuration
 
-Three layers, last writer wins (highest priority last):
+Configuration lives in `~/.stropha/config.yaml`; explicit CLI flags override
+the YAML for that invocation. Project-local YAML and generic environment
+overlays are not supported.
 
-1. **Repo defaults** — built into the registry
-2. **YAML** — `./stropha.yaml` (per project) or `~/.stropha/config.yaml` (per user)
-3. **Environment** — `STROPHA_<STAGE>__<KEY>__<SUBKEY>` (double-underscore separated)
-4. **CLI flags** — `--enricher`, `--embedder`, `--repo`, …
-
-### Example `stropha.yaml`
+### Example `~/.stropha/config.yaml`
 
 ```yaml
 pipeline:
@@ -501,11 +506,18 @@ pipeline:
   retrieval:
     adapter: hybrid-rrf
     config:
-      k: 60
+      rrf_k: 60
       streams:
         dense: { adapter: vec-cosine, config: { k: 50 } }
         sparse: { adapter: fts5-bm25, config: { k: 50 } }
         symbol: { adapter: like-tokens, config: { k: 50 } }
+        model2vec:
+          adapter: model2vec-cosine
+          config:
+            model: minishlab/potion-code-16M
+            dim: 256
+            normalize: true
+            k: 50
 ```
 
 ### Configuration

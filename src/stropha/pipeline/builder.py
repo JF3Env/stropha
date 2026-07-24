@@ -3,8 +3,9 @@
 Importing this module triggers ``stropha.adapters`` auto-registration so
 ``lookup_adapter`` resolves immediately.
 
-Build order (Phase 2):
-    walker → enricher → embedder → storage(embedder.dim) → retrieval(storage, embedder)
+Build order:
+    walker → chunker → enricher → primary embedder → optional secondary embedder
+    → storage(primary dim) → retrieval(storage, both embedders)
 
 The chunker stage (Phase 3) is built lazily by the Pipeline using the
 legacy ``stropha.ingest.chunker.Chunker`` until §10.3 ships its adapter.
@@ -23,7 +24,7 @@ from ..stages.embedder import EmbedderStage
 from ..stages.enricher import EnricherStage
 from ..stages.retrieval import RetrievalStage
 from ..stages.router import RouterStage
-from ..stages.storage import StorageStage
+from ..stages.storage import SECONDARY_EMBEDDING_DIM, StorageStage
 from ..stages.walker import WalkerStage
 from .registry import lookup_adapter
 
@@ -49,14 +50,15 @@ class BuiltStages:
     retrieval: RetrievalStage
     resolved: dict[str, Any]
     router: RouterStage | None = None
+    secondary_embedder: EmbedderStage | None = None
 
     def indexing_hash(self) -> str:
-        """Stable hash of the four adapters that determine index contents.
+        """Stable hash of the adapters that determine index contents.
 
         WIN-176: the Meta-Harness index cache (WIN-177) keys on this
         hash. Two builds that produce byte-identical index databases
         share the same indexing_hash; flipping any walker, chunker,
-        enricher, or embedder adapter_id forces a fresh hash, which
+        enricher, primary embedder, or secondary embedder adapter_id forces a fresh hash, which
         invalidates the cache.
 
         Storage and retrieval are **deliberately excluded**: changing
@@ -72,6 +74,12 @@ class BuiltStages:
             f"chunker={getattr(self.chunker, 'adapter_id', '?')}",
             f"enricher={getattr(self.enricher, 'adapter_id', '?')}",
             f"embedder={getattr(self.embedder, 'adapter_id', '?')}",
+            "secondary_embedder="
+            + (
+                getattr(self.secondary_embedder, "adapter_id", "?")
+                if self.secondary_embedder is not None
+                else "none"
+            ),
         ]
         digest = hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
         # Short prefix is plenty — 12 hex chars = 48 bits ≈ 280 trillion
@@ -102,6 +110,7 @@ def build_stages(
     chunker = _build_simple(resolved_config, "chunker")
     enricher = _build_simple(resolved_config, "enricher")
     embedder = _build_simple(resolved_config, "embedder")
+    secondary_embedder = _build_secondary_embedder(resolved_config)
 
     storage: StorageStage | None = None
     retrieval: RetrievalStage | None = None
@@ -159,7 +168,10 @@ def build_stages(
             raise ConfigError(
                 f"Invalid config for pipeline.retrieval adapter={retrieval_name!r}: {exc}"
             ) from exc
-        retrieval = retrieval_cls(retrieval_cfg, storage=storage, embedder=embedder)
+        retrieval_kwargs = {"storage": storage, "embedder": embedder}
+        if secondary_embedder is not None:
+            retrieval_kwargs["secondary_embedder"] = secondary_embedder
+        retrieval = retrieval_cls(retrieval_cfg, **retrieval_kwargs)
         log.info(
             "pipeline.adapter.built",
             stage="retrieval",
@@ -208,6 +220,7 @@ def build_stages(
         retrieval=retrieval,  # type: ignore[arg-type]
         resolved=resolved_config,
         router=router,
+        secondary_embedder=secondary_embedder,
     )
 
 
@@ -236,3 +249,67 @@ def _build_simple(resolved_config: dict[str, Any], stage: str) -> Any:
         adapter_id=getattr(instance, "adapter_id", "?"),
     )
     return instance
+
+
+def _build_secondary_embedder(
+    resolved_config: dict[str, Any],
+) -> EmbedderStage | None:
+    """Build the one Model2Vec instance requested by secondary streams."""
+    retrieval_config = (resolved_config.get("retrieval") or {}).get("config") or {}
+    streams = retrieval_config.get("streams") or {}
+    if not isinstance(streams, dict):
+        raise ConfigError("retrieval.config.streams must be a mapping")
+    configs: list[Any] = []
+    for name, spec in streams.items():
+        if spec is None:
+            continue
+        if not isinstance(spec, dict):
+            raise ConfigError(f"retrieval.streams.{name} must be a mapping or null")
+        if spec.get("adapter") != "model2vec-cosine":
+            continue
+        stream_cls = lookup_adapter("retrieval-stream", "model2vec-cosine")
+        try:
+            configs.append(stream_cls.Config(**(spec.get("config") or {})))
+        except Exception as exc:
+            raise ConfigError(
+                f"Invalid config for retrieval.streams.{name} "
+                f"(adapter='model2vec-cosine'): {exc}"
+            ) from exc
+
+    if not configs:
+        return None
+
+    first = configs[0]
+    identity = (first.model, first.batch_size, first.normalize, first.dim)
+    if any(
+        (config.model, config.batch_size, config.normalize, config.dim) != identity
+        for config in configs[1:]
+    ):
+        raise ConfigError(
+            "All model2vec-cosine streams must use the same model, batch_size, "
+            "normalize, and dim settings"
+        )
+    if first.dim != SECONDARY_EMBEDDING_DIM or first.normalize is not True:
+        raise ConfigError(
+            f"model2vec-cosine requires dim={SECONDARY_EMBEDDING_DIM} and normalize=true"
+        )
+
+    embedder_cls = lookup_adapter("embedder", "model2vec")
+    embedder_config = embedder_cls.Config(
+        model=first.model,
+        batch_size=first.batch_size,
+        normalize=first.normalize,
+    )
+    secondary_embedder = embedder_cls(embedder_config)
+    if secondary_embedder.dim != SECONDARY_EMBEDDING_DIM:
+        raise ConfigError(
+            f"model2vec-cosine model {first.model!r} produced dim="
+            f"{secondary_embedder.dim}; expected {SECONDARY_EMBEDDING_DIM}"
+        )
+    log.info(
+        "pipeline.adapter.built",
+        stage="secondary-embedder",
+        adapter=secondary_embedder.adapter_name,
+        adapter_id=secondary_embedder.adapter_id,
+    )
+    return secondary_embedder

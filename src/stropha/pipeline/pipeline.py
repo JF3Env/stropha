@@ -63,6 +63,8 @@ class PipelineStats:
     repos: list[RepoStats] = field(default_factory=list)
     enricher_id: str = ""
     embedder_id: str = ""
+    secondary_embedder_id: str | None = None
+    secondary_chunks_embedded: int = 0
 
     @property
     def files_visited(self) -> int:
@@ -109,6 +111,7 @@ class Pipeline:
         *,
         storage: StorageStage,
         embedder: EmbedderStage,
+        secondary_embedder: EmbedderStage | None = None,
         enricher: EnricherStage,
         repos: Sequence[Path],
         walker: WalkerStage | None = None,
@@ -159,6 +162,7 @@ class Pipeline:
             )
         self._storage = storage
         self._embedder = embedder
+        self._secondary_embedder = secondary_embedder
         self._enricher = enricher
         self._repos = [p.resolve() for p in repos]
         self._enricher_concurrency = enricher_concurrency
@@ -246,6 +250,11 @@ class Pipeline:
         stats = PipelineStats(
             enricher_id=self._enricher.adapter_id,
             embedder_id=self._embedder.adapter_id,
+            secondary_embedder_id=(
+                self._secondary_embedder.adapter_id
+                if self._secondary_embedder is not None
+                else None
+            ),
         )
 
         # Drift detection: compare the stored adapter ids (written by the
@@ -311,6 +320,18 @@ class Pipeline:
         self._storage.set_meta("active_enricher_id", self._enricher.adapter_id)
         self._storage.set_meta("active_embedder_id", self._embedder.adapter_id)
         self._storage.commit()
+
+        # The secondary vector space is independently incremental: storage
+        # selects rows by its adapter identity and the current content hash.
+        # Run after primary indexing has committed all chunks, but before the
+        # graph lifecycle starts.
+        if self._secondary_embedder is not None:
+            from ..ingest.secondary_embedding_loader import SecondaryEmbeddingLoader
+
+            secondary_result = SecondaryEmbeddingLoader(
+                self._storage, self._secondary_embedder
+            ).load()
+            stats.secondary_chunks_embedded = secondary_result.embedded
 
         # Run graphify to produce / refresh graph.json BEFORE loading the
         # mirror.  This makes ``stropha index`` a self-contained entry point:

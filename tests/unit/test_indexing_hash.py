@@ -26,6 +26,7 @@ def _built(
     embedder_id: str = "embedder:v1",
     storage_id: str = "storage:v1",
     retrieval_id: str = "retrieval:v1",
+    secondary_embedder_id: str | None = None,
 ) -> BuiltStages:
     return BuiltStages(
         walker=_StubStage(walker_id),         # type: ignore[arg-type]
@@ -35,6 +36,11 @@ def _built(
         storage=_StubStage(storage_id),       # type: ignore[arg-type]
         retrieval=_StubStage(retrieval_id),   # type: ignore[arg-type]
         resolved={},
+        secondary_embedder=(
+            _StubStage(secondary_embedder_id)  # type: ignore[arg-type]
+            if secondary_embedder_id is not None
+            else None
+        ),
     )
 
 
@@ -62,6 +68,14 @@ class TestIndexingHash:
 
     def test_changes_when_embedder_changes(self) -> None:
         assert _built(embedder_id="v1").indexing_hash() != _built(embedder_id="v2").indexing_hash()
+
+    def test_changes_when_secondary_embedder_changes(self) -> None:
+        assert _built().indexing_hash() != _built(
+            secondary_embedder_id="model2vec:v1"
+        ).indexing_hash()
+        assert _built(
+            secondary_embedder_id="model2vec:v1"
+        ).indexing_hash() != _built(secondary_embedder_id="model2vec:v2").indexing_hash()
 
     def test_unchanged_when_storage_changes(self) -> None:
         """Storage swap (e.g. sqlite-vec → lancedb) doesn't change WHAT

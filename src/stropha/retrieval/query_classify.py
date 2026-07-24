@@ -149,6 +149,7 @@ class StreamWeights:
     sparse: float = 1.0   # fts5-bm25
     symbol: float = 1.0   # like-tokens
     graph_vec: float = 1.0  # graph-vec (if enabled)
+    model2vec: float = 1.0  # independent Model2Vec dense lane
     
     def to_dict(self) -> dict[str, float]:
         return {
@@ -156,6 +157,7 @@ class StreamWeights:
             "sparse": self.sparse,
             "symbol": self.symbol,
             "graph_vec": self.graph_vec,
+            "model2vec": self.model2vec,
         }
 
 
@@ -165,6 +167,7 @@ SYMBOL_WEIGHTS = StreamWeights(
     sparse=1.0,
     symbol=1.5,
     graph_vec=0.5,
+    model2vec=0.5,
 )
 
 NATURAL_WEIGHTS = StreamWeights(
@@ -172,6 +175,7 @@ NATURAL_WEIGHTS = StreamWeights(
     sparse=0.8,
     symbol=0.5,
     graph_vec=1.0,
+    model2vec=1.2,
 )
 
 MIXED_WEIGHTS = StreamWeights(
@@ -179,6 +183,7 @@ MIXED_WEIGHTS = StreamWeights(
     sparse=1.0,
     symbol=1.0,
     graph_vec=1.0,
+    model2vec=1.0,
 )
 
 
@@ -202,6 +207,7 @@ def _interpolate_weights(ratio: float) -> StreamWeights:
         sparse=round(_lerp(NATURAL_WEIGHTS.sparse, SYMBOL_WEIGHTS.sparse, ratio), 4),
         symbol=round(_lerp(NATURAL_WEIGHTS.symbol, SYMBOL_WEIGHTS.symbol, ratio), 4),
         graph_vec=round(_lerp(NATURAL_WEIGHTS.graph_vec, SYMBOL_WEIGHTS.graph_vec, ratio), 4),
+        model2vec=round(_lerp(NATURAL_WEIGHTS.model2vec, SYMBOL_WEIGHTS.model2vec, ratio), 4),
     )
 
 

@@ -34,6 +34,32 @@ class _PoisonedRaw:
         self.rolled_back = getattr(self, "rolled_back", 0) + 1
 
 
+class _RecordingCursor:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, object]] = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+    def execute(self, sql: str, params: object = None) -> None:
+        self.calls.append((sql, params))
+
+
+class _RecordingRaw:
+    def __init__(self) -> None:
+        self.recording_cursor = _RecordingCursor()
+        self.committed = False
+
+    def cursor(self) -> _RecordingCursor:
+        return self.recording_cursor
+
+    def commit(self) -> None:
+        self.committed = True
+
+
 def _bare_storage(dsn: str = _TEST_DSN) -> PostgresStorage:
     st = object.__new__(PostgresStorage)
     st._dsn = dsn
@@ -105,3 +131,24 @@ def test_migrate_recovers_when_lock_clears(monkeypatch: pytest.MonkeyPatch) -> N
 
     assert len(attempts) == 2
     assert _TEST_DSN in pg_mod._MIGRATED_DSNS
+
+
+def test_migration_updates_existing_schema_version() -> None:
+    st = _bare_storage()
+    raw = _RecordingRaw()
+    st._raw = raw
+    st._dim = 4
+
+    st._run_migration_ddl()
+
+    schema_calls = [
+        (sql, params)
+        for sql, params in raw.recording_cursor.calls
+        if "VALUES ('schema_version'" in sql
+    ]
+    assert len(schema_calls) == 1
+    sql, params = schema_calls[0]
+    assert "DO UPDATE SET value = EXCLUDED.value" in sql
+    assert "CAST(meta.value AS integer) < CAST(EXCLUDED.value AS integer)" in sql
+    assert params == ("14",)
+    assert raw.committed is True

@@ -22,12 +22,14 @@ from ..errors import StorageError
 from ..ingest.git_meta import RepoIdentity
 from ..logging import get_logger
 from ..models import Chunk, RepoRef, RepoStats, SearchHit, StoredFileMeta
+from ..secondary_embeddings import SECONDARY_EMBEDDING_DIM
 
 if TYPE_CHECKING:
     # These are imported inline at call sites to avoid pulling memory/session
     # models into the storage import graph at runtime. Listed here so type
     # annotations on the public storage methods resolve cleanly.
     from ..models import EpisodeRecord, ProjectMemoryRecord, SessionRecord
+    from ..secondary_embeddings import SecondaryEmbeddingChunk, SecondaryEmbeddingVector
 
 log = get_logger(__name__)
 
@@ -53,7 +55,9 @@ log = get_logger(__name__)
 #     `graph_edges` tables to allow multiple repos with their own graphify
 #     graphs to share a single stropha index. Node IDs are prefixed with
 #     repo_id to avoid collisions across repos.
-SCHEMA_VERSION = 13
+# v14: independent 256-d secondary chunk embeddings (WIN-300). A dedicated
+#      sqlite-vec table carries content/embedder metadata for drift-safe search.
+SCHEMA_VERSION = 14
 
 
 def _serialize_vector(vec: list[float]) -> bytes:
@@ -705,6 +709,21 @@ class Storage:
             """
         )
 
+        # v14: independent Model2Vec secondary embedding space (WIN-300).
+        # vec0 metadata columns let KNN constrain by embedder identity before
+        # ranking; content_hash is checked against the current chunks row so a
+        # stale vector can never surface after chunk content changes.
+        cur.execute(
+            f"""
+            CREATE VIRTUAL TABLE IF NOT EXISTS vec_chunks_secondary USING vec0(
+                embedding float[{SECONDARY_EMBEDDING_DIM}],
+                content_hash text,
+                embedder_id text,
+                embedding_dim integer
+            );
+            """
+        )
+
         cur.execute(
             "INSERT OR IGNORE INTO meta(key,value) VALUES(?,?)",
             ("schema_version", str(SCHEMA_VERSION)),
@@ -781,6 +800,7 @@ class Storage:
         self._conn.executescript(
             """
             DROP TABLE IF EXISTS vec_chunks;
+            DELETE FROM vec_chunks_secondary;
             DELETE FROM chunks;
             DELETE FROM fts_chunks;
             DELETE FROM files;
@@ -1127,6 +1147,9 @@ class Storage:
             return 0
         id_placeholders = ",".join("?" * len(ids))
         cur.execute(f"DELETE FROM vec_chunks WHERE rowid IN ({id_placeholders})", ids)
+        cur.execute(
+            f"DELETE FROM vec_chunks_secondary WHERE rowid IN ({id_placeholders})", ids
+        )
         cur.execute(f"DELETE FROM fts_chunks WHERE rowid IN ({id_placeholders})", ids)
         cur.execute(f"DELETE FROM chunks WHERE id IN ({id_placeholders})", ids)
         return len(ids)
@@ -1243,6 +1266,9 @@ class Storage:
             return 0
         id_placeholders = ",".join("?" * len(ids))
         cur.execute(f"DELETE FROM vec_chunks WHERE rowid IN ({id_placeholders})", ids)
+        cur.execute(
+            f"DELETE FROM vec_chunks_secondary WHERE rowid IN ({id_placeholders})", ids
+        )
         cur.execute(f"DELETE FROM fts_chunks WHERE rowid IN ({id_placeholders})", ids)
         cur.execute(f"DELETE FROM chunks WHERE id IN ({id_placeholders})", ids)
         return len(ids)
@@ -1282,6 +1308,7 @@ class Storage:
         
         rowid = int(row["id"])
         cur.execute("DELETE FROM vec_chunks WHERE rowid = ?", (rowid,))
+        cur.execute("DELETE FROM vec_chunks_secondary WHERE rowid = ?", (rowid,))
         cur.execute("DELETE FROM fts_chunks WHERE rowid = ?", (rowid,))
         cur.execute("DELETE FROM chunks WHERE id = ?", (rowid,))
         return True
@@ -1314,10 +1341,17 @@ class Storage:
         effective_text = embedding_text if embedding_text is not None else chunk.content
         cur = self._conn.cursor()
         # Try update first to preserve rowid (vec_chunks linkage).
-        cur.execute("SELECT id FROM chunks WHERE chunk_id = ?", (chunk.chunk_id,))
+        cur.execute(
+            "SELECT id, content_hash FROM chunks WHERE chunk_id = ?",
+            (chunk.chunk_id,),
+        )
         existing = cur.fetchone()
         if existing is not None:
             rowid = int(existing["id"])
+            if existing["content_hash"] != chunk.content_hash:
+                cur.execute(
+                    "DELETE FROM vec_chunks_secondary WHERE rowid = ?", (rowid,)
+                )
             cur.execute(
                 """
                 UPDATE chunks SET
@@ -1366,6 +1400,168 @@ class Storage:
             (rowid, _fts_text(chunk.content, chunk.rel_path, chunk.symbol), chunk.rel_path),
         )
         return rowid
+
+    # ----- independent secondary embeddings (WIN-300) --------------------
+
+    def list_chunks_needing_secondary_embeddings(
+        self,
+        embedder_id: str,
+        embedding_dim: int = SECONDARY_EMBEDDING_DIM,
+        limit: int = 1000,
+    ) -> list[SecondaryEmbeddingChunk]:
+        """Return chunks missing a current vector for the secondary embedder."""
+        if embedding_dim != SECONDARY_EMBEDDING_DIM:
+            raise StorageError(
+                f"Secondary embedding dim {embedding_dim} != provisioned dim "
+                f"{SECONDARY_EMBEDDING_DIM}"
+            )
+        if limit <= 0:
+            return []
+        rows = self._conn.execute(
+            """
+            SELECT c.chunk_id, c.content_hash, c.content
+            FROM chunks c
+            LEFT JOIN vec_chunks_secondary v ON v.rowid = c.id
+            WHERE v.rowid IS NULL
+               OR v.content_hash IS NOT c.content_hash
+               OR v.embedder_id IS NOT ?
+               OR v.embedding_dim IS NOT ?
+            ORDER BY c.id
+            LIMIT ?
+            """,
+            (embedder_id, embedding_dim, limit),
+        ).fetchall()
+        return [
+            {
+                "chunk_id": row["chunk_id"],
+                "content_hash": row["content_hash"],
+                "content": row["content"],
+            }
+            for row in rows
+        ]
+
+    def upsert_secondary_embeddings(
+        self,
+        vectors: list[SecondaryEmbeddingVector],
+        embedder_id: str,
+        embedding_dim: int = SECONDARY_EMBEDDING_DIM,
+    ) -> int:
+        """Insert a batch of vectors that still match current chunk content."""
+        if embedding_dim != SECONDARY_EMBEDDING_DIM:
+            raise StorageError(
+                f"Secondary embedding dim {embedding_dim} != provisioned dim "
+                f"{SECONDARY_EMBEDDING_DIM}"
+            )
+        for item in vectors:
+            if len(item["embedding"]) != embedding_dim:
+                raise StorageError(
+                    f"Secondary embedding dim mismatch for {item['chunk_id']}: "
+                    f"got {len(item['embedding'])}, expected {embedding_dim}"
+                )
+        cur = self._conn.cursor()
+        upserted = 0
+        for item in vectors:
+            embedding = item["embedding"]
+            row = cur.execute(
+                "SELECT id FROM chunks WHERE chunk_id = ? AND content_hash = ?",
+                (item["chunk_id"], item["content_hash"]),
+            ).fetchone()
+            if row is None:
+                continue
+            rowid = int(row["id"])
+            cur.execute("DELETE FROM vec_chunks_secondary WHERE rowid = ?", (rowid,))
+            cur.execute(
+                """INSERT INTO vec_chunks_secondary
+                   (rowid, embedding, content_hash, embedder_id, embedding_dim)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (
+                    rowid,
+                    _serialize_vector(embedding),
+                    item["content_hash"],
+                    embedder_id,
+                    embedding_dim,
+                ),
+            )
+            upserted += 1
+        return upserted
+
+    def count_secondary_embeddings(
+        self,
+        embedder_id: str,
+        embedding_dim: int = SECONDARY_EMBEDDING_DIM,
+    ) -> int:
+        """Count current secondary vectors for one exact embedder identity."""
+        if embedding_dim != SECONDARY_EMBEDDING_DIM:
+            return 0
+        row = self._conn.execute(
+            """
+            SELECT COUNT(*) AS n
+            FROM vec_chunks_secondary v
+            JOIN chunks c ON c.id = v.rowid
+            WHERE v.content_hash = c.content_hash
+              AND v.embedder_id = ?
+              AND v.embedding_dim = ?
+            """,
+            (embedder_id, embedding_dim),
+        ).fetchone()
+        return int(row["n"]) if row else 0
+
+    def search_secondary_embeddings(
+        self,
+        query_vec: list[float],
+        embedder_id: str,
+        embedding_dim: int = SECONDARY_EMBEDDING_DIM,
+        k: int = 10,
+    ) -> list[SearchHit]:
+        """Search only current vectors from one exact secondary embedder."""
+        if len(query_vec) != embedding_dim:
+            raise StorageError(
+                f"Secondary query dim {len(query_vec)} != requested dim {embedding_dim}"
+            )
+        if embedding_dim != SECONDARY_EMBEDDING_DIM:
+            raise StorageError(
+                f"Secondary embedding dim {embedding_dim} != provisioned dim "
+                f"{SECONDARY_EMBEDDING_DIM}"
+            )
+        if k <= 0:
+            return []
+        rows = self._conn.execute(
+            f"""
+            SELECT
+                {_REPO_JOIN_COLUMNS},
+                v.distance AS distance
+            FROM vec_chunks_secondary v
+            JOIN chunks c ON c.id = v.rowid
+            LEFT JOIN repos r ON r.id = c.repo_id
+            WHERE v.embedding MATCH ?
+              AND v.embedder_id = ?
+              AND v.embedding_dim = ?
+              AND v.content_hash = c.content_hash
+              AND k = ?
+            ORDER BY v.distance
+            """,
+            (_serialize_vector(query_vec), embedder_id, embedding_dim, k),
+        ).fetchall()
+        hits: list[SearchHit] = []
+        for rank, row in enumerate(rows, start=1):
+            distance = float(row["distance"])
+            score = max(0.0, 1.0 - (distance * distance) / 2.0)
+            hits.append(
+                SearchHit(
+                    rank=rank,
+                    score=score,
+                    rel_path=row["rel_path"],
+                    language=row["language"],
+                    kind=row["kind"],
+                    symbol=row["symbol"],
+                    start_line=int(row["start_line"]),
+                    end_line=int(row["end_line"]),
+                    snippet=_snippet(row["content"]),
+                    chunk_id=row["chunk_id"],
+                    repo=_repo_from_row(row),
+                )
+            )
+        return hits
 
     # ----- L2 retroactive FTS5 augmentation (Trilha A) --------------------
 
@@ -1486,6 +1682,7 @@ class Storage:
         cur.executescript(
             """
             DELETE FROM vec_chunks;
+            DELETE FROM vec_chunks_secondary;
             DELETE FROM fts_chunks;
             DELETE FROM chunks;
             DELETE FROM files;

@@ -203,6 +203,7 @@ def index_cached_repo(cached: CachedRepo) -> None:
             pipeline = Pipeline(
                 storage=storage,
                 embedder=built.embedder,
+                secondary_embedder=built.secondary_embedder,
                 enricher=built.enricher,
                 walker=built.walker,
                 chunker=built.chunker,

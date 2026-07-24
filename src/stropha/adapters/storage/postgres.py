@@ -56,6 +56,7 @@ from ...models import (
 )
 from ...pipeline.base import StageHealth
 from ...pipeline.registry import register_adapter
+from ...secondary_embeddings import SECONDARY_EMBEDDING_DIM
 
 # Pure text helpers reused verbatim so FTS/symbol tokenization matches the
 # sqlite-vec backend exactly. These pull in ``storage.sqlite`` (and therefore
@@ -70,6 +71,7 @@ from ...storage.sqlite import (
 
 if TYPE_CHECKING:
     from ...ingest.git_meta import RepoIdentity
+    from ...secondary_embeddings import SecondaryEmbeddingChunk, SecondaryEmbeddingVector
 
 log = get_logger(__name__)
 
@@ -112,7 +114,11 @@ def _pg_tsquery(query: str) -> str:
             tokens.append(norm)
     # de-dup preserving order
     seen: set[str] = set()
-    uniq = [t for t in tokens if not (t in seen or seen.add(t))]
+    uniq: list[str] = []
+    for token in tokens:
+        if token not in seen:
+            seen.add(token)
+            uniq.append(token)
     return " | ".join(uniq)
 
 
@@ -518,7 +524,8 @@ class PostgresStorage:
             self._create_aux_tables(cur)
             cur.execute(
                 "INSERT INTO meta(key, value) VALUES ('schema_version', %s) "
-                "ON CONFLICT (key) DO NOTHING;",
+                "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value "
+                "WHERE CAST(meta.value AS integer) < CAST(EXCLUDED.value AS integer);",
                 (str(SCHEMA_VERSION),),
             )
             cur.execute(
@@ -564,6 +571,25 @@ class PostgresStorage:
         cur.execute(
             "CREATE INDEX IF NOT EXISTS idx_chunks_embedding ON chunks "
             "USING hnsw (embedding vector_l2_ops);"
+        )
+        cur.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS secondary_embeddings (
+                chunk_rowid  bigint PRIMARY KEY REFERENCES chunks(id) ON DELETE CASCADE,
+                content_hash text NOT NULL,
+                embedder_id  text NOT NULL,
+                embedding_dim integer NOT NULL,
+                embedding    vector({SECONDARY_EMBEDDING_DIM}) NOT NULL
+            );
+            """
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_secondary_embeddings_identity "
+            "ON secondary_embeddings(embedder_id, embedding_dim);"
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_secondary_embeddings_embedding "
+            "ON secondary_embeddings USING hnsw (embedding vector_l2_ops);"
         )
         cur.execute(
             """
@@ -782,6 +808,7 @@ class PostgresStorage:
             return
         log.info("postgres.dim_change_reset", old=stored, new=self._dim)
         with self._raw.cursor() as cur:
+            cur.execute("DROP TABLE IF EXISTS secondary_embeddings;")
             cur.execute("DROP TABLE IF EXISTS chunks CASCADE;")
             cur.execute("DROP TABLE IF EXISTS files CASCADE;")
             cur.execute("DROP TABLE IF EXISTS enrichments CASCADE;")
@@ -850,6 +877,7 @@ class PostgresStorage:
     def clear(self) -> None:
         """Wipe the index, preserving repo identities (mirrors sqlite clear())."""
         with self._raw.cursor() as cur:
+            cur.execute("DELETE FROM secondary_embeddings;")
             cur.execute("DELETE FROM chunks;")
             cur.execute("DELETE FROM files;")
             cur.execute("DELETE FROM enrichments;")
@@ -994,7 +1022,159 @@ class PostgresStorage:
                 effective_text, enricher_id, _vec_literal(embedding), fts_doc,
             ),
         ).fetchone()
+        if row is not None:
+            self._raw.execute(
+                "DELETE FROM secondary_embeddings "
+                "WHERE chunk_rowid = %s AND content_hash <> %s;",
+                (row["id"], chunk.content_hash),
+            )
         return int(row["id"]) if row else 0
+
+    # ----- independent secondary embeddings (WIN-300) --------------------
+
+    def list_chunks_needing_secondary_embeddings(
+        self,
+        embedder_id: str,
+        embedding_dim: int = SECONDARY_EMBEDDING_DIM,
+        limit: int = 1000,
+    ) -> list[SecondaryEmbeddingChunk]:
+        if embedding_dim != SECONDARY_EMBEDDING_DIM:
+            raise StorageError(
+                f"Secondary embedding dim {embedding_dim} != provisioned dim "
+                f"{SECONDARY_EMBEDDING_DIM}"
+            )
+        if limit <= 0:
+            return []
+        rows = self._raw.execute(
+            """
+            SELECT c.chunk_id, c.content_hash, c.content
+            FROM chunks c
+            LEFT JOIN secondary_embeddings s ON s.chunk_rowid = c.id
+            WHERE s.chunk_rowid IS NULL
+               OR s.content_hash IS DISTINCT FROM c.content_hash
+               OR s.embedder_id IS DISTINCT FROM %s
+               OR s.embedding_dim IS DISTINCT FROM %s
+            ORDER BY c.id
+            LIMIT %s;
+            """,
+            (embedder_id, embedding_dim, limit),
+        ).fetchall()
+        return [
+            {
+                "chunk_id": row["chunk_id"],
+                "content_hash": row["content_hash"],
+                "content": row["content"],
+            }
+            for row in rows
+        ]
+
+    def upsert_secondary_embeddings(
+        self,
+        vectors: list[SecondaryEmbeddingVector],
+        embedder_id: str,
+        embedding_dim: int = SECONDARY_EMBEDDING_DIM,
+    ) -> int:
+        if embedding_dim != SECONDARY_EMBEDDING_DIM:
+            raise StorageError(
+                f"Secondary embedding dim {embedding_dim} != provisioned dim "
+                f"{SECONDARY_EMBEDDING_DIM}"
+            )
+        params: list[tuple[str, int, str, str, str]] = []
+        for item in vectors:
+            embedding = item["embedding"]
+            if len(embedding) != embedding_dim:
+                raise StorageError(
+                    f"Secondary embedding dim mismatch for {item['chunk_id']}: "
+                    f"got {len(embedding)}, expected {embedding_dim}"
+                )
+            params.append(
+                (
+                    embedder_id,
+                    embedding_dim,
+                    _vec_literal(embedding),
+                    item["chunk_id"],
+                    item["content_hash"],
+                )
+            )
+        if not params:
+            return 0
+        with self._raw.cursor() as cur:
+            cur.executemany(
+                """
+                INSERT INTO secondary_embeddings
+                    (chunk_rowid, content_hash, embedder_id, embedding_dim, embedding)
+                SELECT id, content_hash, %s, %s, %s::vector
+                FROM chunks
+                WHERE chunk_id = %s AND content_hash = %s
+                ON CONFLICT (chunk_rowid) DO UPDATE SET
+                    content_hash = EXCLUDED.content_hash,
+                    embedder_id = EXCLUDED.embedder_id,
+                    embedding_dim = EXCLUDED.embedding_dim,
+                    embedding = EXCLUDED.embedding;
+                """,
+                params,
+            )
+            return max(0, int(cur.rowcount or 0))
+
+    def count_secondary_embeddings(
+        self,
+        embedder_id: str,
+        embedding_dim: int = SECONDARY_EMBEDDING_DIM,
+    ) -> int:
+        if embedding_dim != SECONDARY_EMBEDDING_DIM:
+            return 0
+        row = self._raw.execute(
+            """
+            SELECT COUNT(*) AS n
+            FROM secondary_embeddings s
+            JOIN chunks c ON c.id = s.chunk_rowid
+            WHERE s.content_hash = c.content_hash
+              AND s.embedder_id = %s
+              AND s.embedding_dim = %s;
+            """,
+            (embedder_id, embedding_dim),
+        ).fetchone()
+        return int(row["n"]) if row else 0
+
+    def search_secondary_embeddings(
+        self,
+        query_vec: list[float],
+        embedder_id: str,
+        embedding_dim: int = SECONDARY_EMBEDDING_DIM,
+        k: int = 10,
+    ) -> list[SearchHit]:
+        if len(query_vec) != embedding_dim:
+            raise StorageError(
+                f"Secondary query dim {len(query_vec)} != requested dim {embedding_dim}"
+            )
+        if embedding_dim != SECONDARY_EMBEDDING_DIM:
+            raise StorageError(
+                f"Secondary embedding dim {embedding_dim} != provisioned dim "
+                f"{SECONDARY_EMBEDDING_DIM}"
+            )
+        if k <= 0:
+            return []
+        vec = _vec_literal(query_vec)
+        rows = self._raw.execute(
+            f"""
+            SELECT {_REPO_COLS}, s.embedding <-> %s::vector AS distance
+            FROM secondary_embeddings s
+            JOIN chunks c ON c.id = s.chunk_rowid
+            LEFT JOIN repos r ON r.id = c.repo_id
+            WHERE s.content_hash = c.content_hash
+              AND s.embedder_id = %s
+              AND s.embedding_dim = %s
+            ORDER BY s.embedding <-> %s::vector
+            LIMIT %s;
+            """,
+            (vec, embedder_id, embedding_dim, vec, k),
+        ).fetchall()
+        hits: list[SearchHit] = []
+        for rank, row in enumerate(rows, start=1):
+            distance = float(row["distance"])
+            score = max(0.0, 1.0 - (distance * distance) / 2.0)
+            hits.append(self._hit(row, rank=rank, score=score))
+        return hits
 
     def chunk_is_fresh(
         self,

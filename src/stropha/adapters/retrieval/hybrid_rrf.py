@@ -154,6 +154,7 @@ class HybridRrfRetrieval(RetrievalStage):
         *,
         storage: StorageStage | None = None,
         embedder: EmbedderStage | None = None,
+        secondary_embedder: EmbedderStage | None = None,
     ) -> None:
         if config is None:
             config = HybridRrfConfig()
@@ -165,7 +166,8 @@ class HybridRrfRetrieval(RetrievalStage):
         self._config = config
         self._storage = storage
         self._embedder = embedder
-        self._streams = self._build_streams(storage)
+        self._secondary_embedder = secondary_embedder
+        self._streams = self._build_streams(storage, secondary_embedder)
         self._reranker = self._build_reranker()
 
     # ----- Stage contract -------------------------------------------------
@@ -209,7 +211,13 @@ class HybridRrfRetrieval(RetrievalStage):
 
     # ----- search ---------------------------------------------------------
 
-    def search(self, query: str, *, top_k: int | None = None) -> list[SearchHit]:
+    def search(
+        self,
+        query: str,
+        *,
+        top_k: int | None = None,
+        conversation_context: str | None = None,
+    ) -> list[SearchHit]:
         if not query.strip() or not self._streams:
             return []
         k = top_k or self._config.top_k
@@ -223,12 +231,19 @@ class HybridRrfRetrieval(RetrievalStage):
         )
         
         if multi_query_enabled:
-            return self._search_multi_query(query, k)
+            return self._search_multi_query(query, k, conversation_context=conversation_context)
         else:
-            return self._search_single_query(query, k)
+            return self._search_single_query(
+                query, k, conversation_context=conversation_context
+            )
 
     def _search_single_query(
-        self, query: str, k: int, *, search_query: str | None = None
+        self,
+        query: str,
+        k: int,
+        *,
+        search_query: str | None = None,
+        conversation_context: str | None = None,
     ) -> list[SearchHit]:
         """Execute search with a single query (the standard path)."""
         from ...config import get_config
@@ -266,6 +281,12 @@ class HybridRrfRetrieval(RetrievalStage):
                 rewritten = maybe_hyde_rewrite(query, force_enabled=True)  # Use original query for HyDE
                 if rewritten:
                     dense_query = rewritten
+
+            if conversation_context and conversation_context.strip():
+                dense_query = (
+                    f"{dense_query}\n\nRecent conversation: "
+                    f"{conversation_context.strip()}"
+                )
         
         query_vec = self._embedder.embed_query(dense_query) if needs_vec else None
 
@@ -282,7 +303,11 @@ class HybridRrfRetrieval(RetrievalStage):
         
         # RRF fusion with adaptive weighting
         if len(ranked_by_name) == 1:
-            fused = next(iter(ranked_by_name.values()))
+            only_name, only_hits = next(iter(ranked_by_name.items()))
+            fused = [
+                hit.model_copy(update={"streams": {only_name: hit.score}})
+                for hit in only_hits[:k]
+            ]
         else:
             # Get more candidates if we have a reranker
             fusion_k = self._config.candidate_k if self._reranker else k
@@ -328,14 +353,25 @@ class HybridRrfRetrieval(RetrievalStage):
         
         # Map stream names to weight values
         # The stream names in hybrid-rrf are: dense, sparse, symbol, graph_vec
-        return {
+        stream_weights = {
             "dense": weights.dense,
             "sparse": weights.sparse,
             "symbol": weights.symbol,
             "graph_vec": weights.graph_vec,
+            "model2vec": weights.model2vec,
         }
+        for name, stream in self._streams.items():
+            if stream.adapter_name == "model2vec-cosine":
+                stream_weights[name] = weights.model2vec
+        return stream_weights
 
-    def _search_multi_query(self, query: str, k: int) -> list[SearchHit]:
+    def _search_multi_query(
+        self,
+        query: str,
+        k: int,
+        *,
+        conversation_context: str | None = None,
+    ) -> list[SearchHit]:
         """Execute search with multiple paraphrases, fusing results via RRF.
         
         Multi-query expansion generates N paraphrases of the query,
@@ -352,7 +388,9 @@ class HybridRrfRetrieval(RetrievalStage):
         
         if len(paraphrases) <= 1:
             # Fallback to single query if paraphrase generation failed
-            return self._search_single_query(query, k)
+            return self._search_single_query(
+                query, k, conversation_context=conversation_context
+            )
         
         # Search with each paraphrase
         all_results: list[list[SearchHit]] = []
@@ -363,6 +401,7 @@ class HybridRrfRetrieval(RetrievalStage):
                 query,  # Original query for HyDE/reranking context
                 cand_k,
                 search_query=paraphrase,  # Paraphrase for actual search
+                conversation_context=conversation_context,
             )
             if hits:
                 all_results.append(hits)
@@ -417,7 +456,9 @@ class HybridRrfRetrieval(RetrievalStage):
     # ----- helpers --------------------------------------------------------
 
     def _build_streams(
-        self, storage: StorageStage
+        self,
+        storage: StorageStage,
+        secondary_embedder: EmbedderStage | None,
     ) -> dict[str, RetrievalStreamStage]:
         merged: dict[str, dict[str, Any] | None] = {**_DEFAULT_STREAMS, **self._config.streams}
         out: dict[str, RetrievalStreamStage] = {}
@@ -437,7 +478,19 @@ class HybridRrfRetrieval(RetrievalStage):
                     f"Invalid config for retrieval.streams.{name} "
                     f"(adapter={adapter_name!r}): {exc}"
                 ) from exc
-            out[name] = cls(cfg_obj, storage=storage)
+            if adapter_name == "model2vec-cosine":
+                if secondary_embedder is None:
+                    raise ConfigError(
+                        "model2vec-cosine stream requires the pipeline builder's "
+                        "secondary embedder"
+                    )
+                out[name] = cls(
+                    cfg_obj,
+                    storage=storage,
+                    secondary_embedder=secondary_embedder,
+                )
+            else:
+                out[name] = cls(cfg_obj, storage=storage)
         return out
 
     def _build_reranker(self) -> RerankerStage | None:

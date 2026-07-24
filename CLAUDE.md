@@ -39,7 +39,10 @@ via `STROPHA_MCP_HOST` / `STROPHA_MCP_PORT`). Health probe: `GET /health`.
 
 1. **HTTP-only MCP transport** -- `stropha-mcp` is served exclusively
    over `streamable-http` at `http://<host>:<port>/mcp`. A single shared
-   singleton (started by `bin/stropha-mcp-ensure`) serves every client.
+   singleton (started by `bin/stropha-mcp-ensure`) serves every client and
+   owns one warm pipeline/storage runtime for the daemon lifetime. MCP
+   sessions share those heavy adapters but never their dedup, pins, scratchpad,
+   recent-query, or trace state.
    stdio and SSE are explicitly NOT supported -- never re-introduce
    `--transport stdio`, subprocess-spawning client configs, or
    per-client env blocks.
@@ -61,6 +64,10 @@ via `STROPHA_MCP_HOST` / `STROPHA_MCP_PORT`). Health probe: `GET /health`.
    `INSERT INTO fts_chunks(rowid, content, rel_path)`. Never UPDATE.
 9. **Search-time toggles don't require re-index** -- HyDE and recursive
    merge are query-path only.
+10. **Primary and secondary vector spaces stay independent** -- the primary
+    embedder owns `chunks.embedding` / `vec_chunks`; the optional 256-d
+    Model2Vec lane uses its own tables and drift identity. Enabling or changing
+    the secondary lane must never rebuild the primary vector space.
 
 ## Code conventions
 
@@ -96,7 +103,8 @@ Adapters register via `@register_adapter(stage=..., name=...)` across
 6 stages: walker, chunker, enricher, embedder, storage, retrieval.
 Run `stropha adapters list` or `stropha pipeline show` for the live state.
 
-Schema is at v13 (SQLite). All migrations forward-only and idempotent.
+Schema is at v14 (SQLite/PostgreSQL). v14 adds the independent 256-d
+Model2Vec chunk-vector space. All migrations are forward-only and idempotent.
 Run `stropha stats` for current schema + chunk counts.
 
 ## Useful pointers

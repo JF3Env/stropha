@@ -64,6 +64,12 @@ _DEFAULTS: dict[str, dict[str, Any]] = {
             # adds ~1.4s/query latency for the cross-encoder.
             "reranker": None,
             "candidate_k": 50,
+            # Optional independent 256-d Model2Vec lane (WIN-300).
+            # Enabling this entry also enables its incremental backfill.
+            # Keep it opt-in: on the Stropha golden set (n=52), the lane kept
+            # Recall@10 flat at 0.8462 but reduced MRR 0.6220 -> 0.5586 and
+            # increased p50 latency 78.7 -> 90.8 ms.
+            "streams": {"model2vec": None},
         },
     },
 }

@@ -1,6 +1,6 @@
 """MCP server entry point.
 
-Wires Config → Embedder → Storage → SearchEngine inside a FastMCP lifespan,
+Wires Config → configured pipeline stages inside a FastMCP lifespan,
 and exposes the Phase 1 tool surface from spec §9.2:
 
 - `search_code`         — hybrid retrieval (dense + BM25 + RRF).
@@ -1667,6 +1667,15 @@ def _pipeline_snapshot(app: AppContext) -> dict:
             "model": getattr(built.embedder, "model_name", "?"),
             "dim": getattr(built.embedder, "dim", 0),
         },
+        "secondary_embedder": (
+            {
+                **(_stage(built.secondary_embedder) or {}),
+                "model": getattr(built.secondary_embedder, "model_name", "?"),
+                "dim": getattr(built.secondary_embedder, "dim", 0),
+            }
+            if built.secondary_embedder is not None
+            else None
+        ),
         "storage": {
             **(_stage(built.storage) or {}),
             # Report the ACTIVE backend's real target — the Postgres DSN

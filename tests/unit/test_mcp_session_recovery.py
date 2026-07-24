@@ -61,7 +61,7 @@ def test_streamable_http_recovers_from_stale_session_id_after_restart() -> None:
 
     with patch("stropha.server.load_pipeline_config", return_value={}), patch(
         "stropha.server.build_stages", return_value=fake_built
-    ):
+    ) as build_stages:
         original_security = mcp.settings.transport_security
         mcp.settings.transport_security = None
         try:
@@ -91,6 +91,11 @@ def test_streamable_http_recovers_from_stale_session_id_after_restart() -> None:
             assert body2["jsonrpc"] == "2.0"
             assert body2["id"] == "tools-1"
             assert "result" in body2
+
+            # One build for each simulated daemon lifetime. The two stale-session
+            # requests in app2 reuse its warm runtime instead of rebuilding.
+            assert build_stages.call_count == 2
+            assert fake_storage.close.call_count == 2
         finally:
             mcp._session_manager = None
             mcp.settings.transport_security = original_security

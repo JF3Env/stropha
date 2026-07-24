@@ -49,6 +49,10 @@ def _emb(seed: int) -> list[float]:
     return _norm([math.sin(seed + i) for i in range(DIM)])
 
 
+def _secondary_emb(seed: int) -> list[float]:
+    return _norm([math.sin(seed + i) for i in range(256)])
+
+
 def _chunk(i: int, path: str, symbol: str, content: str) -> Chunk:
     return Chunk(
         chunk_id=f"sha256:t{i}",
@@ -125,6 +129,78 @@ def test_migrate_and_stats(store: PostgresStorage) -> None:
     assert s["files"] == 3
     assert s["index_dim"] == DIM
     assert "***" in s["db_path"]  # password redacted
+
+
+def test_schema_v14_updates_existing_version_and_has_hnsw(
+    store: PostgresStorage,
+) -> None:
+    store.set_meta("schema_version", "13")
+    store.commit()
+    store._run_migration_ddl()
+
+    assert store.get_meta("schema_version") == "14"
+    row = store._raw.execute(
+        """
+        SELECT indexdef FROM pg_indexes
+        WHERE indexname = 'idx_secondary_embeddings_embedding';
+        """
+    ).fetchone()
+    assert row is not None and "USING hnsw" in row["indexdef"]
+    vector_type = store._raw.execute(
+        """
+        SELECT format_type(a.atttypid, a.atttypmod) AS type
+        FROM pg_attribute a
+        WHERE a.attrelid = 'secondary_embeddings'::regclass
+          AND a.attname = 'embedding';
+        """
+    ).fetchone()
+    assert vector_type is not None and vector_type["type"] == "vector(256)"
+
+
+def test_secondary_embedding_freshness_search_and_lifecycle(
+    store: PostgresStorage,
+) -> None:
+    repo_id = _seed(store)
+    pending = store.list_chunks_needing_secondary_embeddings("model2vec:v1")
+    assert len(pending) == 4
+    assert store.upsert_secondary_embeddings(
+        [
+            {
+                "chunk_id": item["chunk_id"],
+                "content_hash": item["content_hash"],
+                "embedding": _secondary_emb(index),
+            }
+            for index, item in enumerate(pending)
+        ],
+        "model2vec:v1",
+    ) == 4
+    store.commit()
+
+    assert store.count_secondary_embeddings("model2vec:v1") == 4
+    assert store.list_chunks_needing_secondary_embeddings("model2vec:v1") == []
+    hits = store.search_secondary_embeddings(_secondary_emb(0), "model2vec:v1", k=4)
+    assert hits[0].chunk_id == pending[0]["chunk_id"]
+    assert store.search_secondary_embeddings(_secondary_emb(0), "model2vec:v2") == []
+
+    assert store.rename_chunks(repo_id, "auth.py", "renamed_auth.py") == 2
+    assert store.count_secondary_embeddings("model2vec:v1") == 4
+    assert any(
+        hit.rel_path == "renamed_auth.py"
+        for hit in store.search_secondary_embeddings(
+            _secondary_emb(0), "model2vec:v1", k=4
+        )
+    )
+
+    store._raw.execute(
+        "UPDATE chunks SET content_hash = 'changed' WHERE rel_path = 'renamed_auth.py';"
+    )
+    assert store.count_secondary_embeddings("model2vec:v1") == 2
+    assert len(store.list_chunks_needing_secondary_embeddings("model2vec:v1")) == 2
+
+    store.delete_chunks_by_repo_paths(repo_id, ["renamed_auth.py"])
+    assert store.count_secondary_embeddings("model2vec:v1") == 2
+    store.clear()
+    assert store.count_secondary_embeddings("model2vec:v1") == 0
 
 
 def test_load_file_meta_map_roundtrip(store: PostgresStorage) -> None:

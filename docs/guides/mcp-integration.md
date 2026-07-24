@@ -2,9 +2,9 @@
 
 > **stropha** exposes its MCP tools over **HTTP only** (streamable-http
 > transport). A single shared singleton serves every MCP client
-> concurrently — one process, one SQLite connection, no WAL contention,
-> no subprocess spawning. This guide shows how to start the daemon and
-> point each client at it.
+> concurrently: one process, one warm pipeline/storage runtime, and no
+> subprocess spawning. This guide shows how to start the daemon and point
+> each client at it.
 
 ---
 
@@ -44,6 +44,14 @@ Defaults:
 | Log file | `~/.cache/stropha/mcp-server.log` |
 
 Override host / port with `STROPHA_MCP_HOST` / `STROPHA_MCP_PORT`.
+
+The first MCP session builds the configured adapters and starts the watcher.
+Later sessions, including stale-session recovery after a client reconnect,
+reuse that warm runtime. Session state remains isolated: dedup history, pins,
+scratchpad, recent queries, and trace recorder are created per session. The
+watcher and storage connection close only when the daemon shuts down.
+Restart the daemon after changing adapter or storage configuration so the warm
+runtime is rebuilt from the new settings.
 
 ### 4. Configure your MCP client
 

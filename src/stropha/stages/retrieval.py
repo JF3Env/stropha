@@ -33,5 +33,11 @@ class RetrievalStage(Protocol):
 
     def health(self) -> StageHealth: ...
 
-    def search(self, query: str, *, top_k: int = 10) -> list[SearchHit]:
+    def search(
+        self,
+        query: str,
+        *,
+        top_k: int = 10,
+        conversation_context: str | None = None,
+    ) -> list[SearchHit]:
         """Top-k hits for a free-text query."""

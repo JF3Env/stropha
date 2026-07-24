@@ -21,7 +21,7 @@ Cada **nó da pipeline** do stropha (walker, chunker, enricher, embedder, storag
 4. Auto-registra via decorator no import-time; descoberto por `stropha adapters list`.
 5. Pode ser substituído trocando uma string na config; mismatch contra estado persistido aciona re-processamento automático.
 
-Quando um stage tem complexidade interna (despachador + sub-implementações), ele **é** um sub-pipeline encapsulado em adapter, com sub-config aninhado mas igualmente visível. Hoje o `chunker` é o exemplo canônico (dispatcher → 6 chunkers por linguagem). O `retrieval` já é sub-pipeline (4 streams + RRF).
+Quando um stage tem complexidade interna (despachador + sub-implementações), ele **é** um sub-pipeline encapsulado em adapter, com sub-config aninhado mas igualmente visível. Hoje o `chunker` é o exemplo canônico (dispatcher → 6 chunkers por linguagem). O `retrieval` já é sub-pipeline (até 5 streams + RRF).
 
 Não há composição/chain entre adapters do MESMO stage. Um adapter por stage por vez. Adapters podem ser trocados a qualquer momento; o pipeline detecta drift e re-processa o necessário, com cache.
 
@@ -1143,19 +1143,22 @@ pipeline:
 | `ollama` | `adapters/enricher/ollama.py` | LLM local | One-line summary via Ollama HTTP (`qwen2.5-coder:1.5b`). Fail-graceful. |
 | `mlx` | `adapters/enricher/mlx.py` | LLM local | Mesma proposta do `ollama` mas via `mlx-lm` nativo Apple Silicon. Optional dep `[mlx]`. Lazy-load. |
 
-### Embedder (3)
+### Embedder (5)
 
 | Adapter | Arquivo | Modelo padrão | Cost / network |
 |---|---|---|---|
 | `local` (default) | `adapters/embedder/local.py` | `mixedbread-ai/mxbai-embed-large-v1` @ 1024d | local ONNX, ~1.7 GB on disk |
 | `voyage` | `adapters/embedder/voyage.py` | `voyage-code-3` @ 512d (Matryoshka) | cloud, requires `VOYAGE_API_KEY` |
 | `bge-m3` | `adapters/embedder/bge_m3.py` | `BAAI/bge-m3` @ 1024d | local ONNX, multilingual fallback |
+| `mlx` | `adapters/embedder/mlx.py` | configurável | local Apple Silicon, optional dep `[mlx-embed]` |
+| `model2vec` | `adapters/embedder/model2vec.py` | `minishlab/potion-code-16M` @ 256d | local static lookup; primary or optional secondary lane |
 
 ### Storage (1)
 
 | Adapter | Arquivo | Notas |
 |---|---|---|
-| `sqlite-vec` (default) | `adapters/storage/sqlite_vec.py` | Subclass do `stropha.storage.Storage` legacy — herda a superfície read/write completa. Schema v1→v5. |
+| `sqlite-vec` (default) | `adapters/storage/sqlite_vec.py` | Subclass do `stropha.storage.Storage` legacy — herda a superfície read/write completa. Schema v1→v14. |
+| `postgres` | `adapters/storage/postgres.py` | pgvector com paridade de schema v14 e índice HNSW. |
 
 ### Retrieval coordinator (1)
 
@@ -1163,7 +1166,7 @@ pipeline:
 |---|---|---|
 | `hybrid-rrf` (default) | `adapters/retrieval/hybrid_rrf.py` | RRF (k=60) sobre N streams configuráveis em `config.streams.{name: {adapter, config}}`. `adapter_id` digests a composição de streams (drift). Skipa `embed_query` quando nenhuma stream dense está habilitada. |
 
-### Retrieval stream sub-adapters (4)
+### Retrieval stream sub-adapters (5)
 
 | Adapter | Arquivo | Lane semântica |
 |---|---|---|
@@ -1171,6 +1174,18 @@ pipeline:
 | `fts5-bm25` (default) | `adapters/retrieval/streams/fts5_bm25.py` | Sparse BM25 sobre `fts_chunks` (FTS5). |
 | `like-tokens` (default) | `adapters/retrieval/streams/like_tokens.py` | Symbol-token `LIKE` match — identificadores. |
 | `graph-vec` (opt-in default-on quando graph existe) | `adapters/retrieval/streams/graph_vec.py` | Cosine brute-force sobre `graph_nodes.embedding`. Trilha A L3. |
+| `model2vec-cosine` (opt-in) | `adapters/retrieval/streams/model2vec_cosine.py` | ANN sobre o espaço secundário 256-d; embebe a query literal reescrita com a mesma instância Model2Vec usada no backfill. |
+
+`BuiltStages.secondary_embedder` é `None` quando o stream não está configurado.
+Quando habilitado, o builder cria uma única instância Model2Vec, valida
+`dim=256` + `normalize=true`, injeta a mesma instância no `Pipeline` e no
+stream e inclui seu `adapter_id` no `indexing_hash`. O loader secundário roda
+depois do commit dos chunks primários e antes do lifecycle graphify. Schema
+v14 mantém metadados `content_hash` + `embedder_id` junto ao espaço vetorial
+secundário; drift ou interrupção causam backfill incremental sem tocar os
+vetores primários. O stream permanece opt-in: no golden set Stropha (n=52),
+Recall@10 ficou estável em 0.8462, enquanto MRR caiu de 0.6220 para 0.5586 e
+latência p50 subiu de 78.7 ms para 90.8 ms.
 
 ### Quick-reference dos adapter_id shapes (drift detection)
 
@@ -1179,7 +1194,7 @@ pipeline:
 | walker | `<name>:max=<bytes>[:depth=<n>]` | `git-ls-files:max=524288` |
 | chunker | `tree-sitter-dispatch:<hash>` | `tree-sitter-dispatch:2a342cf6` |
 | enricher | `<name>:<flags>` | `graph-aware:c:n:p` |
-| embedder | `<name>:<model>:<dim>` | `local:mixedbread-ai/mxbai-embed-large-v1:1024` |
+| embedder | `<name>:<model>:<dim>[:flags]` | `model2vec:minishlab/potion-code-16M:256:normalize=true` |
 | storage | `sqlite-vec:dim=<n>` | `sqlite-vec:dim=1024` |
 | retrieval | `hybrid-rrf:k=<n>:streams=<hash>` | `hybrid-rrf:k=60:streams=35c9b110` |
 | retrieval-stream | `<name>:k=<n>[:min=<sim>]` | `graph-vec:k=20:min=0.3` |

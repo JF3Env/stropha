@@ -124,7 +124,18 @@ class TestModel2VecEmbedderAdapterId:
         
         with patch.dict("sys.modules", {"model2vec": mock_module}):
             embedder = Model2VecEmbedder()
-            assert embedder.adapter_id == "model2vec:minishlab/potion-code-16M:256"
+            assert embedder.adapter_id == (
+                "model2vec:minishlab/potion-code-16M:256:normalize=true"
+            )
+
+    def test_adapter_id_changes_with_normalize(self):
+        mock_module, _mock_static_model, _mock_model = _create_mock_model2vec()
+
+        with patch.dict("sys.modules", {"model2vec": mock_module}):
+            normalized = Model2VecEmbedder(Model2VecEmbedderConfig(normalize=True))
+            unnormalized = Model2VecEmbedder(Model2VecEmbedderConfig(normalize=False))
+
+        assert normalized.adapter_id != unnormalized.adapter_id
 
     def test_adapter_id_changes_with_model(self):
         mock_module, _mock_static_model, mock_model = _create_mock_model2vec()

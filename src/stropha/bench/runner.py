@@ -209,6 +209,7 @@ def build_index(matrix: Matrix, cell: Cell, db_path: Path) -> dict[str, Any]:
         pipe = Pipeline(
             storage=storage,
             embedder=built.embedder,
+            secondary_embedder=built.secondary_embedder,
             enricher=built.enricher,
             walker=built.walker,
             chunker=built.chunker,

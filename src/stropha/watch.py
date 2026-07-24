@@ -182,6 +182,7 @@ def _reindex(repo: Path, *, full_refresh: bool) -> None:
             pipeline = Pipeline(
                 storage=built.storage,
                 embedder=built.embedder,
+                secondary_embedder=built.secondary_embedder,
                 enricher=built.enricher,
                 walker=built.walker,
                 chunker=built.chunker,

@@ -109,7 +109,8 @@ class Model2VecEmbedder(EmbedderStage):
 
     @property
     def adapter_id(self) -> str:
-        return f"model2vec:{self._config.model}:{self._dim}"
+        normalize = str(self._config.normalize).lower()
+        return f"model2vec:{self._config.model}:{self._dim}:normalize={normalize}"
 
     @property
     def config_schema(self) -> type[BaseModel]:
@@ -145,6 +146,10 @@ class Model2VecEmbedder(EmbedderStage):
     @property
     def batch_size(self) -> int:
         return self._config.batch_size
+
+    @property
+    def normalize(self) -> bool:
+        return self._config.normalize
 
     def embed_documents(self, texts: Sequence[str]) -> list[list[float]]:
         """Embed documents using static token lookup + pooling."""

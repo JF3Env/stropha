@@ -104,6 +104,13 @@ class SearchResponse(BaseModel):
             "and was returned anyway (escape hatch to avoid empty result)."
         ),
     )
+    redacted_count: int = Field(
+        default=0,
+        description=(
+            "WIN-340: number of result snippets replaced by the secret-egress "
+            "guard before MCP serialization."
+        ),
+    )
     trace_id: str | None = Field(
         default=None,
         description=(

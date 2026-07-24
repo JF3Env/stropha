@@ -6,7 +6,7 @@ Documento de design técnico para um sistema de Retrieval-Augmented Generation (
 >
 > **Implementado (cumulativo, conforme §16):**
 > - Phase 0 (spike) ✓ — walker / chunker dummy / sqlite-vec / CLI.
-> - Phase 1 (MVP MCP) ✓ — tree-sitter chunking, hybrid retrieval (4 streams agora), MCP server `stropha_rag`.
+> - Phase 1 (MVP MCP) ✓ — tree-sitter chunking, hybrid retrieval (até 5 streams), MCP server `stropha_rag`.
 > - Pipeline-adapters Phase 1–4 (spec `stropha-pipeline-adapters.md`) ✓ — framework Stage/registry + 13 adapters concretos.
 > - Graphify integration Fase 1.5a/b/c/e/f (spec `stropha-graphify-integration.md`) ✓ — mirror SQLite + 6 MCP tools + hook v=3 + L2 retroativo + L3 graph-vec stream.
 > - Phase 2 parcial ✓ — `find_callers` / `find_tests_for`, Recall@K + MRR eval (RAGAS deferred).
@@ -683,9 +683,10 @@ Transport:
 
 - **HTTP streamable (único transporte suportado)**: servidor singleton
   exposto em `http://<host>:<port>/mcp`. Um único processo serve todos
-  os clientes MCP concorrentemente (uma conexão SQLite, zero
-  contenção WAL). `bin/stropha-mcp-ensure` é o launcher canônico;
-  health probe em `GET /health`. stdio e SSE não são suportados.
+  os clientes MCP concorrentemente com um único runtime aquecido de adapters
+  (pipeline, embedder, storage e retrieval). `bin/stropha-mcp-ensure` é o
+  launcher canônico; health probe em `GET /health`. stdio e SSE não são
+  suportados.
 
 ### 9.2 Design dos tools
 
@@ -806,6 +807,13 @@ Padrão para `search_code`:
 
 ### 9.4 Implementação
 
+**Lifecycle do runtime**: o primeiro MCP session inicializa os adapters pesados
+sob lock assíncrono e os associa ao `FastMCP` process-wide. Sessions seguintes
+reutilizam esse runtime, inclusive no recovery de session id obsoleto. Apenas
+estado mutável de cliente (`seen_chunk_ids`, pins, scratchpad, queries recentes
+e trace recorder) vive no `AppContext` por session. No shutdown ASGI, o session
+manager encerra as tasks antes de parar watcher e fechar storage.
+
 **Stack recomendado**:
 
 - **Linguagem**: Python 3.12 (ecossistema RAG mais maduro). Alternativa: Rust se latência crítica.
@@ -876,7 +884,10 @@ Tradeoff: `.mcp.json` versionado significa que o time inteiro herda. Para config
 ### 9.6 Segurança do MCP
 
 - **Path traversal**: validar todos os paths recebidos contra raiz do repo. Rejeitar `..`.
-- **Secret leakage**: scanner (gitleaks/trufflehog) na ingestão. Chunks contendo secrets são marcados e nunca retornados a clientes não-autorizados.
+- **Secret leakage**: além da exclusão na ingestão, `search_code` aplica uma
+  barreira de egress com assinaturas de providers, assignments sensíveis e
+  entropia. O snippet inteiro é substituído antes da serialização, e o log
+  contém somente `chunk_id`, path e nomes das regras acionadas.
 - **Rate limiting**: por cliente (token bucket). Default: 100 req/min.
 - **Audit log**: cada tool call logado com timestamp, cliente, args, result_hash.
 - **Sandboxing**: para deploy remoto, rodar em container sem network egress (exceto Voyage API).
@@ -1048,6 +1059,12 @@ Chunks com secrets:
 - Marcar `has_secret: true`.
 - Mascarar (`****`) o secret no texto persistido.
 - Excluir de qualquer response a clientes sem flag `--allow-secrets`.
+
+Como defesa-em-profundidade, o egress de `search_code` reescaneia cada snippet
+depois de compressão e packing. Assinaturas conhecidas, URLs com credenciais,
+assignments sensíveis ou tokens de alta entropia substituem o snippet inteiro
+por um marcador fixo. A resposta expõe apenas `redacted_count`; valores
+detectados nunca entram no log.
 
 ### 13.2 RBAC (multi-usuário)
 

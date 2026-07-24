@@ -221,12 +221,19 @@ def search_code_impl(
     except Exception:
         log.debug("search.watermark.failed", exc_info=True)
 
+    from .secret_egress import guard_search_results
+
+    results, redacted_count = guard_search_results(
+        [to_result(hit) for hit in hits],
+        log=log,
+    )
     return SearchResponse(
-        results=[to_result(hit) for hit in hits],
+        results=results,
         total_candidates=len(hits),
         query=query,
         facets=facets,
         spilled_count=spilled_count,
         truncated_oversize=truncated_oversize,
+        redacted_count=redacted_count,
         index_watermark=watermark,
     )
