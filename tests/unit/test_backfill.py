@@ -197,8 +197,10 @@ class TestRunBackfill:
         (traces / "t.jsonl").write_text(
             json.dumps({
                 "trace_id": "tr-1",
+                "session_id": "task-solved",
                 "tool": "search_code",
                 "query": "added",
+                "returned_tokens": 120,
                 "results": [
                     {"chunk_id": "c1", "rel_path": "src.py", "symbol": "added_one"},
                     {"chunk_id": "c2", "rel_path": "other.py", "symbol": "helper"},
@@ -218,7 +220,8 @@ class TestRunBackfill:
             "since_sha", "head_sha", "diff_paths", "diff_symbols",
             "traces_scanned", "hits_labeled", "tier_counts",
             "per_trace_scores", "overall_score", "output_path",
-            "generated_at",
+            "tasks_observed", "solved_tasks", "total_returned_tokens",
+            "returned_tokens_per_solved_task", "generated_at",
         ):
             assert key in payload, f"missing key {key!r}"
 
@@ -239,6 +242,39 @@ class TestRunBackfill:
         summary = run_backfill(since_sha=prev, meta_dir=meta, repo_dir=repo)
         assert "tr-1" in summary.per_trace_scores
 
+    def test_returned_tokens_per_solved_task_penalizes_unsolved_work(
+        self, tmp_path: Path,
+    ) -> None:
+        repo, meta, prev, _head = self._build_scenario(tmp_path)
+        trace_path = meta / "traces" / "t.jsonl"
+        with open(trace_path, "a") as fh:
+            # More cost in the solved session. It is one task despite two traces.
+            fh.write(json.dumps({
+                "trace_id": "tr-2",
+                "session_id": "task-solved",
+                "tool": "get_symbol",
+                "returned_tokens": 80,
+                "results": [],
+            }) + "\n")
+            # An unsolved task still contributes to the numerator; failures are
+            # not free when comparing harness token efficiency.
+            fh.write(json.dumps({
+                "trace_id": "tr-3",
+                "session_id": "task-unsolved",
+                "tool": "search_code",
+                "returned_tokens": 300,
+                "results": [
+                    {"chunk_id": "c3", "rel_path": "unrelated.py", "symbol": "none"},
+                ],
+            }) + "\n")
+
+        summary = run_backfill(since_sha=prev, meta_dir=meta, repo_dir=repo)
+
+        assert summary.tasks_observed == 2
+        assert summary.solved_tasks == 1
+        assert summary.total_returned_tokens == 500
+        assert summary.returned_tokens_per_solved_task == 500.0
+
     def test_no_traces_yields_zero(self, tmp_path: Path) -> None:
         repo = tmp_path / "repo"
         repo.mkdir()
@@ -251,6 +287,10 @@ class TestRunBackfill:
         assert summary.traces_scanned == 0
         assert summary.hits_labeled == 0
         assert summary.overall_score == 0.0
+        assert summary.tasks_observed == 0
+        assert summary.solved_tasks == 0
+        assert summary.total_returned_tokens == 0
+        assert summary.returned_tokens_per_solved_task is None
 
     def test_backfill_skips_traces_with_no_hits(self, tmp_path: Path) -> None:
         """A trace whose results list is empty contributes zero labels."""
@@ -305,11 +345,16 @@ class TestRunBackfill:
             tier_counts={"T1": 1, "T7": 6},
             per_trace_scores={"t1": 0.5},
             overall_score=0.143,
+            tasks_observed=3,
+            solved_tasks=2,
+            total_returned_tokens=900,
+            returned_tokens_per_solved_task=450.0,
             output_path="/tmp/x.json",
         )
         d = s.to_dict()
         assert d["since_sha"] == "a"
         assert d["tier_counts"]["T1"] == 1
+        assert d["returned_tokens_per_solved_task"] == 450.0
         assert "generated_at" in d
 
 

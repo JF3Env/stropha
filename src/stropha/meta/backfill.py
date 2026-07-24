@@ -12,7 +12,7 @@ operator-facing entry point. Internally it:
    heuristic symbol extraction.
 2. Iterates every JSONL trace under the meta traces directory.
 3. Labels every hit in every trace with :func:`stropha.meta.outcome.label_hits`.
-4. Aggregates per-trace + per-session + per-tier scores.
+4. Aggregates per-trace + per-session + per-tier scores and token efficiency.
 5. Writes a single JSON summary to
    ``<meta>/outcomes/<HEAD_sha>.json``.
 
@@ -80,6 +80,10 @@ class BackfillSummary:
     tier_counts: dict[str, int] = field(default_factory=dict)
     per_trace_scores: dict[str, float] = field(default_factory=dict)
     overall_score: float = 0.0
+    tasks_observed: int = 0
+    solved_tasks: int = 0
+    total_returned_tokens: int = 0
+    returned_tokens_per_solved_task: float | None = None
     output_path: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -93,6 +97,10 @@ class BackfillSummary:
             "tier_counts": self.tier_counts,
             "per_trace_scores": self.per_trace_scores,
             "overall_score": self.overall_score,
+            "tasks_observed": self.tasks_observed,
+            "solved_tasks": self.solved_tasks,
+            "total_returned_tokens": self.total_returned_tokens,
+            "returned_tokens_per_solved_task": self.returned_tokens_per_solved_task,
             "output_path": self.output_path,
             "generated_at": datetime.now(tz=UTC).isoformat(),
         }
@@ -181,6 +189,41 @@ def load_traces(traces_dir: Path) -> list[dict[str, Any]]:
     return records
 
 
+def _trace_task_key(trace: dict[str, Any], index: int) -> str:
+    """Use session identity as the task key, with stable legacy fallbacks."""
+    session_id = str(trace.get("session_id") or "").strip()
+    if session_id:
+        return f"session:{session_id}"
+    trace_id = str(trace.get("trace_id") or "").strip()
+    if trace_id:
+        return f"trace:{trace_id}"
+    return f"legacy:{index}"
+
+
+def _trace_returned_tokens(trace: dict[str, Any]) -> int:
+    """Read the trace-level count, falling back to legacy result snippets."""
+    try:
+        if "returned_tokens" in trace:
+            return max(0, int(trace["returned_tokens"]))
+    except (TypeError, ValueError):
+        pass
+
+    total = 0
+    for result in trace.get("results") or []:
+        if not isinstance(result, dict):
+            continue
+        try:
+            if "returned_tokens" in result:
+                total += max(0, int(result["returned_tokens"]))
+                continue
+        except (TypeError, ValueError):
+            pass
+        snippet = result.get("snippet")
+        if isinstance(snippet, str):
+            total += len(snippet) // 4
+    return total
+
+
 # --------------------------------------------------------------------------- #
 # Backfill entry point                                                        #
 # --------------------------------------------------------------------------- #
@@ -235,12 +278,20 @@ def run_backfill(
 
     all_labels: list[TierLabel] = []
     per_trace: dict[str, float] = {}
-    for trace in traces:
+    task_keys: set[str] = set()
+    solved_task_keys: set[str] = set()
+    total_returned_tokens = 0
+    for index, trace in enumerate(traces):
+        task_key = _trace_task_key(trace, index)
+        task_keys.add(task_key)
+        total_returned_tokens += _trace_returned_tokens(trace)
         hits = trace.get("results") or []
         if not hits:
             continue
         labels = label_hits(hits, ctx)
         all_labels.extend(labels)
+        if any(label.score > 0 for label in labels):
+            solved_task_keys.add(task_key)
         trace_id = str(trace.get("trace_id") or "")
         if trace_id:
             per_trace[trace_id] = aggregate_score(labels)
@@ -256,14 +307,22 @@ def run_backfill(
         tier_counts={t.value: c for t, c in counts.items()},
         per_trace_scores=per_trace,
         overall_score=aggregate_score(all_labels),
+        tasks_observed=len(task_keys),
+        solved_tasks=len(solved_task_keys),
+        total_returned_tokens=total_returned_tokens,
+        returned_tokens_per_solved_task=(
+            total_returned_tokens / len(solved_task_keys)
+            if solved_task_keys
+            else None
+        ),
     )
 
     out_dir = meta_dir / "outcomes"
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"{head_resolved}.json"
+    summary.output_path = str(out_path)
     payload = summary.to_dict()
     out_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-    summary.output_path = str(out_path)
     log.info(
         "backfill.done",
         since=since_sha,
@@ -271,6 +330,10 @@ def run_backfill(
         traces=summary.traces_scanned,
         hits=summary.hits_labeled,
         overall=summary.overall_score,
+        tasks_observed=summary.tasks_observed,
+        solved_tasks=summary.solved_tasks,
+        total_returned_tokens=summary.total_returned_tokens,
+        returned_tokens_per_solved_task=summary.returned_tokens_per_solved_task,
         output=summary.output_path,
     )
     return summary

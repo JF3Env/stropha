@@ -2107,6 +2107,14 @@ def outcome_backfill_cmd(
     table.add_row("traces_scanned", str(summary.traces_scanned))
     table.add_row("hits_labeled", str(summary.hits_labeled))
     table.add_row("overall_score", f"{summary.overall_score:+.4f}")
+    table.add_row("tasks_observed", str(summary.tasks_observed))
+    table.add_row("solved_tasks", str(summary.solved_tasks))
+    table.add_row("returned_tokens", f"{summary.total_returned_tokens:,}")
+    tokens_per_solved = summary.returned_tokens_per_solved_task
+    table.add_row(
+        "returned_tokens/solved_task",
+        f"{tokens_per_solved:,.1f}" if tokens_per_solved is not None else "—",
+    )
     table.add_row("output", str(summary.output_path or "—"))
     console.print(table)
 

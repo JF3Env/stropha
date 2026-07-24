@@ -150,6 +150,13 @@ The foundation. The paper's central finding is that *full-history* access (code 
 
   The label is a small JSON document attached to each trace (`outcome.tiers: [...]`, `outcome.score: float`, `outcome.evidence: {edited_files, symbols_in_diff, follow_up_calls, …}`). The `outcome.score` is what fitness consumes; the evidence dict is what the agentic proposer reads.
 
+  **Token efficiency (WIN-391):** `session_id` is also the task identity. A
+  task is considered solved when any trace in its session receives positive
+  T1–T4 evidence. Outcome backfill records total returned tokens across all
+  observed tasks divided by solved tasks; unsuccessful attempts remain in the
+  numerator so failures are not free. With no solved tasks the ratio is `null`,
+  never a misleading zero.
+
 - Wire `TraceRecorder` into `server.py` (all MCP tools, not just `search_code` — engagement tiers depend on capturing `get_symbol`/`find_callers`/etc.) and `retrieval/search.py` (CLI path). Recording is best-effort and never on the latency-critical path — fire-and-forget append.
 - **Stretch goal — `report_bad_result` MCP tool**: a 13th tool the agent calls when a search clearly misfired (option #41 in the companion analysis). Single call, structured payload (`trace_id`, `reason: enum`), zero retrieval work. This is the only explicit negative signal source and is the cheapest improvement to label quality after T1+T2 land.
 

@@ -175,7 +175,7 @@ Continuously numbered 1–118. **Effort:** S (<1d) · M (1–4d) · L (>1w). **I
 | 41 | `report_bad_result` tool | An MCP tool the agent calls on a miss; entries become hard negatives for reranker training. | S | Med |
 | 42 | Self-tuning chunk granularity | Measure retrieval success per chunk size and adapt per language — close the loop on chunking, the dominant quality lever. | L | Med |
 | 43 | Local reranker distillation | Periodically distill the `code-aware` reranker from accumulated feedback via lightweight local fine-tune (LoRA). Local-only. | L | Med |
-| 44 | Token-efficiency signal | Log returned-tokens-per-solved-task; the paper optimizes explicitly for token frugality, so it must be a first-class signal. | S | Med |
+| 44 | Token-efficiency signal | Log returned-tokens-per-solved-task from outcome backfill. `session_id` identifies a task, positive T1–T4 evidence marks it solved, and all observed-task tokens stay in the numerator so failed attempts are penalized. The paper optimizes explicitly for token frugality, so it must be a first-class signal. | S | Med |
 
 ### E. World-model depth — richer facts and guidance material · **[Harness — information + guidance]**
 
