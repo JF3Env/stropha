@@ -34,11 +34,13 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field
 
 from ...errors import ConfigError
+from ...meta.stream_weights import StreamWeightProfiles
 from ...models import SearchHit
 from ...pipeline.base import StageHealth
 from ...pipeline.registry import lookup_adapter, register_adapter
@@ -79,6 +81,20 @@ class HybridRrfConfig(BaseModel):
             "accordingly. Symbol queries boost lexical/symbol streams; natural "
             "language queries boost dense semantic matching. "
             "Set STROPHA_ADAPTIVE_WEIGHTING=0 to disable."
+        ),
+    )
+    learned_weights_enabled: bool = Field(
+        default=True,
+        description=(
+            "Apply per-repository stream multipliers learned by outcome backfill. "
+            "Missing or invalid profiles preserve the query-adaptive weights."
+        ),
+    )
+    learned_weights_dir: str | None = Field(
+        default=None,
+        description=(
+            "Override the learned profile directory. Defaults to "
+            "<index_path_parent>/meta/stream-weights."
         ),
     )
     hyde_enabled: bool = Field(
@@ -169,6 +185,7 @@ class HybridRrfRetrieval(RetrievalStage):
         self._secondary_embedder = secondary_embedder
         self._streams = self._build_streams(storage, secondary_embedder)
         self._reranker = self._build_reranker()
+        self._learned_weights = self._build_learned_weights()
 
     # ----- Stage contract -------------------------------------------------
 
@@ -186,8 +203,17 @@ class HybridRrfRetrieval(RetrievalStage):
             (name, s.adapter_id) for name, s in self._streams.items()
         )
         reranker_id = self._reranker.adapter_id if self._reranker else "none"
+        learned_id = (
+            self._learned_weights.fingerprint()
+            if self._learned_weights is not None
+            else "off"
+        )
         digest = hashlib.sha256(repr(canonical).encode("utf-8")).hexdigest()[:8]
-        return f"hybrid-rrf:k={self._config.rrf_k}:streams={digest}:reranker={reranker_id}"
+        return (
+            f"hybrid-rrf:k={self._config.rrf_k}:streams={digest}:"
+            f"reranker={reranker_id}:adaptive={int(self._config.adaptive_weighting)}:"
+            f"learned={learned_id}"
+        )
 
     @property
     def config_schema(self) -> type[BaseModel]:
@@ -320,6 +346,11 @@ class HybridRrfRetrieval(RetrievalStage):
                 k=self._config.rrf_k,
                 top_k=fusion_k,
                 weights=weights,
+                repo_weights=(
+                    self._learned_weights.weights()
+                    if self._learned_weights is not None
+                    else None
+                ),
             )
         
         # Optional reranking
@@ -454,6 +485,19 @@ class HybridRrfRetrieval(RetrievalStage):
         )
 
     # ----- helpers --------------------------------------------------------
+
+    def _build_learned_weights(self) -> StreamWeightProfiles | None:
+        if not self._config.learned_weights_enabled:
+            return None
+        from ...config import get_config
+
+        configured = self._config.learned_weights_dir
+        if configured:
+            directory = Path(configured).expanduser().resolve()
+        else:
+            index_path = Path(get_config().resolve_index_path()).expanduser().resolve()
+            directory = index_path.parent / "meta" / "stream-weights"
+        return StreamWeightProfiles(directory)
 
     def _build_streams(
         self,

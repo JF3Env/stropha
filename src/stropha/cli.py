@@ -2066,6 +2066,8 @@ def outcome_backfill_cmd(
     Writes:
     - ``<meta_dir>/outcomes/<head_sha>.json`` — the outcome summary the
       Phase 1 evaluator consumes (WIN-167).
+    - ``<meta_dir>/stream-weights/<repo_hash>.json`` — regularized stream
+      multipliers consumed by hybrid RRF (WIN-380).
 
     The post-commit hook v=5 runs this in its detached background process
     so ``git commit`` is never blocked.
@@ -2115,6 +2117,15 @@ def outcome_backfill_cmd(
         "returned_tokens/solved_task",
         f"{tokens_per_solved:,.1f}" if tokens_per_solved is not None else "—",
     )
+    table.add_row("stream_weights_repo", str(summary.stream_weights_repo or "—"))
+    table.add_row(
+        "stream_weights",
+        ", ".join(
+            f"{stream}={weight:.3f}"
+            for stream, weight in sorted(summary.stream_weights.items())
+        ) or "—",
+    )
+    table.add_row("stream_weights_path", str(summary.stream_weights_path or "—"))
     table.add_row("output", str(summary.output_path or "—"))
     console.print(table)
 

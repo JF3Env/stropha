@@ -157,6 +157,14 @@ The foundation. The paper's central finding is that *full-history* access (code 
   numerator so failures are not free. With no solved tasks the ratio is `null`,
   never a misleading zero.
 
+  **Learned stream weights (WIN-380):** the same backfill joins each labeled
+  hit to its `streams` attribution and repository identity. It fits a
+  zero-prior, regularized mean tier score per stream, maps scores to positive
+  multipliers, and normalizes each repository profile to mean 1. Profiles are
+  written atomically under `meta/stream-weights/`; hybrid RRF hot-reloads them
+  and multiplies them by query-adaptive weights. Missing, malformed, or
+  unattributed feedback leaves retrieval behavior unchanged.
+
 - Wire `TraceRecorder` into `server.py` (all MCP tools, not just `search_code` — engagement tiers depend on capturing `get_symbol`/`find_callers`/etc.) and `retrieval/search.py` (CLI path). Recording is best-effort and never on the latency-critical path — fire-and-forget append.
 - **Stretch goal — `report_bad_result` MCP tool**: a 13th tool the agent calls when a search clearly misfired (option #41 in the companion analysis). Single call, structured payload (`trace_id`, `reason: enum`), zero retrieval work. This is the only explicit negative signal source and is the cheapest improvement to label quality after T1+T2 land.
 

@@ -27,6 +27,7 @@ def rrf_fuse(
     top_k: int = 10,
     weights: list[float] | None = None,
     stream_names: list[str] | None = None,
+    repo_weights: Mapping[str, Mapping[str, float]] | None = None,
 ) -> list[SearchHit]:
     """Merge any number of ranked lists into a single ranked list.
 
@@ -46,6 +47,8 @@ def rrf_fuse(
             ``SearchHit`` carries a ``streams`` dict mapping the labels of
             the streams it appeared in to their per-stream RRF contribution.
             Consumed by the Meta-Harness trace recorder (WIN-160).
+        repo_weights: Optional per-repository stream multipliers learned from
+            feedback. They multiply the query-level ``weights`` for each hit.
     """
     if weights is None:
         weights = [1.0] * len(ranked_lists)
@@ -57,6 +60,8 @@ def rrf_fuse(
         raise ValueError(
             f"stream_names length ({len(stream_names)}) must match number of ranked lists ({len(ranked_lists)})"
         )
+    if repo_weights and stream_names is None:
+        raise ValueError("repo_weights requires stream_names")
 
     scores: dict[str, float] = {}
     seen: dict[str, SearchHit] = {}
@@ -65,7 +70,12 @@ def rrf_fuse(
     for idx, (weight, lst) in enumerate(zip(weights, ranked_lists, strict=False)):
         label = stream_names[idx] if stream_names is not None else None
         for rank, hit in enumerate(lst, start=1):
-            contribution = weight / (k + rank)
+            effective_weight = weight
+            if repo_weights and label is not None and hit.repo is not None:
+                effective_weight *= repo_weights.get(
+                    hit.repo.normalized_key, {}
+                ).get(label, 1.0)
+            contribution = effective_weight / (k + rank)
             scores[hit.chunk_id] = scores.get(hit.chunk_id, 0.0) + contribution
             if hit.chunk_id not in seen:
                 seen[hit.chunk_id] = hit
@@ -89,6 +99,7 @@ def rrf_fuse_named(
     k: int = DEFAULT_K,
     top_k: int = 10,
     weights: dict[str, float] | None = None,
+    repo_weights: Mapping[str, Mapping[str, float]] | None = None,
 ) -> list[SearchHit]:
     """Merge named ranked lists with optional per-stream weights.
 
@@ -101,6 +112,8 @@ def rrf_fuse_named(
         top_k: Number of results to return.
         weights: Optional dict mapping stream names to weights.
             Missing streams default to weight 1.0.
+        repo_weights: Optional per-repository stream multipliers. Missing
+            repositories and streams default to 1.0.
     """
     if weights is None:
         weights = {}
@@ -116,4 +129,5 @@ def rrf_fuse_named(
         top_k=top_k,
         weights=weight_list,
         stream_names=names,
+        repo_weights=repo_weights,
     )

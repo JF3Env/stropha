@@ -13,7 +13,8 @@ operator-facing entry point. Internally it:
 2. Iterates every JSONL trace under the meta traces directory.
 3. Labels every hit in every trace with :func:`stropha.meta.outcome.label_hits`.
 4. Aggregates per-trace + per-session + per-tier scores and token efficiency.
-5. Writes a single JSON summary to
+5. Fits regularized per-repository RRF stream weights from attributed hits.
+6. Writes a single JSON summary to
    ``<meta>/outcomes/<HEAD_sha>.json``.
 
 The summary is what the Phase 1 evaluator (WIN-167) consumes to compute
@@ -32,6 +33,7 @@ from pathlib import Path
 from typing import Any
 
 from ..errors import StrophaError
+from ..ingest.git_meta import detect as detect_repo
 from ..logging import get_logger
 from .feedback import BadResultStore, resolve_bad_chunks
 from .outcome import (
@@ -42,6 +44,7 @@ from .outcome import (
     label_hits,
     tier_summary,
 )
+from .stream_weights import fit_stream_weights, write_stream_weight_profile
 
 log = get_logger(__name__)
 
@@ -84,6 +87,10 @@ class BackfillSummary:
     solved_tasks: int = 0
     total_returned_tokens: int = 0
     returned_tokens_per_solved_task: float | None = None
+    stream_weights_repo: str | None = None
+    stream_weights: dict[str, float] = field(default_factory=dict)
+    stream_weight_observations: dict[str, int] = field(default_factory=dict)
+    stream_weights_path: str | None = None
     output_path: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -101,6 +108,10 @@ class BackfillSummary:
             "solved_tasks": self.solved_tasks,
             "total_returned_tokens": self.total_returned_tokens,
             "returned_tokens_per_solved_task": self.returned_tokens_per_solved_task,
+            "stream_weights_repo": self.stream_weights_repo,
+            "stream_weights": self.stream_weights,
+            "stream_weight_observations": self.stream_weight_observations,
+            "stream_weights_path": self.stream_weights_path,
             "output_path": self.output_path,
             "generated_at": datetime.now(tz=UTC).isoformat(),
         }
@@ -277,6 +288,7 @@ def run_backfill(
     )
 
     all_labels: list[TierLabel] = []
+    labeled_hits: list[dict[str, Any]] = []
     per_trace: dict[str, float] = {}
     task_keys: set[str] = set()
     solved_task_keys: set[str] = set()
@@ -285,16 +297,38 @@ def run_backfill(
         task_key = _trace_task_key(trace, index)
         task_keys.add(task_key)
         total_returned_tokens += _trace_returned_tokens(trace)
-        hits = trace.get("results") or []
+        hits = [
+            hit for hit in (trace.get("results") or [])
+            if isinstance(hit, dict)
+        ]
         if not hits:
             continue
         labels = label_hits(hits, ctx)
+        labeled_hits.extend(hits)
         all_labels.extend(labels)
         if any(label.score > 0 for label in labels):
             solved_task_keys.add(task_key)
         trace_id = str(trace.get("trace_id") or "")
         if trace_id:
             per_trace[trace_id] = aggregate_score(labels)
+
+    repo_key = detect_repo(repo_dir).normalized_key
+    profile = fit_stream_weights(
+        labeled_hits,
+        all_labels,
+        repo_key=repo_key,
+    )
+    stream_weights_path: str | None = None
+    if profile is not None:
+        try:
+            path = write_stream_weight_profile(meta_dir / "stream-weights", profile)
+            stream_weights_path = str(path)
+        except OSError as exc:
+            log.warning(
+                "backfill.stream_weights_write_failed",
+                repo=repo_key,
+                error=str(exc),
+            )
 
     counts = tier_summary(all_labels)
     summary = BackfillSummary(
@@ -315,6 +349,12 @@ def run_backfill(
             if solved_task_keys
             else None
         ),
+        stream_weights_repo=repo_key,
+        stream_weights=dict(profile.weights) if profile is not None else {},
+        stream_weight_observations=(
+            dict(profile.observations) if profile is not None else {}
+        ),
+        stream_weights_path=stream_weights_path,
     )
 
     out_dir = meta_dir / "outcomes"
@@ -334,6 +374,10 @@ def run_backfill(
         solved_tasks=summary.solved_tasks,
         total_returned_tokens=summary.total_returned_tokens,
         returned_tokens_per_solved_task=summary.returned_tokens_per_solved_task,
+        stream_weights_repo=summary.stream_weights_repo,
+        stream_weights=summary.stream_weights,
+        stream_weight_observations=summary.stream_weight_observations,
+        stream_weights_path=summary.stream_weights_path,
         output=summary.output_path,
     )
     return summary

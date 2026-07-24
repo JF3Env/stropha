@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -24,7 +25,8 @@ from stropha.adapters.retrieval.streams.vec_cosine import (
     VecCosineStream,
 )
 from stropha.errors import ConfigError
-from stropha.models import SearchHit
+from stropha.meta.stream_weights import StreamWeightProfile, write_stream_weight_profile
+from stropha.models import RepoRef, SearchHit
 from stropha.pipeline.registry import all_adapters
 
 # ---------------------------------------------------------------------------
@@ -232,3 +234,43 @@ def test_hybrid_rrf_returns_empty_for_blank_query() -> None:
     embedder = _StubEmbedder()
     r = HybridRrfRetrieval(HybridRrfConfig(), storage=storage, embedder=embedder)
     assert r.search("") == []
+
+
+def test_hybrid_rrf_applies_learned_weights_for_hit_repo(tmp_path: Path) -> None:
+    class _RepoStorage(_RecordingStorage):
+        def search_dense(self, vec: list[float], k: int) -> list[SearchHit]:
+            hit = self._hit(1, "dense").model_copy(update={
+                "repo": RepoRef(normalized_key="repo-a"),
+            })
+            return [hit]
+
+        def search_bm25(self, query: str, k: int) -> list[SearchHit]:
+            hit = self._hit(1, "sparse").model_copy(update={
+                "repo": RepoRef(normalized_key="repo-a"),
+            })
+            return [hit]
+
+    write_stream_weight_profile(
+        tmp_path,
+        StreamWeightProfile(
+            repo="repo-a",
+            weights={"dense": 0.5, "sparse": 1.5},
+            observations={"dense": 10, "sparse": 10},
+            mean_scores={"dense": -0.2, "sparse": 0.2},
+            generated_at="2026-07-24T00:00:00+00:00",
+        ),
+    )
+    retrieval = HybridRrfRetrieval(
+        HybridRrfConfig(
+            adaptive_weighting=False,
+            learned_weights_dir=str(tmp_path),
+            streams={"symbol": None},
+        ),
+        storage=_RepoStorage(),
+        embedder=_StubEmbedder(),
+    )
+
+    hits = retrieval.search("query")
+
+    assert hits[0].chunk_id == "sparse"
+    assert "learned=none" not in retrieval.adapter_id

@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import pytest
 
-from stropha.models import SearchHit
+from stropha.models import RepoRef, SearchHit
 from stropha.retrieval.rrf import rrf_fuse, rrf_fuse_named
 
 
-def _hit(chunk_id: str, rank: int) -> SearchHit:
+def _hit(chunk_id: str, rank: int, repo: str | None = None) -> SearchHit:
     return SearchHit(
         rank=rank,
         score=1.0,
@@ -19,6 +19,7 @@ def _hit(chunk_id: str, rank: int) -> SearchHit:
         end_line=2,
         snippet="…",
         chunk_id=chunk_id,
+        repo=RepoRef(normalized_key=repo) if repo else None,
     )
 
 
@@ -146,3 +147,25 @@ class TestStreamsAttribution:
         b = next(h for h in fused if h.chunk_id == "b")
         assert b.streams is not None
         assert b.streams["sparse"] == pytest.approx(1 / 61)
+
+    def test_repo_weights_multiply_query_weights_per_hit(self) -> None:
+        fused = rrf_fuse_named(
+            {
+                "dense": [_hit("repo-a-dense", 1, "repo-a")],
+                "sparse": [_hit("repo-a-sparse", 1, "repo-a")],
+            },
+            weights={"dense": 2.0, "sparse": 1.0},
+            repo_weights={"repo-a": {"dense": 0.5, "sparse": 3.0}},
+        )
+
+        assert fused[0].chunk_id == "repo-a-sparse"
+        by_id = {hit.chunk_id: hit for hit in fused}
+        assert by_id["repo-a-dense"].streams == {"dense": pytest.approx(1 / 61)}
+        assert by_id["repo-a-sparse"].streams == {"sparse": pytest.approx(3 / 61)}
+
+    def test_repo_weights_require_stream_names(self) -> None:
+        with pytest.raises(ValueError, match="requires stream_names"):
+            rrf_fuse(
+                [_hit("a", 1, "repo-a")],
+                repo_weights={"repo-a": {"dense": 2.0}},
+            )

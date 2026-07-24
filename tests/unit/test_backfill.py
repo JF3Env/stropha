@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pytest
 
+from stropha.ingest.git_meta import detect as detect_repo
 from stropha.meta.backfill import (
     BackfillError,
     BackfillSummary,
@@ -191,6 +192,7 @@ class TestRunBackfill:
         meta = tmp_path / "meta"
         traces = meta / "traces"
         traces.mkdir(parents=True)
+        repo_key = detect_repo(repo).normalized_key
         # One trace whose result chunk's symbol matches the diff → T2.
         # Another whose chunk's file is in the diff → T1.
         # A third with no signal → T7.
@@ -202,8 +204,20 @@ class TestRunBackfill:
                 "query": "added",
                 "returned_tokens": 120,
                 "results": [
-                    {"chunk_id": "c1", "rel_path": "src.py", "symbol": "added_one"},
-                    {"chunk_id": "c2", "rel_path": "other.py", "symbol": "helper"},
+                    {
+                        "chunk_id": "c1",
+                        "rel_path": "src.py",
+                        "symbol": "added_one",
+                        "repo": {"normalized_key": repo_key},
+                        "streams": {"dense": 0.02, "sparse": 0.01},
+                    },
+                    {
+                        "chunk_id": "c2",
+                        "rel_path": "other.py",
+                        "symbol": "helper",
+                        "repo": {"normalized_key": repo_key},
+                        "streams": {"sparse": 0.02},
+                    },
                 ],
             }) + "\n"
         )
@@ -221,7 +235,9 @@ class TestRunBackfill:
             "traces_scanned", "hits_labeled", "tier_counts",
             "per_trace_scores", "overall_score", "output_path",
             "tasks_observed", "solved_tasks", "total_returned_tokens",
-            "returned_tokens_per_solved_task", "generated_at",
+            "returned_tokens_per_solved_task", "stream_weights_repo",
+            "stream_weights", "stream_weight_observations",
+            "stream_weights_path", "generated_at",
         ):
             assert key in payload, f"missing key {key!r}"
 
@@ -241,6 +257,17 @@ class TestRunBackfill:
         repo, meta, prev, _head = self._build_scenario(tmp_path)
         summary = run_backfill(since_sha=prev, meta_dir=meta, repo_dir=repo)
         assert "tr-1" in summary.per_trace_scores
+
+    def test_fits_and_persists_repo_stream_weights(self, tmp_path: Path) -> None:
+        repo, meta, prev, _head = self._build_scenario(tmp_path)
+
+        summary = run_backfill(since_sha=prev, meta_dir=meta, repo_dir=repo)
+
+        assert summary.stream_weights_repo == detect_repo(repo).normalized_key
+        assert summary.stream_weight_observations == {"dense": 1, "sparse": 2}
+        assert summary.stream_weights["dense"] > summary.stream_weights["sparse"]
+        assert summary.stream_weights_path is not None
+        assert Path(summary.stream_weights_path).is_file()
 
     def test_returned_tokens_per_solved_task_penalizes_unsolved_work(
         self, tmp_path: Path,
@@ -349,12 +376,17 @@ class TestRunBackfill:
             solved_tasks=2,
             total_returned_tokens=900,
             returned_tokens_per_solved_task=450.0,
+            stream_weights_repo="repo-a",
+            stream_weights={"dense": 1.1, "sparse": 0.9},
+            stream_weight_observations={"dense": 8, "sparse": 7},
+            stream_weights_path="/tmp/weights.json",
             output_path="/tmp/x.json",
         )
         d = s.to_dict()
         assert d["since_sha"] == "a"
         assert d["tier_counts"]["T1"] == 1
         assert d["returned_tokens_per_solved_task"] == 450.0
+        assert d["stream_weights"]["dense"] == 1.1
         assert "generated_at" in d
 
 
