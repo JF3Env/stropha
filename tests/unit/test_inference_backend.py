@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, PropertyMock, patch
 
 import pytest
 
@@ -175,7 +175,10 @@ class TestGetBackend:
             assert backend is not None
 
     def test_prefer_ollama(self):
-        backend = get_backend(prefer="ollama")
+        with patch.object(
+            OllamaBackend, "is_available", new_callable=PropertyMock, return_value=True
+        ):
+            backend = get_backend(prefer="ollama")
         assert isinstance(backend, OllamaBackend)
 
     def test_yaml_config_backend_override(self, isolated_test_env):
@@ -189,7 +192,10 @@ inference:
 """)
         reset_config()
         reset_backend()
-        backend = get_backend()
+        with patch.object(
+            OllamaBackend, "is_available", new_callable=PropertyMock, return_value=True
+        ):
+            backend = get_backend()
         assert isinstance(backend, OllamaBackend)
 
 
