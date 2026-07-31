@@ -150,6 +150,7 @@ _UPSERT_PK: dict[str, list[str]] = {
 # Session advisory-lock key that serializes concurrent index writers so two
 # `stropha index` runs can't deadlock on chunks/files. Arbitrary constant.
 _INDEX_LOCK_KEY = 0x53545250  # "STRP"
+_FTS_AUGMENT_BATCH_SIZE = 1_000
 
 # DSNs whose schema this process has already ensured. The MCP daemon builds a
 # fresh Storage per transport session; without this memo every session re-runs
@@ -883,6 +884,14 @@ class PostgresStorage:
             cur.execute("DELETE FROM enrichments;")
         self._raw.commit()
 
+    def clear_repo(self, repo_id: int) -> None:
+        """Delete indexed data for one repository, preserving all others."""
+        with self._raw.cursor() as cur:
+            cur.execute("DELETE FROM chunks WHERE repo_id = %s;", (repo_id,))
+            cur.execute("DELETE FROM files WHERE repo_id = %s;", (repo_id,))
+            cur.execute("DELETE FROM meta WHERE key = %s;", (f"last_indexed_sha_{repo_id}",))
+        self._raw.commit()
+
     def vacuum(self) -> tuple[int, int]:
         """Reclaim space. Postgres autovacuums online; this is a manual nudge.
 
@@ -1447,25 +1456,54 @@ class PostgresStorage:
             return {"augmented": 0, "unchanged": 0, "missing_graph": 1}
         rows = self._raw.execute(
             """
-            SELECT c.id, c.rel_path, c.symbol, c.content,
+            SELECT DISTINCT ON (c.id)
+                   c.id, c.rel_path, c.symbol, c.content,
                    n.label, n.community_label, n.source_location
             FROM chunks c
             JOIN graph_nodes n ON n.source_file = c.rel_path
-            WHERE n.source_location IS NOT NULL;
+            WHERE n.source_location IS NOT NULL
+            ORDER BY c.id, n.source_location, n.label;
             """
         ).fetchall()
+        total = len(rows)
+        log.info(
+            "fts_augment.start",
+            backend="postgres",
+            total=total,
+            batch_size=_FTS_AUGMENT_BATCH_SIZE,
+        )
         augmented = 0
-        for r in rows:
-            extras = " ".join(
-                str(x) for x in (r["label"], r["community_label"], r["source_location"]) if x
-            )
-            doc = _fts_text(r["content"], r["rel_path"], r["symbol"]) + "\n" + extras
+        for offset in range(0, total, _FTS_AUGMENT_BATCH_SIZE):
+            batch = rows[offset : offset + _FTS_AUGMENT_BATCH_SIZE]
+            values_sql = ", ".join(["(%s::bigint, %s::text)"] * len(batch))
+            params: list[Any] = []
+            for r in batch:
+                extras = " ".join(
+                    str(x)
+                    for x in (r["label"], r["community_label"], r["source_location"])
+                    if x
+                )
+                doc = _fts_text(r["content"], r["rel_path"], r["symbol"]) + "\n" + extras
+                params.extend((r["id"], doc))
             self._raw.execute(
-                "UPDATE chunks SET fts = to_tsvector('simple', %s) WHERE id = %s;",
-                (doc, r["id"]),
+                f"""
+                UPDATE chunks AS c
+                SET fts = to_tsvector('simple', batch.doc)
+                FROM (VALUES {values_sql}) AS batch(id, doc)
+                WHERE c.id = batch.id;
+                """,
+                params,
             )
-            augmented += 1
-        self._raw.commit()
+            self._raw.commit()
+            augmented += len(batch)
+            log.info(
+                "fts_augment.progress",
+                backend="postgres",
+                processed=augmented,
+                total=total,
+                percent=round(augmented * 100 / total, 1) if total else 100.0,
+            )
+        log.info("fts_augment.done", backend="postgres", augmented=augmented)
         return {"augmented": augmented, "unchanged": 0, "missing_graph": 0}
 
     def _graph_stats(self) -> dict[str, Any] | None:

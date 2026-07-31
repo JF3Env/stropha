@@ -205,7 +205,8 @@ class Pipeline:
         """Execute the pipeline.
 
         Args:
-            rebuild: Wipe chunks before indexing (does NOT drop repos).
+            rebuild: Wipe chunks and file metadata for the selected repositories
+                before indexing (does NOT drop repos or affect other repositories).
                 Forces ``mode="full"`` internally.
             mode: One of ``"auto"`` (default), ``"reconcile"``, ``"full"``,
                 or ``"incremental"``.
@@ -306,8 +307,15 @@ class Pipeline:
                 )
 
         if rebuild:
-            log.info("pipeline.rebuild_clear")
-            self._storage.clear()
+            for repo_path in self._repos:
+                identity = detect_repo(repo_path)
+                repo_id = self._storage.register_repo(identity)
+                log.info(
+                    "pipeline.rebuild_clear_repo",
+                    repo=identity.normalized_key,
+                    repo_id=repo_id,
+                )
+                self._storage.clear_repo(repo_id)
 
         for repo_path in self._repos:
             rstats = self._index_one_repo(
@@ -345,12 +353,9 @@ class Pipeline:
         graph_capable = getattr(self._storage, "graph_capable", True)
         if self._graphify and graph_capable:
             self._run_graphify()
-
-        # Optional graphify graph mirror — populates graph_nodes/graph_edges
-        # for the find_callers / find_related / get_community / find_rationale
-        # MCP tools. No-op when graphify-out/graph.json is absent. Only
-        # reload when the file mtime is newer than our last load.
-        if graph_capable:
+            # Refreshing the mirror also embeds graph nodes and augments FTS.
+            # Keep the entire lifecycle behind --graphify/--no-graphify so a
+            # caller can explicitly avoid expensive post-index graph work.
             self._refresh_graphify_mirror()
 
         _release_lock = getattr(self._storage, "release_index_lock", None)

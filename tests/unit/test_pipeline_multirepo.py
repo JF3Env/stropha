@@ -175,7 +175,7 @@ def test_search_returns_correct_repo_for_each_hit(
         assert keys == {"github.com/example/alpha", "github.com/example/beta"}
 
 
-def test_pipeline_rebuild_clears_only_chunks_not_repos(
+def test_pipeline_rebuild_clears_only_selected_repos(
     tmp_path: Path, two_repos_with_collision: tuple[Path, Path]
 ) -> None:
     repo_a, repo_b = two_repos_with_collision
@@ -190,19 +190,24 @@ def test_pipeline_rebuild_clears_only_chunks_not_repos(
         first_repos = {r.normalized_key for r in storage.list_repos()}
         assert first_repos == {"github.com/example/alpha", "github.com/example/beta"}
 
-        # Second pass with rebuild=True: chunks cleared then repopulated.
+        beta_before = next(
+            r for r in storage.list_repos()
+            if r.normalized_key == "github.com/example/beta"
+        )
+
+        # Second pass with rebuild=True: only alpha is cleared and repopulated.
         IndexPipeline(
             storage=storage, embedder=embedder, repos=[repo_a]
         ).run(rebuild=True)
         second_repos = {r.normalized_key for r in storage.list_repos()}
-        # Beta is still in `repos` (we don't garbage-collect repos table)
-        # but has 0 chunks because the rebuild scope was alpha-only.
+        # Beta's identity and indexed data are untouched.
         assert "github.com/example/beta" in second_repos
         beta_row = next(
             r for r in storage.list_repos()
             if r.normalized_key == "github.com/example/beta"
         )
-        assert beta_row.chunks == 0
+        assert beta_row.chunks == beta_before.chunks
+        assert beta_row.files == beta_before.files
 
 
 def test_pipeline_rejects_no_target() -> None:

@@ -53,6 +53,7 @@ _DEFAULT_LANGUAGES: dict[str, dict[str, Any]] = {
     "vue":        {"adapter": "sfc-split"},
     "markdown":   {"adapter": "heading-split"},
     "gherkin":    {"adapter": "regex-feature-scenario"},
+    "yaml":       {"adapter": "yaml-structure"},
     "_fallback":  {"adapter": "file-level"},
 }
 
@@ -95,11 +96,8 @@ class TreeSitterDispatchChunker:
 
     @property
     def adapter_id(self) -> str:
-        # Encode the resolved language map so changing any sub-adapter
-        # surfaces as a different adapter_id.
-        canonical = sorted(
-            (lang, sub.get("adapter", "?")) for lang, sub in self._language_specs.items()
-        )
+        # Include each resolved sub-adapter's config-sensitive identity.
+        canonical = sorted((lang, adapter.adapter_id) for lang, adapter in self._registry.items())
         digest = hashlib.sha256(repr(canonical).encode("utf-8")).hexdigest()[:8]
         return f"tree-sitter-dispatch:{digest}"
 

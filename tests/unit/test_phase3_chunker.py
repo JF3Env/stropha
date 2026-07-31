@@ -11,6 +11,10 @@ from stropha.adapters.chunker.languages.file_level import FileLevelLanguageChunk
 from stropha.adapters.chunker.languages.heading_split import (
     HeadingSplitLanguageChunker,
 )
+from stropha.adapters.chunker.languages.yaml_structure import (
+    YamlStructureConfig,
+    YamlStructureLanguageChunker,
+)
 from stropha.adapters.chunker.tree_sitter_dispatch import (
     TreeSitterDispatchChunker,
     TreeSitterDispatchConfig,
@@ -82,7 +86,14 @@ def txt_file(tmp_path: Path) -> SourceFile:
 def test_chunker_and_language_chunker_stages_registered() -> None:
     reg = all_adapters()
     assert "tree-sitter-dispatch" in reg["chunker"]
-    for name in ("ast-generic", "heading-split", "sfc-split", "regex-feature-scenario", "file-level"):
+    for name in (
+        "ast-generic",
+        "heading-split",
+        "sfc-split",
+        "regex-feature-scenario",
+        "yaml-structure",
+        "file-level",
+    ):
         assert name in reg["language-chunker"], f"missing {name}"
 
 
@@ -105,6 +116,81 @@ def test_file_level_sub_adapter(txt_file: SourceFile) -> None:
     chunks = list(sub.chunk(txt_file, txt_file.path.read_text()))
     assert len(chunks) == 1
     assert chunks[0].kind == "file"
+
+
+def test_yaml_sub_adapter_splits_documents_and_names_resources(tmp_path: Path) -> None:
+    content = """apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+data:
+  LOG_LEVEL: info
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+spec:
+  replicas: 2
+"""
+    path = tmp_path / "resources.yml"
+    path.write_text(content, encoding="utf-8")
+    source = SourceFile(
+        path=path, rel_path="resources.yml", language="yaml", size_bytes=len(content)
+    )
+
+    chunks = list(YamlStructureLanguageChunker().chunk(source, content))
+
+    assert [chunk.symbol for chunk in chunks] == ["ConfigMap/app-config", "Deployment/api"]
+    assert all(chunk.kind == "yaml_document" for chunk in chunks)
+    assert chunks[0].end_line < chunks[1].start_line
+
+
+def test_yaml_sub_adapter_splits_large_mapping_on_keys(tmp_path: Path) -> None:
+    content = "metadata:\n  name: service\nspec:\n" + "".join(
+        f"  setting_{index}: {'x' * 80}\n" for index in range(20)
+    )
+    path = tmp_path / "values.yaml"
+    path.write_text(content, encoding="utf-8")
+    source = SourceFile(
+        path=path, rel_path="values.yaml", language="yaml", size_bytes=len(content)
+    )
+
+    chunker = YamlStructureLanguageChunker(YamlStructureConfig(max_chars_per_chunk=500))
+    chunks = list(chunker.chunk(source, content))
+
+    assert len(chunks) > 1
+    assert all(chunk.kind == "yaml_section" for chunk in chunks)
+    assert any((chunk.symbol or "").endswith(".spec") for chunk in chunks)
+    assert all(len(chunk.content) <= 500 for chunk in chunks)
+
+
+def test_yaml_sub_adapter_falls_back_for_invalid_yaml(tmp_path: Path) -> None:
+    content = "metadata:\n  name: valid prefix\ninvalid: [unterminated\n"
+    path = tmp_path / "broken.yaml"
+    path.write_text(content, encoding="utf-8")
+    source = SourceFile(
+        path=path, rel_path="broken.yaml", language="yaml", size_bytes=len(content)
+    )
+
+    chunks = list(YamlStructureLanguageChunker().chunk(source, content))
+
+    assert len(chunks) == 1
+    assert chunks[0].kind == "file"
+
+
+def test_yaml_sub_adapter_preserves_comment_only_files(tmp_path: Path) -> None:
+    content = "# Deployment values and operational guidance\n"
+    path = tmp_path / "comments.yaml"
+    path.write_text(content, encoding="utf-8")
+    source = SourceFile(
+        path=path, rel_path="comments.yaml", language="yaml", size_bytes=len(content)
+    )
+
+    chunks = list(YamlStructureLanguageChunker().chunk(source, content))
+
+    assert len(chunks) == 1
+    assert chunks[0].content == content
 
 
 # ---------------------------------------------------------------------------
@@ -145,6 +231,31 @@ def test_dispatcher_adapter_id_changes_with_language_override() -> None:
     assert default != override
 
 
+def test_dispatcher_adapter_id_includes_sub_adapter_config() -> None:
+    compact = TreeSitterDispatchChunker(
+        TreeSitterDispatchConfig(
+            languages={
+                "yaml": {
+                    "adapter": "yaml-structure",
+                    "config": {"max_chars_per_chunk": 4_000},
+                }
+            }
+        )
+    ).adapter_id
+    broad = TreeSitterDispatchChunker(
+        TreeSitterDispatchConfig(
+            languages={
+                "yaml": {
+                    "adapter": "yaml-structure",
+                    "config": {"max_chars_per_chunk": 8_000},
+                }
+            }
+        )
+    ).adapter_id
+
+    assert compact != broad
+
+
 def test_dispatcher_unknown_sub_adapter_raises() -> None:
     from stropha.errors import ConfigError
 
@@ -160,8 +271,8 @@ def test_dispatcher_health_reports_sub_adapter_count() -> None:
     chunker = TreeSitterDispatchChunker()
     h = chunker.health()
     assert h.status == "ready"
-    # 10 default languages + _fallback = 11 entries.
-    assert "11" in h.message
+    # 11 default languages + _fallback = 12 entries.
+    assert "12" in h.message
 
 
 # ---------------------------------------------------------------------------

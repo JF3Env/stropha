@@ -1634,6 +1634,8 @@ class Storage:
                 }
 
         augmented = 0
+        total_to_augment = len(by_chunk)
+        log.info("fts_augment.start", backend="sqlite", total=total_to_augment)
         for cid, info in by_chunk.items():
             extra_parts: list[str] = []
             if info["community_label"]:
@@ -1650,6 +1652,18 @@ class Storage:
                 (cid, new_doc, info["rel_path"]),
             )
             augmented += 1
+            if augmented % 1_000 == 0 or augmented == total_to_augment:
+                log.info(
+                    "fts_augment.progress",
+                    backend="sqlite",
+                    processed=augmented,
+                    total=total_to_augment,
+                    percent=(
+                        round(augmented * 100 / total_to_augment, 1)
+                        if total_to_augment
+                        else 100.0
+                    ),
+                )
 
         # The remaining chunks (no graph match) are left as-is.
         total_chunks = int(
@@ -1689,6 +1703,30 @@ class Storage:
             DELETE FROM enrichments;
             """
         )
+        self._conn.commit()
+
+    def clear_repo(self, repo_id: int) -> None:
+        """Delete indexed data for one repository, preserving all others."""
+        rows = self._conn.execute(
+            "SELECT id FROM chunks WHERE repo_id = ?", (repo_id,)
+        ).fetchall()
+        ids = [int(row["id"]) for row in rows]
+        if ids:
+            placeholders = ",".join("?" * len(ids))
+            self._conn.execute(
+                f"DELETE FROM vec_chunks WHERE rowid IN ({placeholders})", ids
+            )
+            self._conn.execute(
+                f"DELETE FROM vec_chunks_secondary WHERE rowid IN ({placeholders})", ids
+            )
+            self._conn.execute(
+                f"DELETE FROM fts_chunks WHERE rowid IN ({placeholders})", ids
+            )
+            self._conn.execute(
+                f"DELETE FROM chunks WHERE id IN ({placeholders})", ids
+            )
+        self._conn.execute("DELETE FROM files WHERE repo_id = ?", (repo_id,))
+        self._conn.execute("DELETE FROM meta WHERE key = ?", (f"last_indexed_sha_{repo_id}",))
         self._conn.commit()
 
     def vacuum(self) -> tuple[int, int]:

@@ -373,18 +373,20 @@ class TestPipelineGraphifyIntegration:
     ) -> None:
         pipeline = self._make_pipeline(tmp_path, graphify=True)
         with patch.object(pipeline, "_run_graphify") as mock_gf, \
-             patch.object(pipeline, "_refresh_graphify_mirror"):
+             patch.object(pipeline, "_refresh_graphify_mirror") as mock_refresh:
             pipeline.run()
         mock_gf.assert_called_once()
+        mock_refresh.assert_called_once()
 
     def test_graphify_disabled_skips_run_graphify(
         self, tmp_path: Path,
     ) -> None:
         pipeline = self._make_pipeline(tmp_path, graphify=False)
         with patch.object(pipeline, "_run_graphify") as mock_gf, \
-             patch.object(pipeline, "_refresh_graphify_mirror"):
+             patch.object(pipeline, "_refresh_graphify_mirror") as mock_refresh:
             pipeline.run()
         mock_gf.assert_not_called()
+        mock_refresh.assert_not_called()
 
     def test_graphify_default_is_true(self, tmp_path: Path) -> None:
         """Default Pipeline() should have graphify enabled."""

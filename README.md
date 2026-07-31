@@ -354,7 +354,7 @@ stropha index             # walk → chunk → enrich → embed → store
   --repo PATH             # repeatable (multi-repo)
   --manifest FILE         # YAML manifest with `repos: [{path, enabled}]`
                           # mutually exclusive with --repo
-  --rebuild               # clear index first
+  --rebuild               # clear and reindex selected repos only
   --enricher NAME         # noop | hierarchical | graph-aware | ollama | mlx
   --embedder NAME         # local | voyage
 

@@ -161,7 +161,7 @@ def _print_index_summary(
     # ---- Run mode -------------------------------------------------------
     mode_flags = [f"[green]{mode}[/green]"]
     if rebuild:
-        mode_flags.append("[red]rebuild[/red] (wipes chunks)")
+        mode_flags.append("[red]rebuild[/red] (selected repos only)")
     if vacuum:
         mode_flags.append("vacuum (reclaim disk)")
     table.add_row("Mode", " · ".join(mode_flags))
@@ -369,13 +369,15 @@ def index(
         ),
     ),
     rebuild: bool = typer.Option(
-        False, "--rebuild", help="Clear the index before reindexing."
+        False,
+        "--rebuild",
+        help="Clear and reindex only the repositories selected by --repo/--manifest.",
     ),
     vacuum: bool = typer.Option(
         False, "--vacuum",
         help=(
-            "Reclaim unused disk space after indexing. SQLite ``DELETE FROM`` "
-            "(used by --rebuild) marks pages as free but does not shrink the "
+            "Reclaim unused disk space after indexing. SQLite deletes "
+            "performed by --rebuild mark pages as free but do not shrink the "
             "file. VACUUM rewrites the file to actually reduce disk usage. "
             "Slower on large databases."
         ),

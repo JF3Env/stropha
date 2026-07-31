@@ -7,17 +7,17 @@ Phase 1 (MVP) semantics — single repo:
   (`Storage.chunk_is_fresh`) makes a no-op re-run near-instant — no API
   calls, no DB writes. Stale chunks for deleted source are NOT cleaned up
   in this mode.
-- `index --rebuild` → drop the index, then full walk. Use this when the
-  source tree changed (file deletions, method renames) and you want a
-  clean state.
+- `index --rebuild` → clear the selected repository, then full walk. Use
+  this when the source tree changed (file deletions, method renames) and
+  you want a clean state without affecting other indexed repositories.
 
 Phase 4 (multi-repo) semantics — list of repos:
 - The pipeline accepts ``repos: list[Path]``. Each repo is walked and
   indexed sequentially, sharing the same Storage and Embedder.
 - ``chunk_id`` is namespaced by repo (via ``Chunker.chunk(repo_key=…)``)
   so identical files in distinct repos do not collide.
-- ``--rebuild`` clears chunks but keeps the ``repos`` table; identities
-  survive rebuilds so FK references stay stable.
+- ``--rebuild`` clears chunks and file metadata only for selected repos.
+  Repository identities and data belonging to other repos survive.
 
 True git-diff-based incremental (post-commit hooks, soft index for
 working tree) is deferred to Phase 2/3 — see spec §8.
@@ -140,8 +140,15 @@ class IndexPipeline:
         # Clear in the rebuild case BEFORE registering, so the repos table is
         # preserved but every chunk row goes away.
         if rebuild:
-            log.info("pipeline.rebuild_clear")
-            self._storage.clear()
+            for repo_path in self._repos:
+                identity = detect_repo(repo_path)
+                repo_id = self._storage.register_repo(identity)
+                log.info(
+                    "pipeline.rebuild_clear_repo",
+                    repo=identity.normalized_key,
+                    repo_id=repo_id,
+                )
+                self._storage.clear_repo(repo_id)
 
         # Walk + index each repo in sequence.
         for repo_path in self._repos:
