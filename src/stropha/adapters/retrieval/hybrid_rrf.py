@@ -330,9 +330,10 @@ class HybridRrfRetrieval(RetrievalStage):
         # RRF fusion with adaptive weighting
         if len(ranked_by_name) == 1:
             only_name, only_hits = next(iter(ranked_by_name.items()))
+            candidate_limit = self._config.candidate_k if self._reranker else k
             fused = [
                 hit.model_copy(update={"streams": {only_name: hit.score}})
-                for hit in only_hits[:k]
+                for hit in only_hits[:candidate_limit]
             ]
         else:
             # Get more candidates if we have a reranker

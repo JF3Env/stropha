@@ -11,9 +11,11 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
+from stropha.adapters.enricher.contextual import ContextualEnricher
 from stropha.adapters.enricher.hierarchical import HierarchicalEnricher
 from stropha.adapters.enricher.noop import NoopEnricher
 from stropha.models import Chunk
@@ -237,3 +239,33 @@ def test_pipeline_switching_enricher_triggers_re_embed(
         assert stats3.chunks_embedded == stats1.chunks_seen
         assert stats3.chunks_skipped_fresh == 0
         assert stats3.files_skipped_fresh == 0
+
+
+def test_contextual_batch_size_change_triggers_re_embed(
+    tmp_path: Path, repo_with_one_file: Path
+) -> None:
+    db = tmp_path / "batch-drift.db"
+    embedder = _StubEmbedder()
+
+    with (
+        Storage(db, embedding_dim=embedder.dim) as storage,
+        patch("stropha.inference.generate", return_value="This describes the chunk."),
+    ):
+        first = Pipeline(
+            storage=storage,
+            embedder=embedder,
+            enricher=ContextualEnricher(),
+            repos=[repo_with_one_file],
+            enricher_batch_size=1,
+        ).run(rebuild=True, mode="full")
+        second = Pipeline(
+            storage=storage,
+            embedder=embedder,
+            enricher=ContextualEnricher(),
+            repos=[repo_with_one_file],
+            enricher_batch_size=2,
+        ).run(mode="full")
+
+    assert first.chunks_embedded >= 1
+    assert second.chunks_embedded == first.chunks_seen
+    assert second.files_skipped_fresh == 0

@@ -187,7 +187,27 @@ def _print_index_summary(
     if enricher_uses_llm:
         section("Inference", "LLM for enricher / HyDE / query rewrite")
         backend = cfg.inference.backend or "auto"
-        if backend == "deepseek":
+        if backend == "lms":
+            table.add_row(
+                "Backend",
+                f"[magenta]lms[/magenta] [dim](internal)[/dim]  →  "
+                f"{cfg.inference.lms_model}",
+            )
+            table.add_row("  endpoint", cfg.inference.lms_base_url)
+            table.add_row(
+                "  api key",
+                "[green]set[/green]"
+                if cfg.secrets.has_lms
+                else "[red]MISSING[/red] — set secrets.lms_api_key",
+            )
+            table.add_row(
+                "  resilience",
+                f"timeout={cfg.inference.lms_timeout:.0f}s · "
+                f"retries={cfg.inference.lms_max_retries} (exp backoff)",
+            )
+            table.add_row("  concurrency", f"{enricher_concurrency} in-flight")
+            _add_batch_row(table, enricher_batch_size, built.enricher.adapter_name)
+        elif backend == "deepseek":
             table.add_row(
                 "Backend",
                 f"[magenta]deepseek[/magenta] [dim](cloud)[/dim]  →  "
@@ -932,6 +952,7 @@ def init(
         resolved = load_pipeline_config()
         try:
             built = build_stages(resolved)
+            inference = get_config().inference
             pipeline = Pipeline(
                 storage=built.storage,
                 embedder=built.embedder,
@@ -940,6 +961,8 @@ def init(
                 walker=built.walker,
                 chunker=built.chunker,
                 repos=[target],
+                enricher_concurrency=inference.enricher_concurrency,
+                enricher_batch_size=inference.effective_batch_size(),
             )
             with built.storage:
                 stats_result = pipeline.run(rebuild=False)

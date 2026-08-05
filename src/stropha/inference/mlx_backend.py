@@ -41,6 +41,10 @@ class MlxBackend(InferenceBackend):
         return "mlx"
 
     @property
+    def identity(self) -> str:
+        return f"mlx:model={self._default_model}"
+
+    @property
     def is_available(self) -> bool:
         """Check if MLX is available."""
         try:

@@ -58,6 +58,22 @@ def test_adapter_id_changes_with_prompt_edit() -> None:
     assert e1.adapter_id != e2.adapter_id
 
 
+def test_adapter_id_changes_with_output_config() -> None:
+    e1 = ContextualEnricher(ContextualEnricherConfig(max_tokens=64))
+    e2 = ContextualEnricher(ContextualEnricherConfig(max_tokens=128))
+    assert e1.adapter_id != e2.adapter_id
+
+
+def test_adapter_id_changes_with_inference_identity() -> None:
+    backend = MagicMock(identity="lms:model=one:endpoint=a")
+    with patch("stropha.inference.get_backend", return_value=backend):
+        first = ContextualEnricher().adapter_id
+    backend.identity = "lms:model=two:endpoint=a"
+    with patch("stropha.inference.get_backend", return_value=backend):
+        second = ContextualEnricher().adapter_id
+    assert first != second
+
+
 def test_adapter_name_is_contextual() -> None:
     assert ContextualEnricher().adapter_name == "contextual"
 

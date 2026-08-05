@@ -1698,7 +1698,19 @@ def _inference_snapshot(cfg: Config) -> dict:
         "backend": backend,
         "enricher_concurrency": cfg.inference.enricher_concurrency,
     }
-    if backend == "deepseek":
+    if backend == "lms":
+        base.update(
+            {
+                "model": cfg.inference.lms_model,
+                "endpoint": cfg.inference.lms_base_url,
+                "api_key_set": cfg.secrets.has_lms,
+                "timeout_s": cfg.inference.lms_timeout,
+                "max_retries": cfg.inference.lms_max_retries,
+                "think": cfg.inference.lms_think,
+                "location": "internal (OpenAI-compatible LMS)",
+            }
+        )
+    elif backend == "deepseek":
         base.update(
             {
                 "model": cfg.inference.deepseek_model,
@@ -1866,6 +1878,8 @@ def _features_summary(app: AppContext) -> dict:
         llm_active.append("query_decomposition")
     if rf.multi_query_enabled:
         llm_active.append(f"multi_query×{rf.multi_query_count}")
+    if reranker_active and getattr(reranker, "adapter_name", "") == "llm":
+        llm_active.append("reranker(llm)")
 
     return {
         "embedder": f"{built.embedder.adapter_name}:{built.embedder.model_name}@{built.embedder.dim}d",

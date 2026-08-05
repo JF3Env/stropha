@@ -27,6 +27,7 @@ API contract (mirrors :class:`OllamaBackend`):
 
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from urllib import error as urllib_error
@@ -113,6 +114,11 @@ class DeepSeekBackend(InferenceBackend):
     @property
     def name(self) -> str:
         return "deepseek"
+
+    @property
+    def identity(self) -> str:
+        endpoint_hash = hashlib.sha256(self._base_url.encode()).hexdigest()[:8]
+        return f"deepseek:model={self._default_model}:endpoint={endpoint_hash}"
 
     @property
     def is_available(self) -> bool:

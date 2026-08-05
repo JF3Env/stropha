@@ -26,6 +26,7 @@ from stropha.pipeline.graphify_runner import (
     run_graphify,
     run_graphify_multi,
 )
+from stropha.pipeline.pipeline import RepoStats
 
 # ---------------------------------------------------------------------------
 # find_graphify
@@ -387,6 +388,37 @@ class TestPipelineGraphifyIntegration:
             pipeline.run()
         mock_gf.assert_not_called()
         mock_refresh.assert_not_called()
+
+    def test_unchanged_imported_graph_skips_graphify_subprocess(
+        self, tmp_path: Path,
+    ) -> None:
+        pipeline = self._make_pipeline(tmp_path, graphify=True)
+        stats = [RepoStats(normalized_key="test", url=None)]
+
+        with patch(
+            "stropha.ingest.graphify_loader.GraphifyLoader",
+        ) as loader_cls, patch(
+            "stropha.pipeline.graphify_runner.run_graphify_multi",
+        ) as mock_run:
+            loader_cls.return_value.exists.return_value = True
+            loader_cls.return_value.is_stale.return_value = False
+            pipeline._run_graphify(stats)
+
+        mock_run.assert_not_called()
+
+    def test_changed_repo_still_runs_graphify_subprocess(
+        self, tmp_path: Path,
+    ) -> None:
+        pipeline = self._make_pipeline(tmp_path, graphify=True)
+        stats = [RepoStats(normalized_key="test", url=None, code_changed=True)]
+
+        with patch(
+            "stropha.pipeline.graphify_runner.run_graphify_multi",
+            return_value=[],
+        ) as mock_run:
+            pipeline._run_graphify(stats)
+
+        mock_run.assert_called_once_with([tmp_path.resolve()])
 
     def test_graphify_default_is_true(self, tmp_path: Path) -> None:
         """Default Pipeline() should have graphify enabled."""

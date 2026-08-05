@@ -27,6 +27,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from ..config import get_config
 from ..errors import StrophaError
 from ..logging import get_logger
 from .matrix import FEATURE_AXES, INDEXING_AXES, Cell, Matrix, MatrixError
@@ -203,6 +204,7 @@ def build_index(matrix: Matrix, cell: Cell, db_path: Path) -> dict[str, Any]:
     overrides["storage"] = {"adapter": "sqlite-vec", "config": {"path": str(db_path)}}
     cfg = pipeline_config_from_dict(overrides)
     built = build_stages(cfg, force_rebuild=True)
+    inference = get_config().inference
     repo = Path(matrix.repo).resolve()
     t0 = time.perf_counter()
     with built.storage as storage:
@@ -215,6 +217,8 @@ def build_index(matrix: Matrix, cell: Cell, db_path: Path) -> dict[str, Any]:
             chunker=built.chunker,
             repos=[repo],
             graphify=False,
+            enricher_concurrency=inference.enricher_concurrency,
+            enricher_batch_size=inference.effective_batch_size(),
         )
         pipe.run(rebuild=True, mode="full")
     dt = time.perf_counter() - t0

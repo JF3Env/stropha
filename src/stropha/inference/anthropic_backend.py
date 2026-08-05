@@ -32,6 +32,7 @@ API contract (mirrors :class:`DeepSeekBackend`):
 
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from urllib import error as urllib_error
@@ -125,6 +126,14 @@ class AnthropicBackend(InferenceBackend):
     @property
     def name(self) -> str:
         return "anthropic"
+
+    @property
+    def identity(self) -> str:
+        endpoint_hash = hashlib.sha256(self._base_url.encode()).hexdigest()[:8]
+        return (
+            f"anthropic:model={self._default_model}:endpoint={endpoint_hash}"
+            f":version={self._version}"
+        )
 
     @property
     def is_available(self) -> bool:

@@ -1,14 +1,15 @@
 """LLM inference backends.
 
 This module provides a unified interface for LLM inference,
-supporting four backends:
+supporting five backends:
 
 - ``mlx``       — local, Apple Silicon native (default when available)
 - ``ollama``    — local, HTTP daemon (fallback)
 - ``deepseek``  — cloud, OpenAI-compatible API (opt-in, requires
   ``DEEPSEEK_API_KEY``)
 - ``anthropic`` — cloud, Messages API (opt-in, requires
-  ``ANTHROPIC_API_KEY``)
+   ``ANTHROPIC_API_KEY``)
+- ``lms``       — internal OpenAI-compatible API (opt-in)
 
 Per ``CLAUDE.md`` §3.6, cloud backends are never auto-selected — they
 must be requested explicitly via ``inference.backend`` in
@@ -35,10 +36,12 @@ from .backend import (
     get_backend,
     is_anthropic_available,
     is_deepseek_available,
+    is_lms_available,
     is_mlx_available,
     is_ollama_available,
 )
 from .deepseek_backend import DeepSeekBackend
+from .lms_backend import LmsBackend
 from .mlx_backend import MlxBackend
 from .ollama_backend import OllamaBackend
 
@@ -46,12 +49,14 @@ __all__ = [
     "AnthropicBackend",
     "DeepSeekBackend",
     "InferenceBackend",
+    "LmsBackend",
     "MlxBackend",
     "OllamaBackend",
     "generate",
     "get_backend",
     "is_anthropic_available",
     "is_deepseek_available",
+    "is_lms_available",
     "is_mlx_available",
     "is_ollama_available",
 ]

@@ -183,6 +183,7 @@ def index_cached_repo(cached: CachedRepo) -> None:
     
     Updates the cache metadata with the indexing timestamp.
     """
+    from stropha.config import get_config
     from stropha.pipeline.builder import build_stages
     from stropha.pipeline.config import load_pipeline_config
     from stropha.pipeline.pipeline import Pipeline
@@ -199,6 +200,7 @@ def index_cached_repo(cached: CachedRepo) -> None:
     try:
         resolved = load_pipeline_config()
         built = build_stages(resolved)
+        inference = get_config().inference
         with built.storage as storage:  # type: ignore[union-attr]
             pipeline = Pipeline(
                 storage=storage,
@@ -208,6 +210,8 @@ def index_cached_repo(cached: CachedRepo) -> None:
                 walker=built.walker,
                 chunker=built.chunker,
                 repos=[cached.local_path],
+                enricher_concurrency=inference.enricher_concurrency,
+                enricher_batch_size=inference.effective_batch_size(),
             )
             stats = pipeline.run(rebuild=False)
         

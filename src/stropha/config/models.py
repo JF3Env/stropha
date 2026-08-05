@@ -75,13 +75,12 @@ class RetrievalFeatures:
 class InferenceConfig:
     """LLM inference backend configuration (YAML: ``inference``).
 
-    The ``deepseek_*`` and ``anthropic_*`` fields are opt-in cloud knobs
-    — the backend is only selected when ``backend == "deepseek"`` or
-    ``"anthropic"``. The API keys live in :class:`SecretsConfig`
+    The network backend fields are opt-in knobs. They are selected only when
+    ``backend`` names them explicitly. API keys live in :class:`SecretsConfig`
     (YAML: ``secrets``).
     """
 
-    backend: str | None = None  # "mlx", "ollama", "deepseek", "anthropic", or None for auto-detect
+    backend: str | None = None  # "mlx", "ollama", "deepseek", "anthropic", "lms", or None
     mlx_model: str = "mlx-community/Qwen2.5-Coder-1.5B-Instruct-4bit"
     ollama_model: str = "qwen2.5-coder:1.5b"
     ollama_host: str = "http://localhost:11434"
@@ -97,6 +96,13 @@ class InferenceConfig:
     # (bad key, bad request, wrong model) is permanent and short-circuits
     # without retry.
     deepseek_max_retries: int = 2
+    # Internal LMS OpenAI-compatible endpoint. Like other network backends,
+    # LMS is explicit opt-in and is never selected by auto-detection.
+    lms_model: str = "Qwen/Qwen3-Coder-Next-FP8"
+    lms_base_url: str = "https://lms.example.com/openai"
+    lms_timeout: float = 180.0
+    lms_max_retries: int = 2
+    lms_think: bool = False
     # Anthropic Messages API (https://api.anthropic.com/v1/messages).
     # Default is claude-haiku-4-5 — fast + cheap, good fit for the
     # contextual enricher's per-chunk pattern (thousands of short calls).
@@ -126,7 +132,7 @@ class InferenceConfig:
     # per request). Other enrichers (noop, hierarchical, …) ignore this
     # knob and stay per-chunk.
     # Suggested: 1 for local backends (mlx, ollama — single GPU); 10 for
-    # cloud (Anthropic, OpenAI); 5 for DeepSeek (verbose, prone to truncating
+    # cloud (Anthropic, OpenAI, LMS); 5 for DeepSeek (verbose, prone to truncating
     # responses at higher batch sizes — see deepseek_batch_size below).
     enricher_batch_size: int = 1
     # Per-backend batch-size overrides. ``None`` = use ``enricher_batch_size``.
@@ -136,6 +142,7 @@ class InferenceConfig:
     # JSON array mid-string. Observed in the wild: deepseek-chat starts
     # losing entries above batch_size=5; claude-haiku-4-5 handles 10 fine.
     deepseek_batch_size: int | None = None
+    lms_batch_size: int | None = None
     anthropic_batch_size: int | None = None
     ollama_batch_size: int | None = None
     mlx_batch_size: int | None = None
@@ -153,6 +160,7 @@ class InferenceConfig:
         """
         override = {
             "deepseek": self.deepseek_batch_size,
+            "lms": self.lms_batch_size,
             "anthropic": self.anthropic_batch_size,
             "ollama": self.ollama_batch_size,
             "mlx": self.mlx_batch_size,
@@ -219,6 +227,7 @@ class SecretsConfig:
     voyage_api_key: str | None = None
     anthropic_api_key: str | None = None
     deepseek_api_key: str | None = None
+    lms_api_key: str | None = None
 
     @property
     def has_voyage(self) -> bool:
@@ -227,6 +236,10 @@ class SecretsConfig:
     @property
     def has_deepseek(self) -> bool:
         return bool(self.deepseek_api_key and self.deepseek_api_key.strip())
+
+    @property
+    def has_lms(self) -> bool:
+        return bool(self.lms_api_key and self.lms_api_key.strip())
 
     @property
     def has_anthropic(self) -> bool:

@@ -46,6 +46,11 @@ class InferenceBackend(ABC):
         """Check if the backend is available and ready."""
         ...
 
+    @property
+    def identity(self) -> str:
+        """Stable non-secret identity for output drift detection."""
+        return self.name
+
     @abstractmethod
     def generate(
         self,
@@ -130,6 +135,11 @@ def is_anthropic_available() -> bool:
     return get_config().secrets.has_anthropic
 
 
+def is_lms_available() -> bool:
+    """Cheap LMS availability probe without making a network request."""
+    return get_config().secrets.has_lms
+
+
 def get_backend(prefer: str | None = None) -> InferenceBackend:
     """Get the best available inference backend.
 
@@ -143,7 +153,7 @@ def get_backend(prefer: str | None = None) -> InferenceBackend:
 
     The backend is cached globally for reuse.
 
-    Auto-detection NEVER selects ``deepseek`` or ``anthropic`` — both
+    Auto-detection NEVER selects ``deepseek``, ``anthropic``, or ``lms`` — these
     are cloud backends and must be opted into explicitly via
     ``inference.backend: deepseek|anthropic`` in ``stropha.yaml`` (or
     ``prefer='deepseek'|'anthropic'``). This preserves the
@@ -163,6 +173,7 @@ def get_backend(prefer: str | None = None) -> InferenceBackend:
 
     from .anthropic_backend import AnthropicBackend
     from .deepseek_backend import DeepSeekBackend
+    from .lms_backend import LmsBackend
     from .mlx_backend import MlxBackend
     from .ollama_backend import OllamaBackend
 
@@ -215,6 +226,16 @@ def get_backend(prefer: str | None = None) -> InferenceBackend:
         # user explicitly asked for Anthropic. Cache so health_check
         # reports actionable guidance.
         log.warning("inference.anthropic_no_api_key")
+        _BACKEND = backend
+        return _BACKEND
+
+    if prefer == "lms":
+        backend = LmsBackend()
+        if backend.is_available:
+            _BACKEND = backend
+            log.info("inference.backend_selected", backend="lms")
+            return _BACKEND
+        log.warning("inference.lms_no_api_key")
         _BACKEND = backend
         return _BACKEND
 

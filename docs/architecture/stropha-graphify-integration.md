@@ -1450,6 +1450,7 @@ Todos retornam `{"graph_loaded": false, "message": …}` quando a tabela `graph_
 - `src/stropha/ingest/graph_vec_loader.py` — embed incremental de `graph_nodes.label` via o embedder ativo. Skip-fresh por `embedding_model`. ~30 s para 2K nós com fastembed/mxbai. Works cross-repo without changes (queries all nodes regardless of repo_id).
 - `Pipeline.run()` (`pipeline/pipeline.py::_refresh_graphify_mirror`) — ordem canônica post-index: GraphifyLoader → GraphVecLoader → `augment_fts_with_graph`. Invariante #3 do `CLAUDE.md §3`.
   - **Multi-repo**: Calls `detect_repo()` + `register_repo()` to obtain `repo_id` before instantiating `GraphifyLoader(storage, repo_root, repo_id=repo_id)`.
+  - **No-op indexing**: skips `graphify update` per repository when the source scan found no code changes and `graph_meta.last_loaded_mtime:<repo_id>` proves the existing `graph.json` was already imported. Missing, stale, and changed graphs still run through the canonical lifecycle.
 - `src/stropha/retrieval/graph.py` — `GraphNode` dataclass includes `repo_id` field. `_hydrate_node()` scopes chunk lookups by repo. Graph tools (`find_callers`, `find_related`, etc.) work cross-repo by default.
 
 ### 21.4 Hook installer (CLI + cross-repo v=3)

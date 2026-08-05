@@ -199,14 +199,28 @@ class ContextualEnricher(EnricherStage):
 
     @property
     def adapter_id(self) -> str:
-        # Hash the prompt so edits invalidate the enrichment cache
+        # Every input that can change generated text must invalidate the cache.
         prompt_hash = hashlib.sha256(
             self._config.prompt_template.encode()
         ).hexdigest()[:8]
+        config_hash = hashlib.sha256(
+            self._config.model_dump_json().encode()
+        ).hexdigest()[:8]
+
+        from ...config import get_config
+        from ...inference import get_backend
+
+        backend_hash = hashlib.sha256(
+            get_backend().identity.encode()
+        ).hexdigest()[:8]
+        configured_batch_size = get_config().inference.effective_batch_size()
         return (
             f"contextual"
             f":t={self._config.temperature}"
             f":p={prompt_hash}"
+            f":cfg={config_hash}"
+            f":llm={backend_hash}"
+            f":batch={configured_batch_size}"
         )
 
     @property

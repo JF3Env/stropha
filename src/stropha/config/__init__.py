@@ -227,6 +227,13 @@ def _parse_inference(raw: dict[str, Any]) -> InferenceConfig:
         deepseek_base_url=str(raw.get("deepseek_base_url", "https://api.deepseek.com/v1")),
         deepseek_timeout=_float(raw.get("deepseek_timeout"), 120.0),
         deepseek_max_retries=_int(raw.get("deepseek_max_retries"), 2),
+        lms_model=str(raw.get("lms_model", "Qwen/Qwen3-Coder-Next-FP8")),
+        lms_base_url=str(
+            raw.get("lms_base_url", "https://lms.example.com/openai")
+        ),
+        lms_timeout=_float(raw.get("lms_timeout"), 180.0),
+        lms_max_retries=_int(raw.get("lms_max_retries"), 2),
+        lms_think=_bool(raw.get("lms_think"), False),
         anthropic_model=str(raw.get("anthropic_model", "claude-haiku-4-5")),
         anthropic_base_url=str(raw.get("anthropic_base_url", "https://api.anthropic.com/v1")),
         anthropic_timeout=_float(raw.get("anthropic_timeout"), 60.0),
@@ -235,6 +242,7 @@ def _parse_inference(raw: dict[str, Any]) -> InferenceConfig:
         enricher_concurrency=_int(raw.get("enricher_concurrency"), 1),
         enricher_batch_size=_int(raw.get("enricher_batch_size"), 1),
         deepseek_batch_size=_int_optional(raw.get("deepseek_batch_size")),
+        lms_batch_size=_int_optional(raw.get("lms_batch_size")),
         anthropic_batch_size=_int_optional(raw.get("anthropic_batch_size")),
         ollama_batch_size=_int_optional(raw.get("ollama_batch_size")),
         mlx_batch_size=_int_optional(raw.get("mlx_batch_size")),
@@ -268,6 +276,11 @@ def _parse_secrets(raw: dict[str, Any]) -> SecretsConfig:
         voyage_api_key=raw.get("voyage_api_key") or None,
         anthropic_api_key=raw.get("anthropic_api_key") or None,
         deepseek_api_key=raw.get("deepseek_api_key") or None,
+        lms_api_key=(
+            raw.get("lms_api_key")
+            if isinstance(raw.get("lms_api_key"), str)
+            else None
+        ),
     )
 
 
@@ -434,10 +447,14 @@ def get_config_info() -> dict[str, Any]:
     # Secrets: redact when set, null when absent.
     voyage_set = bool(cfg.secrets.voyage_api_key)
     anthropic_set = bool(cfg.secrets.anthropic_api_key)
+    deepseek_set = bool(cfg.secrets.deepseek_api_key)
+    lms_set = bool(cfg.secrets.lms_api_key)
 
     settings_dump: dict[str, Any] = {
         "voyage_api_key": "(set)" if voyage_set else None,
         "anthropic_api_key": "(set)" if anthropic_set else None,
+        "deepseek_api_key": "(set)" if deepseek_set else None,
+        "lms_api_key": "(set)" if lms_set else None,
         "target_repo": str(cfg.target_repo),
         "index_path": str(cfg.index_path),
         "voyage_embed_model": cfg.voyage_embed_model,

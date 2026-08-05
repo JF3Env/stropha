@@ -96,7 +96,7 @@ at runtime are `STROPHA_TARGET_REPO` (a runtime argument: *which* repo
 to operate on) and `STROPHA_HOOK_*` (escape hatches for the detached
 post-commit hook subprocess; see `src/stropha/config/__init__.py`
 `_ENV_REGISTRY` for the canonical list). API keys (`voyage_api_key`,
-`anthropic_api_key`, `deepseek_api_key`) live under `secrets:` in the
+`anthropic_api_key`, `deepseek_api_key`, `lms_api_key`) live under `secrets:` in the
 YAML. See `get_config` MCP tool for live runtime state.
 
 Adapters register via `@register_adapter(stage=..., name=...)` across

@@ -39,6 +39,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .config import get_config
 from .errors import StrophaError
 from .ingest.walker import Walker
 from .logging import get_logger
@@ -177,6 +178,7 @@ def _reindex(repo: Path, *, full_refresh: bool) -> None:
     """Run a fresh ``Pipeline`` pass against ``repo``."""
     resolved = load_pipeline_config()
     built = build_stages(resolved)
+    inference = get_config().inference
     try:
         with built.storage:  # type: ignore[union-attr]
             pipeline = Pipeline(
@@ -187,6 +189,8 @@ def _reindex(repo: Path, *, full_refresh: bool) -> None:
                 walker=built.walker,
                 chunker=built.chunker,
                 repos=[repo],
+                enricher_concurrency=inference.enricher_concurrency,
+                enricher_batch_size=inference.effective_batch_size(),
             )
             stats = pipeline.run()
         log.info(

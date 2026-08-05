@@ -507,6 +507,10 @@ pipeline:
     adapter: hybrid-rrf
     config:
       rrf_k: 60
+      candidate_k: 20
+      reranker:
+        adapter: llm
+        config: { max_candidates: 20, max_snippet_chars: 1200 }
       streams:
         dense: { adapter: vec-cosine, config: { k: 50 } }
         sparse: { adapter: fts5-bm25, config: { k: 50 } }
@@ -518,7 +522,21 @@ pipeline:
             dim: 256
             normalize: true
             k: 50
+
+inference:
+  backend: lms
+  lms_model: Qwen/Qwen3-Coder-Next-FP8
+  lms_base_url: https://lms.example.com/openai
+
+secrets:
+  lms_api_key: <key>
 ```
+
+The `lms` backend is explicit opt-in and powers contextual enrichment, HyDE,
+query intelligence, and the optional `llm` reranker. Store API keys as literal
+YAML values and restrict the file with `chmod 600 ~/.stropha/config.yaml`.
+These features send prompts, queries, and bounded code snippets to the configured
+endpoint; use them only with a service authorized to process repository content.
 
 ### Configuration
 

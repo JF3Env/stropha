@@ -38,6 +38,8 @@ class RepoStats:
 
     normalized_key: str
     url: str | None
+    code_changed: bool = False
+    """Whether source files were added, modified, renamed, or deleted."""
     files_visited: int = 0
     files_skipped_fresh: int = 0
     """Files whose stored ``(mtime, size_bytes)`` matched the on-disk
@@ -167,6 +169,11 @@ class Pipeline:
         self._repos = [p.resolve() for p in repos]
         self._enricher_concurrency = enricher_concurrency
         self._enricher_batch_size = enricher_batch_size
+        supports_batch = callable(getattr(self._enricher, "enrich_batch", None))
+        effective_batch_size = enricher_batch_size if supports_batch else 1
+        self._effective_enricher_id = (
+            f"{self._enricher.adapter_id}:batch={effective_batch_size}"
+        )
         self._graphify = graphify
 
         # Pre-warm the enricher's lazy state (e.g. inference backend
@@ -249,7 +256,7 @@ class Pipeline:
             )
 
         stats = PipelineStats(
-            enricher_id=self._enricher.adapter_id,
+            enricher_id=self._effective_enricher_id,
             embedder_id=self._embedder.adapter_id,
             secondary_embedder_id=(
                 self._secondary_embedder.adapter_id
@@ -269,7 +276,7 @@ class Pipeline:
             stored_embedder = self._storage.get_meta("active_embedder_id")
             drift_enricher = (
                 stored_enricher is not None
-                and stored_enricher != self._enricher.adapter_id
+                and stored_enricher != self._effective_enricher_id
             )
             drift_embedder = (
                 stored_embedder is not None
@@ -279,7 +286,7 @@ class Pipeline:
                 log.warning(
                     "pipeline.config_drift_detected",
                     stored_enricher_id=stored_enricher,
-                    active_enricher_id=self._enricher.adapter_id,
+                    active_enricher_id=self._effective_enricher_id,
                     stored_embedder_id=stored_embedder,
                     active_embedder_id=self._embedder.adapter_id,
                     enricher_changed=drift_enricher,
@@ -325,7 +332,7 @@ class Pipeline:
             self._storage.commit()
 
         self._storage.set_meta("chunk_id_version", "2")
-        self._storage.set_meta("active_enricher_id", self._enricher.adapter_id)
+        self._storage.set_meta("active_enricher_id", self._effective_enricher_id)
         self._storage.set_meta("active_embedder_id", self._embedder.adapter_id)
         self._storage.commit()
 
@@ -352,7 +359,7 @@ class Pipeline:
         # backends (sqlite-vec, postgres) support it; this is a framework hook.
         graph_capable = getattr(self._storage, "graph_capable", True)
         if self._graphify and graph_capable:
-            self._run_graphify()
+            self._run_graphify(stats.repos)
             # Refreshing the mirror also embeds graph nodes and augments FTS.
             # Keep the entire lifecycle behind --graphify/--no-graphify so a
             # caller can explicitly avoid expensive post-index graph work.
@@ -363,16 +370,47 @@ class Pipeline:
             _release_lock()
         return stats
 
-    def _run_graphify(self) -> None:
-        """Invoke ``graphify update`` for each repo before the mirror load.
+    def _run_graphify(self, repo_stats: Sequence[RepoStats]) -> None:
+        """Invoke ``graphify update`` for repos whose graph may be outdated.
 
         Creates ``graphify-out/graph.json`` on first run; refreshes it
-        incrementally on subsequent runs.  Skipped silently when the
-        ``graphify`` binary is not installed (no hard dependency).
+        after source changes. Unchanged repos are skipped only when their
+        existing graph has already been imported. Skipped silently when
+        the ``graphify`` binary is not installed (no hard dependency).
         """
+        from ..ingest.graphify_loader import GraphifyLoader
         from .graphify_runner import run_graphify_multi
 
-        results = run_graphify_multi(list(self._repos))
+        repos_to_update: list[Path] = []
+        for repo_path, rstats in zip(self._repos, repo_stats, strict=True):
+            if not rstats.code_changed:
+                try:
+                    identity = detect_repo(repo_path)
+                    repo_id = self._storage.register_repo(identity)
+                    loader = GraphifyLoader(
+                        self._storage, repo_path, repo_id=repo_id,
+                    )  # type: ignore[arg-type]
+                    graph_is_imported = loader.exists() and not loader.is_stale()
+                except Exception as exc:  # pragma: no cover - custom storage fallback
+                    log.debug(
+                        "pipeline.graphify_freshness_check_failed",
+                        repo=str(repo_path),
+                        error=str(exc),
+                    )
+                else:
+                    if graph_is_imported:
+                        log.info(
+                            "pipeline.graphify_skipped_fresh",
+                            repo=str(repo_path),
+                            repo_id=repo_id,
+                        )
+                        continue
+            repos_to_update.append(repo_path)
+
+        if not repos_to_update:
+            return
+
+        results = run_graphify_multi(repos_to_update)
         for r in results:
             if r.error:
                 log.warning(
@@ -558,6 +596,20 @@ class Pipeline:
         # Materialise the walker output so we can both index it and use
         # it for stale-file detection.
         source_files = list(self._walker.discover(repo_path))
+        stored = self._storage.load_file_meta_map(repo_id)
+        for sf in source_files:
+            try:
+                st = sf.path.stat()
+            except OSError:
+                continue
+            meta = stored.get(sf.rel_path)
+            if (
+                meta is None
+                or meta.mtime != st.st_mtime
+                or meta.size_bytes != st.st_size
+            ):
+                rstats.code_changed = True
+                break
         self._index_files(
             source_files,
             rstats,
@@ -570,6 +622,7 @@ class Pipeline:
         current_paths = [sf.rel_path for sf in source_files]
         stale = self._storage.list_stale_files(repo_id, current_paths)
         if stale:
+            rstats.code_changed = True
             evicted = self._storage.delete_chunks_by_repo_paths(repo_id, stale)
             self._storage.delete_file_meta(repo_id, stale)
             rstats.files_evicted = len(stale)
@@ -606,7 +659,9 @@ class Pipeline:
         stored = self._storage.load_file_meta_map(repo_id)
         # Same identifiers file_is_fresh / _index_files use, so the drift
         # contract is enforced identically on the reconcile fast-path.
-        enricher_id = self._enricher.adapter_id
+        # Batched enrichers use a different prompt shape, so the effective
+        # runtime batch size is part of freshness even when supplied by CLI.
+        enricher_id = self._effective_enricher_id
         embedder_model = self._embedder.model_name
 
         changed: list = []
@@ -617,10 +672,16 @@ class Pipeline:
                 # Vanished between walk and stat — stale-cleanup evicts it.
                 continue
             meta = stored.get(sf.rel_path)
-            if (
+            source_is_fresh = (
                 meta is not None
                 and meta.mtime == st.st_mtime
                 and meta.size_bytes == st.st_size
+            )
+            if not source_is_fresh:
+                rstats.code_changed = True
+            if (
+                meta is not None
+                and source_is_fresh
                 and meta.enricher_id == enricher_id
                 and meta.embedder_model == embedder_model
             ):
@@ -649,6 +710,7 @@ class Pipeline:
         current_paths = [sf.rel_path for sf in source_files]
         stale = self._storage.list_stale_files(repo_id, current_paths)
         if stale:
+            rstats.code_changed = True
             evicted = self._storage.delete_chunks_by_repo_paths(repo_id, stale)
             self._storage.delete_file_meta(repo_id, stale)
             rstats.files_evicted = len(stale)
@@ -689,6 +751,8 @@ class Pipeline:
             )
             self._index_one_repo_full(repo_path, identity, repo_id, rstats)
             return
+
+        rstats.code_changed = bool(deltas)
 
         adds_modifies: list[str] = []
         deletes: list[str] = []
@@ -760,7 +824,7 @@ class Pipeline:
         batch_chunks: list[Chunk] = []
         batch_embed_texts: list[str] = []
         seen_paths: set[str] = set()
-        enricher_id = self._enricher.adapter_id
+        enricher_id = self._effective_enricher_id
         embedder_model = self._embedder.model_name
 
         def flush() -> None:

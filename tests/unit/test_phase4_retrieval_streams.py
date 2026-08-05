@@ -208,6 +208,30 @@ def test_hybrid_rrf_skips_embedder_when_no_dense_stream() -> None:
     assert embedder.calls == 0
 
 
+def test_single_stream_passes_candidate_k_to_reranker() -> None:
+    storage = _RecordingStorage()
+    retrieval = HybridRrfRetrieval(
+        HybridRrfConfig(
+            candidate_k=7,
+            streams={"dense": None, "sparse": None},
+            reranker={"adapter": "noop", "config": {}},
+        ),
+        storage=storage,
+        embedder=_StubEmbedder(),
+    )
+    assert retrieval._reranker is not None
+    original_rerank = retrieval._reranker.rerank
+    seen: list[int] = []
+
+    def recording_rerank(query, hits, *, top_k):
+        seen.append(len(hits))
+        return original_rerank(query, hits, top_k=top_k)
+
+    retrieval._reranker.rerank = recording_rerank
+    retrieval.search("query", top_k=3)
+    assert seen == [7]
+
+
 def test_hybrid_rrf_adapter_id_changes_with_stream_swap() -> None:
     storage = _RecordingStorage()
     embedder = _StubEmbedder()

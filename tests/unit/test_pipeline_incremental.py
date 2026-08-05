@@ -293,6 +293,7 @@ def test_pipeline_skips_unchanged_files_on_second_run(tmp_path: Path) -> None:
         ).run(rebuild=True, mode="full")
         assert s1.chunks_embedded >= 1
         assert s1.files_skipped_fresh == 0
+        assert s1.repos[0].code_changed is True
 
         s2 = Pipeline(
             storage=s, embedder=embedder, enricher=NoopEnricher(),
@@ -301,6 +302,7 @@ def test_pipeline_skips_unchanged_files_on_second_run(tmp_path: Path) -> None:
         assert s2.files_skipped_fresh == s1.files_visited
         assert s2.chunks_seen == 0  # chunker bypassed
         assert s2.chunks_embedded == 0
+        assert s2.repos[0].code_changed is False
 
 
 def test_pipeline_invalidates_skip_when_file_changes(tmp_path: Path) -> None:
@@ -325,6 +327,7 @@ def test_pipeline_invalidates_skip_when_file_changes(tmp_path: Path) -> None:
         ).run(mode="full")
         assert s2.files_skipped_fresh == 0
         assert s2.chunks_seen >= 1
+        assert s2.repos[0].code_changed is True
 
 
 # --------------------------------------------------------------------------- Phase B — git-diff incremental
@@ -637,6 +640,7 @@ def test_auto_mode_routes_to_reconcile(tmp_path: Path) -> None:
         ).run()
         assert s2.files_skipped_fresh >= 1
         assert s2.chunks_seen == 0  # nothing re-chunked
+        assert s2.repos[0].code_changed is False
 
 
 def test_reconcile_detects_uncommitted_edit(tmp_path: Path) -> None:
@@ -660,6 +664,7 @@ def test_reconcile_detects_uncommitted_edit(tmp_path: Path) -> None:
         assert stats.files_skipped_fresh == 0
         assert stats.chunks_seen >= 1
         assert stats.chunks_embedded >= 1
+        assert stats.repos[0].code_changed is True
 
 
 def test_reconcile_recovers_from_interrupted_index(tmp_path: Path) -> None:
@@ -721,6 +726,7 @@ def test_reconcile_evicts_git_removed_file(tmp_path: Path) -> None:
             storage=s, embedder=emb, enricher=NoopEnricher(), repos=[repo],
         ).run()
         assert stats.files_evicted == 1
+        assert stats.repos[0].code_changed is True
         assert s._conn.execute(
             "SELECT 1 FROM chunks WHERE rel_path = 'drop.py' LIMIT 1"
         ).fetchone() is None
@@ -744,3 +750,4 @@ def test_reconcile_reindexes_on_embedder_config_change(tmp_path: Path) -> None:
         ).run()
         assert stats.files_skipped_fresh == 0
         assert stats.chunks_embedded >= 1
+        assert stats.repos[0].code_changed is False

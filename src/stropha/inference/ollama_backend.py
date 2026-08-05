@@ -11,6 +11,7 @@ Configuration (stropha.yaml):
 
 from __future__ import annotations
 
+import hashlib
 import json
 from urllib import error as urllib_error
 from urllib import request as urllib_request
@@ -46,6 +47,11 @@ class OllamaBackend(InferenceBackend):
     @property
     def name(self) -> str:
         return "ollama"
+
+    @property
+    def identity(self) -> str:
+        host_hash = hashlib.sha256(self._base_url.encode()).hexdigest()[:8]
+        return f"ollama:model={self._default_model}:host={host_hash}"
 
     @property
     def is_available(self) -> bool:
