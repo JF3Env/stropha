@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import deque
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -64,9 +65,16 @@ def _hit(chunk_id: str, snippet: str) -> SearchHit:
 def _context(hits: list[SearchHit]) -> MagicMock:
     engine = MagicMock()
     engine.search.return_value = hits
+    storage = MagicMock()
+    storage.lookup_repo_id.return_value = 1
+    storage.get_chunk_by_id.side_effect = lambda chunk_id: {
+        "chunk_id": chunk_id,
+        "repo_id": 1,
+    }
     app = SimpleNamespace(
+        config=SimpleNamespace(target_repo=Path.cwd()),
         search_engine=engine,
-        storage=MagicMock(),
+        storage=storage,
         pinned_chunk_ids=set(),
         seen_chunk_ids=set(),
         recent_queries=deque(maxlen=5),

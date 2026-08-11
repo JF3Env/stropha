@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 
 import pytest
 
@@ -194,3 +195,85 @@ async def test_failed_watcher_start_cleans_partial_runtime(tmp_path) -> None:
     storage.close.assert_called_once_with()
     close_shared_runtime(owner)
     assert not hasattr(owner, "_stropha_shared_runtime_lock")
+
+
+@pytest.mark.asyncio
+async def test_reload_shared_runtime_swaps_without_closing_active_sessions(tmp_path) -> None:
+    from stropha.server_runtime import (
+        close_shared_runtime,
+        get_shared_runtime,
+        reload_shared_runtime,
+    )
+
+    owner = SimpleNamespace()
+    first_storage = MagicMock(adapter_name="first")
+    second_storage = MagicMock(adapter_name="second")
+    first = SimpleNamespace(
+        embedder=MagicMock(),
+        storage=first_storage,
+        retrieval=MagicMock(),
+    )
+    second = SimpleNamespace(
+        embedder=MagicMock(),
+        storage=second_storage,
+        retrieval=MagicMock(),
+    )
+    builds = MagicMock(side_effect=[first, second])
+    first_config = _config(tmp_path)
+    second_config = _config(tmp_path)
+    second_config.log_level = "DEBUG"
+    configs = iter([first_config, second_config])
+    configure_logging = MagicMock()
+    kwargs = {
+        "get_config_fn": lambda: next(configs),
+        "configure_logging_fn": configure_logging,
+        "load_pipeline_config_fn": lambda: {},
+        "build_stages_fn": builds,
+        "watch_controller_cls": MagicMock,
+    }
+
+    active = await get_shared_runtime(owner, version="test", **kwargs)
+    replacement = await reload_shared_runtime(owner, **kwargs)
+
+    assert active.built is first
+    assert replacement.built is second
+    assert replacement.retired == [first]
+    first_storage.close.assert_not_called()
+    second_storage.close.assert_not_called()
+    configure_logging.assert_has_calls([call("INFO"), call("DEBUG")])
+
+    close_shared_runtime(owner)
+    first_storage.close.assert_called_once_with()
+    second_storage.close.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_reload_shared_runtime_keeps_event_loop_responsive(tmp_path) -> None:
+    from stropha.server_runtime import reload_shared_runtime
+
+    owner = SimpleNamespace()
+    storage = MagicMock(adapter_name="test")
+    built = SimpleNamespace(
+        embedder=MagicMock(),
+        storage=storage,
+        retrieval=MagicMock(),
+    )
+
+    def slow_build(_resolved):
+        time.sleep(0.1)
+        return built
+
+    task = asyncio.create_task(
+        reload_shared_runtime(
+            owner,
+            get_config_fn=lambda: _config(tmp_path),
+            configure_logging_fn=lambda _level: None,
+            load_pipeline_config_fn=lambda: {},
+            build_stages_fn=slow_build,
+            watch_controller_cls=MagicMock,
+        )
+    )
+
+    await asyncio.sleep(0.02)
+    assert not task.done()
+    assert await task == owner._stropha_shared_runtime

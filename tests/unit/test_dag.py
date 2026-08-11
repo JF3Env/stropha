@@ -41,6 +41,55 @@ def _engine(hits: list[SearchHit]) -> MagicMock:
 
 
 class TestExecutePlan:
+    def test_broad_scope_supports_legacy_search_signature(self) -> None:
+        class LegacySearch:
+            def search(self, query: str, *, top_k: int) -> list[SearchHit]:
+                assert query == "task"
+                return [_hit("c1")][:top_k]
+
+        plan = InvestigationPlan(
+            task="task",
+            steps=[
+                InvestigationStep(
+                    order=1,
+                    tool="search_code",
+                    purpose="primary",
+                    args={"query": "task", "top_k": 5, "include_other_repos": True},
+                )
+            ],
+        )
+
+        result = execute_plan(
+            plan, search_engine=LegacySearch(), storage=None, context_budget=4000
+        )
+
+        primary = next(section for section in result.sections if section.key == "primary")
+        assert [hit.chunk_id for hit in primary.hits] == ["c1"]
+
+    def test_concrete_repo_id_is_always_passed(self) -> None:
+        plan = InvestigationPlan(
+            task="task",
+            steps=[
+                InvestigationStep(
+                    order=1,
+                    tool="search_code",
+                    purpose="primary",
+                    args={"query": "task"},
+                )
+            ],
+        )
+        engine = _engine([])
+
+        execute_plan(
+            plan,
+            search_engine=engine,
+            storage=None,
+            context_budget=4000,
+            repo_id=7,
+        )
+
+        assert engine.search.call_args.kwargs["repo_id"] == 7
+
     def test_negative_budget_raises(self) -> None:
         plan = InvestigationPlan(task="t")
         with pytest.raises(ValueError, match="context_budget"):

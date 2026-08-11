@@ -20,7 +20,8 @@ def smart_search_tool_impl(
     *,
     to_result: ToResult,
     smart_search_fn: Callable[..., Any],
-    graph_loaded_fn: Callable[[Any], bool],
+    graph_loaded_fn: Callable[..., bool],
+    repo_id: int | None,
     log: Any,
 ) -> SmartSearchResponse:
     top_k = max(1, min(top_k, 30))
@@ -34,6 +35,8 @@ def smart_search_tool_impl(
             use_router=True,
             use_llm_router=use_llm_router,
             router=configured_router,
+            search_engine=app.search_engine,
+            repo_id=repo_id,
         )
         return SmartSearchResponse(
             results=[to_result(hit) for hit in result.hits],
@@ -43,7 +46,7 @@ def smart_search_tool_impl(
             symbol=result.routed.symbol,
             tool_used=result.tool_used,
             confidence=result.routed.confidence,
-            graph_available=graph_loaded_fn(app.storage),
+            graph_available=graph_loaded_fn(app.storage, repo_id=repo_id),
         )
     except StrophaError as exc:
         log.warning("mcp.smart_search.error", error=str(exc))
@@ -55,12 +58,23 @@ def smart_search_tool_impl(
             symbol=None,
             tool_used="search_code",
             confidence=0.0,
-            graph_available=graph_loaded_fn(app.storage),
+            graph_available=graph_loaded_fn(app.storage, repo_id=repo_id),
         )
 
 
-def get_symbol_impl(symbol: str, limit: int, app: AppContext, *, to_result: ToResult) -> list[SearchResult]:
-    hits = app.storage.lookup_by_symbol(symbol, limit=max(1, min(limit, 20)))
+def get_symbol_impl(
+    symbol: str,
+    limit: int,
+    app: AppContext,
+    *,
+    to_result: ToResult,
+    repo_id: int | None,
+) -> list[SearchResult]:
+    bounded_limit = max(1, min(limit, 20))
+    if repo_id is None:
+        hits = app.storage.lookup_by_symbol(symbol, limit=bounded_limit)
+    else:
+        hits = app.storage.lookup_by_symbol(symbol, limit=bounded_limit, repo_id=repo_id)
     return [to_result(hit) for hit in hits]
 
 
@@ -80,8 +94,16 @@ def list_repos_impl(app: AppContext) -> list[RepoSummary]:
     ]
 
 
-def get_file_outline_impl(path: str, app: AppContext) -> list[OutlineEntry]:
-    rows = app.storage.file_outline(path)
+def get_file_outline_impl(
+    path: str,
+    app: AppContext,
+    *,
+    repo_id: int | None,
+) -> list[OutlineEntry]:
+    if repo_id is None:
+        rows = app.storage.file_outline(path)
+    else:
+        rows = app.storage.file_outline(path, repo_id=repo_id)
     return [
         OutlineEntry(
             chunk_id=row["chunk_id"],

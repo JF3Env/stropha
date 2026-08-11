@@ -47,6 +47,8 @@ def smart_search(
     use_router: bool = True,
     use_llm_router: bool | None = None,
     router: Any = None,
+    search_engine: Any = None,
+    repo_id: int | None = None,
 ) -> SmartSearchResult:
     """Unified search with automatic query routing.
 
@@ -70,6 +72,10 @@ def smart_search(
             ignored (the router's own config dictates LLM use). When
             ``None`` (the default), falls back to the legacy
             :func:`route_query` helper.
+        search_engine: Optional configured retrieval stage. Direct callers
+            may omit it to retain the legacy :class:`SearchEngine` fallback.
+        repo_id: Optional repository scope. ``None`` intentionally searches
+            across repositories.
 
     Returns:
         SmartSearchResult with hits, routing info, and tool used.
@@ -114,7 +120,7 @@ def smart_search(
         routed = route_query(query, use_llm=use_llm_router)
     
     # Check if graph is required and available
-    if is_graph_intent(routed.intent) and not graph.graph_loaded(storage):
+    if is_graph_intent(routed.intent) and not graph.graph_loaded(storage, repo_id=repo_id):
         log.info(
             "smart_search.graph_not_loaded_fallback",
             intent=routed.intent.value,
@@ -130,7 +136,7 @@ def smart_search(
     
     # Dispatch to appropriate tool
     if routed.intent == QueryIntent.FIND_CALLERS and routed.symbol:
-        result = graph.find_callers(storage, routed.symbol, limit=top_k)
+        result = graph.find_callers(storage, routed.symbol, limit=top_k, repo_id=repo_id)
         hits = _graph_nodes_to_hits(result.get("callers", []), storage)
         return SmartSearchResult(
             hits=hits,
@@ -140,7 +146,7 @@ def smart_search(
         )
     
     elif routed.intent == QueryIntent.FIND_TESTS and routed.symbol:
-        result = graph.find_tests_for(storage, routed.symbol, limit=top_k)
+        result = graph.find_tests_for(storage, routed.symbol, limit=top_k, repo_id=repo_id)
         hits = _graph_nodes_to_hits(result.get("tests", []), storage)
         return SmartSearchResult(
             hits=hits,
@@ -150,7 +156,7 @@ def smart_search(
         )
     
     elif routed.intent == QueryIntent.FIND_RELATED and routed.symbol:
-        result = graph.find_related(storage, routed.symbol, limit=top_k)
+        result = graph.find_related(storage, routed.symbol, limit=top_k, repo_id=repo_id)
         hits = _graph_nodes_to_hits(result.get("related", []), storage)
         return SmartSearchResult(
             hits=hits,
@@ -162,7 +168,7 @@ def smart_search(
     elif routed.intent == QueryIntent.TRACE_FEATURE:
         # trace_feature uses the full query, not just symbol
         feature = routed.symbol or routed.original_query
-        result = graph.trace_feature(storage, feature, max_paths=top_k)
+        result = graph.trace_feature(storage, feature, max_paths=top_k, repo_id=repo_id)
         # Flatten paths to hits
         all_nodes = []
         for path in result.get("paths", []):
@@ -185,7 +191,12 @@ def smart_search(
     
     elif routed.intent == QueryIntent.GET_SYMBOL and routed.symbol:
         # Direct symbol lookup
-        hits = storage.lookup_by_symbol(routed.symbol, limit=top_k)
+        if repo_id is None:
+            hits = storage.lookup_by_symbol(routed.symbol, limit=top_k)
+        else:
+            hits = storage.lookup_by_symbol(
+                routed.symbol, limit=top_k, repo_id=repo_id
+            )
         return SmartSearchResult(
             hits=hits,
             routed=routed,
@@ -193,8 +204,11 @@ def smart_search(
         )
     
     # Default: hybrid search
-    engine = SearchEngine(storage, embedder)
-    hits = engine.search(query, top_k=top_k)
+    engine = search_engine or SearchEngine(storage, embedder)
+    if repo_id is None:
+        hits = engine.search(query, top_k=top_k)
+    else:
+        hits = engine.search(query, top_k=top_k, repo_id=repo_id)
     return SmartSearchResult(
         hits=hits,
         routed=routed,

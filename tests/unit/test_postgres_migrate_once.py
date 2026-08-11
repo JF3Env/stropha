@@ -60,6 +60,23 @@ class _RecordingRaw:
         self.committed = True
 
 
+class _LockingCursor(_RecordingCursor):
+    def execute(self, sql: str, params: object = None) -> None:
+        super().execute(sql, params)
+        if sql.startswith("DROP TABLE"):
+            raise psycopg.errors.LockNotAvailable("canceling statement due to lock timeout")
+
+
+class _LockingRaw(_RecordingRaw):
+    def __init__(self) -> None:
+        super().__init__()
+        self.recording_cursor = _LockingCursor()
+        self.rolled_back = False
+
+    def rollback(self) -> None:
+        self.rolled_back = True
+
+
 def _bare_storage(dsn: str = _TEST_DSN) -> PostgresStorage:
     st = object.__new__(PostgresStorage)
     st._dsn = dsn
@@ -152,3 +169,17 @@ def test_migration_updates_existing_schema_version() -> None:
     assert "CAST(meta.value AS integer) < CAST(EXCLUDED.value AS integer)" in sql
     assert params == ("14",)
     assert raw.committed is True
+
+
+def test_dimension_reset_has_bounded_lock_wait() -> None:
+    st = _bare_storage()
+    raw = _LockingRaw()
+    st._raw = raw
+    st._dim = 2560
+    st.get_meta = lambda _key: "1024"  # type: ignore[method-assign]
+
+    with pytest.raises(StorageError, match="timed out waiting for active Postgres readers"):
+        st._reset_dim_dependent_tables_if_needed()
+
+    assert raw.recording_cursor.calls[0][0].startswith("SET LOCAL lock_timeout")
+    assert raw.rolled_back is True

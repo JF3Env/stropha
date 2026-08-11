@@ -12,16 +12,115 @@ embed call.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
+from typing import Any
 
 from pydantic import BaseModel, Field
 
 from ...errors import EmbeddingError
 from ...logging import get_logger
-from ...pipeline.base import StageHealth
 from ...pipeline.registry import register_adapter
-from ...stages.embedder import EmbedderStage
+from .composed import ComposedEmbedder
 
 log = get_logger(__name__)
+
+OnnxProvider = str | tuple[str, dict[str, Any]]
+
+
+@dataclass(frozen=True)
+class OnnxExecutionProvider:
+    """Replaceable hardware component for the shared FastEmbed implementation."""
+
+    name: str
+    providers: tuple[OnnxProvider, ...]
+    install_hint: str
+
+    @property
+    def required_provider(self) -> str:
+        provider = self.providers[0]
+        return provider[0] if isinstance(provider, tuple) else provider
+
+    def ensure_available(self) -> None:
+        try:
+            import onnxruntime as ort  # type: ignore[import-untyped]
+        except ImportError as exc:  # pragma: no cover - FastEmbed normally provides it
+            raise EmbeddingError("ONNX Runtime is not installed. Run `uv sync --extra local`.") from exc
+        available = ort.get_available_providers()
+        if self.required_provider not in available:
+            raise EmbeddingError(
+                f"{self.name} execution requires {self.required_provider}, but ONNX Runtime "
+                f"only exposes {', '.join(available) or 'no providers'}. {self.install_hint}"
+            )
+
+
+CPU_EXECUTION = OnnxExecutionProvider(
+    name="CPU",
+    providers=("CPUExecutionProvider",),
+    install_hint="Install the standard ONNX Runtime package.",
+)
+
+
+class FastEmbedEngine:
+    """FastEmbed engine parameterized by one ONNX execution provider."""
+
+    def __init__(self, model: str, execution: OnnxExecutionProvider) -> None:
+        self._model_name = model
+        self._execution = execution
+        try:
+            from fastembed import TextEmbedding  # type: ignore[import-untyped]
+        except ImportError as exc:  # pragma: no cover
+            raise EmbeddingError(
+                "fastembed package is not installed. Run `uv sync`."
+            ) from exc
+        execution.ensure_available()
+        try:
+            self._model = TextEmbedding(
+                model_name=model,
+                providers=list(execution.providers),
+            )
+        except Exception as exc:
+            raise EmbeddingError(f"fastembed failed to load {model!r}: {exc}") from exc
+        probe = next(iter(self._model.embed(["probe"])))
+        self._dim = len(list(probe))
+        log.info(
+            "fastembed.ready",
+            model=model,
+            dim=self._dim,
+            execution=execution.name,
+        )
+
+    @property
+    def name(self) -> str:
+        return f"FastEmbed / {self._execution.name}"
+
+    @property
+    def model_name(self) -> str:
+        return self._model_name
+
+    @property
+    def dim(self) -> int:
+        return self._dim
+
+    @property
+    def health_detail(self) -> dict[str, str]:
+        return {
+            "model": self.model_name,
+            "dim": str(self.dim),
+            "execution": self._execution.name,
+            "provider": self._execution.required_provider,
+        }
+
+    def embed_documents(self, texts: Sequence[str]) -> list[list[float]]:
+        try:
+            return [list(v) for v in self._model.embed(list(texts))]
+        except Exception as exc:
+            raise EmbeddingError(f"FastEmbed document embedding failed: {exc}") from exc
+
+    def embed_query(self, text: str) -> list[float]:
+        try:
+            return list(next(iter(self._model.query_embed([text]))))
+        except Exception as exc:
+            raise EmbeddingError(f"FastEmbed query embedding failed: {exc}") from exc
 
 
 class LocalEmbedderConfig(BaseModel):
@@ -35,12 +134,19 @@ class LocalEmbedderConfig(BaseModel):
 
 
 @register_adapter(stage="embedder", name="local")
-class LocalEmbedder(EmbedderStage):
+class LocalEmbedder(ComposedEmbedder):
     """ONNX-based embedder, runs on CPU."""
 
     Config = LocalEmbedderConfig
 
-    def __init__(self, config: LocalEmbedderConfig | None = None, *, model: str | None = None) -> None:
+    def __init__(
+        self,
+        config: LocalEmbedderConfig | None = None,
+        *,
+        model: str | None = None,
+        execution: OnnxExecutionProvider = CPU_EXECUTION,
+        adapter: str = "local",
+    ) -> None:
         # Allow legacy keyword form ``LocalEmbedder(model="...")`` for back-compat
         # with code that hasn't migrated to passing a Config yet.
         if config is None:
@@ -49,72 +155,9 @@ class LocalEmbedder(EmbedderStage):
             )
         elif model is not None:
             raise TypeError("Pass either config= or model=, not both")
-        self._config = config
-
-        try:
-            from fastembed import TextEmbedding  # type: ignore[import-untyped]
-        except ImportError as exc:  # pragma: no cover
-            raise EmbeddingError(
-                "fastembed package is not installed. Run `uv sync`."
-            ) from exc
-        try:
-            self._model_obj = TextEmbedding(model_name=config.model)
-        except Exception as exc:
-            raise EmbeddingError(
-                f"fastembed failed to load {config.model!r}: {exc}"
-            ) from exc
-        # fastembed exposes model metadata; probe to be robust.
-        probe = next(iter(self._model_obj.embed(["probe"])))
-        self._dim = len(list(probe))
-        log.info("local_embedder.ready", model=config.model, dim=self._dim)
-
-    # ----- Stage contract -------------------------------------------------
-
-    @property
-    def stage_name(self) -> str:
-        return "embedder"
-
-    @property
-    def adapter_name(self) -> str:
-        return "local"
-
-    @property
-    def adapter_id(self) -> str:
-        return f"local:{self._config.model}:{self._dim}"
-
-    @property
-    def config_schema(self) -> type[BaseModel]:
-        return LocalEmbedderConfig
-
-    def health(self) -> StageHealth:
-        return StageHealth(
-            status="ready",
-            message=f"fastembed model loaded ({self._config.model}, dim={self._dim})",
-            detail={"model": self._config.model, "dim": str(self._dim)},
+        super().__init__(
+            adapter=adapter,
+            config=config,
+            batch_size=config.batch_size,
+            engine=FastEmbedEngine(config.model, execution),
         )
-
-    # ----- Embedder surface ----------------------------------------------
-
-    @property
-    def model_name(self) -> str:
-        return self._config.model
-
-    @property
-    def dim(self) -> int:
-        return self._dim
-
-    @property
-    def batch_size(self) -> int:
-        return self._config.batch_size
-
-    def embed_documents(self, texts: Sequence[str]) -> list[list[float]]:
-        try:
-            return [list(v) for v in self._model_obj.embed(list(texts))]
-        except Exception as exc:
-            raise EmbeddingError(f"Local embed failed: {exc}") from exc
-
-    def embed_query(self, text: str) -> list[float]:
-        try:
-            return list(next(iter(self._model_obj.query_embed([text]))))
-        except Exception as exc:
-            raise EmbeddingError(f"Local query embed failed: {exc}") from exc

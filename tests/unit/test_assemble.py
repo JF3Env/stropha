@@ -87,6 +87,28 @@ class TestArgumentValidation:
 
 
 class TestAssembleHappyPath:
+    def test_broad_scope_supports_legacy_search_signature(self) -> None:
+        class LegacySearch:
+            def search(self, query: str, *, top_k: int) -> list[SearchHit]:
+                assert query == "task"
+                return [_hit("x", chunk_id="c1")][:top_k]
+
+        result = assemble_context(
+            "task", search_engine=LegacySearch(), context_budget=4000
+        )
+
+        primary = next(section for section in result.sections if section.key == "primary")
+        assert [hit.chunk_id for hit in primary.hits] == ["c1"]
+
+    def test_concrete_repo_id_is_always_passed(self) -> None:
+        engine = _engine([])
+
+        assemble_context(
+            "task", search_engine=engine, context_budget=4000, repo_id=7
+        )
+
+        assert engine.search.call_args.kwargs["repo_id"] == 7
+
     def test_primary_only_returns_bundle_with_primary_section(self) -> None:
         hits = [
             _hit("def foo(): pass", chunk_id="c1", symbol="foo"),

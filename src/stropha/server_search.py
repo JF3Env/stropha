@@ -13,6 +13,12 @@ ToResult = Callable[[Any], SearchResult]
 PersistSessionState = Callable[[AppContext], None]
 ApplyFilters = Callable[..., list[Any]]
 TrackSearchSavings = Callable[[str, list[Any]], Any]
+ResolveTargetRepoId = Callable[[AppContext], int | None]
+
+
+def _hit_belongs_to_repo(storage: Any, hit: Any, repo_id: int) -> bool:
+    chunk = storage.get_chunk_by_id(hit.chunk_id)
+    return chunk is not None and chunk.get("repo_id") == repo_id
 
 
 def apply_filters(
@@ -56,6 +62,7 @@ def search_code_impl(
     include_facets: bool,
     recursive: bool,
     repo_url: str | None,
+    include_other_repos: bool,
     refresh: bool,
     context_budget: int | None,
     compress: bool,
@@ -69,8 +76,9 @@ def search_code_impl(
     persist_session_state: PersistSessionState,
     track_search_savings_fn: TrackSearchSavings,
     is_git_url_fn: Callable[[str], bool],
-    search_git_url_fn: Callable[..., list[Any]],
+    search_git_url_fn: Callable[..., Any],
     apply_filters_fn: ApplyFilters,
+    resolve_target_repo_id_fn: ResolveTargetRepoId,
     stropha_error_cls: type[Exception],
     log: Any,
 ) -> SearchResponse:
@@ -87,16 +95,30 @@ def search_code_impl(
     if conversation_aware and app.recent_queries:
         conversation_context = " | ".join(app.recent_queries)
 
+    repo_id: int | None = None
     try:
-        if repo_url and is_git_url_fn(repo_url):
+        if repo_url:
+            if not is_git_url_fn(repo_url):
+                raise stropha_error_cls(f"Invalid git repository URL: {repo_url}")
             log.info("mcp.search_code.remote", repo_url=repo_url, refresh=refresh)
-            hits = search_git_url_fn(query, repo_url, top_k=fetch_k, refresh=refresh)
+            remote = search_git_url_fn(query, repo_url, top_k=fetch_k, refresh=refresh)
+            hits = remote.hits
+            repo_id = remote.repo_id
         else:
-            hits = app.search_engine.search(
-                query,
-                top_k=fetch_k,
-                conversation_context=conversation_context,
-            )
+            if not include_other_repos:
+                repo_id = resolve_target_repo_id_fn(app)
+                if repo_id is None:
+                    log.warning("mcp.search_code.repo_not_resolved")
+                    return SearchResponse(
+                        results=[], total_candidates=0, query=query, facets=None
+                    )
+            search_kwargs: dict[str, Any] = {
+                "top_k": fetch_k,
+                "conversation_context": conversation_context,
+            }
+            if repo_id is not None:
+                search_kwargs["repo_id"] = repo_id
+            hits = app.search_engine.search(query, **search_kwargs)
     except stropha_error_cls as exc:
         log.warning("mcp.search_code.error", error=str(exc))
         return SearchResponse(results=[], total_candidates=0, query=query, facets=None)
@@ -128,10 +150,23 @@ def search_code_impl(
     if app.pinned_chunk_ids:
         from .retrieval.pinning import prepend_pins, resolve_pins
 
-        resolved = resolve_pins(app.storage, app.pinned_chunk_ids)
+        pin_ids = app.pinned_chunk_ids
+        if repo_id is not None:
+            pin_ids = {
+                chunk_id
+                for chunk_id in pin_ids
+                if (
+                    (chunk := app.storage.get_chunk_by_id(chunk_id)) is not None
+                    and chunk.get("repo_id") == repo_id
+                )
+            }
+        resolved = resolve_pins(app.storage, pin_ids)
         pinned_hits = [resolved_pin.hit for resolved_pin in resolved if resolved_pin.found and resolved_pin.hit is not None]
         if pinned_hits:
             hits = prepend_pins(pinned_hits, hits)
+
+    if repo_id is not None:
+        hits = [hit for hit in hits if _hit_belongs_to_repo(app.storage, hit, repo_id)]
 
     facets: FacetCounts | None = None
     if include_facets and hits:

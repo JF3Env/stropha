@@ -184,7 +184,9 @@ def _load_yaml() -> dict[str, Any]:
     try:
         raw = yaml.safe_load(user_yaml.read_text(encoding="utf-8")) or {}
         if not isinstance(raw, dict):
-            log.warning("config.invalid_yaml", path=str(user_yaml), error="top-level must be a mapping")
+            log.warning(
+                "config.invalid_yaml", path=str(user_yaml), error="top-level must be a mapping"
+            )
             return {}
         log.debug("config.loaded", path=str(user_yaml))
         return raw
@@ -228,12 +230,14 @@ def _parse_inference(raw: dict[str, Any]) -> InferenceConfig:
         deepseek_timeout=_float(raw.get("deepseek_timeout"), 120.0),
         deepseek_max_retries=_int(raw.get("deepseek_max_retries"), 2),
         lms_model=str(raw.get("lms_model", "Qwen/Qwen3-Coder-Next-FP8")),
-        lms_base_url=str(
-            raw.get("lms_base_url", "https://lms.example.com/openai")
-        ),
+        lms_base_url=str(raw.get("lms_base_url", "https://lms.example.com/openai")),
         lms_timeout=_float(raw.get("lms_timeout"), 180.0),
         lms_max_retries=_int(raw.get("lms_max_retries"), 2),
         lms_think=_bool(raw.get("lms_think"), False),
+        moa_model=str(raw.get("moa_model", "moa-code")),
+        moa_base_url=str(raw.get("moa_base_url", "http://127.0.0.1:14598/v1")),
+        moa_timeout=_float(raw.get("moa_timeout"), 300.0),
+        moa_max_retries=_int(raw.get("moa_max_retries"), 1),
         anthropic_model=str(raw.get("anthropic_model", "claude-haiku-4-5")),
         anthropic_base_url=str(raw.get("anthropic_base_url", "https://api.anthropic.com/v1")),
         anthropic_timeout=_float(raw.get("anthropic_timeout"), 60.0),
@@ -243,6 +247,7 @@ def _parse_inference(raw: dict[str, Any]) -> InferenceConfig:
         enricher_batch_size=_int(raw.get("enricher_batch_size"), 1),
         deepseek_batch_size=_int_optional(raw.get("deepseek_batch_size")),
         lms_batch_size=_int_optional(raw.get("lms_batch_size")),
+        moa_batch_size=_int_optional(raw.get("moa_batch_size")),
         anthropic_batch_size=_int_optional(raw.get("anthropic_batch_size")),
         ollama_batch_size=_int_optional(raw.get("ollama_batch_size")),
         mlx_batch_size=_int_optional(raw.get("mlx_batch_size")),
@@ -276,11 +281,8 @@ def _parse_secrets(raw: dict[str, Any]) -> SecretsConfig:
         voyage_api_key=raw.get("voyage_api_key") or None,
         anthropic_api_key=raw.get("anthropic_api_key") or None,
         deepseek_api_key=raw.get("deepseek_api_key") or None,
-        lms_api_key=(
-            raw.get("lms_api_key")
-            if isinstance(raw.get("lms_api_key"), str)
-            else None
-        ),
+        lms_api_key=(raw.get("lms_api_key") if isinstance(raw.get("lms_api_key"), str) else None),
+        moa_api_key=(raw.get("moa_api_key") if isinstance(raw.get("moa_api_key"), str) else None),
     )
 
 
@@ -313,9 +315,7 @@ def _parse_mcp(raw: dict[str, Any]) -> McpConfig:
 def _parse_git(raw: dict[str, Any]) -> GitConfig:
     cache_raw = raw.get("url_cache")
     cache_path = (
-        Path(cache_raw).expanduser()
-        if cache_raw
-        else Path.home() / ".cache" / "stropha" / "repos"
+        Path(cache_raw).expanduser() if cache_raw else Path.home() / ".cache" / "stropha" / "repos"
     )
     return GitConfig(
         url_cache=cache_path,
@@ -328,9 +328,7 @@ def _parse_hook() -> HookConfig:
     """Hook config is read from env only — the hook is a detached subprocess."""
     log_env = os.environ.get("STROPHA_HOOK_LOG")
     log_path = (
-        Path(log_env).expanduser()
-        if log_env
-        else Path.home() / ".cache" / "stropha-hook.log"
+        Path(log_env).expanduser() if log_env else Path.home() / ".cache" / "stropha-hook.log"
     )
     proj_env = os.environ.get("STROPHA_HOOK_PROJECT_DIR")
     return HookConfig(
@@ -352,9 +350,7 @@ def _parse_hook() -> HookConfig:
 _config_instance: Config | None = None
 
 
-def load_config(
-    project_root: Path | None = None, force_reload: bool = False
-) -> Config:
+def load_config(project_root: Path | None = None, force_reload: bool = False) -> Config:
     """Load unified configuration from ``~/.stropha/config.yaml``. Cached.
 
     Args:
@@ -428,7 +424,8 @@ def get_config_info() -> dict[str, Any]:
     }
     env_values: dict[str, str | None] = {
         var.name: (
-            "(set)" if var.secret and os.environ.get(var.name)
+            "(set)"
+            if var.secret and os.environ.get(var.name)
             else os.environ.get(var.name, var.default)
         )
         for var in _ENV_REGISTRY
@@ -449,12 +446,14 @@ def get_config_info() -> dict[str, Any]:
     anthropic_set = bool(cfg.secrets.anthropic_api_key)
     deepseek_set = bool(cfg.secrets.deepseek_api_key)
     lms_set = bool(cfg.secrets.lms_api_key)
+    moa_set = bool(cfg.secrets.moa_api_key)
 
     settings_dump: dict[str, Any] = {
         "voyage_api_key": "(set)" if voyage_set else None,
         "anthropic_api_key": "(set)" if anthropic_set else None,
         "deepseek_api_key": "(set)" if deepseek_set else None,
         "lms_api_key": "(set)" if lms_set else None,
+        "moa_api_key": "(set)" if moa_set else None,
         "target_repo": str(cfg.target_repo),
         "index_path": str(cfg.index_path),
         "voyage_embed_model": cfg.voyage_embed_model,

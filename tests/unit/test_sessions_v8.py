@@ -373,7 +373,7 @@ class TestSessionPersistenceWriteThrough:
         ]
         ctx = MagicMock()
         ctx.request_context.lifespan_context = app
-        search_code("q", dedup=True, ctx=ctx)
+        search_code("q", dedup=True, include_other_repos=True, ctx=ctx)
         rec = storage.get_session("test-session")
         assert rec is not None
         assert "c1" in rec.seen_chunk_ids
@@ -382,9 +382,12 @@ class TestSessionPersistenceWriteThrough:
         from stropha.server import pin_chunks
 
         app = self._app(storage, client_id="A")
+        app.storage.get_chunk_by_id = MagicMock(
+            return_value={"chunk_id": "c1", "repo_id": None}
+        )
         ctx = MagicMock()
         ctx.request_context.lifespan_context = app
-        pin_chunks(["c1"], ctx=ctx)
+        pin_chunks(["c1"], include_other_repos=True, ctx=ctx)
         rec = storage.get_session("test-session")
         assert rec is not None
         assert rec.pinned_chunk_ids == {"c1"}
@@ -393,9 +396,12 @@ class TestSessionPersistenceWriteThrough:
         from stropha.server import pin_chunks, unpin_chunks
 
         app = self._app(storage, client_id="A")
+        app.storage.get_chunk_by_id = MagicMock(
+            return_value={"chunk_id": "c1", "repo_id": None}
+        )
         ctx = MagicMock()
         ctx.request_context.lifespan_context = app
-        pin_chunks(["c1"], ctx=ctx)
+        pin_chunks(["c1"], include_other_repos=True, ctx=ctx)
         unpin_chunks(["c1"], ctx=ctx)
         rec = storage.get_session("test-session")
         assert rec is not None

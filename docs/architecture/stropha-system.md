@@ -370,6 +370,12 @@ Para Mimoria: **não recomendado na fase inicial**. Single-vector + rerank cobre
 
 Para <100k vetores (caso Mimoria), **flat (brute-force)** com SIMD é suficiente e tem recall 100%. HNSW só vira necessário acima de ~500k.
 
+No adapter PostgreSQL, vetores de até 2000 dimensões usam HNSW `vector_l2_ops` diretamente.
+Entre 2001 e 4000 dimensões, o vetor continua armazenado como `vector(N)` em precisão completa,
+mas o HNSW e a consulta ANN usam a expressão `embedding::halfvec(N)` com
+`halfvec_l2_ops`, respeitando o limite dimensional do pgvector. Acima de 4000 dimensões,
+a busca densa permanece exata sem HNSW.
+
 ### 5.3 Persistência paralela
 
 | Dado | Store | Por quê |
@@ -394,6 +400,29 @@ Para <100k vetores (caso Mimoria), **flat (brute-force)** com SIMD é suficiente
 ## 6. Recuperação (retrieval)
 
 ### 6.1 Hybrid search (dense + sparse)
+
+#### 6.1.1 Escopo de repositório
+
+Busca semântica, lookup direto de símbolos e consultas diretas ao grafo são
+isolados no repositório em trabalho por padrão. Os tools MCP `search_code`,
+`smart_search`, `get_symbol`, os seis tools de grafo, os analisadores derivados,
+`plan_investigation`, `assemble_context` e `execute_investigation`, o comando
+`stropha search` e `POST /api/query` resolvem o target corrente para `repos.id`
+em cada fronteira pública. Esse ID é propagado por `RetrievalStage`, lookup de
+símbolo, resolução/membros de communities, extensões de grafo, planner e DAG.
+Falha de resolução retorna o modelo de resposta nativo vazio, sem consultar o
+índice; tools graph-gated preservam `graph_loaded: false` com mensagem acionável.
+Resultados cross-repo exigem `include_other_repos=true` no MCP/frontend ou
+`--include-other-repos` no CLI. Um `repo_url` explícito sempre permanece limitado
+ao clone/cache solicitado, independentemente dessa flag.
+
+Internamente, `repo_id=None` significa busca em todos os repositórios. Um ID
+concreto é aplicado no storage antes de ranking e `LIMIT`; pins são filtrados
+antes de prepend e há filtro final de defesa-em-profundidade. GraphVec filtra
+`graph_nodes` e hidrata chunks pela mesma identidade de repo. Recursive merge usa
+`(repo, rel_path)` como chave para não unir arquivos homônimos de repos distintos.
+`repo_id=None` chega aos tools diretos somente após opt-in explícito com
+`include_other_repos=true`.
 
 Pipeline padrão:
 
@@ -813,6 +842,44 @@ reutilizam esse runtime, inclusive no recovery de session id obsoleto. Apenas
 estado mutável de cliente (`seen_chunk_ids`, pins, scratchpad, queries recentes
 e trace recorder) vive no `AppContext` por session. No shutdown ASGI, o session
 manager encerra as tasks antes de parar watcher e fechar storage.
+
+#### 9.4.1 Frontend JSON API e live reload
+
+O mesmo daemon HTTP serve um dashboard em `/dashboard` e expõe cinco rotas
+JSON locais, separadas do protocolo MCP:
+
+- `GET /api/status`: retorna saúde e identidade do pipeline ativo, contagens do
+  índice e aliases de modelos descobertos no MoA Gateway local.
+- `GET /api/config`: retorna o documento `~/.stropha/config.yaml` com secrets e
+  passwords em URLs redigidos.
+- `GET /api/config/schema`: deriva opções, tipos, limites e defaults dos schemas
+  Pydantic dos adapters registrados, incluindo metadados tipados para sub-adapters
+  aninhados como `pipeline.retrieval.config.reranker`; o dashboard renderiza esses
+  controles sob o adapter pai e combina-os com a ajuda operacional dos campos.
+- `PATCH /api/config`: aplica deep merge parcial, substituindo a configuração de
+  um adapter quando seu nome muda, escreve via temp file + rename atômico e
+  constrói um novo conjunto de adapters antes de publicar o runtime.
+- `POST /api/query`: executa retrieval no índice ativo, monta evidências com IDs
+  `[S1]`, `[S2]`, etc. e usa o backend de inference configurado para responder.
+  Histórico recente (`user`/`assistant`) é limitado, validado e usado como
+  contexto de retrieval e geração para suportar follow-ups sem estado no servidor.
+
+O swap de runtime ocorre sob o mesmo lock assíncrono process-wide usado no
+startup. Falha de validação, conexão de storage ou construção de adapter restaura
+o YAML anterior e mantém o runtime anterior publicado. Sessions MCP já abertas
+retêm seus adapters para não fechar uma conexão em uso; os runtimes aposentados
+são fechados no shutdown ASGI. Novas sessions e requests frontend observam o
+runtime substituto imediatamente.
+
+O LLM nunca recebe acesso SQL nem escolhe queries arbitrárias. A rota de query
+fornece somente os chunks retornados pelo `RetrievalStage`, trata snippets como
+dados não confiáveis e exige citações por source ID. CORS para essas rotas aceita
+somente origins HTTP(S) em `localhost`, `127.0.0.1` ou `::1`; não há wildcard.
+
+O backend `moa` conecta ao MoA Gateway local pela API OpenAI-compatible. Modelo,
+base URL, timeout, retries e API key opcional são configurados sob `inference.moa_*`
+e `secrets.moa_api_key`. Seleção explícita não faz fallback silencioso se o gateway
+ou alias estiver indisponível; o dashboard expõe esse estado como falha acionável.
 
 **Stack recomendado**:
 
@@ -1238,7 +1305,7 @@ Bootstrap inicial (full reindex Mimoria, ~5K chunks): ~US$ 2 one-shot.
 - [x] Manifest YAML para listas declarativas de repos. *(`stropha index --manifest repos.yaml`)*
 - [x] Auto-discovery de nested `.git` durante o walk (monorepos com submódulos / vendored deps). *(`walker/nested-git` adapter)*
 - [ ] Indexação de dependências externas (Quarkus, Vue) on-demand.
-- [x] Modelo de embedding self-hosted (bge-m3) como fallback offline. *(`embedder/local` adapter exposes `BAAI/bge-m3` via fastembed)*
+- [x] Modelo de embedding self-hosted (bge-m3) como fallback offline. *(`embedder/bge-m3` runs `BAAI/bge-m3` through the native Apple Silicon `[mlx-embed]` backend; FastEmbed does not support this model.)*
 - [ ] Deploy remoto com OAuth 2.1. *(deferred — local-first policy)*
 - [ ] Multi-tenant com RBAC. *(deferred — local-first policy)*
 - [ ] Web UI para evaluation/debug. *(deferred)*

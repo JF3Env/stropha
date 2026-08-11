@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 
@@ -55,16 +56,22 @@ class _RecordingStorage:
             chunk_id=chunk_id,
         )
 
-    def search_dense(self, vec: list[float], k: int) -> list[SearchHit]:
-        self.calls.append(("dense", k))
+    def search_dense(
+        self, vec: list[float], k: int, *, repo_id: int | None = None
+    ) -> list[SearchHit]:
+        self.calls.append(("dense", (k, repo_id)))
         return [self._hit(i + 1, f"d{i}") for i in range(k)]
 
-    def search_bm25(self, query: str, k: int) -> list[SearchHit]:
-        self.calls.append(("bm25", k))
+    def search_bm25(
+        self, query: str, k: int, *, repo_id: int | None = None
+    ) -> list[SearchHit]:
+        self.calls.append(("bm25", (k, repo_id)))
         return [self._hit(i + 1, f"b{i}") for i in range(k)]
 
-    def search_symbol_tokens(self, query: str, k: int) -> list[SearchHit]:
-        self.calls.append(("symbol", k))
+    def search_symbol_tokens(
+        self, query: str, k: int, *, repo_id: int | None = None
+    ) -> list[SearchHit]:
+        self.calls.append(("symbol", (k, repo_id)))
         return [self._hit(i + 1, f"s{i}") for i in range(k)]
 
 
@@ -124,7 +131,7 @@ def test_vec_cosine_stream_routes_to_storage_search_dense() -> None:
     s = VecCosineStream(VecCosineConfig(k=7), storage=storage)
     out = s.search("query", [0.1, 0.2, 0.3, 0.4])
     assert len(out) == 7
-    assert storage.calls == [("dense", 7)]
+    assert storage.calls == [("dense", (7, None))]
     assert s.adapter_id == "vec-cosine:k=7"
 
 
@@ -138,7 +145,7 @@ def test_fts5_bm25_stream_routes_to_storage_search_bm25() -> None:
     s = Fts5Bm25Stream(Fts5Bm25Config(k=12), storage=storage)
     out = s.search("query", None)
     assert len(out) == 12
-    assert storage.calls == [("bm25", 12)]
+    assert storage.calls == [("bm25", (12, None))]
 
 
 def test_like_tokens_stream_routes_to_storage_search_symbol() -> None:
@@ -146,7 +153,7 @@ def test_like_tokens_stream_routes_to_storage_search_symbol() -> None:
     s = LikeTokensStream(LikeTokensConfig(k=5), storage=storage)
     out = s.search("query", None)
     assert len(out) == 5
-    assert storage.calls == [("symbol", 5)]
+    assert storage.calls == [("symbol", (5, None))]
 
 
 def test_streams_require_storage() -> None:
@@ -169,6 +176,35 @@ def test_hybrid_rrf_calls_all_default_streams() -> None:
     assert hits
     seen = {c[0] for c in storage.calls}
     assert seen == {"dense", "bm25", "symbol"}
+
+
+def test_hybrid_rrf_propagates_repo_id_to_every_stream() -> None:
+    storage = _RecordingStorage()
+    retrieval = HybridRrfRetrieval(
+        HybridRrfConfig(), storage=storage, embedder=_StubEmbedder()
+    )
+
+    retrieval.search("hello world", repo_id=42)
+
+    assert {details[1] for _, details in storage.calls} == {42}
+
+
+def test_hybrid_rrf_propagates_repo_id_through_multi_query() -> None:
+    storage = _RecordingStorage()
+    retrieval = HybridRrfRetrieval(
+        HybridRrfConfig(multi_query_enabled=True),
+        storage=storage,
+        embedder=_StubEmbedder(),
+    )
+
+    with patch(
+        "stropha.retrieval.multi_query.generate_paraphrases",
+        return_value=["original", "alternative"],
+    ):
+        retrieval.search("original", repo_id=42)
+
+    assert len(storage.calls) == 6
+    assert {details[1] for _, details in storage.calls} == {42}
 
 
 def test_hybrid_rrf_disables_stream_set_to_null() -> None:
@@ -262,13 +298,17 @@ def test_hybrid_rrf_returns_empty_for_blank_query() -> None:
 
 def test_hybrid_rrf_applies_learned_weights_for_hit_repo(tmp_path: Path) -> None:
     class _RepoStorage(_RecordingStorage):
-        def search_dense(self, vec: list[float], k: int) -> list[SearchHit]:
+        def search_dense(
+            self, vec: list[float], k: int, *, repo_id: int | None = None
+        ) -> list[SearchHit]:
             hit = self._hit(1, "dense").model_copy(update={
                 "repo": RepoRef(normalized_key="repo-a"),
             })
             return [hit]
 
-        def search_bm25(self, query: str, k: int) -> list[SearchHit]:
+        def search_bm25(
+            self, query: str, k: int, *, repo_id: int | None = None
+        ) -> list[SearchHit]:
             hit = self._hit(1, "sparse").model_copy(update={
                 "repo": RepoRef(normalized_key="repo-a"),
             })

@@ -111,8 +111,17 @@ stropha index --manifest repos.yaml
 | Embedder | Latency | Quality | Cost | Best For |
 |----------|---------|---------|------|----------|
 | `local` (mxbai) | ~5ms/chunk | High | Free | Development, most codebases |
-| `bge-m3` | ~5ms/chunk | High | Free | Multilingual codebases |
+| `bge-m3` | ~5ms/chunk | High | Free | Multilingual codebases on Apple Silicon |
+| `nvidia` | hardware-dependent | High | Free | CUDA-capable NVIDIA systems |
+| `amd` | hardware-dependent | High | Free | ROCm-capable AMD systems |
+| `intel-npu` | hardware-dependent | High | Free | Intel NPU via OpenVINO |
 | `voyage` | ~50ms/chunk | Highest | $$$ | Production with budget |
+
+All local hardware adapters implement the same composed engine contract. CPU uses FastEmbed/ONNX,
+Apple uses MLX, NVIDIA and AMD use native PyTorch execution through CUDA and ROCm, and Intel NPU
+uses OpenVINO. The adapter shell keeps model identity, batching, health, and persistence consistent
+while each engine remains native to its hardware. Missing runtimes produce actionable installation
+errors.
 
 ### Switching Embedders
 
@@ -120,8 +129,16 @@ Switching embedders requires re-indexing (embeddings are model-specific):
 
 ```bash
 # Switch to bge-m3 for multilingual support
+uv sync --extra mlx-embed
 stropha index --embedder bge-m3 --rebuild
 ```
+
+The configurable `mlx` adapter also accepts MLX-converted Qwen3 embedding checkpoints such as
+`mlx-community/Qwen3-Embedding-4B-4bit-DWQ`. These use `mlx-lm`, last-token pooling, and normalized
+embeddings. Configuration only validates the checkpoint metadata; weights are downloaded and loaded
+on the first embedding batch during indexing. Stropha caps the MLX free-buffer cache at 512 MiB and
+clears it after each batch so Metal does not retain memory up to its default device working-set limit.
+Changing checkpoints requires a rebuild.
 
 ---
 

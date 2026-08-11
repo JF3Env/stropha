@@ -236,15 +236,21 @@ class TestHybridRrfSearchIntegration:
                     chunk_id=chunk_id,
                 )
 
-            def search_dense(self, vec: list[float], k: int) -> list[SearchHit]:
+            def search_dense(
+                self, vec: list[float], k: int, *, repo_id: int | None = None
+            ) -> list[SearchHit]:
                 self.dense_calls.append((vec, k))
                 return [self._hit(i + 1, f"d{i}") for i in range(min(k, 3))]
 
-            def search_bm25(self, query: str, k: int) -> list[SearchHit]:
+            def search_bm25(
+                self, query: str, k: int, *, repo_id: int | None = None
+            ) -> list[SearchHit]:
                 self.bm25_calls.append((query, k))
                 return [self._hit(i + 1, f"b{i}") for i in range(min(k, 3))]
 
-            def search_symbol_tokens(self, query: str, k: int) -> list[SearchHit]:
+            def search_symbol_tokens(
+                self, query: str, k: int, *, repo_id: int | None = None
+            ) -> list[SearchHit]:
                 self.symbol_calls.append((query, k))
                 return [self._hit(i + 1, f"s{i}") for i in range(min(k, 3))]
 

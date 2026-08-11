@@ -183,6 +183,8 @@ class StorageStage(Protocol):
         embedder_id: str,
         embedding_dim: int = SECONDARY_EMBEDDING_DIM,
         k: int = 10,
+        *,
+        repo_id: int | None = None,
     ) -> list[SearchHit]: ...
 
     def count_secondary_embeddings(
@@ -215,15 +217,44 @@ class StorageStage(Protocol):
 
     # ----- Reads ----------------------------------------------------------
 
-    def search_dense(self, query_vec: list[float], k: int = 10) -> list[SearchHit]: ...
+    def search_dense(
+        self,
+        query_vec: list[float],
+        k: int = 10,
+        *,
+        repo_id: int | None = None,
+    ) -> list[SearchHit]: ...
 
-    def search_bm25(self, query: str, k: int = 50) -> list[SearchHit]: ...
+    def search_bm25(
+        self,
+        query: str,
+        k: int = 50,
+        *,
+        repo_id: int | None = None,
+    ) -> list[SearchHit]: ...
 
-    def search_symbol_tokens(self, query: str, k: int = 20) -> list[SearchHit]: ...
+    def search_symbol_tokens(
+        self,
+        query: str,
+        k: int = 20,
+        *,
+        repo_id: int | None = None,
+    ) -> list[SearchHit]: ...
 
-    def lookup_by_symbol(self, symbol: str, limit: int = 10) -> list[SearchHit]: ...
+    def lookup_by_symbol(
+        self,
+        symbol: str,
+        limit: int = 10,
+        *,
+        repo_id: int | None = None,
+    ) -> list[SearchHit]: ...
 
-    def file_outline(self, rel_path: str) -> list[dict[str, Any]]: ...
+    def file_outline(
+        self,
+        rel_path: str,
+        *,
+        repo_id: int | None = None,
+    ) -> list[dict[str, Any]]: ...
 
     def list_repos(self) -> list[RepoStats]: ...
 

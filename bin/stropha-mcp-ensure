@@ -8,12 +8,10 @@
 #   bin/stropha-mcp-ensure --stop   # stop the running server
 #   bin/stropha-mcp-ensure --status # check if running
 #
-# Local Postgres (pgvector) is provisioned AUTOMATICALLY when the stropha
-# config (~/.stropha/config.yaml) selects the `postgres` storage adapter — the
-# default for this install — so `bin/stropha-mcp-ensure` alone brings up both
-# the database and the MCP server. Overrides:
-#   STROPHA_USE_POSTGRES=0 bin/stropha-mcp-ensure   # force-skip Postgres
-#   STROPHA_USE_POSTGRES=1 bin/stropha-mcp-ensure   # force-on regardless of config
+# Local Postgres (pgvector) container management is strictly opt-in:
+#   STROPHA_USE_POSTGRES=1 bin/stropha-mcp-ensure
+# Without that flag, the daemon connects to the configured DSN without touching
+# Docker, including when the `postgres` storage adapter is selected.
 # Connection params (port/user/password/db) are read from the config `dsn:` so
 # the container always matches what stropha connects to; STROPHA_PG_* override.
 # Data persists in a named Docker volume across restarts.
@@ -26,20 +24,13 @@ PIDFILE="${HOME}/.cache/stropha/mcp-server.pid"
 LOGFILE="${HOME}/.cache/stropha/mcp-server.log"
 
 # --- Postgres (pgvector) bring-up --------------------------------------------
-# Default behavior: bring up Postgres whenever the stropha config selects the
-# `postgres` storage adapter. STROPHA_USE_POSTGRES forces on/off. Managed as a
-# Docker container (no system Postgres install); data lives in a named volume.
+# STROPHA_USE_POSTGRES=1 explicitly enables the managed Docker container. Data
+# lives in a named volume. Native and externally managed Postgres are untouched.
 STROPHA_CONFIG_FILE="${STROPHA_CONFIG_FILE:-${HOME}/.stropha/config.yaml}"
 
-_config_selects_postgres() {
-    [ -f "$STROPHA_CONFIG_FILE" ] || return 1
-    grep -Eq '^[[:space:]]*adapter:[[:space:]]*postgres([[:space:]]|$)' "$STROPHA_CONFIG_FILE"
-}
-
-case "${STROPHA_USE_POSTGRES:-auto}" in
+case "${STROPHA_USE_POSTGRES:-0}" in
     1|true|yes|on)  USE_POSTGRES=1 ;;
-    0|false|no|off) USE_POSTGRES=0 ;;
-    *)              if _config_selects_postgres; then USE_POSTGRES=1; else USE_POSTGRES=0; fi ;;
+    *)              USE_POSTGRES=0 ;;
 esac
 
 # Connection defaults (the local container). Overridden by the config `dsn:`
@@ -99,6 +90,23 @@ _is_running() {
 # against the real listener, not just the pidfile.
 _port_listeners() {
     lsof -tnP -iTCP:"${PORT}" -sTCP:LISTEN 2>/dev/null
+}
+
+_track_listener_pid() {
+    # `uv run` can spawn the Python entry point and exit, making `$!` stale.
+    # Once the server is ready, hand the pidfile to the sole process that
+    # actually owns the listening socket.
+    set -- $(_port_listeners)
+    [ "$#" -eq 1 ] || return 1
+    echo "$1" > "$PIDFILE"
+}
+
+_wait_for_port_release() {
+    for _wait in $(seq 1 30); do
+        [ -z "$(_port_listeners)" ] && return 0
+        sleep 1
+    done
+    return 1
 }
 
 # Probe that the MCP *protocol* endpoint actually serves a request — not just
@@ -238,6 +246,10 @@ _start() {
         echo "[stropha-mcp] killing orphaned server on port ${PORT} (pid $_lp)" >&2
         kill "$_lp" 2>/dev/null || true
     done
+    if ! _wait_for_port_release; then
+        echo "[stropha-mcp] error: port ${PORT} did not become available" >&2
+        return 1
+    fi
 
     echo "[stropha-mcp] starting on ${HOST}:${PORT}..."
 
@@ -274,6 +286,7 @@ _start() {
     # is reported as a warning rather than a false "ready".
     for i in $(seq 1 30); do
         if curl -sf -m 5 "http://${HOST}:${PORT}/health" >/dev/null 2>&1 && _mcp_responsive; then
+            _track_listener_pid || true
             echo "[stropha-mcp] ready (pid $(cat "$PIDFILE"), port $PORT) — /mcp responsive"
             return 0
         fi
@@ -301,11 +314,22 @@ _stop() {
         kill "$_lp" 2>/dev/null && \
             echo "[stropha-mcp] stopped orphaned server on port ${PORT} (pid $_lp)"
     done
+    if ! _wait_for_port_release; then
+        echo "[stropha-mcp] warning: port ${PORT} is still in use" >&2
+        return 1
+    fi
     _pg_stop
 }
 
 _status() {
     _pg_status
+    # Recover when the launcher exited after `uv` handed the process off but
+    # before it could persist the listener PID.
+    if ! _is_running \
+        && curl -sf -m 5 "http://${HOST}:${PORT}/health" >/dev/null 2>&1 \
+        && _mcp_responsive; then
+        _track_listener_pid || true
+    fi
     if _is_running; then
         if _mcp_responsive; then
             echo "[stropha-mcp] running (pid $(cat "$PIDFILE"), port $PORT) — /mcp responsive"

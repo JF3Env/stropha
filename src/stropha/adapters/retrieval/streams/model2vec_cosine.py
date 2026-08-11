@@ -74,12 +74,26 @@ class Model2VecCosineStream:
     def k(self) -> int:
         return self._config.k
 
-    def search(self, query: str, query_vec: list[float] | None) -> list[SearchHit]:
+    def search(
+        self,
+        query: str,
+        query_vec: list[float] | None,
+        *,
+        repo_id: int | None = None,
+    ) -> list[SearchHit]:
         del query_vec  # The primary vector may be HyDE-rewritten and is a different space.
         query_vec = self._embedder.embed_query(query)
+        if repo_id is None:
+            return self._storage.search_secondary_embeddings(
+                query_vec,
+                self._embedder.adapter_id,
+                embedding_dim=SECONDARY_EMBEDDING_DIM,
+                k=self._config.k,
+            )
         return self._storage.search_secondary_embeddings(
             query_vec,
             self._embedder.adapter_id,
             embedding_dim=SECONDARY_EMBEDDING_DIM,
             k=self._config.k,
+            repo_id=repo_id,
         )

@@ -14,7 +14,7 @@ from .server_models import (
     ResetDedupResponse,
     SearchResult,
 )
-from .server_runtime import AppContext
+from .server_runtime import AppContext, chunk_belongs_to_repo
 
 ToResult = Callable[[Any], SearchResult]
 PersistSessionState = Callable[[AppContext], None]
@@ -37,9 +37,15 @@ def pin_chunks_impl(
     chunk_ids: list[str],
     app: AppContext,
     *,
+    repo_id: int | None,
     persist_session_state: PersistSessionState,
     log: Any,
 ) -> PinResponse:
+    chunk_ids = [
+        chunk_id
+        for chunk_id in chunk_ids
+        if chunk_belongs_to_repo(app.storage, chunk_id, repo_id)
+    ]
     before = len(app.pinned_chunk_ids)
     app.pinned_chunk_ids.update(chunk_ids)
     added = len(app.pinned_chunk_ids) - before
@@ -51,7 +57,12 @@ def pin_chunks_impl(
         total=len(app.pinned_chunk_ids),
         session_id=app.session_id,
     )
-    return PinResponse(pinned=sorted(app.pinned_chunk_ids), added=added)
+    visible_pins = [
+        chunk_id
+        for chunk_id in app.pinned_chunk_ids
+        if chunk_belongs_to_repo(app.storage, chunk_id, repo_id)
+    ]
+    return PinResponse(pinned=sorted(visible_pins), added=added)
 
 
 def unpin_chunks_impl(
@@ -75,10 +86,24 @@ def unpin_chunks_impl(
     return PinResponse(pinned=sorted(app.pinned_chunk_ids), removed=removed)
 
 
-def list_pins_impl(app: AppContext, *, to_result: ToResult) -> ListPinsResponse:
+def list_pins_impl(
+    app: AppContext,
+    *,
+    to_result: ToResult,
+    repo_id: int | None,
+) -> ListPinsResponse:
     from .retrieval.pinning import resolve_pins
 
-    resolved = resolve_pins(app.storage, app.pinned_chunk_ids)
+    pin_ids = (
+        list(app.pinned_chunk_ids)
+        if repo_id is None
+        else [
+            chunk_id
+            for chunk_id in app.pinned_chunk_ids
+            if chunk_belongs_to_repo(app.storage, chunk_id, repo_id)
+        ]
+    )
+    resolved = resolve_pins(app.storage, pin_ids)
     entries: list[PinListEntry] = []
     found = 0
     for resolved_pin in resolved:
@@ -112,11 +137,12 @@ def expand_chunk_impl(
     app: AppContext,
     *,
     to_result: ToResult,
+    repo_id: int | None,
 ) -> ExpandChunkResponse:
     from .retrieval.cards import ALLOWED_LEVELS, apply_level_to_snippets
 
     hit = app.storage.lookup_by_chunk_id(chunk_id)
-    if hit is None:
+    if hit is None or not chunk_belongs_to_repo(app.storage, chunk_id, repo_id):
         return ExpandChunkResponse(chunk_id=chunk_id, found=False, result=None)
     if card_level != "full" and card_level in ALLOWED_LEVELS:
         hit = apply_level_to_snippets([hit], card_level)[0]  # type: ignore[arg-type]
@@ -129,6 +155,7 @@ def expand_chunks_impl(
     app: AppContext,
     *,
     to_result: ToResult,
+    repo_id: int | None,
 ) -> ExpandChunksResponse:
     from .retrieval.cards import ALLOWED_LEVELS, apply_level_to_snippets
 
@@ -136,7 +163,7 @@ def expand_chunks_impl(
     found = 0
     for chunk_id in chunk_ids:
         hit = app.storage.lookup_by_chunk_id(chunk_id)
-        if hit is None:
+        if hit is None or not chunk_belongs_to_repo(app.storage, chunk_id, repo_id):
             results.append(ExpandChunkResponse(chunk_id=chunk_id, found=False, result=None))
             continue
         if card_level != "full" and card_level in ALLOWED_LEVELS:

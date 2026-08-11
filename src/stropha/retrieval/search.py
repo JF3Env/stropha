@@ -37,6 +37,7 @@ class SearchEngine:
         context_budget: int | None = None,
         compress: bool = False,
         conversation_context: str | None = None,
+        repo_id: int | None = None,
     ) -> list[SearchHit]:
         """Three-stream hybrid retrieval, fused with RRF.
 
@@ -104,6 +105,7 @@ class SearchEngine:
                         top_k=top_k,
                         candidate_k=candidate_k,
                         rrf_k=rrf_k,
+                        repo_id=repo_id,
                     )
                     all_hits.append(sub_hits)
 
@@ -119,6 +121,7 @@ class SearchEngine:
         single = self._search_single(
             query, top_k=top_k, candidate_k=candidate_k, rrf_k=rrf_k,
             conversation_context=conversation_context,
+            repo_id=repo_id,
         )
         compressed = self._maybe_compress(single, query, compress)
         return self._maybe_pack(compressed, context_budget)
@@ -179,6 +182,7 @@ class SearchEngine:
         candidate_k: int = CANDIDATE_K,
         rrf_k: int = DEFAULT_K,
         conversation_context: str | None = None,
+        repo_id: int | None = None,
     ) -> list[SearchHit]:
         """Single-query hybrid search (internal)."""
         # HyDE — only the dense embedding sees the hypothetical doc; BM25
@@ -204,9 +208,18 @@ class SearchEngine:
                 context_chars=len(conversation_context),
             )
         query_vec = self._embedder.embed_query(dense_query)
-        dense_hits = self._storage.search_dense(query_vec, k=candidate_k)
-        sparse_hits = self._storage.search_bm25(query, k=candidate_k)
-        symbol_hits = self._storage.search_symbol_tokens(query, k=20)
+        if repo_id is None:
+            dense_hits = self._storage.search_dense(query_vec, k=candidate_k)
+            sparse_hits = self._storage.search_bm25(query, k=candidate_k)
+            symbol_hits = self._storage.search_symbol_tokens(query, k=20)
+        else:
+            dense_hits = self._storage.search_dense(
+                query_vec, k=candidate_k, repo_id=repo_id
+            )
+            sparse_hits = self._storage.search_bm25(
+                query, k=candidate_k, repo_id=repo_id
+            )
+            symbol_hits = self._storage.search_symbol_tokens(query, k=20, repo_id=repo_id)
 
         # WIN-160: keep the source stream label on every hit so the trace
         # recorder can attribute each result to dense / sparse / symbol.
@@ -244,10 +257,26 @@ class SearchEngine:
         from .recursive import merge_hits
         return merge_hits(fused, self._storage)
 
-    def search_dense_only(self, query: str, top_k: int = 10) -> list[SearchHit]:
+    def search_dense_only(
+        self,
+        query: str,
+        top_k: int = 10,
+        *,
+        repo_id: int | None = None,
+    ) -> list[SearchHit]:
         """Escape hatch for debugging or A/B comparison."""
         query_vec = self._embedder.embed_query(query)
-        return self._storage.search_dense(query_vec, k=top_k)
+        if repo_id is None:
+            return self._storage.search_dense(query_vec, k=top_k)
+        return self._storage.search_dense(query_vec, k=top_k, repo_id=repo_id)
 
-    def search_sparse_only(self, query: str, top_k: int = 10) -> list[SearchHit]:
-        return self._storage.search_bm25(query, k=top_k)
+    def search_sparse_only(
+        self,
+        query: str,
+        top_k: int = 10,
+        *,
+        repo_id: int | None = None,
+    ) -> list[SearchHit]:
+        if repo_id is None:
+            return self._storage.search_bm25(query, k=top_k)
+        return self._storage.search_bm25(query, k=top_k, repo_id=repo_id)

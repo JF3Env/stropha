@@ -77,7 +77,7 @@ embedder if you want premium quality.
 | Pluggable adapter framework — every stage swappable via YAML | ✅ |
 | Walkers: `git-ls-files`, `filesystem`, `nested-git` (monorepos) | ✅ |
 | Enrichers: `noop`, `hierarchical`, `graph-aware`, `ollama`, `mlx` | ✅ |
-| Embedders: `local`, `voyage`, `bge-m3`, `mlx`, `model2vec` | ✅ |
+| Embedders: `local` CPU, `mlx`, `nvidia`, `amd`, `intel-npu`, `bge-m3`, `voyage`, `model2vec` | ✅ |
 | Graphify mirror + **6 graph traversal MCP tools** (`find_callers`, `find_tests_for`, `find_related`, `get_community`, `find_rationale`, `trace_feature`) | ✅ |
 | Soft index — `stropha watch <repo>` auto-reindexes on file save | ✅ |
 | Cost dashboard — `stropha cost` aggregates structlog by adapter / repo | ✅ |
@@ -293,6 +293,49 @@ The daemon listens on `http://127.0.0.1:9741/mcp` by default. Override
 with `STROPHA_MCP_HOST` / `STROPHA_MCP_PORT`. The pidfile lives at
 `~/.cache/stropha/mcp-server.pid` and the log at
 `~/.cache/stropha/mcp-server.log`. Health probe: `GET /health`.
+The launcher never manages PostgreSQL by default, even when the `postgres`
+storage adapter is configured. Use `STROPHA_USE_POSTGRES=1
+bin/stropha-mcp-ensure` only when you explicitly want its Docker container;
+native and externally managed PostgreSQL need no launcher flag.
+
+Open `http://127.0.0.1:9741/dashboard` for the local chat and configuration UI.
+The same daemon exposes its supporting frontend API:
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /dashboard` | Serve the local grounded-chat and live-configuration UI |
+| `GET /api/status` | Report pipeline/index health and discover local MoA models |
+| `GET /api/config` | Read `~/.stropha/config.yaml` with secrets and URL passwords redacted |
+| `GET /api/config/schema` | List editable settings, adapter schemas, valid ranges, and operational impact |
+| `PATCH /api/config` | Deep-merge a partial config and atomically reload the warm runtime |
+| `POST /api/query` | Retrieve current-repository evidence and answer with the configured LLM; `include_other_repos: true` explicitly broadens scope |
+
+Example grounded query:
+
+```bash
+curl -X POST http://127.0.0.1:9741/api/query \
+  -H 'Content-Type: application/json' \
+  -d '{"question":"How does incremental indexing remove deleted files?","top_k":8}'
+```
+
+Responses contain an `answer` plus structured `sources` using the same
+`chunk_id`, path, line range, symbol, repository, and score data returned by
+retrieval. Configuration updates are transactional: stropha writes the YAML,
+builds a replacement adapter graph, and rolls the file back if construction
+fails. Existing MCP sessions finish on their prior adapters; new requests use
+the replacement runtime. Browser CORS is accepted only from localhost origins.
+
+For local MoA Gateway inference, select it in the dashboard or configure:
+
+```yaml
+inference:
+  backend: moa
+  moa_model: moa-code
+  moa_base_url: http://127.0.0.1:14598/v1
+```
+
+MoA model aliases are discovered from its OpenAI-compatible `/v1/models`
+endpoint. An optional bearer token belongs in `secrets.moa_api_key`.
 
 ### Step 2 — point your MCP client at the URL
 
@@ -333,6 +376,10 @@ with `STROPHA_MCP_HOST` / `STROPHA_MCP_PORT`. The pidfile lives at
 | Tool | When the model should reach for it |
 |---|---|
 | `search_code(query, top_k)` | Free-text or conceptual queries ("how does mastery work?") |
+| `smart_search(query, top_k)` | Route ambiguous queries across semantic, symbol, and graph search |
+| `plan_investigation(task)` | Build a scoped search/callers/tests/rationale recipe without executing it |
+| `assemble_context(task, context_budget)` | Run scoped search plus optional graph extensions and pack one bundle |
+| `execute_investigation(task, context_budget)` | Plan and execute the scoped investigation DAG server-side |
 | `get_symbol(symbol, limit)` | Known identifier — cheaper and exact (`FsrsCalculator`) |
 | `get_file_outline(path)` | Plan a `Read` before consuming a whole file |
 | `list_repos()` | Multi-repo indexes — show available sources |
@@ -346,6 +393,10 @@ with `STROPHA_MCP_HOST` / `STROPHA_MCP_PORT`. The pidfile lives at
 The six graph-aware tools return `{graph_loaded: false, ...}` with a
 clear error message when no graphify graph is present, instead of failing
 silently.
+
+Semantic, symbol, direct graph, and composed tools default to the configured
+current repository. Pass `include_other_repos=true` only when cross-repository
+results are intentional. This includes `get_symbol` and all six graph tools.
 
 ## CLI reference
 
@@ -672,7 +723,7 @@ uv build
 src/stropha/
 ├── adapters/        # concrete stage implementations (auto-registered)
 │   ├── chunker/     #   tree-sitter-dispatch + 5 language sub-adapters
-│   ├── embedder/    #   local (fastembed) + voyage + bge-m3
+│   ├── embedder/    #   local (fastembed) + voyage + bge-m3 (MLX) + model2vec
 │   ├── enricher/    #   noop, hierarchical, graph-aware, ollama, mlx
 │   ├── retrieval/   #   hybrid-rrf + 4 stream sub-adapters (including graph-vec)
 │   ├── storage/     #   sqlite-vec

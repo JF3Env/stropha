@@ -5,7 +5,6 @@ from __future__ import annotations
 import contextlib
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
 
 from .server_models import (
     BlastRadiusResponse,
@@ -25,10 +24,10 @@ from .server_models import (
     TestImpactResponse,
     VerdictResponse,
 )
-from .server_runtime import AppContext
+from .server_runtime import AppContext, chunk_belongs_to_repo
 
-GraphLoaded = Callable[[Any], bool]
-HasRationaleEdges = Callable[[Any], bool]
+GraphLoaded = Callable[..., bool]
+HasRationaleEdges = Callable[..., bool]
 Unavailable = Callable[[], dict]
 
 
@@ -38,13 +37,16 @@ def find_callers_impl(
     *,
     depth: int,
     limit: int,
+    repo_id: int | None,
     graph_loaded_fn: GraphLoaded,
     unavailable_fn: Unavailable,
     graph_find_callers_fn: Callable[..., dict],
 ) -> dict:
-    if not graph_loaded_fn(app.storage):
+    if not graph_loaded_fn(app.storage, repo_id=repo_id):
         return unavailable_fn() | {"symbol": symbol}
-    return graph_find_callers_fn(app.storage, symbol, depth=depth, limit=limit)
+    return graph_find_callers_fn(
+        app.storage, symbol, depth=depth, limit=limit, repo_id=repo_id
+    )
 
 
 def find_related_impl(
@@ -54,11 +56,12 @@ def find_related_impl(
     depth: int,
     limit: int,
     relations: list[str] | None,
+    repo_id: int | None,
     graph_loaded_fn: GraphLoaded,
     unavailable_fn: Unavailable,
     graph_find_related_fn: Callable[..., dict],
 ) -> dict:
-    if not graph_loaded_fn(app.storage):
+    if not graph_loaded_fn(app.storage, repo_id=repo_id):
         return unavailable_fn() | {"symbol": symbol}
     return graph_find_related_fn(
         app.storage,
@@ -66,6 +69,7 @@ def find_related_impl(
         depth=depth,
         limit=limit,
         relations=tuple(relations) if relations else None,
+        repo_id=repo_id,
     )
 
 
@@ -74,16 +78,17 @@ def get_community_impl(
     app: AppContext,
     *,
     limit: int,
+    repo_id: int | None,
     graph_loaded_fn: GraphLoaded,
     unavailable_fn: Unavailable,
     graph_get_community_fn: Callable[..., dict],
 ) -> dict:
-    if not graph_loaded_fn(app.storage):
+    if not graph_loaded_fn(app.storage, repo_id=repo_id):
         return unavailable_fn() | {"query": symbol_or_community_id}
     query: str | int = symbol_or_community_id
     with contextlib.suppress(ValueError, TypeError):
         query = int(symbol_or_community_id)
-    return graph_get_community_fn(app.storage, query, limit=limit)
+    return graph_get_community_fn(app.storage, query, limit=limit, repo_id=repo_id)
 
 
 def find_rationale_impl(
@@ -91,20 +96,21 @@ def find_rationale_impl(
     app: AppContext,
     *,
     limit: int,
+    repo_id: int | None,
     graph_loaded_fn: GraphLoaded,
     has_rationale_edges_fn: HasRationaleEdges,
     unavailable_fn: Unavailable,
     graph_find_rationale_fn: Callable[..., dict],
 ) -> dict:
-    if not graph_loaded_fn(app.storage):
+    if not graph_loaded_fn(app.storage, repo_id=repo_id):
         return unavailable_fn() | {"symbol": symbol}
-    if not has_rationale_edges_fn(app.storage):
+    if not has_rationale_edges_fn(app.storage, repo_id=repo_id):
         return {
             "symbol": symbol,
             "rationale": [],
             "message": "Graph loaded but no `rationale_for` edges present yet.",
         }
-    return graph_find_rationale_fn(app.storage, symbol, limit=limit)
+    return graph_find_rationale_fn(app.storage, symbol, limit=limit, repo_id=repo_id)
 
 
 def find_tests_for_impl(
@@ -113,18 +119,25 @@ def find_tests_for_impl(
     *,
     limit: int,
     test_path_patterns: list[str] | None,
+    repo_id: int | None,
     graph_loaded_fn: GraphLoaded,
     unavailable_fn: Unavailable,
     graph_find_tests_for_fn: Callable[..., dict],
 ) -> dict:
-    if not graph_loaded_fn(app.storage):
+    if not graph_loaded_fn(app.storage, repo_id=repo_id):
         return unavailable_fn() | {"symbol": symbol}
     patterns = (
         tuple(test_path_patterns)
         if test_path_patterns
         else ("test_", "_test", "/tests/", "/test/", ".spec.", ".test.")
     )
-    return graph_find_tests_for_fn(app.storage, symbol, limit=limit, test_path_patterns=patterns)
+    return graph_find_tests_for_fn(
+        app.storage,
+        symbol,
+        limit=limit,
+        test_path_patterns=patterns,
+        repo_id=repo_id,
+    )
 
 
 def trace_feature_impl(
@@ -133,13 +146,20 @@ def trace_feature_impl(
     *,
     max_paths: int,
     max_depth: int,
+    repo_id: int | None,
     graph_loaded_fn: GraphLoaded,
     unavailable_fn: Unavailable,
     graph_trace_feature_fn: Callable[..., dict],
 ) -> dict:
-    if not graph_loaded_fn(app.storage):
+    if not graph_loaded_fn(app.storage, repo_id=repo_id):
         return unavailable_fn() | {"feature": feature}
-    return graph_trace_feature_fn(app.storage, feature, max_paths=max_paths, max_depth=max_depth)
+    return graph_trace_feature_fn(
+        app.storage,
+        feature,
+        max_paths=max_paths,
+        max_depth=max_depth,
+        repo_id=repo_id,
+    )
 
 
 def verify_claim_impl(
@@ -147,6 +167,7 @@ def verify_claim_impl(
     app: AppContext,
     *,
     graph_loaded_fn: GraphLoaded,
+    repo_id: int | None,
 ) -> VerdictResponse:
     from .retrieval.graph import (
         _fetch_node_rows,
@@ -169,7 +190,7 @@ def verify_claim_impl(
                 "Try 'X calls Y', 'X is a class', 'X is in src/foo.py', 'X has tests'."
             ),
         )
-    if not graph_loaded_fn(app.storage):
+    if not graph_loaded_fn(app.storage, repo_id=repo_id):
         return VerdictResponse(
             raw_text=parsed.raw_text,
             parsed=True,
@@ -184,19 +205,24 @@ def verify_claim_impl(
         )
 
     def callers(symbol: str) -> dict:
-        return find_callers(app.storage, symbol)
+        return find_callers(app.storage, symbol, repo_id=repo_id)
 
     def related(symbol: str, relations: list[str] | None) -> dict:
-        return find_related(app.storage, symbol, relations=tuple(relations) if relations else None)
+        return find_related(
+            app.storage,
+            symbol,
+            relations=tuple(relations) if relations else None,
+            repo_id=repo_id,
+        )
 
     def tests(symbol: str) -> dict:
-        return find_tests_for(app.storage, symbol)
+        return find_tests_for(app.storage, symbol, repo_id=repo_id)
 
     def resolve(symbol: str) -> dict | None:
-        node_id = resolve_symbol_to_node(app.storage, symbol)
+        node_id = resolve_symbol_to_node(app.storage, symbol, repo_id=repo_id)
         if node_id is None:
             return None
-        rows = _fetch_node_rows(app.storage, [node_id])
+        rows = _fetch_node_rows(app.storage, [node_id], repo_id=repo_id)
         if node_id not in rows:
             return None
         return _hydrate_node(app.storage, rows[node_id]).as_dict()
@@ -215,17 +241,28 @@ def verify_claim_impl(
     )
 
 
-def check_symbols_impl(symbols: list[str], app: AppContext, *, max_suggestions: int) -> HallucinationGuardResponse:
+def check_symbols_impl(
+    symbols: list[str],
+    app: AppContext,
+    *,
+    max_suggestions: int,
+    repo_id: int | None,
+) -> HallucinationGuardResponse:
     from .retrieval.hallucination_guard import check_symbols
 
     max_suggestions = max(1, min(int(max_suggestions), 20))
 
     def exists(name: str) -> bool:
-        return bool(app.storage.lookup_by_symbol(name, limit=1))
+        if repo_id is None:
+            return bool(app.storage.lookup_by_symbol(name, limit=1))
+        return bool(app.storage.lookup_by_symbol(name, limit=1, repo_id=repo_id))
 
     def similar(name: str) -> list[str]:
         try:
-            hits = app.storage.lookup_by_symbol(name, limit=20)
+            if repo_id is None:
+                hits = app.storage.lookup_by_symbol(name, limit=20)
+            else:
+                hits = app.storage.lookup_by_symbol(name, limit=20, repo_id=repo_id)
         except Exception:
             return []
         out: list[str] = []
@@ -258,11 +295,12 @@ def blast_radius_impl(
     *,
     graph_loaded_fn: GraphLoaded,
     has_rationale_edges_fn: HasRationaleEdges,
+    repo_id: int | None,
 ) -> BlastRadiusResponse:
     from .retrieval.blast_radius import compute_blast_radius
     from .retrieval.graph import find_callers, find_rationale, find_related, find_tests_for
 
-    graph_ok = graph_loaded_fn(app.storage)
+    graph_ok = graph_loaded_fn(app.storage, repo_id=repo_id)
     if not graph_ok:
         return BlastRadiusResponse(
             changed_symbols=[s.strip() for s in symbols if s and s.strip()],
@@ -272,16 +310,16 @@ def blast_radius_impl(
         )
 
     rationale_fn = None
-    if has_rationale_edges_fn(app.storage):
+    if has_rationale_edges_fn(app.storage, repo_id=repo_id):
         def rationale(symbol: str) -> dict:
-            return find_rationale(app.storage, symbol)
+            return find_rationale(app.storage, symbol, repo_id=repo_id)
         rationale_fn = rationale
 
     report = compute_blast_radius(
         symbols,
-        callers_fn=lambda symbol: find_callers(app.storage, symbol),
-        tests_fn=lambda symbol: find_tests_for(app.storage, symbol),
-        related_fn=lambda symbol: find_related(app.storage, symbol),
+        callers_fn=lambda symbol: find_callers(app.storage, symbol, repo_id=repo_id),
+        tests_fn=lambda symbol: find_tests_for(app.storage, symbol, repo_id=repo_id),
+        related_fn=lambda symbol: find_related(app.storage, symbol, repo_id=repo_id),
         rationale_fn=rationale_fn,
     )
     return BlastRadiusResponse(
@@ -303,13 +341,18 @@ def assert_snippet_freshness_impl(
     app: AppContext,
     *,
     strict: bool,
+    repo_id: int | None,
 ) -> FreshnessResponse:
     from .retrieval.freshness import assert_snippet_freshness
 
     verdict = assert_snippet_freshness(
         chunk_id,
         expected_snippet,
-        lookup_fn=lambda cid: app.storage.lookup_by_chunk_id(cid),
+        lookup_fn=lambda cid: (
+            app.storage.lookup_by_chunk_id(cid)
+            if chunk_belongs_to_repo(app.storage, cid, repo_id)
+            else None
+        ),
         strict=bool(strict),
     )
     return FreshnessResponse(
@@ -329,11 +372,12 @@ def test_impact_impl(
     transitive_depth: int,
     runner: str,
     graph_loaded_fn: GraphLoaded,
+    repo_id: int | None,
 ) -> TestImpactResponse:
     from .retrieval.graph import find_callers, find_tests_for
     from .retrieval.test_impact import analyse_test_impact
 
-    graph_ok = graph_loaded_fn(app.storage)
+    graph_ok = graph_loaded_fn(app.storage, repo_id=repo_id)
     if not graph_ok:
         return TestImpactResponse(
             changed_symbols=[s.strip() for s in symbols if s and s.strip()],
@@ -343,8 +387,8 @@ def test_impact_impl(
         )
     report = analyse_test_impact(
         symbols,
-        tests_fn=lambda symbol: find_tests_for(app.storage, symbol),
-        callers_fn=lambda symbol: find_callers(app.storage, symbol),
+        tests_fn=lambda symbol: find_tests_for(app.storage, symbol, repo_id=repo_id),
+        callers_fn=lambda symbol: find_callers(app.storage, symbol, repo_id=repo_id),
         transitive_depth=max(0, int(transitive_depth)),
         runner=str(runner) if runner else "pytest",
     )
@@ -358,21 +402,36 @@ def test_impact_impl(
     )
 
 
-def audit_citations_impl(text: str, app: AppContext) -> CitationAuditResponse:
+def audit_citations_impl(
+    text: str,
+    app: AppContext,
+    *,
+    repo_id: int | None,
+) -> CitationAuditResponse:
     from .retrieval.citation import Citation, audit_citations
 
     def lookup(citation: Citation) -> bool:
         if citation.kind == "chunk_id":
             try:
-                return app.storage.lookup_by_chunk_id(citation.chunk_id) is not None
+                return (
+                    app.storage.lookup_by_chunk_id(citation.chunk_id) is not None
+                    and chunk_belongs_to_repo(app.storage, citation.chunk_id, repo_id)
+                )
             except Exception:
                 return False
         if citation.kind == "file_line":
             try:
-                hits = app.storage.lookup_by_symbol(citation.path, limit=20)
+                if repo_id is None:
+                    hits = app.storage.lookup_by_symbol(citation.path, limit=20)
+                else:
+                    hits = app.storage.lookup_by_symbol(
+                        citation.path, limit=20, repo_id=repo_id
+                    )
             except Exception:
                 return False
             for hit in hits or []:
+                if not chunk_belongs_to_repo(app.storage, hit.chunk_id, repo_id):
+                    continue
                 if getattr(hit, "rel_path", "") == citation.path:
                     start = int(getattr(hit, "start_line", 0) or 0)
                     end = int(getattr(hit, "end_line", 0) or 0)
@@ -432,22 +491,11 @@ def default_spec_loader(repo_root: str) -> dict[str, str]:
 def spec_consistency_impl(
     changed_symbols: list[str],
     changed_files: list[str] | None,
-    app: AppContext,
     *,
+    repo_root: str,
     default_spec_loader_fn: Callable[[str], dict[str, str]],
 ) -> SpecConsistencyResponse:
     from .retrieval.spec_consistency import check_spec_consistency
-
-    try:
-        repos = app.storage.stats().get("repos") or []
-    except Exception:
-        repos = []
-    repo_root = ""
-    for repo in repos:
-        path = repo.get("local_path") or repo.get("path") or ""
-        if path:
-            repo_root = path
-            break
 
     def loader() -> dict[str, str]:
         if not repo_root:
@@ -482,18 +530,22 @@ def contract_tests_impl(
     app: AppContext,
     *,
     graph_loaded_fn: GraphLoaded,
+    repo_id: int | None,
 ) -> ContractTestsResponse:
     from .retrieval.contract_tests import surface_contract_tests
     from .retrieval.graph import find_tests_for
 
-    graph_ok = graph_loaded_fn(app.storage)
+    graph_ok = graph_loaded_fn(app.storage, repo_id=repo_id)
     if not graph_ok:
         return ContractTestsResponse(
             target_symbol=symbol,
             graph_loaded=False,
             notes=["graph_loaded=False"],
         )
-    report = surface_contract_tests(symbol, tests_fn=lambda value: find_tests_for(app.storage, value))
+    report = surface_contract_tests(
+        symbol,
+        tests_fn=lambda value: find_tests_for(app.storage, value, repo_id=repo_id),
+    )
     return ContractTestsResponse(
         target_symbol=report.target_symbol,
         contract_tests=[

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -257,6 +258,8 @@ def _make_ctx(
     chunks = chunks or {}
     symbols = symbols or {}
     app = MagicMock()
+    app.config.target_repo = Path.cwd()
+    app.storage.lookup_repo_id.return_value = 1
     if raise_chunk:
         app.storage.lookup_by_chunk_id.side_effect = RuntimeError("chunk boom")
     else:
@@ -267,8 +270,18 @@ def _make_ctx(
         app.storage.lookup_by_symbol.side_effect = RuntimeError("sym boom")
     else:
         app.storage.lookup_by_symbol.side_effect = (
-            lambda path, limit=20: symbols.get(path, [])[:limit]
+            lambda path, limit=20, **_: symbols.get(path, [])[:limit]
         )
+    symbol_chunk_ids = {
+        hit.chunk_id
+        for hits in symbols.values()
+        for hit in hits
+    }
+    app.storage.get_chunk_by_id.side_effect = lambda cid: (
+        {"chunk_id": cid, "repo_id": 1}
+        if cid in chunks or cid in symbol_chunk_ids
+        else None
+    )
     ctx = MagicMock()
     ctx.request_context.lifespan_context = app
     return ctx
@@ -276,6 +289,7 @@ def _make_ctx(
 
 def _file_hit(path: str, start: int, end: int):
     hit = MagicMock()
+    hit.chunk_id = f"{path}:{start}-{end}"
     hit.rel_path = path
     hit.start_line = start
     hit.end_line = end
@@ -376,3 +390,33 @@ class TestAuditCitationsMCP:
             "Claim [src/foo.py:10].", ctx=ctx,
         )
         assert "src/foo.py:10" in response.broken_citations
+
+    def test_foreign_chunk_and_file_citations_are_rejected(self) -> None:
+        from stropha.server import audit_citations_tool
+
+        chunk_id = "sha256:" + ("f" * 64)
+        file_hit = _file_hit("src/foo.py", 1, 20)
+        ctx = _make_ctx(
+            chunks={chunk_id: MagicMock()},
+            symbols={"src/foo.py": [file_hit]},
+        )
+        app = ctx.request_context.lifespan_context
+        app.storage.get_chunk_by_id.side_effect = lambda _: {"repo_id": 2}
+
+        response = audit_citations_tool(
+            f"Chunk [{chunk_id}]. File [src/foo.py:10].", ctx=ctx
+        )
+
+        assert set(response.broken_citations) == {chunk_id, "src/foo.py:10"}
+
+    def test_unresolved_repository_fails_closed(self) -> None:
+        from stropha.server import audit_citations_tool
+
+        ctx = _make_ctx(chunks={"foreign": MagicMock()})
+        app = ctx.request_context.lifespan_context
+        app.storage.lookup_repo_id.return_value = None
+
+        response = audit_citations_tool("Claim [foreign].", ctx=ctx)
+
+        assert response.claims == []
+        assert response.notes

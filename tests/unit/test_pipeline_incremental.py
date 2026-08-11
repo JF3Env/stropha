@@ -702,8 +702,8 @@ def test_reconcile_recovers_from_interrupted_index(tmp_path: Path) -> None:
         ).fetchone() is not None
 
 
-def test_reconcile_evicts_git_removed_file(tmp_path: Path) -> None:
-    """A file removed from the tree is evicted on the next auto run."""
+def test_reconcile_evicts_file_deleted_from_worktree(tmp_path: Path) -> None:
+    """A tracked file deleted only on disk is evicted on the next auto run."""
     import subprocess
 
     repo = tmp_path / "repo"
@@ -719,8 +719,6 @@ def test_reconcile_evicts_git_removed_file(tmp_path: Path) -> None:
         ).run()
 
         (repo / "drop.py").unlink()
-        subprocess.run(["git", "rm", "drop.py", "-q"], cwd=repo, check=True)
-        subprocess.run(["git", "commit", "-qm", "drop"], cwd=repo, check=True)
 
         stats = Pipeline(
             storage=s, embedder=emb, enricher=NoopEnricher(), repos=[repo],
@@ -729,6 +727,55 @@ def test_reconcile_evicts_git_removed_file(tmp_path: Path) -> None:
         assert stats.repos[0].code_changed is True
         assert s._conn.execute(
             "SELECT 1 FROM chunks WHERE rel_path = 'drop.py' LIMIT 1"
+        ).fetchone() is None
+
+
+def test_pipeline_clears_obsolete_path_identity(tmp_path: Path) -> None:
+    """Fallback repo data cannot survive after a checkout gains a remote identity."""
+    import subprocess
+
+    repo = tmp_path / "repo"
+    _git_init_with_file(repo, "current.py", "current = True\n")
+    subprocess.run(
+        ["git", "remote", "add", "origin", "https://example.com/acme/repo.git"],
+        cwd=repo,
+        check=True,
+    )
+
+    with Storage(tmp_path / "idx.db", embedding_dim=4) as s:
+        fallback_id = s.register_repo(
+            RepoIdentity(
+                normalized_key=f"path:{repo.resolve()}",
+                remote_url=None,
+                root_path=repo.resolve(),
+                default_branch=None,
+                head_commit=None,
+            )
+        )
+        stale = Chunk(
+            chunk_id="sha256:obsolete-path-identity",
+            rel_path="deleted.py",
+            language="python",
+            kind="module",
+            symbol=None,
+            parent_chunk_id=None,
+            start_line=1,
+            end_line=1,
+            content="deleted = True",
+            content_hash="obsolete",
+        )
+        s.upsert_chunk(stale, [0.1] * 4, "stub:v1", 4, repo_id=fallback_id)
+        s.commit()
+
+        Pipeline(
+            storage=s,
+            embedder=_StubEmbedder(),
+            enricher=NoopEnricher(),
+            repos=[repo],
+        ).run()
+
+        assert s._conn.execute(
+            "SELECT 1 FROM chunks WHERE repo_id = ? LIMIT 1", (fallback_id,)
         ).fetchone() is None
 
 

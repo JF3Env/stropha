@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from stropha.ingest.git_meta import RepoIdentity
 from stropha.ingest.graphify_loader import GraphifyLoader
 from stropha.models import Chunk
 from stropha.storage import Storage
@@ -25,7 +26,8 @@ from stropha.storage import Storage
 def _seed_graph(storage: Storage, graph_path: Path,
                 nodes: list[dict], edges: list[dict],
                 communities: dict | None = None,
-                community_labels: dict | None = None) -> None:
+                community_labels: dict | None = None,
+                repo_id: int | None = None) -> None:
     payload: dict = {"nodes": nodes, "links": edges}
     if communities is not None:
         payload["communities"] = communities
@@ -33,7 +35,7 @@ def _seed_graph(storage: Storage, graph_path: Path,
         payload["community_labels"] = community_labels
     graph_path.parent.mkdir(parents=True, exist_ok=True)
     graph_path.write_text(json.dumps(payload), encoding="utf-8")
-    GraphifyLoader(storage, graph_path.parent.parent).load()
+    GraphifyLoader(storage, graph_path.parent.parent, repo_id=repo_id).load()
 
 
 def _seed_chunk(
@@ -44,17 +46,19 @@ def _seed_chunk(
     end: int = 10,
     content: str = "def foo(): pass",
     symbol: str | None = None,
+    repo_id: int | None = None,
+    suffix: str = "",
 ) -> int:
     chunk = Chunk(
-        chunk_id=f"sha-{rel_path}-{start}",
+        chunk_id=f"sha-{rel_path}-{start}{suffix}",
         rel_path=rel_path, language="python", kind="function",
         symbol=symbol, parent_chunk_id=None,
         start_line=start, end_line=end,
-        content=content, content_hash=f"h-{start}",
+        content=content, content_hash=f"h-{start}{suffix}",
     )
     return storage.upsert_chunk(
         chunk, embedding=[0.0] * 4,
-        embedding_model="stub", embedding_dim=4,
+        embedding_model="stub", embedding_dim=4, repo_id=repo_id,
     )
 
 
@@ -113,6 +117,79 @@ def test_augment_inserts_community_term(tmp_path: Path, storage: Storage) -> Non
     hits = storage.search_bm25("authentication", k=5)
     assert len(hits) == 1
     assert hits[0].rel_path == "src/auth.py"
+
+
+def test_augment_matches_graph_terms_by_path_and_repository(
+    tmp_path: Path, storage: Storage,
+) -> None:
+    repo_a = storage.register_repo(
+        RepoIdentity(
+            normalized_key="local:a",
+            remote_url=None,
+            root_path=tmp_path / "a",
+            default_branch="main",
+            head_commit="abc",
+        )
+    )
+    repo_b = storage.register_repo(
+        RepoIdentity(
+            normalized_key="local:b",
+            remote_url=None,
+            root_path=tmp_path / "b",
+            default_branch="main",
+            head_commit="def",
+        )
+    )
+    _seed_graph(
+        storage,
+        tmp_path / "a" / "graphify-out" / "graph.json",
+        nodes=[
+            {
+                "id": "shared",
+                "label": "repoaonlygraphterm",
+                "source_file": "src/shared.py",
+                "source_location": "L5",
+            }
+        ],
+        edges=[],
+        repo_id=repo_a,
+    )
+    _seed_chunk(
+        storage, rel_path="src/shared.py", repo_id=repo_a, suffix="-a"
+    )
+    _seed_chunk(
+        storage, rel_path="src/shared.py", repo_id=repo_b, suffix="-b"
+    )
+
+    result = storage.augment_fts_with_graph()
+
+    assert result["augmented"] == 1
+    assert [
+        hit.chunk_id
+        for hit in storage.search_bm25("repoaonlygraphterm", repo_id=repo_a)
+    ] == ["sha-src/shared.py-1-a"]
+    assert storage.search_bm25("repoaonlygraphterm", repo_id=repo_b) == []
+
+
+def test_augment_preserves_legacy_null_repo_matching(tmp_path: Path, storage: Storage) -> None:
+    _seed_graph(
+        storage,
+        tmp_path / "graphify-out" / "graph.json",
+        nodes=[
+            {
+                "id": "legacy",
+                "label": "LegacyNullGraphTerm",
+                "source_file": "legacy.py",
+                "source_location": "L1",
+            }
+        ],
+        edges=[],
+    )
+    _seed_chunk(storage, rel_path="legacy.py")
+
+    storage.augment_fts_with_graph()
+
+    assert len(storage.search_bm25("LegacyNullGraphTerm")) == 1
 
 
 def test_augment_idempotent(tmp_path: Path, storage: Storage) -> None:

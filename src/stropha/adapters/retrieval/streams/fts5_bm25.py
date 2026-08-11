@@ -48,5 +48,13 @@ class Fts5Bm25Stream:
     def k(self) -> int:
         return self._config.k
 
-    def search(self, query: str, query_vec: list[float] | None) -> list[SearchHit]:
-        return self._storage.search_bm25(query, k=self._config.k)
+    def search(
+        self,
+        query: str,
+        query_vec: list[float] | None,
+        *,
+        repo_id: int | None = None,
+    ) -> list[SearchHit]:
+        if repo_id is None:
+            return self._storage.search_bm25(query, k=self._config.k)
+        return self._storage.search_bm25(query, k=self._config.k, repo_id=repo_id)

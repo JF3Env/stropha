@@ -44,5 +44,11 @@ class RetrievalStreamStage(Protocol):
     def k(self) -> int:
         """Per-stream candidate budget. Coordinator passes to the backend."""
 
-    def search(self, query: str, query_vec: list[float] | None) -> list[SearchHit]:
+    def search(
+        self,
+        query: str,
+        query_vec: list[float] | None,
+        *,
+        repo_id: int | None = None,
+    ) -> list[SearchHit]:
         """Return ranked hits. ``query_vec`` may be None for non-dense streams."""

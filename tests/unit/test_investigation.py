@@ -39,6 +39,25 @@ def _engine(hits: list[SearchHit]) -> MagicMock:
 
 
 class TestPlanInvestigation:
+    def test_broad_scope_supports_legacy_search_signature(self) -> None:
+        class LegacySearch:
+            def search(self, query: str, *, top_k: int) -> list[SearchHit]:
+                assert query == "task"
+                assert top_k == 5
+                return [_hit(symbol="Foo")]
+
+        plan = plan_investigation("task", search_engine=LegacySearch())
+
+        assert plan.primary_symbols == ["Foo"]
+        assert all(step.args["include_other_repos"] is True for step in plan.steps)
+
+    def test_concrete_repo_id_is_always_passed(self) -> None:
+        engine = _engine([])
+
+        plan_investigation("task", search_engine=engine, repo_id=7)
+
+        assert engine.search.call_args.kwargs["repo_id"] == 7
+
     def test_first_step_is_search_code(self) -> None:
         plan = plan_investigation(
             "how does mastery decay work",

@@ -80,7 +80,7 @@ class InferenceConfig:
     (YAML: ``secrets``).
     """
 
-    backend: str | None = None  # "mlx", "ollama", "deepseek", "anthropic", "lms", or None
+    backend: str | None = None
     mlx_model: str = "mlx-community/Qwen2.5-Coder-1.5B-Instruct-4bit"
     ollama_model: str = "qwen2.5-coder:1.5b"
     ollama_host: str = "http://localhost:11434"
@@ -103,6 +103,12 @@ class InferenceConfig:
     lms_timeout: float = 180.0
     lms_max_retries: int = 2
     lms_think: bool = False
+    # Local MoA Gateway. It exposes an OpenAI-compatible API and may run
+    # without authentication when bound to loopback.
+    moa_model: str = "moa-code"
+    moa_base_url: str = "http://127.0.0.1:14598/v1"
+    moa_timeout: float = 300.0
+    moa_max_retries: int = 1
     # Anthropic Messages API (https://api.anthropic.com/v1/messages).
     # Default is claude-haiku-4-5 — fast + cheap, good fit for the
     # contextual enricher's per-chunk pattern (thousands of short calls).
@@ -143,6 +149,7 @@ class InferenceConfig:
     # losing entries above batch_size=5; claude-haiku-4-5 handles 10 fine.
     deepseek_batch_size: int | None = None
     lms_batch_size: int | None = None
+    moa_batch_size: int | None = None
     anthropic_batch_size: int | None = None
     ollama_batch_size: int | None = None
     mlx_batch_size: int | None = None
@@ -161,6 +168,7 @@ class InferenceConfig:
         override = {
             "deepseek": self.deepseek_batch_size,
             "lms": self.lms_batch_size,
+            "moa": self.moa_batch_size,
             "anthropic": self.anthropic_batch_size,
             "ollama": self.ollama_batch_size,
             "mlx": self.mlx_batch_size,
@@ -228,6 +236,7 @@ class SecretsConfig:
     anthropic_api_key: str | None = None
     deepseek_api_key: str | None = None
     lms_api_key: str | None = None
+    moa_api_key: str | None = None
 
     @property
     def has_voyage(self) -> bool:
@@ -240,6 +249,10 @@ class SecretsConfig:
     @property
     def has_lms(self) -> bool:
         return bool(self.lms_api_key and self.lms_api_key.strip())
+
+    @property
+    def has_moa(self) -> bool:
+        return bool(self.moa_api_key and self.moa_api_key.strip())
 
     @property
     def has_anthropic(self) -> bool:

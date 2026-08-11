@@ -159,9 +159,18 @@ is no per-client subprocess.
 | Tool | Description |
 |------|-------------|
 | `search_code` | Hybrid semantic + lexical search. Use for "where is X?" or "how does Y work?" |
+| `smart_search` | Route an ambiguous query to scoped semantic, symbol, or graph retrieval. |
+| `plan_investigation` | Propose a scoped entry points → callers → tests → rationale recipe. |
+| `assemble_context` | Run scoped semantic retrieval and optional graph extensions into one bundle. |
+| `execute_investigation` | Plan and execute the scoped investigation DAG in one call. |
 | `get_symbol` | Exact symbol lookup. Cheaper than `search_code` when you know the name. |
 | `get_file_outline` | Get all symbols in a file. Plan reads before consuming context. |
 | `list_repos` | List all indexed repositories. |
+
+Semantic, symbol, direct graph, and composed search tools default to the current
+repository. Set `include_other_repos=true` explicitly to search all indexed
+repositories. If the current repository cannot be resolved, scoped tools fail
+closed; graph-gated tools report `graph_loaded: false` with an actionable message.
 
 ### Graph Traversal Tools
 

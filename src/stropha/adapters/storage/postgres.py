@@ -34,6 +34,7 @@ never fails when the optional ``postgres`` extra is absent.
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 from datetime import UTC, datetime
@@ -43,7 +44,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
-from ...errors import StorageError
+from ...errors import EmbeddingDimensionMismatchError, StorageError
 from ...logging import get_logger
 from ...models import (
     Chunk,
@@ -75,6 +76,9 @@ if TYPE_CHECKING:
 
 log = get_logger(__name__)
 
+_HNSW_VECTOR_MAX_DIM = 2000
+_HNSW_HALFVEC_MAX_DIM = 4000
+
 # Shared SELECT list: chunk columns + repo_* aliases consumed by
 # ``_repo_from_row``. Mirrors ``_REPO_JOIN_COLUMNS`` in storage/sqlite.py.
 _REPO_COLS = """
@@ -91,6 +95,33 @@ _REPO_COLS = """
 def _vec_literal(vec: list[float]) -> str:
     """pgvector text input form: ``[1.0,2.0,3.0]`` (cast with ``::vector``)."""
     return "[" + ",".join(str(float(x)) for x in vec) + "]"
+
+
+def _hnsw_index_expression(column: str, dim: int) -> str | None:
+    """Return an HNSW index expression supported by pgvector for ``dim``."""
+    if dim <= _HNSW_VECTOR_MAX_DIM:
+        return f"{column} vector_l2_ops"
+    if dim <= _HNSW_HALFVEC_MAX_DIM:
+        return f"({column}::halfvec({dim})) halfvec_l2_ops"
+    return None
+
+
+def _distance_expression(column: str, dim: int) -> str:
+    """Return distance SQL matching the selected HNSW expression index."""
+    if _HNSW_VECTOR_MAX_DIM < dim <= _HNSW_HALFVEC_MAX_DIM:
+        return f"({column}::halfvec({dim})) <-> %s::halfvec({dim})"
+    return f"{column} <-> %s::vector"
+
+
+def _scoped_read(method: Any) -> Any:
+    """End standalone psycopg reads without committing a caller's outer write."""
+
+    @functools.wraps(method)
+    def wrapped(self: PostgresStorage, *args: Any, **kwargs: Any) -> Any:
+        with self._raw.transaction():
+            return method(self, *args, **kwargs)
+
+    return wrapped
 
 
 def _pg_tsquery(query: str) -> str:
@@ -569,10 +600,18 @@ class PostgresStorage:
         cur.execute("CREATE INDEX IF NOT EXISTS idx_chunks_repo ON chunks(repo_id);")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_chunks_enricher ON chunks(enricher_id);")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_chunks_fts ON chunks USING gin(fts);")
-        cur.execute(
-            "CREATE INDEX IF NOT EXISTS idx_chunks_embedding ON chunks "
-            "USING hnsw (embedding vector_l2_ops);"
-        )
+        hnsw_expression = _hnsw_index_expression("embedding", self._dim)
+        if hnsw_expression is not None:
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_chunks_embedding ON chunks "
+                f"USING hnsw ({hnsw_expression});"
+            )
+        else:
+            log.warning(
+                "postgres.hnsw_skipped",
+                dim=self._dim,
+                max_dim=_HNSW_HALFVEC_MAX_DIM,
+            )
         cur.execute(
             f"""
             CREATE TABLE IF NOT EXISTS secondary_embeddings (
@@ -788,7 +827,7 @@ class PostgresStorage:
     def _check_dimension_consistency(self) -> None:
         stored = self.get_meta("embedding_dim")
         if stored is not None and int(stored) != self._dim:
-            raise StorageError(
+            raise EmbeddingDimensionMismatchError(
                 f"Index was built with embedding_dim={stored} but the active "
                 f"embedder produces dim={self._dim}. Re-index with --rebuild to "
                 f"switch embedding models."
@@ -808,13 +847,23 @@ class PostgresStorage:
         if stored is None or int(stored) == self._dim:
             return
         log.info("postgres.dim_change_reset", old=stored, new=self._dim)
-        with self._raw.cursor() as cur:
-            cur.execute("DROP TABLE IF EXISTS secondary_embeddings;")
-            cur.execute("DROP TABLE IF EXISTS chunks CASCADE;")
-            cur.execute("DROP TABLE IF EXISTS files CASCADE;")
-            cur.execute("DROP TABLE IF EXISTS enrichments CASCADE;")
-            self._create_chunk_tables(cur)
-            cur.execute("DELETE FROM meta WHERE key = 'embedding_dim';")
+        import psycopg
+
+        try:
+            with self._raw.cursor() as cur:
+                cur.execute(f"SET LOCAL lock_timeout = '{_MIGRATE_LOCK_TIMEOUT}';")
+                cur.execute("DROP TABLE IF EXISTS secondary_embeddings;")
+                cur.execute("DROP TABLE IF EXISTS chunks CASCADE;")
+                cur.execute("DROP TABLE IF EXISTS files CASCADE;")
+                cur.execute("DROP TABLE IF EXISTS enrichments CASCADE;")
+                self._create_chunk_tables(cur)
+                cur.execute("DELETE FROM meta WHERE key = 'embedding_dim';")
+        except psycopg.errors.LockNotAvailable as exc:
+            self._raw.rollback()
+            raise StorageError(
+                "Dimension-changing rebuild timed out waiting for active Postgres readers. "
+                "Stop the MCP daemon or retry after active searches finish."
+            ) from exc
         self._raw.commit()
 
     # ----- Stage contract -------------------------------------------------
@@ -907,6 +956,7 @@ class PostgresStorage:
             self._raw.autocommit = prev
         return (size_before, self._db_size())
 
+    @_scoped_read
     def _db_size(self) -> int:
         row = self._raw.execute("SELECT pg_database_size(current_database()) AS n;").fetchone()
         return int(row["n"]) if row else 0
@@ -1041,6 +1091,7 @@ class PostgresStorage:
 
     # ----- independent secondary embeddings (WIN-300) --------------------
 
+    @_scoped_read
     def list_chunks_needing_secondary_embeddings(
         self,
         embedder_id: str,
@@ -1125,6 +1176,7 @@ class PostgresStorage:
             )
             return max(0, int(cur.rowcount or 0))
 
+    @_scoped_read
     def count_secondary_embeddings(
         self,
         embedder_id: str,
@@ -1145,12 +1197,15 @@ class PostgresStorage:
         ).fetchone()
         return int(row["n"]) if row else 0
 
+    @_scoped_read
     def search_secondary_embeddings(
         self,
         query_vec: list[float],
         embedder_id: str,
         embedding_dim: int = SECONDARY_EMBEDDING_DIM,
         k: int = 10,
+        *,
+        repo_id: int | None = None,
     ) -> list[SearchHit]:
         if len(query_vec) != embedding_dim:
             raise StorageError(
@@ -1164,6 +1219,11 @@ class PostgresStorage:
         if k <= 0:
             return []
         vec = _vec_literal(query_vec)
+        repo_clause = "AND c.repo_id = %s" if repo_id is not None else ""
+        params: list[Any] = [vec, embedder_id, embedding_dim]
+        if repo_id is not None:
+            params.append(repo_id)
+        params.extend([vec, k])
         rows = self._raw.execute(
             f"""
             SELECT {_REPO_COLS}, s.embedding <-> %s::vector AS distance
@@ -1173,10 +1233,11 @@ class PostgresStorage:
             WHERE s.content_hash = c.content_hash
               AND s.embedder_id = %s
               AND s.embedding_dim = %s
+              {repo_clause}
             ORDER BY s.embedding <-> %s::vector
             LIMIT %s;
             """,
-            (vec, embedder_id, embedding_dim, vec, k),
+            params,
         ).fetchall()
         hits: list[SearchHit] = []
         for rank, row in enumerate(rows, start=1):
@@ -1185,6 +1246,7 @@ class PostgresStorage:
             hits.append(self._hit(row, rank=rank, score=score))
         return hits
 
+    @_scoped_read
     def chunk_is_fresh(
         self,
         chunk_id: str,
@@ -1208,6 +1270,7 @@ class PostgresStorage:
                 return False
         return True
 
+    @_scoped_read
     def get_enrichment(self, content_hash: str, enricher_id: str) -> str | None:
         row = self._raw.execute(
             "SELECT embedding_text FROM enrichments WHERE content_hash = %s AND enricher_id = %s;",
@@ -1228,6 +1291,7 @@ class PostgresStorage:
             (content_hash, enricher_id, embedding_text, now),
         )
 
+    @_scoped_read
     def count_chunks_without_repo(self) -> int:
         row = self._raw.execute(
             "SELECT COUNT(*) AS n FROM chunks WHERE repo_id IS NULL;"
@@ -1235,9 +1299,10 @@ class PostgresStorage:
         return int(row["n"]) if row else 0
 
     def backfill_chunks_to_repo(self, repo_id: int, sample_root: Any) -> int:
-        rows = self._raw.execute(
-            "SELECT rel_path FROM chunks WHERE repo_id IS NULL LIMIT 5;"
-        ).fetchall()
+        with self._raw.transaction():
+            rows = self._raw.execute(
+                "SELECT rel_path FROM chunks WHERE repo_id IS NULL LIMIT 5;"
+            ).fetchall()
         if not rows:
             return 0
         root = Path(sample_root)
@@ -1256,12 +1321,14 @@ class PostgresStorage:
             (key, value),
         )
 
+    @_scoped_read
     def get_meta(self, key: str) -> str | None:
         row = self._raw.execute("SELECT value FROM meta WHERE key = %s;", (key,)).fetchone()
         return row["value"] if row else None
 
     # ----- File-level incremental ops -------------------------------------
 
+    @_scoped_read
     def file_is_fresh(
         self,
         repo_id: int,
@@ -1287,6 +1354,7 @@ class PostgresStorage:
             return False
         return not (embedder_model is not None and row["last_embedder_model"] != embedder_model)
 
+    @_scoped_read
     def load_file_meta_map(self, repo_id: int) -> dict[str, StoredFileMeta]:
         """Bulk-load freshness columns for every ``files`` row of a repo.
 
@@ -1350,6 +1418,7 @@ class PostgresStorage:
         )
         return int(cur.rowcount or 0)
 
+    @_scoped_read
     def list_stale_files(self, repo_id: int, current_rel_paths: list[str]) -> list[str]:
         rows = self._raw.execute(
             "SELECT rel_path FROM files WHERE repo_id = %s;", (repo_id,)
@@ -1409,18 +1478,21 @@ class PostgresStorage:
         )
         return int(cur.rowcount or 0)
 
+    @_scoped_read
     def lookup_repo_id(self, normalized_key: str) -> int | None:
         row = self._raw.execute(
             "SELECT id FROM repos WHERE normalized_key = %s;", (normalized_key,)
         ).fetchone()
         return int(row["id"]) if row else None
 
+    @_scoped_read
     def chunk_exists(self, chunk_id: str) -> bool:
         row = self._raw.execute(
             "SELECT 1 AS x FROM chunks WHERE chunk_id = %s LIMIT 1;", (chunk_id,)
         ).fetchone()
         return row is not None
 
+    @_scoped_read
     def get_chunk_by_id(self, chunk_id: str) -> dict[str, Any] | None:
         row = self._raw.execute(
             "SELECT * FROM chunks WHERE chunk_id = %s;", (chunk_id,)
@@ -1431,6 +1503,7 @@ class PostgresStorage:
         cur = self._raw.execute("DELETE FROM chunks WHERE chunk_id = %s;", (chunk_id,))
         return bool(cur.rowcount)
 
+    @_scoped_read
     def lookup_by_chunk_id(self, chunk_id: str) -> SearchHit | None:
         row = self._raw.execute(
             f"""
@@ -1451,20 +1524,23 @@ class PostgresStorage:
         ``chunks.fts`` tsvector directly (no FTS5 satellite table). No-op
         sentinel when the graph mirror is empty.
         """
-        probe = self._raw.execute("SELECT 1 AS x FROM graph_nodes LIMIT 1;").fetchone()
-        if probe is None:
-            return {"augmented": 0, "unchanged": 0, "missing_graph": 1}
-        rows = self._raw.execute(
-            """
-            SELECT DISTINCT ON (c.id)
-                   c.id, c.rel_path, c.symbol, c.content,
-                   n.label, n.community_label, n.source_location
-            FROM chunks c
-            JOIN graph_nodes n ON n.source_file = c.rel_path
-            WHERE n.source_location IS NOT NULL
-            ORDER BY c.id, n.source_location, n.label;
-            """
-        ).fetchall()
+        with self._raw.transaction():
+            probe = self._raw.execute("SELECT 1 AS x FROM graph_nodes LIMIT 1;").fetchone()
+            if probe is None:
+                return {"augmented": 0, "unchanged": 0, "missing_graph": 1}
+            rows = self._raw.execute(
+                """
+                SELECT DISTINCT ON (c.id)
+                       c.id, c.rel_path, c.symbol, c.content,
+                       n.label, n.community_label, n.source_location
+                FROM chunks c
+                JOIN graph_nodes n
+                  ON n.source_file = c.rel_path
+                 AND n.repo_id IS NOT DISTINCT FROM c.repo_id
+                WHERE n.source_location IS NOT NULL
+                ORDER BY c.id, n.source_location, n.label;
+                """
+            ).fetchall()
         total = len(rows)
         log.info(
             "fts_augment.start",
@@ -1506,6 +1582,7 @@ class PostgresStorage:
         log.info("fts_augment.done", backend="postgres", augmented=augmented)
         return {"augmented": augmented, "unchanged": 0, "missing_graph": 0}
 
+    @_scoped_read
     def _graph_stats(self) -> dict[str, Any] | None:
         # Multi-repo mode stores per-repo-suffixed meta keys
         # (``last_loaded_at:{repo_id}``); single-repo mode uses the bare key
@@ -1588,6 +1665,7 @@ class PostgresStorage:
             expires_at=expires_at, provenance_commit=provenance_commit,
         )
 
+    @_scoped_read
     def recall(
         self,
         *,
@@ -1709,6 +1787,7 @@ class PostgresStorage:
             created_at=now, updated_at=now, provenance_commit=provenance_commit,
         )
 
+    @_scoped_read
     def recall_episodes(
         self,
         *,
@@ -1737,6 +1816,7 @@ class PostgresStorage:
         ).fetchall()
         return [self._row_to_episode(r) for r in rows]
 
+    @_scoped_read
     def episode_co_occurrence(
         self,
         *,
@@ -1795,6 +1875,7 @@ class PostgresStorage:
 
     # ----- facets + chunk helpers -----------------------------------------
 
+    @_scoped_read
     def compute_facets(self, chunk_ids: list[str] | None = None) -> dict[str, dict[str, int]]:
         if chunk_ids is None:
             lang = self._raw.execute(
@@ -1832,6 +1913,7 @@ class PostgresStorage:
             "repo": {r["repo"]: int(r["n"]) for r in repo},
         }
 
+    @_scoped_read
     def get_chunk(self, chunk_id: str) -> dict[str, Any] | None:
         row = self._raw.execute(
             "SELECT chunk_id, rel_path, language, kind, symbol, parent_chunk_id, "
@@ -1874,6 +1956,7 @@ class PostgresStorage:
         "seen_chunk_ids, pinned_chunk_ids, meta, scratchpad"
     )
 
+    @_scoped_read
     def get_session(self, session_id: str) -> SessionRecord | None:
         row = self._raw.execute(
             f"SELECT {self._SESSION_COLS} FROM sessions WHERE session_id = %s;",
@@ -1881,12 +1964,14 @@ class PostgresStorage:
         ).fetchone()
         return self._session_from_row(row) if row else None
 
+    @_scoped_read
     def get_latest_session(self) -> SessionRecord | None:
         row = self._raw.execute(
             "SELECT session_id FROM sessions ORDER BY updated_at DESC LIMIT 1;"
         ).fetchone()
         return self.get_session(row["session_id"]) if row else None
 
+    @_scoped_read
     def list_sessions(
         self, *, client_id: str | None = None, limit: int = 50
     ) -> list[SessionRecord]:
@@ -1973,21 +2058,35 @@ class PostgresStorage:
 
     # ----- Reads ----------------------------------------------------------
 
-    def search_dense(self, query_vec: list[float], k: int = 10) -> list[SearchHit]:
+    @_scoped_read
+    def search_dense(
+        self,
+        query_vec: list[float],
+        k: int = 10,
+        *,
+        repo_id: int | None = None,
+    ) -> list[SearchHit]:
         if len(query_vec) != self._dim:
             raise StorageError(
                 f"Query vector dim {len(query_vec)} != index dim {self._dim}"
             )
         vec = _vec_literal(query_vec)
+        distance_expression = _distance_expression("c.embedding", self._dim)
+        repo_clause = "AND c.repo_id = %s" if repo_id is not None else ""
+        params: list[Any] = [vec]
+        if repo_id is not None:
+            params.append(repo_id)
+        params.extend([vec, k])
         rows = self._raw.execute(
             f"""
-            SELECT {_REPO_COLS}, c.embedding <-> %s::vector AS distance
+            SELECT {_REPO_COLS}, {distance_expression} AS distance
             FROM chunks c LEFT JOIN repos r ON r.id = c.repo_id
             WHERE c.embedding IS NOT NULL
-            ORDER BY c.embedding <-> %s::vector
+              {repo_clause}
+            ORDER BY {distance_expression}
             LIMIT %s;
             """,
-            (vec, vec, k),
+            params,
         ).fetchall()
         hits: list[SearchHit] = []
         for rank, row in enumerate(rows, start=1):
@@ -1996,32 +2095,51 @@ class PostgresStorage:
             hits.append(self._hit(row, rank=rank, score=score))
         return hits
 
-    def search_bm25(self, query: str, k: int = 50) -> list[SearchHit]:
+    def search_bm25(
+        self,
+        query: str,
+        k: int = 50,
+        *,
+        repo_id: int | None = None,
+    ) -> list[SearchHit]:
         tsq = _pg_tsquery(query)
         if not tsq:
             return []
+        repo_clause = "AND c.repo_id = %s" if repo_id is not None else ""
+        params: list[Any] = [tsq, tsq]
+        if repo_id is not None:
+            params.append(repo_id)
+        params.append(k)
         try:
-            rows = self._raw.execute(
-                f"""
-                SELECT {_REPO_COLS},
-                       ts_rank_cd(c.fts, to_tsquery('simple', %s)) AS score
-                FROM chunks c LEFT JOIN repos r ON r.id = c.repo_id
-                WHERE c.fts @@ to_tsquery('simple', %s)
-                ORDER BY score DESC
-                LIMIT %s;
-                """,
-                (tsq, tsq, k),
-            ).fetchall()
+            with self._raw.transaction():
+                rows = self._raw.execute(
+                    f"""
+                    SELECT {_REPO_COLS},
+                           ts_rank_cd(c.fts, to_tsquery('simple', %s)) AS score
+                    FROM chunks c LEFT JOIN repos r ON r.id = c.repo_id
+                    WHERE c.fts @@ to_tsquery('simple', %s)
+                      {repo_clause}
+                    ORDER BY score DESC
+                    LIMIT %s;
+                    """,
+                    params,
+                ).fetchall()
         except Exception as exc:
             log.warning("storage.fts_query_failed", error=str(exc))
-            self._raw.rollback()
             return []
         return [
             self._hit(row, rank=rank, score=float(row["score"]))
             for rank, row in enumerate(rows, start=1)
         ]
 
-    def search_symbol_tokens(self, query: str, k: int = 20) -> list[SearchHit]:
+    @_scoped_read
+    def search_symbol_tokens(
+        self,
+        query: str,
+        k: int = 20,
+        *,
+        repo_id: int | None = None,
+    ) -> list[SearchHit]:
         tokens = _identifier_tokens(query)
         if not tokens:
             return []
@@ -2030,12 +2148,17 @@ class PostgresStorage:
         )
         where_clause = " OR ".join("c.symbol ILIKE %s" for _ in tokens)
         like_params = [f"%{t}%" for t in tokens]
-        params = [*like_params, *like_params, k]
+        params: list[Any] = [*like_params, *like_params]
+        repo_clause = "AND c.repo_id = %s" if repo_id is not None else ""
+        if repo_id is not None:
+            params.append(repo_id)
+        params.append(k)
         rows = self._raw.execute(
             f"""
             SELECT {_REPO_COLS}, ({score_terms}) AS match_count
             FROM chunks c LEFT JOIN repos r ON r.id = c.repo_id
             WHERE ({where_clause}) AND c.symbol IS NOT NULL
+              {repo_clause}
             ORDER BY match_count DESC, char_length(c.symbol) ASC
             LIMIT %s;
             """,
@@ -2046,14 +2169,28 @@ class PostgresStorage:
             for rank, row in enumerate(rows, start=1)
         ]
 
-    def lookup_by_symbol(self, symbol: str, limit: int = 10) -> list[SearchHit]:
+    @_scoped_read
+    def lookup_by_symbol(
+        self,
+        symbol: str,
+        limit: int = 10,
+        *,
+        repo_id: int | None = None,
+    ) -> list[SearchHit]:
+        repo_clause = "AND c.repo_id = %s" if repo_id is not None else ""
+        params: list[Any] = [symbol, f"%.{symbol}", f"%{symbol}%"]
+        if repo_id is not None:
+            params.append(repo_id)
+        params.extend([symbol, f"%.{symbol}", limit])
         rows = self._raw.execute(
             f"""
             SELECT {_REPO_COLS}
             FROM chunks c LEFT JOIN repos r ON r.id = c.repo_id
-            WHERE c.symbol = %s
+            WHERE (c.symbol = %s
                OR c.symbol ILIKE %s
                OR c.symbol ILIKE %s
+            )
+              {repo_clause}
             ORDER BY
                 CASE WHEN c.symbol = %s THEN 0
                      WHEN c.symbol ILIKE %s THEN 1
@@ -2061,18 +2198,27 @@ class PostgresStorage:
                 char_length(c.symbol)
             LIMIT %s;
             """,
-            (symbol, f"%.{symbol}", f"%{symbol}%", symbol, f"%.{symbol}", limit),
+            params,
         ).fetchall()
         return [self._hit(row, rank=rank, score=1.0) for rank, row in enumerate(rows, start=1)]
 
-    def file_outline(self, rel_path: str) -> list[dict[str, Any]]:
+    @_scoped_read
+    def file_outline(
+        self,
+        rel_path: str,
+        *,
+        repo_id: int | None = None,
+    ) -> list[dict[str, Any]]:
+        repo_clause = "AND repo_id = %s" if repo_id is not None else ""
+        params: tuple[Any, ...] = (rel_path, repo_id) if repo_id is not None else (rel_path,)
         rows = self._raw.execute(
             "SELECT chunk_id, kind, symbol, parent_chunk_id, start_line, end_line "
-            "FROM chunks WHERE rel_path = %s ORDER BY start_line;",
-            (rel_path,),
+            f"FROM chunks WHERE rel_path = %s {repo_clause} ORDER BY start_line;",
+            params,
         ).fetchall()
         return [dict(r) for r in rows]
 
+    @_scoped_read
     def list_repos(self) -> list[RepoStats]:
         rows = self._raw.execute(
             """
@@ -2099,6 +2245,7 @@ class PostgresStorage:
             for row in rows
         ]
 
+    @_scoped_read
     def stats(self) -> dict[str, Any]:
         chunks = int(self._raw.execute("SELECT COUNT(*) AS n FROM chunks;").fetchone()["n"])
         files = int(

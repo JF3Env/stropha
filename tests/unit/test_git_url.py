@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -12,10 +13,13 @@ import pytest
 from stropha.tools.git_url import (
     CachedRepo,
     GitUrlError,
+    GitUrlSearchResult,
     clone_repo,
     get_cache_dir,
     get_cached_repo,
     is_git_url,
+    search_git_url,
+    search_git_url_scoped,
     url_to_cache_key,
 )
 
@@ -287,3 +291,46 @@ class TestCloneRepo:
 
         # Should have called git clone because refresh=True
         mock_run.assert_called_once()
+
+
+def test_search_git_url_scopes_retrieval_to_cached_repo(tmp_path: Path) -> None:
+    cached = CachedRepo(
+        url="https://github.com/org/repo",
+        local_path=tmp_path / "repo",
+        index_path=tmp_path / "index.db",
+        cloned_at=0.0,
+        last_indexed=1.0,
+    )
+    cached.local_path.mkdir()
+    cached.index_path.touch()
+    storage = MagicMock()
+    storage.lookup_repo_id.return_value = 23
+    retrieval = MagicMock()
+    retrieval.search.return_value = []
+    built = MagicMock(storage=storage, retrieval=retrieval)
+
+    with (
+        patch("stropha.tools.git_url.clone_repo", return_value=cached),
+        patch("stropha.pipeline.config.load_pipeline_config", return_value=MagicMock()),
+        patch("stropha.pipeline.builder.build_stages", return_value=built),
+        patch(
+            "stropha.ingest.git_meta.detect",
+            return_value=SimpleNamespace(normalized_key="github.com/org/repo"),
+        ),
+    ):
+        result = search_git_url_scoped("auth", cached.url, top_k=4)
+
+    assert result.hits == []
+    assert result.repo_id == 23
+    retrieval.search.assert_called_once_with("auth", top_k=4, repo_id=23)
+
+
+def test_search_git_url_preserves_public_hit_list_contract(tmp_path: Path) -> None:
+    hits = [MagicMock()]
+    with patch(
+        "stropha.tools.git_url.search_git_url_scoped",
+        return_value=GitUrlSearchResult(hits=hits, repo_id=23),
+    ):
+        result = search_git_url("auth", "https://github.com/org/repo")
+
+    assert result is hits

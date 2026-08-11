@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 import pytest
 
-from stropha.models import Chunk, SearchHit
+from stropha.models import Chunk, RepoRef, SearchHit
 from stropha.retrieval.hyde import maybe_hyde_rewrite
 from stropha.retrieval.recursive import (
     DEFAULT_ADJACENCY_LINES,
@@ -295,6 +295,23 @@ def test_different_files_never_merge(storage: Storage) -> None:
     ]
     out = merge_hits(hits, storage, enabled=True, adjacency_lines=100)
     assert len(out) == 2
+
+
+def test_same_relative_path_in_different_repos_never_merges(storage: Storage) -> None:
+    hits = [
+        _hit(chunk_id="a", rel_path="src/shared.py", start=1, end=5),
+        _hit(chunk_id="b", rel_path="src/shared.py", start=6, end=10),
+    ]
+    hits[0] = hits[0].model_copy(
+        update={"repo": RepoRef(normalized_key="github.com/example/a")}
+    )
+    hits[1] = hits[1].model_copy(
+        update={"repo": RepoRef(normalized_key="github.com/example/b")}
+    )
+
+    out = merge_hits(hits, storage, enabled=True, adjacency_lines=100)
+
+    assert [hit.chunk_id for hit in out] == ["a", "b"]
 
 
 def test_parent_chunk_promotion(storage: Storage) -> None:

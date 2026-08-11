@@ -39,5 +39,6 @@ class RetrievalStage(Protocol):
         *,
         top_k: int = 10,
         conversation_context: str | None = None,
+        repo_id: int | None = None,
     ) -> list[SearchHit]:
         """Top-k hits for a free-text query."""

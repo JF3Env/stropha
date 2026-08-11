@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -335,6 +337,11 @@ def _make_ctx(
     app.storage.lookup_by_chunk_id.side_effect = (
         lambda cid: (hits or {}).get(cid)
     )
+    app.storage.get_chunk_by_id.side_effect = lambda cid: (
+        {"chunk_id": cid, "repo_id": 1} if (hits or {}).get(cid) is not None else None
+    )
+    app.storage.lookup_repo_id.return_value = 1
+    app.config.target_repo = Path.cwd()
     if session_raises:
         app.storage.get_session.side_effect = RuntimeError("session boom")
     else:
@@ -416,6 +423,35 @@ class TestWorkingSetMCP:
         response = working_set_tool("", max_recent=-5, ctx=ctx)
         assert response.recent_count == 0
 
+    def test_foreign_chunks_are_filtered(self) -> None:
+        from stropha.server import working_set_tool
+
+        ctx = _make_ctx(
+            pinned=["local", "foreign"],
+            hits={"local": _Hit(chunk_id="local"), "foreign": _Hit(chunk_id="foreign")},
+        )
+        app = ctx.request_context.lifespan_context
+        app.storage.get_chunk_by_id.side_effect = lambda cid: {
+            "chunk_id": cid,
+            "repo_id": 1 if cid == "local" else 2,
+        }
+
+        response = working_set_tool("", ctx=ctx)
+
+        assert [entry.chunk_id for entry in response.entries] == ["local"]
+
+    def test_unresolved_repository_fails_closed(self) -> None:
+        from stropha.server import working_set_tool
+
+        ctx = _make_ctx(pinned=["foreign"], hits={"foreign": _Hit(chunk_id="foreign")})
+        app = ctx.request_context.lifespan_context
+        app.storage.lookup_repo_id.return_value = None
+
+        response = working_set_tool("", ctx=ctx)
+
+        assert response.entries == []
+        assert response.notes
+
 
 # ---------------------------------------------------------------------------
 # Resource handler — direct invocation
@@ -430,9 +466,13 @@ class TestWorkingSetResource:
         fake_storage.__enter__.return_value = fake_storage
         fake_storage.__exit__.return_value = None
         fake_storage.get_latest_session.return_value = None
+        fake_storage.lookup_repo_id.return_value = 1
 
         fake_built = MagicMock(storage=fake_storage)
-        with patch("stropha.server.load_pipeline_config", return_value={}), \
+        with patch(
+             "stropha.server.get_config",
+             return_value=SimpleNamespace(target_repo=Path.cwd()),
+             ), patch("stropha.server.load_pipeline_config", return_value={}), \
              patch("stropha.server.build_stages", return_value=fake_built):
             md = working_set_resource()
         assert "no session state" in md
@@ -444,9 +484,13 @@ class TestWorkingSetResource:
         fake_storage.__enter__.return_value = fake_storage
         fake_storage.__exit__.return_value = None
         fake_storage.get_latest_session.side_effect = RuntimeError("boom")
+        fake_storage.lookup_repo_id.return_value = 1
 
         fake_built = MagicMock(storage=fake_storage)
-        with patch("stropha.server.load_pipeline_config", return_value={}), \
+        with patch(
+             "stropha.server.get_config",
+             return_value=SimpleNamespace(target_repo=Path.cwd()),
+             ), patch("stropha.server.load_pipeline_config", return_value={}), \
              patch("stropha.server.build_stages", return_value=fake_built):
             md = working_set_resource()
         assert "no session state" in md
@@ -460,12 +504,17 @@ class TestWorkingSetResource:
         fake_storage.__enter__.return_value = fake_storage
         fake_storage.__exit__.return_value = None
         fake_storage.get_latest_session.return_value = record
+        fake_storage.lookup_repo_id.return_value = 1
+        fake_storage.get_chunk_by_id.return_value = {"repo_id": 1}
         fake_storage.lookup_by_chunk_id.side_effect = lambda cid: _Hit(
             chunk_id=cid,
         )
 
         fake_built = MagicMock(storage=fake_storage)
-        with patch("stropha.server.load_pipeline_config", return_value={}), \
+        with patch(
+             "stropha.server.get_config",
+             return_value=SimpleNamespace(target_repo=Path.cwd()),
+             ), patch("stropha.server.load_pipeline_config", return_value={}), \
              patch("stropha.server.build_stages", return_value=fake_built):
             md = working_set_resource()
         assert "latest-sess" in md
@@ -480,11 +529,60 @@ class TestWorkingSetResource:
         fake_storage.__enter__.return_value = fake_storage
         fake_storage.__exit__.return_value = None
         fake_storage.get_latest_session.return_value = record
+        fake_storage.lookup_repo_id.return_value = 1
+        fake_storage.get_chunk_by_id.return_value = {"repo_id": 1}
         fake_storage.lookup_by_chunk_id.side_effect = RuntimeError("lookup boom")
 
         fake_built = MagicMock(storage=fake_storage)
-        with patch("stropha.server.load_pipeline_config", return_value={}), \
+        with patch(
+             "stropha.server.get_config",
+             return_value=SimpleNamespace(target_repo=Path.cwd()),
+             ), patch("stropha.server.load_pipeline_config", return_value={}), \
              patch("stropha.server.build_stages", return_value=fake_built):
             md = working_set_resource()
         # Lookup failed -> empty entries -> placeholder body.
         assert "no working-set" in md or "_no" in md
+
+    def test_resource_filters_foreign_chunks(self) -> None:
+        from stropha.server import working_set_resource
+
+        record = _make_session_record(set(), {"local", "foreign"}, sid="s1")
+        fake_storage = MagicMock()
+        fake_storage.__enter__.return_value = fake_storage
+        fake_storage.__exit__.return_value = None
+        fake_storage.lookup_repo_id.return_value = 1
+        fake_storage.get_latest_session.return_value = record
+        fake_storage.get_chunk_by_id.side_effect = lambda cid: {
+            "repo_id": 1 if cid == "local" else 2
+        }
+        fake_storage.lookup_by_chunk_id.side_effect = lambda cid: _Hit(chunk_id=cid)
+
+        with patch(
+            "stropha.server.get_config",
+            return_value=SimpleNamespace(target_repo=Path.cwd()),
+        ), patch("stropha.server.load_pipeline_config", return_value={}), patch(
+            "stropha.server.build_stages", return_value=MagicMock(storage=fake_storage)
+        ):
+            markdown = working_set_resource()
+
+        assert "local" in markdown
+        assert "foreign" not in markdown
+
+    def test_resource_fails_closed_when_repo_is_unresolved(self) -> None:
+        from stropha.server import working_set_resource
+
+        fake_storage = MagicMock()
+        fake_storage.__enter__.return_value = fake_storage
+        fake_storage.__exit__.return_value = None
+        fake_storage.lookup_repo_id.return_value = None
+
+        with patch(
+            "stropha.server.get_config",
+            return_value=SimpleNamespace(target_repo=Path.cwd()),
+        ), patch("stropha.server.load_pipeline_config", return_value={}), patch(
+            "stropha.server.build_stages", return_value=MagicMock(storage=fake_storage)
+        ):
+            markdown = working_set_resource()
+
+        assert "current repository unavailable" in markdown
+        fake_storage.get_latest_session.assert_not_called()

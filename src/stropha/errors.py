@@ -27,6 +27,10 @@ class StorageError(StrophaError):
     """Failure in the SQLite/vec layer (schema, IO, corruption)."""
 
 
+class EmbeddingDimensionMismatchError(StorageError):
+    """The persisted index and configured embedder use different dimensions."""
+
+
 class RetrievalError(StrophaError):
     """Failure during query execution."""
 

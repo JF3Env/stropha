@@ -93,11 +93,28 @@ mlx = [
     "mlx-lm>=0.18; platform_system == 'Darwin' and platform_machine == 'arm64'",
 ]
 
-# Apple Silicon GPU-accelerated embeddings via mlx-embedding-models.
-# ~3-5x faster than fastembed ONNX. Apple Silicon only.
+# Apple Silicon GPU-accelerated embeddings via mlx-embedding-models and mlx-lm.
+# mlx-lm supports MLX-converted Qwen3 embedding checkpoints. Apple Silicon only.
 mlx-embed = [
     "mlx-embedding-models>=0.0.11; platform_system == 'Darwin' and platform_machine == 'arm64'",
+    "mlx-lm>=0.24; platform_system == 'Darwin' and platform_machine == 'arm64'",
     "transformers>=4.36,<5.0; platform_system == 'Darwin' and platform_machine == 'arm64'",
+]
+
+# Native NVIDIA CUDA execution via PyTorch + SentenceTransformers.
+nvidia = [
+    "sentence-transformers>=3.2; platform_system != 'Darwin'",
+]
+
+# Native AMD ROCm execution. Install the ROCm-specific PyTorch wheel for the
+# host before selecting this adapter; SentenceTransformers uses torch's cuda API.
+amd = [
+    "sentence-transformers>=3.2; platform_system == 'Linux'",
+]
+
+# Native Intel NPU execution through the SentenceTransformers OpenVINO backend.
+intel-npu = [
+    "sentence-transformers[openvino]>=3.2; platform_system == 'Linux' or platform_system == 'Windows'",
 ]
 
 # Model2Vec static embeddings — ultra-fast lookup-based embeddings

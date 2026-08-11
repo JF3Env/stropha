@@ -39,6 +39,7 @@ class SharedRuntime:
     config: Config
     built: BuiltStages
     watcher: Any = None
+    retired: list[BuiltStages] = field(default_factory=list)
     closed: bool = False
 
     def close(self) -> None:
@@ -50,10 +51,16 @@ class SharedRuntime:
                 self.watcher.stop()
             except Exception as exc:
                 log.warning("mcp.watcher.stop_failed", error=str(exc))
-        try:
-            self.built.storage.close()
-        except Exception as exc:
-            log.warning("mcp.storage.close_failed", error=str(exc))
+        seen: set[int] = set()
+        for built in [self.built, *self.retired]:
+            storage = built.storage
+            if id(storage) in seen:
+                continue
+            seen.add(id(storage))
+            try:
+                storage.close()
+            except Exception as exc:
+                log.warning("mcp.storage.close_failed", error=str(exc))
 
 
 @dataclass
@@ -75,6 +82,15 @@ class AppContext:
     client_id: str | None = None
     recent_queries: deque[str] = field(default_factory=lambda: deque(maxlen=5))
     scratchpad: str = ""
+
+
+def chunk_belongs_to_repo(storage: Any, chunk_id: str, repo_id: int | None) -> bool:
+    """Return whether an exact chunk exists within the requested repository scope."""
+    try:
+        chunk = storage.get_chunk_by_id(chunk_id)
+    except Exception:
+        return False
+    return chunk is not None and (repo_id is None or chunk.get("repo_id") == repo_id)
 
 
 def ctx_from_mcp(mcp_ctx: Context) -> AppContext:
@@ -162,6 +178,102 @@ async def _shared_runtime(
 
         runtime = SharedRuntime(config=cfg, built=built, watcher=watcher)
         setattr(app, _SHARED_RUNTIME_ATTR, runtime)
+        return runtime
+
+
+async def get_shared_runtime(
+    app: FastMCP,
+    *,
+    version: str,
+    get_config_fn: Callable[[], Config],
+    configure_logging_fn: Callable[[str], None],
+    load_pipeline_config_fn: Callable[[], Any],
+    build_stages_fn: Callable[[Any], BuiltStages],
+    watch_controller_cls: type[Any],
+) -> SharedRuntime:
+    """Return the process runtime, building it when no MCP session has yet."""
+    return await _shared_runtime(
+        app,
+        version=version,
+        get_config_fn=get_config_fn,
+        configure_logging_fn=configure_logging_fn,
+        load_pipeline_config_fn=load_pipeline_config_fn,
+        build_stages_fn=build_stages_fn,
+        watch_controller_cls=watch_controller_cls,
+    )
+
+
+async def reload_shared_runtime(
+    app: FastMCP,
+    *,
+    get_config_fn: Callable[[], Config],
+    configure_logging_fn: Callable[[str], None],
+    load_pipeline_config_fn: Callable[[], Any],
+    build_stages_fn: Callable[[Any], BuiltStages],
+    watch_controller_cls: type[Any],
+) -> SharedRuntime:
+    """Build and atomically install a replacement process-level runtime.
+
+    Existing MCP sessions retain references to their prior adapters. Their
+    storage handles are therefore retired, not closed immediately; shutdown
+    closes both the current and retired handles. New sessions and frontend
+    requests observe the replacement as soon as it is installed.
+    """
+    lock = getattr(app, _SHARED_RUNTIME_LOCK_ATTR, None)
+    if lock is None:
+        lock = asyncio.Lock()
+        setattr(app, _SHARED_RUNTIME_LOCK_ATTR, lock)
+
+    async with lock:
+        cfg = get_config_fn()
+        pipeline_config = load_pipeline_config_fn()
+        # Adapter construction may download and materialize multi-gigabyte
+        # models. Keep the ASGI event loop responsive while that work runs.
+        built = await asyncio.to_thread(build_stages_fn, pipeline_config)
+        watcher: Any = None
+        try:
+            if cfg.mcp_watch:
+                watcher = watch_controller_cls(
+                    repo=cfg.target_repo,
+                    interval_s=cfg.mcp_watch_interval,
+                    debounce_s=cfg.mcp_watch_debounce,
+                    full_refresh=False,
+                )
+                watcher.start()
+        except Exception:
+            SharedRuntime(config=cfg, built=built, watcher=watcher).close()
+            raise
+
+        try:
+            configure_logging_fn(cfg.log_level)
+        except Exception:
+            SharedRuntime(config=cfg, built=built, watcher=watcher).close()
+            raise
+
+        previous = getattr(app, _SHARED_RUNTIME_ATTR, None)
+        retired: list[BuiltStages] = []
+        if previous is not None and not previous.closed:
+            if previous.watcher is not None:
+                try:
+                    previous.watcher.stop()
+                except Exception as exc:
+                    log.warning("mcp.watcher.stop_failed", error=str(exc))
+                previous.watcher = None
+            retired = [previous.built, *previous.retired]
+            previous.closed = True
+
+        runtime = SharedRuntime(
+            config=cfg,
+            built=built,
+            watcher=watcher,
+            retired=retired,
+        )
+        setattr(app, _SHARED_RUNTIME_ATTR, runtime)
+        log.info(
+            "mcp.runtime_reloaded",
+            retired_runtimes=len(retired),
+            storage=getattr(built.storage, "adapter_name", type(built.storage).__name__),
+        )
         return runtime
 
 

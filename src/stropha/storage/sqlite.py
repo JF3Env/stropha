@@ -1512,6 +1512,8 @@ class Storage:
         embedder_id: str,
         embedding_dim: int = SECONDARY_EMBEDDING_DIM,
         k: int = 10,
+        *,
+        repo_id: int | None = None,
     ) -> list[SearchHit]:
         """Search only current vectors from one exact secondary embedder."""
         if len(query_vec) != embedding_dim:
@@ -1525,6 +1527,22 @@ class Storage:
             )
         if k <= 0:
             return []
+        candidate_k = k
+        repo_clause = ""
+        params: list[Any] = [
+            _serialize_vector(query_vec),
+            embedder_id,
+            embedding_dim,
+        ]
+        if repo_id is not None:
+            candidate_k = int(
+                self._conn.execute("SELECT COUNT(*) FROM vec_chunks_secondary").fetchone()[0]
+            )
+            if candidate_k == 0:
+                return []
+            repo_clause = "AND c.repo_id = ?"
+            params.append(repo_id)
+        params.extend([candidate_k, k])
         rows = self._conn.execute(
             f"""
             SELECT
@@ -1537,10 +1555,12 @@ class Storage:
               AND v.embedder_id = ?
               AND v.embedding_dim = ?
               AND v.content_hash = c.content_hash
+              {repo_clause}
               AND k = ?
             ORDER BY v.distance
+            LIMIT ?
             """,
-            (_serialize_vector(query_vec), embedder_id, embedding_dim, k),
+            params,
         ).fetchall()
         hits: list[SearchHit] = []
         for rank, row in enumerate(rows, start=1):
@@ -1603,6 +1623,7 @@ class Storage:
             FROM chunks c
             JOIN graph_nodes n
               ON n.source_file = c.rel_path
+             AND n.repo_id IS c.repo_id
             WHERE n.source_location IS NOT NULL
             """
         ).fetchall()
@@ -1778,12 +1799,30 @@ class Storage:
 
     # ----- reads -----
 
-    def search_dense(self, query_vec: list[float], k: int = 10) -> list[SearchHit]:
+    def search_dense(
+        self,
+        query_vec: list[float],
+        k: int = 10,
+        *,
+        repo_id: int | None = None,
+    ) -> list[SearchHit]:
         """Top-k dense nearest neighbors."""
         if len(query_vec) != self._dim:
             raise StorageError(
                 f"Query embedding dim {len(query_vec)} != index dim {self._dim}"
             )
+        candidate_k = k
+        repo_clause = ""
+        params: list[Any] = [_serialize_vector(query_vec)]
+        if repo_id is not None:
+            candidate_k = int(self._conn.execute("SELECT COUNT(*) FROM vec_chunks").fetchone()[0])
+            if candidate_k == 0:
+                return []
+            repo_clause = "AND c.repo_id = ?"
+        params.append(candidate_k)
+        if repo_id is not None:
+            params.append(repo_id)
+        params.append(k)
         rows = self._conn.execute(
             f"""
             SELECT
@@ -1793,9 +1832,11 @@ class Storage:
             JOIN chunks c ON c.id = v.rowid
             LEFT JOIN repos r ON r.id = c.repo_id
             WHERE v.embedding MATCH ? AND k = ?
+              {repo_clause}
             ORDER BY v.distance
+            LIMIT ?
             """,
-            (_serialize_vector(query_vec), k),
+            params,
         ).fetchall()
         hits: list[SearchHit] = []
         for rank, row in enumerate(rows, start=1):
@@ -1819,11 +1860,22 @@ class Storage:
             )
         return hits
 
-    def search_bm25(self, query: str, k: int = 50) -> list[SearchHit]:
+    def search_bm25(
+        self,
+        query: str,
+        k: int = 50,
+        *,
+        repo_id: int | None = None,
+    ) -> list[SearchHit]:
         """Top-k via FTS5 BM25 ranking. Returns [] for empty/sanitized queries."""
         match_expr = _sanitize_fts_query(query)
         if not match_expr:
             return []
+        repo_clause = "AND c.repo_id = ?" if repo_id is not None else ""
+        params: list[Any] = [match_expr]
+        if repo_id is not None:
+            params.append(repo_id)
+        params.append(k)
         try:
             rows = self._conn.execute(
                 f"""
@@ -1834,10 +1886,11 @@ class Storage:
                 JOIN chunks c ON c.id = fts_chunks.rowid
                 LEFT JOIN repos r ON r.id = c.repo_id
                 WHERE fts_chunks MATCH ?
+                  {repo_clause}
                 ORDER BY score
                 LIMIT ?
                 """,
-                (match_expr, k),
+                params,
             ).fetchall()
         except sqlite3.OperationalError as exc:
             log.warning("storage.fts_query_failed", query=query, error=str(exc))
@@ -1865,7 +1918,13 @@ class Storage:
             )
         return hits
 
-    def search_symbol_tokens(self, query: str, k: int = 20) -> list[SearchHit]:
+    def search_symbol_tokens(
+        self,
+        query: str,
+        k: int = 20,
+        *,
+        repo_id: int | None = None,
+    ) -> list[SearchHit]:
         """Match chunks whose `symbol` column contains identifier tokens from query.
 
         Used as a third stream in hybrid search (spec §6.3.5 — query routing).
@@ -1884,7 +1943,11 @@ class Storage:
             "(CASE WHEN symbol LIKE ? COLLATE NOCASE THEN 1 ELSE 0 END)"
             for _ in tokens
         )
-        params = params + [f"%{t}%" for t in tokens] + [k]
+        params = params + [f"%{t}%" for t in tokens]
+        repo_clause = "AND c.repo_id = ?" if repo_id is not None else ""
+        if repo_id is not None:
+            params.append(repo_id)
+        params.append(k)
         rows = self._conn.execute(
             f"""
             SELECT {_REPO_JOIN_COLUMNS},
@@ -1893,6 +1956,7 @@ class Storage:
             LEFT JOIN repos r ON r.id = c.repo_id
             WHERE ({like_clauses.replace("symbol", "c.symbol")})
               AND c.symbol IS NOT NULL
+              {repo_clause}
             ORDER BY match_count DESC, LENGTH(c.symbol) ASC
             LIMIT ?
             """,
@@ -2573,19 +2637,32 @@ class Storage:
             repo=_repo_from_row(row),
         )
 
-    def lookup_by_symbol(self, symbol: str, limit: int = 10) -> list[SearchHit]:
+    def lookup_by_symbol(
+        self,
+        symbol: str,
+        limit: int = 10,
+        *,
+        repo_id: int | None = None,
+    ) -> list[SearchHit]:
         """Exact + suffix match on symbol column. Used by `get_symbol`.
 
         Matches `Foo.bar`, `bar` (suffix), and case-insensitively as fallback.
         """
+        repo_clause = "AND c.repo_id = ?" if repo_id is not None else ""
+        params: list[Any] = [symbol, f"%.{symbol}", f"%{symbol}%"]
+        if repo_id is not None:
+            params.append(repo_id)
+        params.extend([symbol, f"%.{symbol}", limit])
         rows = self._conn.execute(
             f"""
             SELECT {_REPO_JOIN_COLUMNS}
             FROM chunks c
             LEFT JOIN repos r ON r.id = c.repo_id
-            WHERE c.symbol = ?
+            WHERE (c.symbol = ?
                OR c.symbol LIKE ? COLLATE NOCASE
                OR c.symbol LIKE ? COLLATE NOCASE
+            )
+              {repo_clause}
             ORDER BY
                 CASE WHEN c.symbol = ? THEN 0
                      WHEN c.symbol LIKE ? COLLATE NOCASE THEN 1
@@ -2593,7 +2670,7 @@ class Storage:
                 LENGTH(c.symbol)
             LIMIT ?
             """,
-            (symbol, f"%.{symbol}", f"%{symbol}%", symbol, f"%.{symbol}", limit),
+            params,
         ).fetchall()
         return [
             SearchHit(
@@ -2612,16 +2689,24 @@ class Storage:
             for rank, row in enumerate(rows, start=1)
         ]
 
-    def file_outline(self, rel_path: str) -> list[dict[str, Any]]:
+    def file_outline(
+        self,
+        rel_path: str,
+        *,
+        repo_id: int | None = None,
+    ) -> list[dict[str, Any]]:
         """Symbolic outline of a file (chunks sorted by start_line)."""
+        repo_clause = "AND repo_id = ?" if repo_id is not None else ""
+        params: tuple[Any, ...] = (rel_path, repo_id) if repo_id is not None else (rel_path,)
         rows = self._conn.execute(
-            """
+            f"""
             SELECT chunk_id, kind, symbol, parent_chunk_id, start_line, end_line
             FROM chunks
             WHERE rel_path = ?
+              {repo_clause}
             ORDER BY start_line
             """,
-            (rel_path,),
+            params,
         ).fetchall()
         return [dict(row) for row in rows]
 

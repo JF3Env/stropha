@@ -93,6 +93,7 @@ def plan_investigation(
     include_callers: bool = True,
     include_tests: bool = True,
     include_rationale: bool = True,
+    repo_id: int | None = None,
 ) -> InvestigationPlan:
     """Build an ordered :class:`InvestigationPlan` for ``task``.
 
@@ -105,6 +106,8 @@ def plan_investigation(
         include_callers / include_tests / include_rationale:
             disable each step family individually when the agent
             already has that context.
+        repo_id: optional repository scope for semantic and graph checks.
+            ``None`` intentionally searches across repositories.
 
     Returns:
         :class:`InvestigationPlan`. Empty ``steps`` when the
@@ -113,7 +116,11 @@ def plan_investigation(
         indexed.
     """
     notes: list[str] = []
-    primary_hits = search_engine.search(task, top_k=top_k)
+    search_kwargs: dict[str, Any] = {"top_k": top_k}
+    if repo_id is not None:
+        search_kwargs["repo_id"] = repo_id
+    primary_hits = search_engine.search(task, **search_kwargs)
+    broad_args = {"include_other_repos": True} if repo_id is None else {}
 
     # Step 1: the scoping search, suggested to the agent so they
     # can re-execute it themselves (the planner already ran it,
@@ -126,7 +133,7 @@ def plan_investigation(
                 "Identify primary entry points for the task. "
                 "Anchors the rest of the plan."
             ),
-            args={"query": task, "top_k": top_k},
+            args={"query": task, "top_k": top_k, **broad_args},
         )
     ]
     primary_symbols: list[str] = []
@@ -148,7 +155,7 @@ def plan_investigation(
                         f"Discover what depends on '{sym}'. "
                         "Surfaces usage patterns + integration points."
                     ),
-                    args={"symbol": sym},
+                    args={"symbol": sym, **broad_args},
                 )
             )
             next_order += 1
@@ -168,7 +175,7 @@ def plan_investigation(
                         f"Establish the contract for '{sym}' — "
                         "tests are the executable specification."
                     ),
-                    args={"symbol": sym},
+                    args={"symbol": sym, **broad_args},
                 )
             )
             next_order += 1
@@ -180,7 +187,10 @@ def plan_investigation(
             try:
                 from .graph import graph_loaded
 
-                graph_ok = bool(graph_loaded(storage))
+                if repo_id is None:
+                    graph_ok = bool(graph_loaded(storage))
+                else:
+                    graph_ok = bool(graph_loaded(storage, repo_id=repo_id))
             except Exception:
                 graph_ok = False
         if not graph_ok:
@@ -198,7 +208,7 @@ def plan_investigation(
                             f"Capture WHY '{sym}' is shaped this way "
                             "(ADRs / design docs / rationale edges)."
                         ),
-                        args={"symbol": sym},
+                        args={"symbol": sym, **broad_args},
                     )
                 )
                 next_order += 1

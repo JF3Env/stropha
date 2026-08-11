@@ -105,7 +105,7 @@ class GraphEdge:
 # --------------------------------------------------------------------- helpers
 
 
-def graph_loaded(storage: Storage) -> bool:
+def graph_loaded(storage: Storage, *, repo_id: int | None = None) -> bool:
     """True iff the graphify mirror tables exist AND have data.
 
     Used by ``server.py`` to gate tool registration: ``find_*`` tools never
@@ -116,17 +116,29 @@ def graph_loaded(storage: Storage) -> bool:
         # mode (``last_loaded_at:{repo_id}``) and the bare key in single-repo
         # mode, so accept either — otherwise a multi-repo index would report
         # "no graph" despite a fully populated mirror.
-        row = storage._conn.execute(
-            "SELECT 1 FROM graph_meta WHERE key = ? OR key LIKE ? LIMIT 1",
-            ("last_loaded_at", "last_loaded_at:%"),
-        ).fetchone()
+        if repo_id is None:
+            row = storage._conn.execute(
+                "SELECT 1 FROM graph_meta WHERE key = ? OR key LIKE ? LIMIT 1",
+                ("last_loaded_at", "last_loaded_at:%"),
+            ).fetchone()
+        else:
+            row = storage._conn.execute(
+                "SELECT 1 FROM graph_meta WHERE key = ? LIMIT 1",
+                (f"last_loaded_at:{repo_id}",),
+            ).fetchone()
     except sqlite3.OperationalError:
         return False
     if row is None:
         return False
-    n = storage._conn.execute(
-        "SELECT COUNT(*) AS n FROM graph_nodes"
-    ).fetchone()["n"]
+    if repo_id is None:
+        n = storage._conn.execute(
+            "SELECT COUNT(*) AS n FROM graph_nodes"
+        ).fetchone()["n"]
+    else:
+        n = storage._conn.execute(
+            "SELECT COUNT(*) AS n FROM graph_nodes WHERE repo_id = ?",
+            (repo_id,),
+        ).fetchone()["n"]
     return int(n) > 0
 
 
@@ -146,7 +158,9 @@ def _parse_location_to_line(loc: str | None) -> int | None:
         return None
 
 
-def resolve_symbol_to_node(storage: Storage, symbol: str) -> str | None:
+def resolve_symbol_to_node(
+    storage: Storage, symbol: str, *, repo_id: int | None = None,
+) -> str | None:
     """Find the most likely ``node_id`` for a fully-qualified symbol.
 
     Strategy (cheapest → most permissive):
@@ -158,23 +172,28 @@ def resolve_symbol_to_node(storage: Storage, symbol: str) -> str | None:
     if not symbol:
         return None
     cur = storage._conn.cursor()
+    repo_clause = " AND repo_id = ?" if repo_id is not None else ""
+    repo_args: tuple[int, ...] = (repo_id,) if repo_id is not None else ()
     # 1: exact
     row = cur.execute(
-        "SELECT node_id FROM graph_nodes WHERE label = ? LIMIT 1", (symbol,)
+        f"SELECT node_id FROM graph_nodes WHERE label = ?{repo_clause} LIMIT 1",
+        (symbol, *repo_args),
     ).fetchone()
     if row:
         return row["node_id"]
     # 2: dotted suffix (Class.method or module.Class)
     row = cur.execute(
-        "SELECT node_id FROM graph_nodes WHERE label LIKE ? ORDER BY LENGTH(label) DESC LIMIT 1",
-        (f"%.{symbol}",),
+        f"SELECT node_id FROM graph_nodes WHERE label LIKE ?{repo_clause} "
+        "ORDER BY LENGTH(label) DESC LIMIT 1",
+        (f"%.{symbol}", *repo_args),
     ).fetchone()
     if row:
         return row["node_id"]
     # 3: substring fallback
     row = cur.execute(
-        "SELECT node_id FROM graph_nodes WHERE label LIKE ? ORDER BY LENGTH(label) ASC LIMIT 1",
-        (f"%{symbol}%",),
+        f"SELECT node_id FROM graph_nodes WHERE label LIKE ?{repo_clause} "
+        "ORDER BY LENGTH(label) ASC LIMIT 1",
+        (f"%{symbol}%", *repo_args),
     ).fetchone()
     if row:
         return row["node_id"]
@@ -244,13 +263,20 @@ def _hydrate_node(storage: Storage, row: sqlite3.Row) -> GraphNode:
     )
 
 
-def _fetch_node_rows(storage: Storage, node_ids: Sequence[str]) -> dict[str, sqlite3.Row]:
+def _fetch_node_rows(
+    storage: Storage,
+    node_ids: Sequence[str],
+    *,
+    repo_id: int | None = None,
+) -> dict[str, sqlite3.Row]:
     if not node_ids:
         return {}
     placeholders = ",".join("?" * len(node_ids))
+    repo_clause = " AND repo_id = ?" if repo_id is not None else ""
+    repo_args: tuple[int, ...] = (repo_id,) if repo_id is not None else ()
     rows = storage._conn.execute(
-        f"SELECT * FROM graph_nodes WHERE node_id IN ({placeholders})",
-        tuple(node_ids),
+        f"SELECT * FROM graph_nodes WHERE node_id IN ({placeholders}){repo_clause}",
+        (*node_ids, *repo_args),
     ).fetchall()
     return {r["node_id"]: r for r in rows}
 
@@ -265,12 +291,13 @@ def find_callers(
     depth: int = 1,
     limit: int = 20,
     confidence: tuple[str, ...] = ("EXTRACTED",),
+    repo_id: int | None = None,
 ) -> dict[str, Any]:
     """Return code locations that call ``symbol`` (BFS up incoming ``calls`` edges)."""
     depth = max(1, min(depth, 3))
     limit = max(1, min(limit, 100))
 
-    target_id = resolve_symbol_to_node(storage, symbol)
+    target_id = resolve_symbol_to_node(storage, symbol, repo_id=repo_id)
     if target_id is None:
         return {"symbol": symbol, "resolved_node": None, "callers": [], "edges": []}
 
@@ -279,6 +306,8 @@ def find_callers(
     found_ids: list[str] = []
     edges: list[GraphEdge] = []
     conf_placeholders = ",".join("?" * len(confidence))
+    repo_clause = " AND repo_id = ?" if repo_id is not None else ""
+    repo_args: tuple[int, ...] = (repo_id,) if repo_id is not None else ()
 
     for _ in range(depth):
         if not frontier or len(found_ids) >= limit:
@@ -291,8 +320,9 @@ def find_callers(
                 WHERE target IN ({f_placeholders})
                   AND relation = 'calls'
                   AND confidence IN ({conf_placeholders})
+                  {repo_clause}
                 LIMIT ?""",
-            (*frontier, *confidence, limit * 4),
+            (*frontier, *confidence, *repo_args, limit * 4),
         ).fetchall()
         new_frontier: list[str] = []
         for r in rows:
@@ -313,7 +343,7 @@ def find_callers(
                     break
         frontier = new_frontier
 
-    rows_by_id = _fetch_node_rows(storage, found_ids)
+    rows_by_id = _fetch_node_rows(storage, found_ids, repo_id=repo_id)
     callers = [_hydrate_node(storage, rows_by_id[nid]).as_dict()
                for nid in found_ids if nid in rows_by_id]
     return {
@@ -334,6 +364,7 @@ def find_related(
     limit: int = 20,
     relations: Sequence[str] | None = None,
     confidence: tuple[str, ...] = ("EXTRACTED",),
+    repo_id: int | None = None,
 ) -> dict[str, Any]:
     """Return any node connected to ``symbol`` regardless of edge direction.
 
@@ -343,7 +374,7 @@ def find_related(
     depth = max(1, min(depth, 3))
     limit = max(1, min(limit, 100))
 
-    src_id = resolve_symbol_to_node(storage, symbol)
+    src_id = resolve_symbol_to_node(storage, symbol, repo_id=repo_id)
     if src_id is None:
         return {"symbol": symbol, "resolved_node": None, "related": [], "edges": []}
 
@@ -352,6 +383,8 @@ def find_related(
     found_ids: list[str] = []
     edges: list[GraphEdge] = []
     conf_placeholders = ",".join("?" * len(confidence))
+    repo_clause = " AND repo_id = ?" if repo_id is not None else ""
+    repo_args: tuple[int, ...] = (repo_id,) if repo_id is not None else ()
     rel_clause = ""
     rel_args: tuple[str, ...] = ()
     if relations:
@@ -369,8 +402,9 @@ def find_related(
                 FROM graph_edges
                 WHERE (source IN ({f_placeholders}) OR target IN ({f_placeholders}))
                   AND confidence IN ({conf_placeholders}) {rel_clause}
+                  {repo_clause}
                 LIMIT ?""",
-            (*frontier, *frontier, *confidence, *rel_args, limit * 4),
+            (*frontier, *frontier, *confidence, *rel_args, *repo_args, limit * 4),
         ).fetchall()
         new_frontier: list[str] = []
         for r in rows:
@@ -394,7 +428,7 @@ def find_related(
                 break
         frontier = new_frontier
 
-    rows_by_id = _fetch_node_rows(storage, found_ids)
+    rows_by_id = _fetch_node_rows(storage, found_ids, repo_id=repo_id)
     related = [_hydrate_node(storage, rows_by_id[nid]).as_dict()
                for nid in found_ids if nid in rows_by_id]
     return {
@@ -413,6 +447,7 @@ def get_community(
     symbol_or_community_id: str | int,
     *,
     limit: int = 50,
+    repo_id: int | None = None,
 ) -> dict[str, Any]:
     """Return all members of the community containing ``symbol_or_community_id``."""
     limit = max(1, min(limit, 200))
@@ -423,12 +458,15 @@ def get_community(
         cid = symbol_or_community_id
     else:
         # Symbol → resolve → community
-        nid = resolve_symbol_to_node(storage, symbol_or_community_id)
+        nid = resolve_symbol_to_node(storage, symbol_or_community_id, repo_id=repo_id)
         if nid is None:
             return {"query": symbol_or_community_id, "community": None, "members": []}
+        repo_clause = " AND repo_id = ?" if repo_id is not None else ""
+        repo_args: tuple[int, ...] = (repo_id,) if repo_id is not None else ()
         row = cur.execute(
-            "SELECT community_id, community_label FROM graph_nodes WHERE node_id = ?",
-            (nid,),
+            f"SELECT community_id, community_label FROM graph_nodes "
+            f"WHERE node_id = ?{repo_clause}",
+            (nid, *repo_args),
         ).fetchone()
         if row is None or row["community_id"] is None:
             return {
@@ -439,10 +477,12 @@ def get_community(
             }
         cid = row["community_id"]
 
+    repo_clause = " AND repo_id = ?" if repo_id is not None else ""
+    repo_args = (repo_id,) if repo_id is not None else ()
     rows = cur.execute(
-        """SELECT * FROM graph_nodes
-           WHERE community_id = ? ORDER BY label LIMIT ?""",
-        (cid, limit),
+        f"SELECT * FROM graph_nodes WHERE community_id = ?{repo_clause} "
+        "ORDER BY label LIMIT ?",
+        (cid, *repo_args, limit),
     ).fetchall()
     if not rows:
         return {
@@ -465,6 +505,7 @@ def find_rationale(
     symbol: str,
     *,
     limit: int = 10,
+    repo_id: int | None = None,
 ) -> dict[str, Any]:
     """Return ``rationale``-style nodes that explain ``symbol``.
 
@@ -472,18 +513,21 @@ def find_rationale(
     surfaced nodes are typically docs / ADRs / design comments.
     """
     limit = max(1, min(limit, 50))
-    target_id = resolve_symbol_to_node(storage, symbol)
+    target_id = resolve_symbol_to_node(storage, symbol, repo_id=repo_id)
     if target_id is None:
         return {"symbol": symbol, "resolved_node": None, "rationale": []}
 
+    repo_clause = " AND e.repo_id = ? AND n.repo_id = ?" if repo_id is not None else ""
+    repo_args: tuple[int, ...] = (repo_id, repo_id) if repo_id is not None else ()
     rows = storage._conn.execute(
-        """SELECT n.*, e.confidence, e.confidence_score, e.source_file AS edge_source_file,
+        f"""SELECT n.*, e.confidence, e.confidence_score, e.source_file AS edge_source_file,
                   e.source_location AS edge_source_location
            FROM graph_edges e
            JOIN graph_nodes n ON n.node_id = e.source
            WHERE e.target = ? AND e.relation = 'rationale_for'
+             {repo_clause}
            ORDER BY COALESCE(e.confidence_score, 0) DESC LIMIT ?""",
-        (target_id, limit),
+        (target_id, *repo_args, limit),
     ).fetchall()
     if not rows:
         return {"symbol": symbol, "resolved_node": target_id, "rationale": []}
@@ -512,6 +556,7 @@ def find_tests_for(
     limit: int = 20,
     confidence: tuple[str, ...] = ("EXTRACTED",),
     test_path_patterns: tuple[str, ...] = ("test_", "_test", "/tests/", "/test/", ".spec.", ".test."),
+    repo_id: int | None = None,
 ) -> dict[str, Any]:
     """Return test code that exercises ``symbol``.
 
@@ -531,7 +576,7 @@ def find_tests_for(
     Override ``test_path_patterns`` to suit a project's layout.
     """
     limit = max(1, min(limit, 100))
-    target_id = resolve_symbol_to_node(storage, symbol)
+    target_id = resolve_symbol_to_node(storage, symbol, repo_id=repo_id)
     if target_id is None:
         return {"symbol": symbol, "resolved_node": None, "tests": []}
 
@@ -539,6 +584,8 @@ def find_tests_for(
     # We accept any edge type that signals "this node touches the target".
     rel_set = ("calls", "references", "implements", "tests")
     rel_placeholders = ",".join("?" * len(rel_set))
+    repo_clause = " AND e.repo_id = ? AND n.repo_id = ?" if repo_id is not None else ""
+    repo_args: tuple[int, ...] = (repo_id, repo_id) if repo_id is not None else ()
 
     rows = storage._conn.execute(
         f"""SELECT n.*, e.relation, e.confidence, e.confidence_score
@@ -547,9 +594,10 @@ def find_tests_for(
             WHERE e.target = ?
               AND e.relation IN ({rel_placeholders})
               AND e.confidence IN ({conf_placeholders})
+              {repo_clause}
             ORDER BY COALESCE(e.confidence_score, 0) DESC
             LIMIT ?""",
-        (target_id, *rel_set, *confidence, limit * 4),
+        (target_id, *rel_set, *confidence, *repo_args, limit * 4),
     ).fetchall()
 
     tests: list[dict[str, Any]] = []
@@ -581,14 +629,18 @@ def find_tests_for(
     }
 
 
-def has_rationale_edges(storage: Storage) -> bool:
+def has_rationale_edges(storage: Storage, *, repo_id: int | None = None) -> bool:
     """True iff at least one ``rationale_for`` edge exists.
 
     Used to conditionally register the ``find_rationale`` tool — RFC §2.2 OBJ-6.
     """
     try:
+        repo_clause = " AND repo_id = ?" if repo_id is not None else ""
+        repo_args: tuple[int, ...] = (repo_id,) if repo_id is not None else ()
         row = storage._conn.execute(
-            "SELECT 1 FROM graph_edges WHERE relation = 'rationale_for' LIMIT 1"
+            f"SELECT 1 FROM graph_edges WHERE relation = 'rationale_for'"
+            f"{repo_clause} LIMIT 1",
+            repo_args,
         ).fetchone()
     except sqlite3.OperationalError:
         return False
@@ -605,6 +657,7 @@ def trace_feature(
     max_paths: int = 5,
     max_depth: int = 6,
     confidence: tuple[str, ...] = ("EXTRACTED",),
+    repo_id: int | None = None,
 ) -> dict[str, Any]:
     """Trace a feature description through the call graph.
 
@@ -641,8 +694,11 @@ def trace_feature(
 
     # Pull a manageable candidate pool — graph_nodes is small enough to
     # scan in Python for non-trivial scoring.
+    repo_clause = " AND repo_id = ?" if repo_id is not None else ""
+    repo_args: tuple[int, ...] = (repo_id,) if repo_id is not None else ()
     rows = cur.execute(
-        "SELECT * FROM graph_nodes WHERE label IS NOT NULL"
+        f"SELECT * FROM graph_nodes WHERE label IS NOT NULL{repo_clause}",
+        repo_args,
     ).fetchall()
 
     def score(label: str) -> int:
@@ -659,6 +715,7 @@ def trace_feature(
 
     # 2. DFS each entry point along outbound `calls` edges.
     conf_placeholders = ",".join("?" * len(confidence))
+    edge_repo_clause = " AND repo_id = ?" if repo_id is not None else ""
     paths: list[dict[str, Any]] = []
     all_node_ids: set[str] = set()
     for entry in entry_rows:
@@ -675,8 +732,9 @@ def trace_feature(
                 f"""SELECT target FROM graph_edges
                     WHERE source = ? AND relation = 'calls'
                       AND confidence IN ({conf_placeholders})
+                      {edge_repo_clause}
                     LIMIT 8""",
-                (node_id, *confidence),
+                (node_id, *confidence, *repo_args),
             ).fetchall()
             for er in edges:
                 tgt = er["target"]
@@ -685,7 +743,8 @@ def trace_feature(
                 visited.add(tgt)
                 all_node_ids.add(tgt)
                 tgt_row = cur.execute(
-                    "SELECT * FROM graph_nodes WHERE node_id = ?", (tgt,)
+                    f"SELECT * FROM graph_nodes WHERE node_id = ?{repo_clause}",
+                    (tgt, *repo_args),
                 ).fetchone()
                 if tgt_row is None:
                     continue
@@ -708,11 +767,13 @@ def trace_feature(
         "paths": paths,
         "nodes": [
             _hydrate_node(storage, cur.execute(
-                "SELECT * FROM graph_nodes WHERE node_id = ?", (nid,)
+                f"SELECT * FROM graph_nodes WHERE node_id = ?{repo_clause}",
+                (nid, *repo_args),
             ).fetchone()).as_dict()
             for nid in sorted(all_node_ids)
             if cur.execute(
-                "SELECT 1 FROM graph_nodes WHERE node_id = ? LIMIT 1", (nid,)
+                f"SELECT 1 FROM graph_nodes WHERE node_id = ?{repo_clause} LIMIT 1",
+                (nid, *repo_args),
             ).fetchone()
         ],
         "provenance": "graphify-out/graph.json (calls edges, conf={})".format(

@@ -122,13 +122,23 @@ class GraphVecStream:
             message=f"graph-vec ready ({n} embedded nodes, min_sim={self._config.min_similarity})",
         )
 
-    def search(self, query: str, query_vec: list[float] | None) -> list[SearchHit]:
+    def search(
+        self,
+        query: str,
+        query_vec: list[float] | None,
+        *,
+        repo_id: int | None = None,
+    ) -> list[SearchHit]:
         if query_vec is None:
             return []
+        repo_clause = "AND repo_id = ?" if repo_id is not None else ""
+        params = (repo_id,) if repo_id is not None else ()
         rows = self._storage._conn.execute(
-            """SELECT node_id, label, source_file, source_location,
-                      community_label, embedding
-               FROM graph_nodes WHERE embedding IS NOT NULL"""
+            f"""SELECT node_id, label, source_file, source_location,
+                       community_label, embedding, repo_id
+                FROM graph_nodes
+                WHERE embedding IS NOT NULL {repo_clause}""",
+            params,
         ).fetchall()
         if not rows:
             return []
@@ -157,25 +167,35 @@ class GraphVecStream:
         if not rel_path:
             return None
         line = self._location_to_line(node.get("source_location"))
+        repo_id = node.get("repo_id")
+        repo_clause = "AND c.repo_id = ?" if repo_id is not None else ""
         cur = self._storage._conn.cursor()
         chunk = None
         if line is not None:
+            params: tuple[object, ...] = (rel_path, line, line)
+            if repo_id is not None:
+                params += (repo_id,)
             chunk = cur.execute(
-                """SELECT c.*, r.normalized_key, r.remote_url, r.default_branch,
-                          r.head_commit
+                f"""SELECT c.*, r.normalized_key, r.remote_url, r.default_branch,
+                           r.head_commit
                    FROM chunks c LEFT JOIN repos r ON c.repo_id = r.id
                    WHERE c.rel_path = ?
                      AND c.start_line <= ? AND c.end_line >= ?
+                     {repo_clause}
                    ORDER BY (c.end_line - c.start_line) ASC LIMIT 1""",
-                (rel_path, line, line),
+                params,
             ).fetchone()
         if chunk is None:
+            params = (rel_path,)
+            if repo_id is not None:
+                params += (repo_id,)
             chunk = cur.execute(
-                """SELECT c.*, r.normalized_key, r.remote_url, r.root_path,
-                          r.default_branch, r.head_commit
+                f"""SELECT c.*, r.normalized_key, r.remote_url, r.root_path,
+                           r.default_branch, r.head_commit
                    FROM chunks c LEFT JOIN repos r ON c.repo_id = r.id
-                   WHERE c.rel_path = ? ORDER BY c.start_line ASC LIMIT 1""",
-                (rel_path,),
+                   WHERE c.rel_path = ? {repo_clause}
+                   ORDER BY c.start_line ASC LIMIT 1""",
+                params,
             ).fetchone()
         if chunk is None:
             return None

@@ -11,6 +11,7 @@ Covers:
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import MagicMock
 
 from stropha.models import SearchHit
@@ -45,6 +46,7 @@ def _make_app(canned_hits: list[SearchHit]) -> MagicMock:
     app.session_id = "test-session"
     app.seen_chunk_ids = set()
     app.pinned_chunk_ids = set()
+    app.config.target_repo = Path.cwd()
     app.search_engine.search.return_value = canned_hits
     app.storage.compute_facets.return_value = {
         "language": {}, "kind": {}, "repo": {},
@@ -52,6 +54,11 @@ def _make_app(canned_hits: list[SearchHit]) -> MagicMock:
     # Default: storage.lookup_by_chunk_id returns None for unknown ids;
     # tests that pin specific ids override this.
     app.storage.lookup_by_chunk_id.return_value = None
+    app.storage.lookup_repo_id.return_value = 1
+    app.storage.get_chunk_by_id.side_effect = lambda chunk_id: {
+        "chunk_id": chunk_id,
+        "repo_id": 1,
+    }
     return app
 
 
@@ -213,6 +220,35 @@ class TestPinTools:
         assert app.pinned_chunk_ids == {"a"}
         assert result.added == 0
 
+    def test_pin_chunks_rejects_foreign_ids_unless_broad(self) -> None:
+        from stropha.server import pin_chunks
+
+        app = _make_app([])
+        app.pinned_chunk_ids = {"foreign"}
+        app.storage.get_chunk_by_id.side_effect = lambda cid: {
+            "chunk_id": cid,
+            "repo_id": 1 if cid == "local" else 2,
+        }
+
+        scoped = pin_chunks(["local", "foreign"], ctx=_make_ctx(app))
+        broad = pin_chunks(
+            ["foreign"], include_other_repos=True, ctx=_make_ctx(app)
+        )
+
+        assert scoped.pinned == ["local"]
+        assert broad.pinned == ["foreign", "local"]
+
+    def test_pin_chunks_fails_closed_when_repo_is_unresolved(self) -> None:
+        from stropha.server import pin_chunks
+
+        app = _make_app([])
+        app.storage.lookup_repo_id.return_value = None
+
+        result = pin_chunks(["foreign"], ctx=_make_ctx(app))
+
+        assert result.pinned == []
+        assert app.pinned_chunk_ids == set()
+
     def test_unpin_chunks_removes_from_set(self) -> None:
         from stropha.server import unpin_chunks
 
@@ -270,6 +306,32 @@ class TestListPins:
         assert result.missing_count == 1
         assert result.entries[0].found is False
         assert result.entries[0].result is None
+
+    def test_foreign_pin_is_filtered(self) -> None:
+        from stropha.server import list_pins
+
+        app = _make_app([])
+        app.pinned_chunk_ids = {"local", "foreign"}
+        app.storage.get_chunk_by_id.side_effect = lambda cid: {
+            "chunk_id": cid,
+            "repo_id": 1 if cid == "local" else 2,
+        }
+        app.storage.lookup_by_chunk_id.side_effect = lambda cid: _hit(cid)
+
+        result = list_pins(ctx=_make_ctx(app))
+
+        assert [entry.chunk_id for entry in result.entries] == ["local"]
+
+    def test_list_pins_fails_closed_when_repo_is_unresolved(self) -> None:
+        from stropha.server import list_pins
+
+        app = _make_app([])
+        app.pinned_chunk_ids = {"foreign"}
+        app.storage.lookup_repo_id.return_value = None
+
+        result = list_pins(ctx=_make_ctx(app))
+
+        assert result.entries == []
 
 
 # ---------------------------------------------------------------------------

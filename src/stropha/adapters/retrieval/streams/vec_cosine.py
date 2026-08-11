@@ -48,7 +48,15 @@ class VecCosineStream:
     def k(self) -> int:
         return self._config.k
 
-    def search(self, query: str, query_vec: list[float] | None) -> list[SearchHit]:
+    def search(
+        self,
+        query: str,
+        query_vec: list[float] | None,
+        *,
+        repo_id: int | None = None,
+    ) -> list[SearchHit]:
         if query_vec is None:
             return []
-        return self._storage.search_dense(query_vec, k=self._config.k)
+        if repo_id is None:
+            return self._storage.search_dense(query_vec, k=self._config.k)
+        return self._storage.search_dense(query_vec, k=self._config.k, repo_id=repo_id)

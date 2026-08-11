@@ -1,0 +1,1131 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>stropha // local intelligence</title>
+  <style>
+    :root {
+      --ink: #090c0c;
+      --panel: #101515;
+      --panel-2: #151b1a;
+      --line: #293230;
+      --line-hot: #485a47;
+      --text: #e8eee9;
+      --muted: #87938d;
+      --acid: #c9ff63;
+      --acid-dim: #26351d;
+      --amber: #f2b84b;
+      --red: #ff6b62;
+      --blue: #88c8ff;
+      --mono: "SFMono-Regular", "Cascadia Code", "Roboto Mono", monospace;
+      --sans: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      overflow: hidden;
+      color: var(--text);
+      background: var(--ink);
+      font: 14px/1.5 var(--sans);
+    }
+    button, input, select, textarea { font: inherit; }
+    button { color: inherit; }
+    ::selection { color: var(--ink); background: var(--acid); }
+    .app {
+      min-height: 100%;
+      height: 100vh;
+      display: grid;
+      grid-template-columns: 72px minmax(0, 1fr);
+    }
+    .rail {
+      border-right: 1px solid var(--line);
+      background: #0c1010;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 18px 10px;
+      gap: 10px;
+      z-index: 5;
+    }
+    .mark {
+      width: 42px;
+      height: 42px;
+      display: grid;
+      place-items: center;
+      margin-bottom: 20px;
+      color: var(--acid);
+      border: 1px solid var(--acid);
+      font: 700 19px/1 var(--mono);
+      box-shadow: 4px 4px 0 var(--acid-dim);
+    }
+    .rail-button {
+      width: 46px;
+      height: 46px;
+      display: grid;
+      place-items: center;
+      border: 1px solid transparent;
+      background: transparent;
+      cursor: pointer;
+      color: var(--muted);
+    }
+    .rail-button:hover { color: var(--text); border-color: var(--line); }
+    .rail-button.active { color: var(--acid); background: var(--acid-dim); border-color: var(--line-hot); }
+    .rail-button svg { width: 19px; height: 19px; }
+    .rail-spacer { flex: 1; }
+    .health-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); }
+    .health-dot.ok { background: var(--acid); box-shadow: 0 0 12px #c9ff6370; }
+    .health-dot.bad { background: var(--red); }
+    .workspace { min-width: 0; height: 100vh; position: relative; }
+    .view { height: 100%; display: none; }
+    .view.active { display: grid; }
+    #chat-view { grid-template-rows: 64px minmax(0, 1fr); }
+    .topbar {
+      min-width: 0;
+      padding: 0 24px;
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      border-bottom: 1px solid var(--line);
+      background: #0d1111e8;
+    }
+    .brand { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+    .brand strong { font: 700 14px/1 var(--mono); letter-spacing: .13em; }
+    .brand span { color: var(--muted); font: 11px/1 var(--mono); white-space: nowrap; }
+    .topbar-spacer { flex: 1; }
+    .status-chip {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--muted);
+      font: 11px/1 var(--mono);
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+    .status-chip b { color: var(--text); font-weight: 500; }
+    .status-chip .health-dot { width: 7px; height: 7px; }
+    .ghost-button, .acid-button {
+      border: 1px solid var(--line);
+      background: transparent;
+      min-height: 36px;
+      padding: 0 13px;
+      cursor: pointer;
+      font: 600 11px/1 var(--mono);
+      letter-spacing: .04em;
+      text-transform: uppercase;
+    }
+    .ghost-button:hover { border-color: var(--muted); background: var(--panel-2); }
+    .acid-button { color: var(--ink); background: var(--acid); border-color: var(--acid); }
+    .acid-button:hover { background: #d8ff8d; }
+    .acid-button:disabled, .ghost-button:disabled { opacity: .45; cursor: default; }
+    .chat-grid { min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 310px; }
+    .chat-stage { min-width: 0; min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr) auto; }
+    .transcript {
+      min-height: 0;
+      overflow-y: auto;
+      scroll-behavior: smooth;
+      padding: 44px max(28px, calc((100% - 850px) / 2)) 24px;
+    }
+    .empty-state { max-width: 790px; margin: 8vh auto 0; }
+    .eyebrow { color: var(--acid); font: 600 11px/1 var(--mono); letter-spacing: .16em; text-transform: uppercase; }
+    .empty-state h1 {
+      max-width: 680px;
+      margin: 17px 0 14px;
+      font-size: clamp(34px, 5vw, 62px);
+      line-height: .98;
+      letter-spacing: -.055em;
+      font-weight: 590;
+    }
+    .empty-state p { color: var(--muted); max-width: 570px; font-size: 15px; }
+    .starter-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 38px; }
+    .starter {
+      min-height: 96px;
+      text-align: left;
+      border: 1px solid var(--line);
+      background: var(--panel);
+      color: var(--text);
+      padding: 16px;
+      cursor: pointer;
+    }
+    .starter:hover { border-color: var(--line-hot); transform: translateY(-1px); }
+    .starter small { display: block; color: var(--acid); font: 10px var(--mono); margin-bottom: 10px; }
+    .message { max-width: 850px; margin: 0 auto 32px; }
+    .message-head { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; color: var(--muted); font: 10px var(--mono); text-transform: uppercase; }
+    .message-head .ordinal { color: var(--acid); }
+    .trace-link { border: 0; padding: 0; color: var(--blue); background: transparent; cursor: pointer; font: inherit; text-transform: uppercase; }
+    .trace-link:hover { color: var(--acid); }
+    .message.user .message-body {
+      margin-left: auto;
+      width: fit-content;
+      max-width: 82%;
+      background: #1b2322;
+      border: 1px solid #34403e;
+      padding: 12px 15px;
+      white-space: pre-wrap;
+    }
+    .message.assistant .message-body { font-size: 15px; line-height: 1.72; }
+    .message-body p { margin: 0 0 14px; }
+    .message-body p:last-child { margin-bottom: 0; }
+    .message-body code { font: 12px var(--mono); color: var(--acid); background: #151c18; padding: 2px 4px; }
+    .message-body pre { overflow-x: auto; border: 1px solid var(--line); background: #090d0c; padding: 15px; }
+    .message-body pre code { color: #d9e6dc; background: none; padding: 0; }
+    .inline-sources { display: flex; gap: 7px; flex-wrap: wrap; margin-top: 16px; }
+    .citation {
+      border: 1px solid var(--line);
+      background: var(--panel);
+      color: var(--muted);
+      padding: 6px 8px;
+      cursor: pointer;
+      font: 10px var(--mono);
+    }
+    .citation:hover { color: var(--acid); border-color: var(--line-hot); }
+    .thinking { display: flex; gap: 5px; padding: 12px 0; }
+    .thinking i { width: 6px; height: 6px; background: var(--acid); animation: pulse 1s infinite alternate; }
+    .thinking i:nth-child(2) { animation-delay: .2s; }
+    .thinking i:nth-child(3) { animation-delay: .4s; }
+    @keyframes pulse { to { opacity: .18; transform: translateY(-4px); } }
+    .composer-wrap { padding: 14px max(24px, calc((100% - 850px) / 2)) 22px; background: linear-gradient(transparent, var(--ink) 25%); }
+    .composer {
+      border: 1px solid #3d4946;
+      background: #121817;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: end;
+      box-shadow: 0 10px 40px #0008;
+    }
+    .composer:focus-within { border-color: var(--acid); }
+    .composer textarea {
+      resize: none;
+      min-height: 58px;
+      max-height: 180px;
+      border: 0;
+      outline: 0;
+      padding: 18px;
+      color: var(--text);
+      background: transparent;
+    }
+    .composer textarea::placeholder { color: #67716d; }
+    .send {
+      width: 42px;
+      height: 42px;
+      margin: 8px;
+      border: 0;
+      color: var(--ink);
+      background: var(--acid);
+      cursor: pointer;
+      font-size: 18px;
+    }
+    .send:disabled { opacity: .35; cursor: default; }
+    .composer-meta { display: flex; justify-content: space-between; margin-top: 7px; color: #64706a; font: 9px var(--mono); text-transform: uppercase; }
+    .evidence {
+      min-height: 0;
+      overflow-y: auto;
+      padding: 22px 18px;
+      border-left: 1px solid var(--line);
+      background: #0d1111;
+    }
+    .panel-title { display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; font: 600 10px var(--mono); letter-spacing: .13em; text-transform: uppercase; }
+    .panel-title span { color: var(--muted); }
+    .evidence-empty { margin-top: 70%; text-align: center; color: #5f6965; font: 11px/1.6 var(--mono); }
+    .source-card { border-top: 1px solid var(--line); padding: 14px 2px 16px; cursor: pointer; }
+    .source-card:hover .source-path { color: var(--acid); }
+    .source-rank { color: var(--acid); font: 10px var(--mono); }
+    .source-path { margin: 6px 0; font: 11px/1.4 var(--mono); overflow-wrap: anywhere; }
+    .source-meta { color: var(--muted); font: 9px var(--mono); }
+    .source-snippet { display: none; margin-top: 12px; white-space: pre-wrap; color: #a9b4ae; font: 10px/1.5 var(--mono); }
+    .source-card.open .source-snippet { display: block; }
+    #traces-view { grid-template-rows: 64px minmax(0, 1fr); }
+    .trace-grid { min-height: 0; display: grid; grid-template-columns: 320px minmax(0, 1fr); }
+    .trace-list { min-height: 0; overflow-y: auto; border-right: 1px solid var(--line); background: #0d1111; padding: 18px; }
+    .trace-list-empty { padding: 42px 14px; color: var(--muted); text-align: center; font: 11px/1.6 var(--mono); }
+    .trace-list-item { width: 100%; margin-bottom: 8px; padding: 14px; border: 1px solid var(--line); color: var(--text); background: var(--panel); cursor: pointer; text-align: left; }
+    .trace-list-item:hover, .trace-list-item.active { border-color: var(--line-hot); }
+    .trace-list-item.active { box-shadow: inset 3px 0 var(--acid); }
+    .trace-list-item strong { display: block; margin-bottom: 7px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 600 11px var(--mono); }
+    .trace-list-item span { color: var(--muted); font: 9px/1.5 var(--mono); text-transform: uppercase; }
+    .trace-detail { min-height: 0; overflow-y: auto; padding: 32px; }
+    .trace-detail-inner { max-width: 980px; margin: 0 auto 70px; }
+    .trace-heading { display: flex; justify-content: space-between; gap: 20px; align-items: end; margin-bottom: 24px; }
+    .trace-heading h1 { margin: 8px 0 0; font: 500 28px var(--mono); letter-spacing: -.04em; overflow-wrap: anywhere; }
+    .trace-time { color: var(--muted); font: 10px var(--mono); white-space: nowrap; }
+    .trace-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 9px; margin-bottom: 28px; }
+    .trace-metric { border: 1px solid var(--line); background: var(--panel); padding: 14px; }
+    .trace-metric span { display: block; color: var(--muted); font: 9px var(--mono); text-transform: uppercase; }
+    .trace-metric b { display: block; margin-top: 10px; color: var(--acid); font: 500 19px var(--mono); }
+    .trace-step { display: grid; grid-template-columns: 72px minmax(0, 1fr) auto; gap: 14px; padding: 17px 0; border-top: 1px solid var(--line); }
+    .trace-step-index { color: var(--acid); font: 10px var(--mono); }
+    .trace-step h3 { margin: 0; font: 600 12px var(--mono); }
+    .trace-step-meta { margin-top: 5px; color: var(--muted); font: 9px var(--mono); text-transform: uppercase; }
+    .trace-step-data { margin: 10px 0 0; padding: 10px; overflow-x: auto; color: #a9b4ae; background: #090d0c; font: 9px/1.5 var(--mono); white-space: pre-wrap; }
+    .trace-step-duration { color: var(--blue); font: 10px var(--mono); white-space: nowrap; }
+    #settings-view { grid-template-rows: 64px minmax(0, 1fr); }
+    .settings-scroll { overflow-y: auto; padding: 36px; }
+    .settings-inner { max-width: 1060px; margin: 0 auto 80px; }
+    .settings-intro { display: flex; justify-content: space-between; align-items: end; gap: 24px; margin-bottom: 32px; }
+    .settings-intro h1 { margin: 8px 0 0; font-size: 34px; letter-spacing: -.035em; }
+    .settings-tabs { display: flex; gap: 0; margin-bottom: 16px; overflow-x: auto; border-bottom: 1px solid var(--line); }
+    .settings-tab { min-width: 140px; padding: 14px 18px; border: 0; border-right: 1px solid var(--line); border-bottom: 2px solid transparent; color: var(--muted); background: #0d1111; cursor: pointer; font: 600 10px var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+    .settings-tab:hover { color: var(--text); background: var(--panel); }
+    .settings-tab.active { color: var(--acid); border-bottom-color: var(--acid); background: var(--panel); }
+    .tab-count { display: inline-grid; min-width: 18px; height: 18px; place-items: center; margin-left: 6px; padding: 0 4px; color: var(--ink); background: var(--acid); font: 700 9px var(--mono); }
+    .settings-context { margin: 0 0 20px; color: var(--muted); font-size: 12px; }
+    .save-state { min-height: 20px; color: var(--muted); font: 10px var(--mono); }
+    .save-state.error { color: var(--red); }
+    .save-state.good { color: var(--acid); }
+    .settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+    .config-card { border: 1px solid var(--line); background: var(--panel); padding: 22px; }
+    .config-card.wide { grid-column: 1 / -1; }
+    .config-card h2 { margin: 0 0 4px; font: 600 12px var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+    .config-card > p { margin: 0 0 22px; color: var(--muted); font-size: 12px; }
+    .field-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+    .config-groups { display: contents; }
+    .config-section { border-top: 1px solid var(--line); padding: 18px 0 4px; }
+    .config-section:first-child { border-top: 0; padding-top: 0; }
+    .config-section summary { cursor: pointer; list-style: none; display: flex; align-items: center; gap: 10px; }
+    .config-section summary::-webkit-details-marker { display: none; }
+    .config-section summary::before { content: "+"; color: var(--acid); font: 16px/1 var(--mono); }
+    .config-section[open] summary::before { content: "-"; }
+    .config-section summary strong { font: 600 11px var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+    .config-section summary span { color: var(--muted); font-size: 11px; }
+    .config-section .field-grid { margin-top: 18px; }
+    .inference-subsection { margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--line); }
+    .inference-subsection:first-of-type { margin-top: 16px; padding-top: 0; border-top: 0; }
+    .inference-subsection h3 { margin: 0 0 5px; color: var(--text); font: 600 10px var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+    .inference-subsection > p { margin: 0 0 14px; color: var(--muted); font-size: 10px; }
+    .provider-state { margin-top: 12px; padding: 10px 12px; border-left: 2px solid var(--acid); color: #a4aea9; background: #111817; font: 10px/1.5 var(--mono); }
+    .provider-state b { color: var(--acid); font-weight: 500; text-transform: uppercase; }
+    .inference-usage { margin-top: 12px; padding: 11px 12px; border: 1px solid var(--line-hot); background: #101714; }
+    .inference-usage-head { display: flex; justify-content: space-between; gap: 12px; color: var(--acid); font: 600 9px var(--mono); letter-spacing: .07em; text-transform: uppercase; }
+    .inference-usage-head span:last-child { color: var(--muted); font-weight: 400; }
+    .usage-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
+    .usage-chip { padding: 5px 7px; border: 1px solid var(--line); color: #b8c3bd; background: #0b1010; font: 9px/1.35 var(--mono); }
+    .usage-chip b { color: var(--blue); font-weight: 500; }
+    .config-field { min-width: 0; }
+    .config-field.full { grid-column: 1 / -1; }
+    .field-help { margin: 7px 0 0; color: #a4aea9; font: 10px/1.5 var(--sans); text-transform: none; letter-spacing: 0; }
+    .field-impact { margin-top: 8px; padding: 8px 10px; border-left: 2px solid var(--line-hot); background: #111817; color: var(--muted); font: 9px/1.55 var(--mono); text-transform: none; letter-spacing: 0; }
+    .field-impact b { color: var(--acid); font-weight: 500; }
+    .field-impact .off { color: var(--amber); }
+    .adapter-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    .adapter-card { border: 1px solid var(--line); background: #0b1010; padding: 15px; }
+    .adapter-card header { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+    .adapter-card h3 { margin: 0; font: 600 11px var(--mono); text-transform: uppercase; }
+    .adapter-card .adapter-impact { min-height: 48px; margin: 10px 0 14px; color: var(--muted); font-size: 10px; }
+    .adapter-fields { display: grid; gap: 12px; margin-top: 14px; }
+    .adapter-description { margin-top: 8px; color: #a4aea9; font-size: 10px; }
+    .config-json, .config-list { min-height: 92px; resize: vertical; font: 10px/1.45 var(--mono); }
+    .nested-adapter { padding-top: 14px; border-top: 1px solid var(--line); }
+    .nested-adapter .field-grid { margin-top: 14px; }
+    .choice-help { margin-top: 6px; color: var(--blue); font: 9px/1.45 var(--mono); text-transform: none; letter-spacing: 0; }
+    label { display: block; color: var(--muted); font: 10px var(--mono); letter-spacing: .05em; text-transform: uppercase; }
+    input, select, .json-editor {
+      width: 100%;
+      margin-top: 7px;
+      padding: 11px 12px;
+      border: 1px solid var(--line);
+      border-radius: 0;
+      outline: none;
+      color: var(--text);
+      background: #0b1010;
+    }
+    input:focus, select:focus, .json-editor:focus { border-color: var(--acid); }
+    .json-editor { min-height: 390px; resize: vertical; font: 11px/1.55 var(--mono); tab-size: 2; }
+    .metric-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    .metric { min-height: 84px; padding: 12px; border: 1px solid var(--line); background: #0b1010; }
+    .metric span { display: block; color: var(--muted); font: 9px var(--mono); text-transform: uppercase; }
+    .metric b { display: block; margin-top: 13px; font: 500 20px var(--mono); }
+    .endpoint { margin-top: 16px; color: var(--muted); font: 10px var(--mono); overflow-wrap: anywhere; }
+    .mobile-evidence { display: none; }
+    .toast { position: fixed; right: 24px; bottom: 24px; z-index: 20; max-width: 380px; padding: 12px 15px; color: var(--ink); background: var(--acid); font: 11px var(--mono); transform: translateY(90px); transition: transform .2s; }
+    .toast.show { transform: translateY(0); }
+    .toast.error { color: white; background: var(--red); }
+    @media (max-width: 980px) {
+      .chat-grid { grid-template-columns: minmax(0, 1fr); }
+      .evidence { display: none; }
+      .mobile-evidence { display: inline-block; }
+      .trace-grid { grid-template-columns: 240px minmax(0, 1fr); }
+    }
+    @media (max-width: 700px) {
+      .app { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) 60px; }
+      .rail { grid-row: 2; border-right: 0; border-top: 1px solid var(--line); flex-direction: row; justify-content: center; padding: 7px; }
+      .mark, .rail-spacer, .rail > .health-dot { display: none; }
+      .workspace { grid-row: 1; height: auto; min-height: 0; }
+      .topbar { padding: 0 14px; }
+      .brand span, .status-chip.pipeline { display: none; }
+      .transcript { padding: 28px 17px 16px; }
+      .empty-state { margin-top: 3vh; }
+      .empty-state h1 { font-size: 39px; }
+      .starter-grid { grid-template-columns: 1fr; margin-top: 26px; }
+      .starter { min-height: 74px; }
+      .composer-wrap { padding: 10px 12px 14px; }
+      .settings-scroll { padding: 22px 14px; }
+      .settings-intro { align-items: start; flex-direction: column; }
+      .settings-tabs { margin-right: -14px; }
+      .settings-tab { min-width: 118px; padding-inline: 12px; }
+      .settings-grid, .field-grid, .adapter-grid { grid-template-columns: 1fr; }
+      .config-card.wide { grid-column: auto; }
+      .config-field.full { grid-column: auto; }
+      .trace-grid { grid-template-columns: 1fr; grid-template-rows: 150px minmax(0, 1fr); }
+      .trace-list { border-right: 0; border-bottom: 1px solid var(--line); display: flex; gap: 8px; overflow-x: auto; }
+      .trace-list-item { min-width: 230px; margin-bottom: 0; }
+      .trace-detail { padding: 22px 14px; }
+      .trace-heading { align-items: start; flex-direction: column; }
+      .trace-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .trace-step { grid-template-columns: 38px minmax(0, 1fr); }
+      .trace-step-duration { grid-column: 2; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <nav class="rail" aria-label="Primary navigation">
+      <div class="mark" title="stropha">S/</div>
+      <button class="rail-button active" data-view="chat" aria-label="Query index" title="Query index">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M5 5h14v11H9l-4 3V5Z"/><path d="M8 9h8M8 12h5"/></svg>
+      </button>
+      <button class="rail-button" data-view="traces" aria-label="Request traces" title="Request traces">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 6h5M13 6h7M4 12h10M18 12h2M4 18h2M10 18h10"/><circle cx="11" cy="6" r="2"/><circle cx="16" cy="12" r="2"/><circle cx="8" cy="18" r="2"/></svg>
+      </button>
+      <button class="rail-button" data-view="settings" aria-label="Configure" title="Configure">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a2 2 0 0 0 .4 2.2l.1.1-2.6 2.6-.1-.1a2 2 0 0 0-2.2-.4 2 2 0 0 0-1.2 1.8V21h-3.6v-.2A2 2 0 0 0 9 19a2 2 0 0 0-2.2.4l-.1.1-2.6-2.6.1-.1A2 2 0 0 0 4.6 15a2 2 0 0 0-1.8-1.2H3v-3.6h.2A2 2 0 0 0 5 9a2 2 0 0 0-.4-2.2l-.1-.1 2.6-2.6.1.1A2 2 0 0 0 9 4.6a2 2 0 0 0 1.2-1.8V3h3.6v.2A2 2 0 0 0 15 5a2 2 0 0 0 2.2-.4l.1-.1 2.6 2.6-.1.1a2 2 0 0 0-.4 2.2 2 2 0 0 0 1.8 1.2h.2v3.6h-.2A2 2 0 0 0 19.4 15Z"/></svg>
+      </button>
+      <div class="rail-spacer"></div>
+      <span id="rail-health" class="health-dot" title="Runtime status"></span>
+    </nav>
+
+    <main class="workspace">
+      <section id="chat-view" class="view active">
+        <header class="topbar">
+          <div class="brand"><strong>STROPHA</strong><span>LOCAL INTELLIGENCE</span></div>
+          <div class="topbar-spacer"></div>
+          <div class="status-chip pipeline"><span>index</span><b id="chunk-count">-- chunks</b></div>
+          <div class="status-chip"><i id="moa-dot" class="health-dot"></i><span id="moa-label">checking MoA</span></div>
+          <button id="clear-chat" class="ghost-button">new thread</button>
+        </header>
+
+        <div class="chat-grid">
+          <div class="chat-stage">
+            <div id="transcript" class="transcript">
+              <div id="empty-state" class="empty-state">
+                <div class="eyebrow">Grounded in your code</div>
+                <h1>Interrogate the index, not your memory.</h1>
+                <p>Stropha retrieves exact evidence from the active repository and asks your local MoA model to reason over it. Every answer stays tethered to a source.</p>
+                <div class="starter-grid">
+                  <button class="starter" data-prompt="Trace the main request flow through this codebase and explain each stage."><small>01 / TRACE</small>How does the main request flow through the system?</button>
+                  <button class="starter" data-prompt="What are the most important architectural invariants in this repository, and where are they enforced?"><small>02 / ARCHITECTURE</small>Which invariants must changes preserve?</button>
+                  <button class="starter" data-prompt="Find likely operational failure modes in the indexing pipeline and cite the relevant code."><small>03 / INVESTIGATE</small>Where can the indexing pipeline fail?</button>
+                  <button class="starter" data-prompt="Explain how inference backends are selected, configured, and health checked."><small>04 / EXPLAIN</small>How are inference backends selected?</button>
+                </div>
+              </div>
+              <div id="messages"></div>
+            </div>
+            <div class="composer-wrap">
+              <form id="chat-form" class="composer">
+                <textarea id="question" rows="1" placeholder="Ask about the indexed repository..." maxlength="8000" aria-label="Question"></textarea>
+                <button id="send" class="send" type="submit" aria-label="Send">&#8593;</button>
+              </form>
+              <div class="composer-meta"><span id="model-label">model / loading</span><span>enter to send // shift+enter for line break</span></div>
+            </div>
+          </div>
+          <aside class="evidence">
+            <div class="panel-title">Evidence <span id="source-count">0 sources</span></div>
+            <div id="evidence-list"><div class="evidence-empty">Sources appear here<br>after the first query.</div></div>
+          </aside>
+        </div>
+      </section>
+
+      <section id="traces-view" class="view">
+        <header class="topbar">
+          <div class="brand"><strong>REQUEST TRACES</strong><span>LLM + TOOL EXECUTION</span></div>
+          <div class="topbar-spacer"></div>
+          <div class="status-chip"><span>requests</span><b id="trace-count">0</b></div>
+        </header>
+        <div class="trace-grid">
+          <aside id="trace-list" class="trace-list"><div class="trace-list-empty">Run a dashboard query to capture its process.</div></aside>
+          <div id="trace-detail" class="trace-detail"><div class="trace-list-empty">Select a trace to inspect every recorded step.</div></div>
+        </div>
+      </section>
+
+      <section id="settings-view" class="view">
+        <header class="topbar">
+          <div class="brand"><strong>CONTROL ROOM</strong><span>~/.stropha/config.yaml</span></div>
+          <div class="topbar-spacer"></div>
+          <button id="reload-config" class="ghost-button">reload</button>
+          <button id="save-config" class="acid-button">apply configuration</button>
+        </header>
+        <div class="settings-scroll">
+          <div class="settings-inner">
+            <div class="settings-intro">
+              <div><div class="eyebrow">Live daemon configuration</div><h1 id="settings-title">General services</h1></div>
+              <div id="save-state" class="save-state">Changes replace the warm runtime atomically.</div>
+            </div>
+            <nav class="settings-tabs" aria-label="Configuration groups" role="tablist">
+              <button class="settings-tab active" type="button" data-settings-group="general" role="tab" aria-selected="true">General <span id="inference-use-count" class="tab-count">1</span></button>
+              <button class="settings-tab" type="button" data-settings-group="indexing" role="tab" aria-selected="false">Indexing</button>
+              <button class="settings-tab" type="button" data-settings-group="retrieval" role="tab" aria-selected="false">Retrieval</button>
+              <button class="settings-tab" type="button" data-settings-group="raw" role="tab" aria-selected="false">Raw</button>
+            </nav>
+            <p id="settings-context" class="settings-context">LLM providers, model behavior, daemon operation, and live health.</p>
+            <div class="settings-grid">
+              <section id="pipeline-card" class="config-card wide" hidden>
+                <h2>Pipeline adapters</h2>
+                <p>Select an implementation for each stage. Every option and adapter-specific field comes from the live registry schema.</p>
+                <div id="pipeline-config" class="adapter-grid"><div class="save-state">Loading adapter registry...</div></div>
+              </section>
+              <section id="runtime-card" class="config-card wide">
+                <h2>Runtime configuration</h2>
+                <p>Valid values, defaults, and operational impact. Toggle fields explain both enabled and disabled behavior.</p>
+                <div id="config-groups" class="config-groups"><div class="save-state">Loading configuration schema...</div></div>
+              </section>
+              <section id="telemetry-card" class="config-card">
+                <h2>Runtime telemetry</h2>
+                <p>Live health from the active warm pipeline and MoA gateway.</p>
+                <div class="metric-row">
+                  <div class="metric"><span>chunks</span><b id="metric-chunks">--</b></div>
+                  <div class="metric"><span>files</span><b id="metric-files">--</b></div>
+                  <div class="metric"><span>MoA</span><b id="metric-moa">--</b></div>
+                </div>
+                <div class="endpoint" id="pipeline-identity">Pipeline identity loading...</div>
+              </section>
+              <section id="raw-card" class="config-card wide" hidden>
+                <h2>Raw configuration</h2>
+                <p>Edit the full redacted YAML document as JSON. Values marked <code>(set)</code> preserve the existing secret.</p>
+                <textarea id="raw-config" class="json-editor" spellcheck="false" aria-label="Raw configuration JSON"></textarea>
+              </section>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+  <div id="toast" class="toast" role="status"></div>
+
+  <script>
+    const $ = (selector) => document.querySelector(selector);
+    const SETTINGS_GROUPS = {
+      general: {
+        title: 'General services',
+        description: 'LLM providers, model behavior, daemon operation, and live health.',
+        stages: [],
+        sections: ['inference', 'service'],
+      },
+      indexing: {
+        title: 'Indexing technologies',
+        description: 'File discovery, chunking, enrichment, embeddings, storage, graph loading, and index location.',
+        stages: ['walker', 'chunker', 'enricher', 'embedder', 'storage'],
+        sections: ['index'],
+      },
+      retrieval: {
+        title: 'Retrieval technologies',
+        description: 'Query routing, search streams, ranking, reranking, caching, and result assembly.',
+        stages: ['retrieval', 'router'],
+        sections: ['retrieval'],
+      },
+      raw: {
+        title: 'Raw configuration',
+        description: 'Advanced access to the complete redacted configuration document.',
+        stages: [],
+        sections: [],
+      },
+    };
+    const state = { config: {}, catalog: null, status: null, messages: [], busy: false, sources: [], traces: [], selectedTraceId: null, settingsGroup: 'general', pendingSecrets: {} };
+
+    function toast(message, error = false) {
+      const node = $('#toast');
+      node.textContent = message;
+      node.className = `toast show${error ? ' error' : ''}`;
+      clearTimeout(toast.timer);
+      toast.timer = setTimeout(() => node.classList.remove('show'), 3200);
+    }
+
+    function switchView(name) {
+      document.querySelectorAll('.view').forEach((node) => node.classList.toggle('active', node.id === `${name}-view`));
+      document.querySelectorAll('[data-view]').forEach((node) => node.classList.toggle('active', node.dataset.view === name));
+    }
+
+    function pathValue(object, path, fallback = '') {
+      return path.split('.').reduce((value, key) => value && value[key], object) ?? fallback;
+    }
+
+    function setPath(object, path, value) {
+      const keys = path.split('.');
+      let cursor = object;
+      keys.slice(0, -1).forEach((key) => cursor = cursor[key] ||= {});
+      cursor[keys.at(-1)] = value;
+    }
+
+    function escapeHtml(value) {
+      return String(value).replace(/[&<>'"]/g, (char) => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[char]));
+    }
+
+    function simpleMarkdown(value) {
+      let html = escapeHtml(value);
+      const blocks = [];
+      html = html.replace(/```(?:\w+)?\n([\s\S]*?)```/g, (_, code) => {
+        blocks.push(`<pre><code>${code.trim()}</code></pre>`);
+        return `\n%%BLOCK${blocks.length - 1}%%\n`;
+      });
+      html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+      html = html.split(/\n{2,}/).map((part) => part.startsWith('%%BLOCK') ? part : `<p>${part.replace(/\n/g, '<br>')}</p>`).join('');
+      return html.replace(/<p>%%BLOCK(\d+)%%<\/p>|%%BLOCK(\d+)%%/g, (_, a, b) => blocks[Number(a ?? b)]);
+    }
+
+    function timeLabel() {
+      return new Intl.DateTimeFormat([], {hour: '2-digit', minute: '2-digit'}).format(new Date());
+    }
+
+    function renderMessages() {
+      $('#empty-state').hidden = state.messages.length > 0;
+      $('#messages').innerHTML = state.messages.map((message, index) => {
+        const body = message.role === 'assistant' ? simpleMarkdown(message.content) : escapeHtml(message.content);
+        const citations = message.sources?.length ? `<div class="inline-sources">${message.sources.map((source, sourceIndex) => `<button class="citation" data-source="${sourceIndex}">[${sourceIndex + 1}] ${escapeHtml(source.path)}</button>`).join('')}</div>` : '';
+        const counts = message.trace?.counts;
+        const traceLink = counts ? `<button class="trace-link" data-message-trace="${escapeHtml(message.trace.request_id)}">${counts.llm_tool_calls} llm tools / ${counts.llm_calls} llm calls / ${formatDuration(message.trace.duration_ms)}</button>` : '';
+        return `<article class="message ${message.role}"><div class="message-head"><span class="ordinal">${String(index + 1).padStart(2, '0')}</span><span>${message.role === 'assistant' ? 'stropha / grounded answer' : 'you'}</span><span>${message.time || ''}</span>${traceLink}</div><div class="message-body">${body}${citations}</div></article>`;
+      }).join('') + (state.busy ? '<article class="message assistant"><div class="message-head"><span class="ordinal">//</span><span>retrieving + reasoning</span></div><div class="thinking"><i></i><i></i><i></i></div></article>' : '');
+      document.querySelectorAll('.citation').forEach((button) => button.addEventListener('click', () => openSource(Number(button.dataset.source))));
+      document.querySelectorAll('[data-message-trace]').forEach((button) => button.addEventListener('click', () => selectTrace(button.dataset.messageTrace, true)));
+      requestAnimationFrame(() => { $('#transcript').scrollTop = $('#transcript').scrollHeight; });
+    }
+
+    function formatDuration(milliseconds) {
+      const value = Number(milliseconds || 0);
+      return value >= 1000 ? `${(value / 1000).toFixed(2)} s` : `${value.toFixed(1)} ms`;
+    }
+
+    function renderTraces() {
+      $('#trace-count').textContent = String(state.traces.length);
+      if (!state.traces.length) {
+        $('#trace-list').innerHTML = '<div class="trace-list-empty">Run a dashboard query to capture its process.</div>';
+        $('#trace-detail').innerHTML = '<div class="trace-list-empty">Select a trace to inspect every recorded step.</div>';
+        return;
+      }
+      const selected = state.traces.find((trace) => trace.request_id === state.selectedTraceId) || state.traces[0];
+      state.selectedTraceId = selected.request_id;
+      $('#trace-list').innerHTML = state.traces.map((trace) => {
+        const counts = trace.counts || {};
+        return `<button class="trace-list-item${trace.request_id === selected.request_id ? ' active' : ''}" data-trace-id="${escapeHtml(trace.request_id)}"><strong>${escapeHtml(trace.question || trace.request_id)}</strong><span>${counts.llm_tool_calls || 0} llm tools / ${counts.llm_calls || 0} llm calls<br>${formatDuration(trace.duration_ms)} / ${escapeHtml(trace.started_at || '')}</span></button>`;
+      }).join('');
+      document.querySelectorAll('[data-trace-id]').forEach((button) => button.addEventListener('click', () => selectTrace(button.dataset.traceId)));
+      const counts = selected.counts || {};
+      const steps = selected.steps || [];
+      $('#trace-detail').innerHTML = `<div class="trace-detail-inner"><div class="trace-heading"><div><div class="eyebrow">Whole request process</div><h1>${escapeHtml(selected.request_id)}</h1></div><div class="trace-time">${escapeHtml(selected.started_at || '')}</div></div><div class="trace-metrics"><div class="trace-metric"><span>LLM tool calls</span><b>${counts.llm_tool_calls || 0}</b></div><div class="trace-metric"><span>App tool calls</span><b>${counts.application_tool_calls || 0}</b></div><div class="trace-metric"><span>LLM calls</span><b>${counts.llm_calls || 0}</b></div><div class="trace-metric"><span>Total time</span><b>${formatDuration(selected.duration_ms)}</b></div></div><div class="panel-title">Timeline <span>${steps.length} steps</span></div>${steps.map((step, index) => traceStepMarkup(step, index)).join('')}</div>`;
+    }
+
+    function traceStepMarkup(step, index) {
+      const ignored = new Set(['id', 'type', 'name', 'actor', 'phase', 'status', 'started_ms', 'duration_ms']);
+      const detail = Object.fromEntries(Object.entries(step).filter(([key]) => !ignored.has(key)));
+      const data = Object.keys(detail).length ? `<pre class="trace-step-data">${escapeHtml(JSON.stringify(detail, null, 2))}</pre>` : '';
+      return `<article class="trace-step"><div class="trace-step-index">${String(index + 1).padStart(2, '0')}</div><div><h3>${escapeHtml(step.name || step.type)}</h3><div class="trace-step-meta">${escapeHtml(step.type || 'step')} / ${escapeHtml(step.actor || 'system')}${step.phase ? ` / ${escapeHtml(step.phase)}` : ''} / ${escapeHtml(step.status || 'completed')} / +${formatDuration(step.started_ms)}</div>${data}</div><div class="trace-step-duration">${formatDuration(step.duration_ms)}</div></article>`;
+    }
+
+    function selectTrace(requestId, openView = false) {
+      state.selectedTraceId = requestId;
+      renderTraces();
+      if (openView) switchView('traces');
+    }
+
+    function renderSources(sources = []) {
+      state.sources = sources;
+      $('#source-count').textContent = `${sources.length} source${sources.length === 1 ? '' : 's'}`;
+      $('#evidence-list').innerHTML = sources.length ? sources.map((source, index) => `<article class="source-card" data-source-card="${index}"><span class="source-rank">[${String(index + 1).padStart(2, '0')}]</span><div class="source-path">${escapeHtml(source.path)}</div><div class="source-meta">L${source.start_line}-${source.end_line}${source.symbol ? ` / ${escapeHtml(source.symbol)}` : ''}</div><div class="source-snippet">${escapeHtml(source.snippet || 'No preview returned.')}</div></article>`).join('') : '<div class="evidence-empty">Sources appear here<br>after the first query.</div>';
+      document.querySelectorAll('.source-card').forEach((card) => card.addEventListener('click', () => card.classList.toggle('open')));
+    }
+
+    function openSource(index) {
+      const card = document.querySelector(`[data-source-card="${index}"]`);
+      if (card) { card.classList.add('open'); card.scrollIntoView({behavior: 'smooth', block: 'center'}); }
+      else if (state.sources[index]) toast(`${state.sources[index].path}:${state.sources[index].start_line}`);
+    }
+
+    async function ask(question) {
+      if (state.busy || !question.trim()) return;
+      const prior = state.messages.map(({role, content}) => ({role, content}));
+      state.messages.push({role: 'user', content: question.trim(), time: timeLabel()});
+      state.busy = true;
+      $('#send').disabled = true;
+      renderMessages();
+      try {
+        const response = await fetch('/api/query', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({question: question.trim(), history: prior, top_k: 8, max_tokens: 768})});
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || `Query failed (${response.status})`);
+        if (data.trace) {
+          data.trace.question = question.trim();
+          state.traces.unshift(data.trace);
+          state.selectedTraceId = data.trace.request_id;
+          renderTraces();
+        }
+        state.messages.push({role: 'assistant', content: data.answer || 'The model returned no answer.', sources: data.sources || [], trace: data.trace, time: timeLabel()});
+        renderSources(data.sources || []);
+        localStorage.setItem('stropha-chat', JSON.stringify(state.messages.slice(-20)));
+      } catch (error) {
+        state.messages.push({role: 'assistant', content: `Query failed: ${error.message}`, time: timeLabel()});
+        toast(error.message, true);
+      } finally {
+        state.busy = false;
+        $('#send').disabled = false;
+        renderMessages();
+      }
+    }
+
+    function schemaType(schema) {
+      if (schema.type) return schema.type;
+      const concrete = (schema.anyOf || []).find((entry) => entry.type && entry.type !== 'null');
+      return concrete?.type || 'object';
+    }
+
+    function optionMarkup(options, selected) {
+      const current = selected == null ? '' : String(selected);
+      return options.map((option) => {
+        const value = option.value == null ? '' : String(option.value);
+        return `<option value="${escapeHtml(value)}"${value === current ? ' selected' : ''}>${escapeHtml(String(option.label ?? value))}</option>`;
+      }).join('');
+    }
+
+    function impactMarkup(field) {
+      if (!field.enabled && !field.disabled) return '';
+      return `<div class="field-impact"><div><b>Enabled:</b> ${escapeHtml(field.enabled || field.help)}</div><div><b class="off">Disabled:</b> ${escapeHtml(field.disabled || 'The behavior is skipped.')}</div></div>`;
+    }
+
+    function fieldMarkup(field, value, path = field.path) {
+      const current = value ?? field.default ?? '';
+      const attrs = [
+        `data-config-path="${escapeHtml(path)}"`,
+        `data-value-type="${escapeHtml(field.type)}"`,
+        field.jsonEmpty ? `data-json-empty="${escapeHtml(field.jsonEmpty)}"` : '',
+        field.minimum != null ? `min="${field.minimum}"` : '',
+        field.maximum != null ? `max="${field.maximum}"` : '',
+        field.step != null ? `step="${field.step}"` : '',
+      ].filter(Boolean).join(' ');
+      let control;
+      if (field.type === 'boolean') {
+        control = `<select ${attrs}>${optionMarkup([{value: true, label: 'Enabled'}, {value: false, label: 'Disabled'}], Boolean(current))}</select>`;
+      } else if (field.type === 'choice') {
+        control = `<select ${attrs}>${optionMarkup(field.options || [], current)}</select>`;
+      } else if (field.type === 'json') {
+        const payload = current == null || current === '' ? '' : JSON.stringify(current, null, 2);
+        control = `<textarea class="config-json" ${attrs} spellcheck="false">${escapeHtml(payload)}</textarea>`;
+      } else if (field.type === 'string-list') {
+        const payload = Array.isArray(current) ? current.join('\n') : '';
+        control = `<textarea class="config-list" ${attrs} spellcheck="false">${escapeHtml(payload)}</textarea>`;
+      } else if (field.type === 'secret') {
+        const configured = pathValue(state.config, path, null) === '(set)';
+        control = `<input type="password" autocomplete="off" placeholder="${configured ? 'configured / unchanged' : 'not configured'}" ${attrs}>`;
+      } else {
+        const inputType = ['integer', 'number'].includes(field.type) ? 'number' : field.type === 'url' ? 'url' : 'text';
+        const list = path === 'inference.moa_model' ? ' list="moa-model-options"' : '';
+        control = `<input type="${inputType}" value="${escapeHtml(String(current))}"${list} ${attrs}>`;
+      }
+      const optionHelp = field.options?.filter((option) => option.help).map((option) => `${option.label}: ${option.help}`).join(' | ');
+      return `<div class="config-field${field.type === 'json' ? ' full' : ''}"><label>${escapeHtml(field.title)}${control}<p class="field-help">${escapeHtml(field.help || '')}</p>${optionHelp ? `<div class="choice-help">${escapeHtml(optionHelp)}</div>` : ''}${impactMarkup(field)}</label></div>`;
+    }
+
+    function adapterField(stage, name, schema) {
+      const type = schemaType(schema);
+      const boolean = type === 'boolean';
+      const nullable = (schema.anyOf || []).some((entry) => entry.type === 'null');
+      let help = schema.description || `Adapter-specific ${name.replaceAll('_', ' ')} setting.`;
+      if (name === 'reranker') help += ` Available adapters: ${(state.catalog?.subadapters?.reranker || []).join(', ')}.`;
+      if (name === 'streams') help += ` Available stream adapters: ${(state.catalog?.subadapters?.['retrieval-stream'] || []).join(', ')}.`;
+      if (name === 'languages') help += ` Available language chunkers: ${(state.catalog?.subadapters?.['language-chunker'] || []).join(', ')}.`;
+      return {
+        title: schema.title || name.replaceAll('_', ' '),
+        type: ['object', 'array'].includes(type) ? 'json' : type,
+        default: schema.default ?? (nullable ? null : type === 'object' ? {} : type === 'array' ? [] : undefined),
+        help,
+        minimum: schema.minimum,
+        maximum: schema.maximum,
+        jsonEmpty: ['object', 'array'].includes(type) ? (nullable ? 'null' : type) : null,
+        enabled: boolean ? `Activates ${name.replaceAll('_', ' ')} for this adapter.` : null,
+        disabled: boolean ? `Skips ${name.replaceAll('_', ' ')} and uses the adapter's simpler path.` : null,
+      };
+    }
+
+    function rerankerMarkup(value, path) {
+      const adapters = state.catalog?.subadapter_catalog?.reranker || [];
+      const selected = value?.adapter || '';
+      const adapter = adapters.find((item) => item.name === selected);
+      const options = [
+        {value: '', label: 'Disabled'},
+        ...(selected && !adapter ? [{value: selected, label: `${selected} (unavailable)`}] : []),
+        ...adapters.map((item) => ({value: item.name, label: item.name})),
+      ];
+      const fields = Object.entries(adapter?.schema?.properties || {}).map(([name, schema]) => {
+        const field = adapterField('reranker', name, schema);
+        if (schemaType(schema) === 'array' && schema.items?.type === 'string') {
+          field.type = 'string-list';
+          field.help = `${field.help} Enter one value per line.`;
+          field.jsonEmpty = null;
+        }
+        return fieldMarkup(field, value?.config?.[name] ?? schema.default, `${path}.config.${name}`);
+      }).join('');
+      const description = adapter?.description || (selected
+        ? 'This configured reranker is unavailable. Choose an installed adapter or disable reranking.'
+        : 'Disabled returns reciprocal-rank-fusion results without a second ranking pass.');
+      return `<div class="config-field full nested-adapter"><label>Reranker<select data-reranker-path="${escapeHtml(path)}">${optionMarkup(options, selected)}</select><p class="field-help">Choose an optional second-stage ranker. Changing adapters resets its options to safe defaults.</p></label><div class="adapter-description">${escapeHtml(description)}</div>${fields ? `<div class="field-grid">${fields}</div>` : ''}</div>`;
+    }
+
+    function selectedAdapter(stageName) {
+      const stage = state.catalog?.pipeline.find((item) => item.stage === stageName);
+      return pathValue(state.config, `pipeline.${stageName}.adapter`, stage?.default_adapter);
+    }
+
+    function storageNotice(adapter) {
+      if (adapter === 'postgres') return 'PostgreSQL uses the DSN below. The SQLite index path does not apply and is hidden.';
+      if (adapter === 'sqlite-vec') return 'SQLite uses the canonical Index path below. The duplicate adapter path alias is hidden to prevent conflicting values.';
+      return '';
+    }
+
+    const INFERENCE_PROVIDERS = ['moa', 'lms', 'anthropic', 'deepseek', 'ollama', 'mlx'];
+
+    function inferenceProvider() {
+      return pathValue(state.config, 'inference.backend', null) || 'auto';
+    }
+
+    function providerOwnsField(path, provider) {
+      return path.startsWith(`inference.${provider}_`) || path === `secrets.${provider}_api_key`;
+    }
+
+    function inferenceProviderLabel() {
+      const provider = inferenceProvider();
+      const selector = state.catalog?.sections.flatMap((section) => section.fields).find((field) => field.path === 'inference.backend');
+      return selector?.options?.find((option) => String(option.value || 'auto') === provider)?.label || (provider === 'auto' ? 'Auto detect' : provider);
+    }
+
+    function inferenceConsumers() {
+      const consumers = [{id: 'dashboard', label: 'Grounded answers', detail: 'every dashboard query', area: 'general'}];
+      const enricher = selectedAdapter('enricher');
+      if (enricher === 'contextual') consumers.push({id: 'contextual', label: 'Contextual enrichment', detail: 'during indexing', area: 'indexing', stage: 'enricher'});
+
+      const router = selectedAdapter('router');
+      const routerConfig = pathValue(state.config, 'pipeline.router.config', {});
+      const globalRouterLlm = Boolean(pathValue(state.config, 'retrieval_features.query_router_llm', false));
+      const routerUsesLlm = router === 'llm'
+        || (router === 'escalating' && (routerConfig.escalation || 'llm') === 'llm')
+        || (router === 'pattern' && Boolean(routerConfig.use_llm_fallback))
+        || globalRouterLlm;
+      if (routerUsesLlm) consumers.push({id: 'router', label: 'Query routing', detail: router === 'llm' ? 'every routed query' : 'ambiguous queries', area: 'retrieval', stage: 'router', section: 'retrieval'});
+
+      const retrievalConfig = pathValue(state.config, 'pipeline.retrieval.config', {});
+      const featureEnabled = (name) => Boolean(retrievalConfig[name] || pathValue(state.config, `retrieval_features.${name}`, false));
+      if (featureEnabled('hyde_enabled')) consumers.push({id: 'hyde', label: 'HyDE', detail: 'hypothetical code generation', area: 'retrieval', section: 'retrieval'});
+      if (featureEnabled('query_rewrite_enabled')) consumers.push({id: 'rewrite', label: 'Query rewrite', detail: 'code-term expansion', area: 'retrieval', section: 'retrieval'});
+      if (featureEnabled('multi_query_enabled')) consumers.push({id: 'multi-query', label: 'Multi-query', detail: 'query paraphrases', area: 'retrieval', section: 'retrieval'});
+      if (Boolean(pathValue(state.config, 'retrieval_features.query_decomposition_enabled', false)) && Boolean(pathValue(state.config, 'retrieval_features.query_decomposition_llm', false))) consumers.push({id: 'decomposition', label: 'Query decomposition', detail: 'compound query splitting', area: 'retrieval', section: 'retrieval'});
+      if (retrievalConfig.reranker?.adapter === 'llm') consumers.push({id: 'reranker', label: 'LLM reranker', detail: 'candidate scoring', area: 'retrieval', stage: 'retrieval'});
+      return consumers;
+    }
+
+    function inferenceUsageMarkup(consumers) {
+      if (!consumers.length) return '';
+      const chips = consumers.map((consumer) => `<span class="usage-chip">${escapeHtml(consumer.label)} / <b>${escapeHtml(consumer.detail)}</b></span>`).join('');
+      return `<div class="inference-usage"><div class="inference-usage-head"><span>Uses shared inference</span><span>${escapeHtml(inferenceProviderLabel())} / active automatically</span></div><div class="usage-chips">${chips}</div></div>`;
+    }
+
+    function inferenceSectionMarkup(section, index) {
+      const provider = inferenceProvider();
+      const selector = section.fields.find((field) => field.path === 'inference.backend');
+      const providerFields = section.fields.filter((field) => provider !== 'auto' && providerOwnsField(field.path, provider));
+      const sharedFields = section.fields.filter((field) => field !== selector && !INFERENCE_PROVIDERS.some((name) => providerOwnsField(field.path, name)));
+      const selectedOption = selector?.options?.find((option) => String(option.value || 'auto') === provider);
+      const providerLabel = selectedOption?.label || (provider === 'auto' ? 'Auto detect' : provider);
+      const providerHelp = provider === 'auto'
+        ? 'Stropha will choose an available local backend. Select a provider to edit provider-specific connection and model settings.'
+        : `Only ${providerLabel} settings are active below. Other provider values remain persisted but hidden.`;
+      const consumers = inferenceConsumers();
+      const selectorMarkup = selector ? fieldMarkup(selector, pathValue(state.config, selector.path, selector.default)) : '';
+      const activeMarkup = providerFields.map((field) => fieldMarkup(field, pathValue(state.config, field.path, field.default))).join('');
+      const sharedMarkup = sharedFields.map((field) => fieldMarkup(field, pathValue(state.config, field.path, field.default))).join('');
+      return `<details class="config-section"${index < 2 ? ' open' : ''}><summary><strong>${escapeHtml(section.title)}</strong><span>${escapeHtml(section.description)}</span></summary><div class="inference-subsection"><h3>Shared provider</h3><p>This provider is enabled automatically by every active consumer listed below.</p><div class="field-grid">${selectorMarkup}</div><div class="provider-state"><b>${escapeHtml(providerLabel)}</b> / ${escapeHtml(providerHelp)}</div>${inferenceUsageMarkup(consumers)}</div>${activeMarkup ? `<div class="inference-subsection"><h3>${escapeHtml(providerLabel)} settings</h3><p>Model, endpoint, authentication, timeout, and retry controls for the shared provider.</p><div class="field-grid">${activeMarkup}</div></div>` : ''}${sharedMarkup ? `<div class="inference-subsection"><h3>Shared inference workload</h3><p>Controls applied across providers during enrichment and batched inference work.</p><div class="field-grid">${sharedMarkup}</div></div>` : ''}</details>`;
+    }
+
+    function renderPipelineConfig() {
+      if (!state.catalog) return;
+      const group = SETTINGS_GROUPS[state.settingsGroup];
+      const stages = state.catalog.pipeline.filter((stage) => group.stages.includes(stage.stage));
+      $('#pipeline-config').innerHTML = stages.map((stage) => {
+        const selected = pathValue(state.config, `pipeline.${stage.stage}.adapter`, stage.default_adapter);
+        const adapter = stage.adapters.find((item) => item.name === selected) || stage.adapters[0];
+        const adapterConfig = pathValue(state.config, `pipeline.${stage.stage}.config`, {});
+        const multiQueryEnabled = Boolean(adapterConfig?.multi_query_enabled
+          ?? adapter?.schema?.properties?.multi_query_enabled?.default);
+        const recursiveEnabled = Boolean(adapterConfig?.recursive_enabled
+          ?? adapter?.schema?.properties?.recursive_enabled?.default);
+        const properties = Object.entries(adapter?.schema?.properties || {}).filter(([name]) => {
+          if (stage.stage === 'storage' && selected === 'sqlite-vec' && name === 'path') return false;
+          if (stage.stage === 'retrieval' && name === 'multi_query_count' && !multiQueryEnabled) return false;
+          if (stage.stage === 'retrieval' && name === 'recursive_adjacency' && !recursiveEnabled) return false;
+          return true;
+        });
+        const fields = properties.map(([name, schema]) => {
+          const path = `pipeline.${stage.stage}.config.${name}`;
+          if (stage.stage === 'retrieval' && name === 'reranker') {
+            return rerankerMarkup(adapterConfig?.[name] ?? schema.default, path);
+          }
+          const field = adapterField(stage.stage, name, schema);
+          return fieldMarkup(field, adapterConfig?.[name] ?? schema.default, path);
+        }).join('');
+        const options = stage.adapters.map((item) => ({value: item.name, label: item.name}));
+        const notice = stage.stage === 'storage' ? storageNotice(selected) : '';
+        const consumers = inferenceConsumers().filter((consumer) => consumer.stage === stage.stage);
+        return `<article class="adapter-card"><header><h3>${escapeHtml(stage.title)}</h3><span class="eyebrow">${escapeHtml(stage.stage)}</span></header><p class="adapter-impact">${escapeHtml(stage.impact)}</p><label>Adapter<select data-adapter-stage="${escapeHtml(stage.stage)}">${optionMarkup(options, selected)}</select></label><div class="adapter-description">${escapeHtml(adapter?.description || 'No adapter description supplied.')}</div>${notice ? `<div class="field-impact"><b>Exclusive storage:</b> ${escapeHtml(notice)}</div>` : ''}${inferenceUsageMarkup(consumers)}${fields ? `<div class="adapter-fields">${fields}</div>` : notice || consumers.length ? '' : '<div class="adapter-description">This adapter has no additional settings.</div>'}</article>`;
+      }).join('');
+      bindConfigControls();
+    }
+
+    function renderRuntimeConfig() {
+      if (!state.catalog) return;
+      const group = SETTINGS_GROUPS[state.settingsGroup];
+      const sections = state.catalog.sections.filter((section) => group.sections.includes(section.id));
+      const multiQueryEnabled = Boolean(pathValue(state.config, 'retrieval_features.multi_query_enabled', false));
+      const recursiveEnabled = Boolean(pathValue(state.config, 'retrieval_features.recursive_enabled', false));
+      $('#config-groups').innerHTML = sections.map((section, index) => {
+        if (section.id === 'inference') return inferenceSectionMarkup(section, index);
+        const watcherEnabled = Boolean(pathValue(state.config, 'mcp.watch', true));
+        const visibleFields = section.fields.filter((field) => {
+          if (field.path === 'paths.index' && selectedAdapter('storage') !== 'sqlite-vec') return false;
+          if (!watcherEnabled && ['mcp.watch_interval', 'mcp.watch_debounce'].includes(field.path)) return false;
+          if (field.path === 'retrieval_features.multi_query_count' && !multiQueryEnabled) return false;
+          if (field.path === 'retrieval_features.recursive_adjacency' && !recursiveEnabled) return false;
+          return true;
+        });
+        const fields = visibleFields.map((field) => fieldMarkup(field, pathValue(state.config, field.path, field.default))).join('');
+        const consumers = inferenceConsumers().filter((consumer) => consumer.section === section.id);
+        const watcherNotice = section.id === 'service' && !watcherEnabled ? '<div class="field-impact"><b>File watcher disabled:</b> Interval and debounce settings are hidden until the watcher is enabled.</div>' : '';
+        return `<details class="config-section"${index < 2 ? ' open' : ''}><summary><strong>${escapeHtml(section.title)}</strong><span>${escapeHtml(section.description)}</span></summary>${inferenceUsageMarkup(consumers)}${watcherNotice}<div class="field-grid">${fields}</div></details>`;
+      }).join('') + '<datalist id="moa-model-options"></datalist>';
+      updateMoaModelOptions();
+      bindConfigControls();
+    }
+
+    function renderSettingsGroup() {
+      const group = SETTINGS_GROUPS[state.settingsGroup];
+      $('#settings-title').textContent = group.title;
+      $('#settings-context').textContent = group.description;
+      $('#inference-use-count').textContent = String(inferenceConsumers().length);
+      document.querySelectorAll('[data-settings-group]').forEach((button) => {
+        const active = button.dataset.settingsGroup === state.settingsGroup;
+        button.classList.toggle('active', active);
+        button.setAttribute('aria-selected', String(active));
+      });
+      $('#pipeline-card').hidden = !group.stages.length;
+      $('#runtime-card').hidden = !group.sections.length;
+      $('#telemetry-card').hidden = state.settingsGroup !== 'general';
+      $('#raw-card').hidden = state.settingsGroup !== 'raw';
+      renderPipelineConfig();
+      renderRuntimeConfig();
+    }
+
+    function parseControlValue(control) {
+      const type = control.dataset.valueType;
+      if (type === 'boolean') return control.value === 'true';
+      if (type === 'integer') return Number.parseInt(control.value, 10);
+      if (type === 'number') return Number(control.value);
+      if (type === 'string-list') {
+        return control.value.split('\n').map((value) => value.trim()).filter(Boolean);
+      }
+      if (type === 'json') {
+        if (control.value.trim()) return JSON.parse(control.value);
+        if (control.dataset.jsonEmpty === 'object') return {};
+        if (control.dataset.jsonEmpty === 'array') return [];
+        return null;
+      }
+      if (type === 'nullable-string') return control.value.trim() || null;
+      if (type === 'choice') return control.value || null;
+      return control.value;
+    }
+
+    function bindConfigControls() {
+      document.querySelectorAll('[data-config-path]').forEach((control) => {
+        if (control.dataset.bound) return;
+        control.dataset.bound = 'true';
+        if (control.dataset.valueType === 'secret') {
+          control.value = state.pendingSecrets[control.dataset.configPath] || '';
+          control.addEventListener('input', () => { state.pendingSecrets[control.dataset.configPath] = control.value; });
+          return;
+        }
+        control.addEventListener('change', () => {
+          try {
+            const config = JSON.parse($('#raw-config').value || '{}');
+            setPath(config, control.dataset.configPath, parseControlValue(control));
+            state.config = config;
+            $('#raw-config').value = JSON.stringify(config, null, 2);
+            const path = control.dataset.configPath;
+            if (path === 'inference.backend' || path === 'mcp.watch' || path.startsWith('retrieval_features.') || path.startsWith('pipeline.retrieval.config.') || path.startsWith('pipeline.router.config.')) renderSettingsGroup();
+          } catch (error) { toast(`Invalid value: ${error.message}`, true); }
+        });
+      });
+      document.querySelectorAll('[data-reranker-path]').forEach((control) => {
+        if (control.dataset.bound) return;
+        control.dataset.bound = 'true';
+        control.addEventListener('change', () => {
+          const config = JSON.parse($('#raw-config').value || '{}');
+          if (!control.value) {
+            setPath(config, control.dataset.rerankerPath, null);
+          } else {
+            const adapters = state.catalog?.subadapter_catalog?.reranker || [];
+            const adapter = adapters.find((item) => item.name === control.value);
+            const defaults = Object.fromEntries(Object.entries(adapter?.schema?.properties || {})
+              .filter(([, schema]) => Object.hasOwn(schema, 'default'))
+              .map(([name, schema]) => [name, schema.default]));
+            setPath(config, control.dataset.rerankerPath, {adapter: control.value, config: defaults});
+          }
+          state.config = config;
+          $('#raw-config').value = JSON.stringify(config, null, 2);
+          renderSettingsGroup();
+        });
+      });
+      document.querySelectorAll('[data-adapter-stage]').forEach((control) => {
+        if (control.dataset.bound) return;
+        control.dataset.bound = 'true';
+        control.addEventListener('change', () => {
+          const stage = state.catalog.pipeline.find((item) => item.stage === control.dataset.adapterStage);
+          const adapter = stage.adapters.find((item) => item.name === control.value);
+          const defaults = Object.fromEntries(Object.entries(adapter?.schema?.properties || {}).filter(([name, schema]) => Object.hasOwn(schema, 'default') && !(stage.stage === 'storage' && control.value === 'sqlite-vec' && name === 'path')).map(([name, schema]) => [name, schema.default]));
+          const config = JSON.parse($('#raw-config').value || '{}');
+          setPath(config, `pipeline.${stage.stage}`, {adapter: control.value, config: defaults});
+          state.config = config;
+          $('#raw-config').value = JSON.stringify(config, null, 2);
+          renderPipelineConfig();
+          renderRuntimeConfig();
+        });
+      });
+    }
+
+    function updateMoaModelOptions() {
+      const list = $('#moa-model-options');
+      if (!list) return;
+      const selected = pathValue(state.config, 'inference.moa_model', 'moa-code');
+      const models = [...new Set([selected, ...(state.status?.moa?.models || [])].filter(Boolean))];
+      list.innerHTML = models.map((model) => `<option value="${escapeHtml(model)}"></option>`).join('');
+    }
+
+    function populateConfig() {
+      $('#raw-config').value = JSON.stringify(state.config, null, 2);
+      renderSettingsGroup();
+    }
+
+    function renderStatus() {
+      if (!state.status) return;
+      const moa = state.status.moa;
+      $('#rail-health').className = `health-dot ${moa.healthy ? 'ok' : 'bad'}`;
+      $('#moa-dot').className = `health-dot ${moa.healthy ? 'ok' : 'bad'}`;
+      $('#moa-label').textContent = moa.healthy ? `MoA / ${moa.model}` : 'MoA offline';
+      $('#model-label').textContent = `model / ${moa.model}`;
+      $('#chunk-count').textContent = `${Number(state.status.index.chunks || 0).toLocaleString()} chunks`;
+      $('#metric-chunks').textContent = Number(state.status.index.chunks || 0).toLocaleString();
+      $('#metric-files').textContent = Number(state.status.index.files || 0).toLocaleString();
+      $('#metric-moa').textContent = moa.healthy ? 'UP' : 'DOWN';
+      $('#metric-moa').style.color = moa.healthy ? 'var(--acid)' : 'var(--red)';
+      $('#pipeline-identity').textContent = `${state.status.pipeline.retrieval} // ${state.status.pipeline.embedder} // ${state.status.inference.identity}`;
+      updateMoaModelOptions();
+    }
+
+    async function loadStatus() {
+      try {
+        const response = await fetch('/api/status');
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error);
+        state.status = data;
+        renderStatus();
+      } catch (error) {
+        $('#rail-health').className = 'health-dot bad';
+        $('#moa-dot').className = 'health-dot bad';
+        $('#moa-label').textContent = 'runtime offline';
+      }
+    }
+
+    async function loadConfig(notify = false) {
+      try {
+        const response = await fetch('/api/config');
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error);
+        state.config = data.config || {};
+        state.pendingSecrets = {};
+        populateConfig();
+        if (notify) toast('Configuration reloaded');
+      } catch (error) { toast(error.message, true); }
+    }
+
+    async function loadCatalog() {
+      try {
+        const response = await fetch('/api/config/schema');
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error);
+        state.catalog = data;
+        renderSettingsGroup();
+      } catch (error) { toast(error.message, true); }
+    }
+
+    function configFromEditor() {
+      const config = JSON.parse($('#raw-config').value || '{}');
+      document.querySelectorAll('[data-config-path]').forEach((control) => {
+        if (control.dataset.valueType === 'secret') return;
+        setPath(config, control.dataset.configPath, parseControlValue(control));
+      });
+      document.querySelectorAll('[data-adapter-stage]').forEach((control) => {
+        setPath(config, `pipeline.${control.dataset.adapterStage}.adapter`, control.value);
+      });
+      Object.entries(state.pendingSecrets).forEach(([path, value]) => { if (value) setPath(config, path, value); });
+      return config;
+    }
+
+    async function saveConfig() {
+      const button = $('#save-config');
+      const label = $('#save-state');
+      button.disabled = true;
+      label.className = 'save-state';
+      try {
+        const patch = configFromEditor();
+        const targetModel = pathValue(patch, 'pipeline.embedder.config.model');
+        const isQwenEmbedding = String(targetModel).toLowerCase().includes('qwen3-embedding');
+        label.textContent = isQwenEmbedding
+          ? 'Validating model metadata. Weights stay deferred until first indexing...'
+          : 'Validating and replacing warm runtime...';
+        const response = await fetch('/api/config', {method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(patch)});
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Configuration rejected');
+        state.config = data.config;
+        state.pendingSecrets = {};
+        populateConfig();
+        await loadStatus();
+        if (data.pending_rebuild) {
+          label.className = 'save-state';
+          label.textContent = `${data.message} Configuration is saved; rebuild and restart to activate it.`;
+          toast('Configuration saved. Index rebuild required.');
+          return;
+        }
+        label.className = 'save-state good';
+        label.textContent = isQwenEmbedding
+          ? 'Configuration applied. Model weights will load during first indexing.'
+          : 'Runtime replaced. New queries use this configuration.';
+        toast('Configuration applied');
+      } catch (error) {
+        label.className = 'save-state error';
+        label.textContent = error.message;
+        toast(error.message, true);
+      } finally { button.disabled = false; }
+    }
+
+    document.querySelectorAll('[data-view]').forEach((button) => button.addEventListener('click', () => switchView(button.dataset.view)));
+    document.querySelectorAll('[data-settings-group]').forEach((button) => button.addEventListener('click', () => { state.settingsGroup = button.dataset.settingsGroup; renderSettingsGroup(); }));
+    document.querySelectorAll('[data-prompt]').forEach((button) => button.addEventListener('click', () => ask(button.dataset.prompt)));
+    $('#chat-form').addEventListener('submit', (event) => { event.preventDefault(); const input = $('#question'); const value = input.value; input.value = ''; input.style.height = ''; ask(value); });
+    $('#question').addEventListener('keydown', (event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); $('#chat-form').requestSubmit(); } });
+    $('#question').addEventListener('input', (event) => { event.target.style.height = 'auto'; event.target.style.height = `${Math.min(event.target.scrollHeight, 180)}px`; });
+    $('#clear-chat').addEventListener('click', () => { state.messages = []; state.traces = []; state.selectedTraceId = null; localStorage.removeItem('stropha-chat'); renderMessages(); renderSources(); renderTraces(); });
+    $('#reload-config').addEventListener('click', () => loadConfig(true));
+    $('#save-config').addEventListener('click', saveConfig);
+
+    try { state.messages = JSON.parse(localStorage.getItem('stropha-chat') || '[]'); } catch (_) { state.messages = []; }
+    state.traces = state.messages.filter((message) => message.trace).map((message) => message.trace).reverse();
+    state.selectedTraceId = state.traces[0]?.request_id || null;
+    renderMessages();
+    renderTraces();
+    Promise.all([loadStatus(), loadConfig(), loadCatalog()]);
+    setInterval(loadStatus, 30000);
+  </script>
+</body>
+</html>

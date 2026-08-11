@@ -8,6 +8,7 @@ call site.
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import MagicMock
 
 from stropha.models import SearchHit
@@ -42,7 +43,14 @@ def _make_app(canned_hits: list[SearchHit]) -> MagicMock:
     app = MagicMock()
     app.session_id = "test-session"
     app.seen_chunk_ids = set()
+    app.pinned_chunk_ids = set()
+    app.config.target_repo = Path.cwd()
     app.search_engine.search.return_value = canned_hits
+    app.storage.lookup_repo_id.return_value = 1
+    app.storage.get_chunk_by_id.side_effect = lambda chunk_id: {
+        "chunk_id": chunk_id,
+        "repo_id": 1,
+    }
     app.storage.compute_facets.return_value = {
         "language": {}, "kind": {}, "repo": {},
     }

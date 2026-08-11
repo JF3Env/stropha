@@ -8,6 +8,9 @@ about the snapshot diff helpers, which are deterministic and small.
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
+
+import pytest
 
 from stropha.adapters.embedder.bge_m3 import BgeM3Config, BgeM3Embedder
 from stropha.pipeline.registry import lookup_adapter
@@ -141,3 +144,25 @@ def test_bge_m3_adapter_id_prefix() -> None:
     import inspect
     src = inspect.getsource(BgeM3Embedder.adapter_name.fget)  # type: ignore[union-attr]
     assert '"bge-m3"' in src
+
+
+def test_bge_m3_delegates_to_mlx_registry_alias() -> None:
+    with (
+        patch("stropha.adapters.embedder.bge_m3._is_mlx_available", return_value=True),
+        patch("stropha.adapters.embedder.mlx.MlxEmbedder.__init__", return_value=None) as init,
+    ):
+        BgeM3Embedder(BgeM3Config(batch_size=12))
+
+    config = init.call_args.args[0]
+    assert config.model == "bge-m3"
+    assert config.batch_size == 12
+
+
+def test_bge_m3_explains_platform_dependency() -> None:
+    from stropha.errors import EmbeddingError
+
+    with (
+        patch("stropha.adapters.embedder.bge_m3._is_mlx_available", return_value=False),
+        pytest.raises(EmbeddingError, match="not supported by FastEmbed"),
+    ):
+        BgeM3Embedder()

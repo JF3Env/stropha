@@ -24,6 +24,7 @@ from pathlib import Path
 import structlog
 
 from stropha.errors import StrophaError
+from stropha.models import SearchHit
 
 logger = structlog.get_logger(__name__)
 
@@ -56,6 +57,14 @@ class CachedRepo:
     def needs_index(self) -> bool:
         """Check if the repo needs indexing."""
         return self.last_indexed is None or not self.index_path.exists()
+
+
+@dataclass(frozen=True)
+class GitUrlSearchResult:
+    """Remote hits plus the exact repository row used for retrieval."""
+
+    hits: list[SearchHit]
+    repo_id: int
 
 
 def url_to_cache_key(url: str) -> str:
@@ -242,8 +251,19 @@ def search_git_url(
     *,
     top_k: int = 10,
     refresh: bool = False,
-) -> list:
-    """Search a remote repository via git URL.
+) -> list[SearchHit]:
+    """Search a remote repository and return the legacy hit list."""
+    return search_git_url_scoped(query, url, top_k=top_k, refresh=refresh).hits
+
+
+def search_git_url_scoped(
+    query: str,
+    url: str,
+    *,
+    top_k: int = 10,
+    refresh: bool = False,
+) -> GitUrlSearchResult:
+    """Search a remote repository and retain its exact repository id.
     
     Args:
         query: Search query
@@ -252,7 +272,7 @@ def search_git_url(
         refresh: If True, re-clone and re-index
         
     Returns:
-        List of SearchHit results
+        Hits and the exact resolved repository id, including for zero hits.
     """
     from stropha.pipeline.builder import build_stages
     from stropha.pipeline.config import load_pipeline_config
@@ -276,11 +296,17 @@ def search_git_url(
     os.environ["STROPHA_TARGET_REPO"] = str(cached.local_path)
 
     try:
+        from stropha.ingest.git_meta import detect
+
         resolved = load_pipeline_config()
         built = build_stages(resolved)
         with built.storage:  # type: ignore[union-attr]
-            hits = built.retrieval.search(query, top_k=top_k)
-        return hits
+            identity = detect(cached.local_path)
+            repo_id = built.storage.lookup_repo_id(identity.normalized_key)
+            if repo_id is None:
+                raise GitUrlError(f"Cached repository is not indexed: {cached.url}")
+            hits = built.retrieval.search(query, top_k=top_k, repo_id=repo_id)
+        return GitUrlSearchResult(hits=hits, repo_id=repo_id)
     finally:
         os.environ.pop("STROPHA_TARGET_REPO", None)
 

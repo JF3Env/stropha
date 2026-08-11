@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -263,8 +264,13 @@ class TestModuleSurface:
 
 def _make_ctx(hits: dict[str, _Hit | None]) -> MagicMock:
     app = MagicMock()
+    app.config.target_repo = Path.cwd()
+    app.storage.lookup_repo_id.return_value = 1
     app.storage.lookup_by_chunk_id.side_effect = (
         lambda cid: hits.get(cid)
+    )
+    app.storage.get_chunk_by_id.side_effect = lambda cid: (
+        {"chunk_id": cid, "repo_id": 1} if hits.get(cid) is not None else None
     )
     ctx = MagicMock()
     ctx.request_context.lifespan_context = app
@@ -319,3 +325,31 @@ class TestFreshnessMCP:
             ctx=_make_ctx({"c1": _Hit("abc   \n")}),
         )
         assert response.fresh is False
+
+    def test_foreign_chunk_does_not_expose_current_snippet(self) -> None:
+        from stropha.server import assert_snippet_freshness_tool
+
+        ctx = _make_ctx({"foreign": _Hit("secret snippet")})
+        app = ctx.request_context.lifespan_context
+        app.storage.get_chunk_by_id.side_effect = lambda _: {"repo_id": 2}
+
+        response = assert_snippet_freshness_tool(
+            "foreign", "old snippet", ctx=ctx
+        )
+
+        assert response.fresh is False
+        assert response.current_snippet is None
+
+    def test_unresolved_repository_fails_closed(self) -> None:
+        from stropha.server import assert_snippet_freshness_tool
+
+        ctx = _make_ctx({"foreign": _Hit("secret snippet")})
+        app = ctx.request_context.lifespan_context
+        app.storage.lookup_repo_id.return_value = None
+
+        response = assert_snippet_freshness_tool(
+            "foreign", "old snippet", ctx=ctx
+        )
+
+        assert response.fresh is None
+        assert response.current_snippet is None

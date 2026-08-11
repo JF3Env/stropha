@@ -663,6 +663,11 @@ def search(
         "--refresh",
         help="Re-clone and re-index remote repository (for git URLs).",
     ),
+    include_other_repos: bool = typer.Option(
+        False,
+        "--include-other-repos",
+        help="Search every indexed repository instead of only the current repository.",
+    ),
     language: list[str] | None = typer.Option(
         None,
         "--language", "-l",
@@ -710,7 +715,7 @@ def search(
     """
     import os
 
-    from .tools.git_url import is_git_url, search_git_url
+    from .tools.git_url import GitUrlError, is_git_url, search_git_url
 
     # Set env var to enable recursive retrieval for this search
     if recursive:
@@ -724,7 +729,9 @@ def search(
     truncated_oversize = False
     try:
         # Handle git URL search
-        if repo_url and is_git_url(repo_url):
+        if repo_url:
+            if not is_git_url(repo_url):
+                raise GitUrlError(f"Invalid git repository URL: {repo_url}")
             console.print(f"[dim]Searching remote repo: {repo_url}[/dim]")
             if refresh:
                 console.print("[dim]Refreshing cache...[/dim]")
@@ -734,7 +741,23 @@ def search(
             resolved = load_pipeline_config()
             built = build_stages(resolved)
             with built.storage:  # type: ignore[union-attr]
-                hits = built.retrieval.search(query, top_k=fetch_k)
+                repo_id: int | None = None
+                if not include_other_repos:
+                    from .ingest.git_meta import detect
+
+                    cfg = _load_config()
+                    target = cfg.target_repo or Path.cwd()
+                    identity = detect(target)
+                    repo_id = built.storage.lookup_repo_id(identity.normalized_key)
+                    if repo_id is None:
+                        console.print(
+                            f"[red]Current repository is not indexed:[/red] {target}"
+                        )
+                        raise typer.Exit(code=1)
+                if repo_id is None:
+                    hits = built.retrieval.search(query, top_k=fetch_k)
+                else:
+                    hits = built.retrieval.search(query, top_k=fetch_k, repo_id=repo_id)
 
         # Apply filters
         if has_filters:

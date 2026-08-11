@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from typing import Any
 
 from stropha.adapters.storage.postgres import PostgresStorage
@@ -41,6 +42,9 @@ class _Raw:
     def commit(self) -> None:
         self.commits += 1
 
+    def transaction(self):
+        return nullcontext()
+
 
 def test_postgres_fts_augmentation_deduplicates_and_batches() -> None:
     rows = [
@@ -66,6 +70,7 @@ def test_postgres_fts_augmentation_deduplicates_and_batches() -> None:
         (query, params) for query, params in raw.calls if "UPDATE chunks AS c" in query
     ]
     assert "DISTINCT ON (c.id)" in select_query
+    assert "n.repo_id IS NOT DISTINCT FROM c.repo_id" in select_query
     assert len(update_calls) == 2
     assert len(update_calls[0][1]) == 2_000
     assert len(update_calls[1][1]) == 2

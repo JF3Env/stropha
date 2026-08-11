@@ -256,8 +256,13 @@ class TestModuleSurface:
 # ---------------------------------------------------------------------------
 
 
-def _make_ctx(stats_repos: list[dict] | None = None, raise_stats: bool = False) -> MagicMock:
+def _make_ctx(
+    target_repo: Path | None = None,
+    stats_repos: list[dict] | None = None,
+    raise_stats: bool = False,
+) -> MagicMock:
     app = MagicMock()
+    app.config.target_repo = target_repo
     if raise_stats:
         app.storage.stats.side_effect = RuntimeError("stats boom")
     else:
@@ -275,19 +280,20 @@ class TestSpecConsistencyMCP:
         assert "spec_consistency_tool" in tool_names
 
     def test_no_repo_root(self) -> None:
-        """When stats() returns no repos, the loader returns {}."""
+        """Without a configured target, the tool fails closed."""
         from stropha.server import spec_consistency_tool
 
         response = spec_consistency_tool(
-            ["Foo"], None, ctx=_make_ctx(stats_repos=[]),
+            ["Foo"], None, ctx=_make_ctx(),
         )
         assert response.invariants_found == 0
+        assert response.notes
 
-    def test_stats_exception_treated_as_no_repos(self) -> None:
+    def test_storage_stats_are_not_consulted(self, tmp_path: Path) -> None:
         from stropha.server import spec_consistency_tool
 
         response = spec_consistency_tool(
-            ["Foo"], [], ctx=_make_ctx(raise_stats=True),
+            ["Foo"], [], ctx=_make_ctx(tmp_path, raise_stats=True),
         )
         assert response.invariants_found == 0
 
@@ -308,7 +314,7 @@ class TestSpecConsistencyMCP:
 
         response = spec_consistency_tool(
             ["FooClass", "BarClass"], [],
-            ctx=_make_ctx(stats_repos=[{"local_path": str(tmp_path)}]),
+            ctx=_make_ctx(tmp_path),
         )
         # Both invariants found; both should produce conflicts.
         assert response.invariants_found >= 2
@@ -320,7 +326,7 @@ class TestSpecConsistencyMCP:
 
         response = spec_consistency_tool(
             ["Foo"], [],
-            ctx=_make_ctx(stats_repos=[{"local_path": str(tmp_path)}]),
+            ctx=_make_ctx(tmp_path),
         )
         assert response.invariants_found == 0
         assert response.spec_files_scanned == []
@@ -343,19 +349,24 @@ class TestSpecConsistencyMCP:
 
         response = spec_consistency_tool(
             [], [],
-            ctx=_make_ctx(stats_repos=[{"local_path": str(tmp_path)}]),
+            ctx=_make_ctx(tmp_path),
         )
         # CLAUDE.md should still be scanned; AGENTS.md skipped silently.
         assert "CLAUDE.md" in response.spec_files_scanned
         assert "AGENTS.md" not in response.spec_files_scanned
 
-    def test_repos_field_named_path(self, tmp_path: Path) -> None:
-        """``stats()`` may return ``path`` instead of ``local_path``."""
+    def test_configured_target_wins_over_first_storage_repo(self, tmp_path: Path) -> None:
         from stropha.server import spec_consistency_tool
 
-        (tmp_path / "CLAUDE.md").write_text("Foo MUST do X.", encoding="utf-8")
+        target = tmp_path / "target"
+        foreign = tmp_path / "foreign"
+        target.mkdir()
+        foreign.mkdir()
+        (target / "CLAUDE.md").write_text("TargetRule MUST do X.", encoding="utf-8")
+        (foreign / "CLAUDE.md").write_text("ForeignRule MUST do Y.", encoding="utf-8")
         response = spec_consistency_tool(
-            ["Foo"], [],
-            ctx=_make_ctx(stats_repos=[{"path": str(tmp_path)}]),
+            ["TargetRule", "ForeignRule"], [],
+            ctx=_make_ctx(target, stats_repos=[{"local_path": str(foreign)}]),
         )
-        assert response.invariants_found >= 1
+        assert response.invariants_found == 1
+        assert [conflict.matched for conflict in response.conflicts] == ["TargetRule"]

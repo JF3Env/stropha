@@ -24,6 +24,8 @@ psycopg = pytest.importorskip("psycopg")
 from stropha.adapters.storage.postgres import (  # noqa: E402
     PostgresStorage,
     PostgresStorageConfig,
+    _distance_expression,
+    _hnsw_index_expression,
 )
 from stropha.ingest.git_meta import RepoIdentity  # noqa: E402
 from stropha.models import Chunk  # noqa: E402
@@ -33,6 +35,40 @@ BASE_DSN = os.environ.get(
 )
 TEST_DB = "stropha_pgtest"
 DIM = 8
+
+
+def test_large_vector_hnsw_uses_halfvec_expression() -> None:
+    assert _hnsw_index_expression("embedding", 2000) == "embedding vector_l2_ops"
+    assert _hnsw_index_expression("embedding", 2560) == (
+        "(embedding::halfvec(2560)) halfvec_l2_ops"
+    )
+    assert _distance_expression("c.embedding", 2560) == (
+        "(c.embedding::halfvec(2560)) <-> %s::halfvec(2560)"
+    )
+    assert _hnsw_index_expression("embedding", 4096) is None
+    assert _distance_expression("c.embedding", 4096) == "c.embedding <-> %s::vector"
+
+
+def test_large_vector_hnsw_expression_executes(pg_dsn: str) -> None:
+    dim = 2560
+    vector = "[1," + ",".join("0" for _ in range(dim - 1)) + "]"
+    index_expression = _hnsw_index_expression("embedding", dim)
+    distance_expression = _distance_expression("embedding", dim)
+    assert index_expression is not None
+
+    with psycopg.connect(pg_dsn) as conn, conn.cursor() as cur:
+        cur.execute(f"CREATE TEMP TABLE large_vectors (embedding vector({dim}));")
+        cur.execute(
+            "CREATE INDEX large_vectors_hnsw ON large_vectors "
+            f"USING hnsw ({index_expression});"
+        )
+        cur.execute("INSERT INTO large_vectors(embedding) VALUES (%s::vector);", (vector,))
+        cur.execute(
+            f"SELECT {distance_expression} AS distance FROM large_vectors "
+            f"ORDER BY {distance_expression} LIMIT 1;",
+            (vector, vector),
+        )
+        assert float(cur.fetchone()[0]) == pytest.approx(0.0)
 
 
 def _swap_db(dsn: str, db: str) -> str:
@@ -129,6 +165,7 @@ def test_migrate_and_stats(store: PostgresStorage) -> None:
     assert s["files"] == 3
     assert s["index_dim"] == DIM
     assert "***" in s["db_path"]  # password redacted
+    assert store._raw.info.transaction_status == psycopg.pq.TransactionStatus.IDLE
 
 
 def test_schema_v14_updates_existing_version_and_has_hnsw(
@@ -240,6 +277,7 @@ def test_search_dense_orders_by_similarity(store: PostgresStorage) -> None:
     assert hits == sorted(hits, key=lambda h: -h.score)
     assert hits[0].repo is not None
     assert hits[0].repo.normalized_key == "local:/tmp/demo"
+    assert store._raw.info.transaction_status == psycopg.pq.TransactionStatus.IDLE
 
 
 def test_search_bm25_finds_tokens(store: PostgresStorage) -> None:
@@ -253,6 +291,155 @@ def test_search_symbol_tokens_camelcase(store: PostgresStorage) -> None:
     hits = store.search_symbol_tokens("ConnectionPool", k=5)
     assert hits[0].symbol == "ConnectionPool"
     assert hits[0].score >= 1.0
+
+
+def test_search_lanes_scope_before_ranking_and_limit(store: PostgresStorage) -> None:
+    local_repo = _seed(store)
+    foreign_repo = store.register_repo(
+        RepoIdentity(
+            normalized_key="local:/tmp/foreign",
+            remote_url=None,
+            root_path=Path("/tmp/foreign"),
+            default_branch="main",
+            head_commit="def",
+        )
+    )
+    foreign = _chunk(99, "foreign.py", "validate_token", "validate token " * 8)
+    store.upsert_chunk(
+        foreign,
+        _emb(0),
+        "demo",
+        DIM,
+        repo_id=foreign_repo,
+        enricher_id="noop",
+    )
+    local = store.get_chunk_by_id("sha256:t0")
+    assert local is not None
+    store.upsert_secondary_embeddings(
+        [
+            {
+                "chunk_id": "sha256:t0",
+                "content_hash": local["content_hash"],
+                "embedding": _secondary_emb(1),
+            },
+            {
+                "chunk_id": foreign.chunk_id,
+                "content_hash": foreign.content_hash,
+                "embedding": _secondary_emb(0),
+            },
+        ],
+        "model2vec:v1",
+    )
+    store.commit()
+
+    assert store.search_dense(_emb(0), k=1, repo_id=local_repo)[0].repo is not None
+    assert store.search_dense(_emb(0), k=1, repo_id=local_repo)[
+        0
+    ].repo.normalized_key == "local:/tmp/demo"
+    assert store.search_bm25("validate token", k=1, repo_id=local_repo)[
+        0
+    ].repo.normalized_key == "local:/tmp/demo"
+    assert store.search_symbol_tokens("validate_token", k=1, repo_id=local_repo)[
+        0
+    ].repo.normalized_key == "local:/tmp/demo"
+    assert store.lookup_by_symbol("validate_token", limit=1, repo_id=local_repo)[
+        0
+    ].repo.normalized_key == "local:/tmp/demo"
+    assert store.search_secondary_embeddings(
+        _secondary_emb(0), "model2vec:v1", k=1, repo_id=local_repo
+    )[0].repo.normalized_key == "local:/tmp/demo"
+
+
+def test_file_outline_filters_duplicate_path_by_repo(store: PostgresStorage) -> None:
+    local_repo = _seed(store)
+    foreign_repo = store.register_repo(
+        RepoIdentity(
+            normalized_key="local:/tmp/outline-foreign",
+            remote_url=None,
+            root_path=Path("/tmp/outline-foreign"),
+            default_branch="main",
+            head_commit="def",
+        )
+    )
+    store.upsert_chunk(
+        _chunk(500, "auth.py", "foreign_auth", "def foreign_auth(): pass"),
+        _emb(500),
+        "demo",
+        DIM,
+        repo_id=foreign_repo,
+    )
+    store.commit()
+
+    scoped = store.file_outline("auth.py", repo_id=local_repo)
+    broad = store.file_outline("auth.py")
+
+    assert {entry["symbol"] for entry in scoped} == {
+        "validate_token",
+        "login_user",
+    }
+    assert "foreign_auth" in {entry["symbol"] for entry in broad}
+
+
+def test_graph_fts_augmentation_matches_path_and_repo(store: PostgresStorage) -> None:
+    repo_a = _seed(store)
+    repo_b = store.register_repo(
+        RepoIdentity(
+            normalized_key="local:/tmp/foreign",
+            remote_url=None,
+            root_path=Path("/tmp/foreign"),
+            default_branch="main",
+            head_commit="def",
+        )
+    )
+    for index, repo_id in ((201, repo_a), (202, repo_b)):
+        store.upsert_chunk(
+            _chunk(index, "shared.py", f"shared_{index}", "def shared(): pass"),
+            _emb(index),
+            "demo",
+            DIM,
+            repo_id=repo_id,
+            enricher_id="noop",
+        )
+    store._conn.execute(
+        "INSERT OR REPLACE INTO graph_nodes "
+        "(node_id, label, source_file, source_location, repo_id) VALUES (?, ?, ?, ?, ?)",
+        ("repo-a-node", "repoaonlygraphterm", "shared.py", "L1", repo_a),
+    )
+    store.commit()
+
+    store.augment_fts_with_graph()
+
+    assert [
+        hit.chunk_id
+        for hit in store.search_bm25("repoaonlygraphterm", repo_id=repo_a)
+        if hit.rel_path == "shared.py"
+    ] == ["sha256:t201"]
+    assert store.search_bm25("repoaonlygraphterm", repo_id=repo_b) == []
+
+
+def test_graph_fts_augmentation_preserves_null_repo_matching(
+    store: PostgresStorage,
+) -> None:
+    store.upsert_chunk(
+        _chunk(203, "legacy.py", "legacy", "def legacy(): pass"),
+        _emb(203),
+        "demo",
+        DIM,
+        repo_id=None,
+        enricher_id="noop",
+    )
+    store._conn.execute(
+        "INSERT OR REPLACE INTO graph_nodes "
+        "(node_id, label, source_file, source_location, repo_id) VALUES (?, ?, ?, ?, ?)",
+        ("legacy-node", "legacynullgraphterm", "legacy.py", "L1", None),
+    )
+    store.commit()
+
+    store.augment_fts_with_graph()
+
+    assert [hit.chunk_id for hit in store.search_bm25("legacynullgraphterm")] == [
+        "sha256:t203"
+    ]
 
 
 def test_chunk_freshness_drift(store: PostgresStorage) -> None:

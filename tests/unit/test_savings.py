@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import patch
 
 from stropha.models import SearchHit
@@ -365,7 +366,15 @@ class TestSearchCodeWiring:
         from unittest.mock import MagicMock
 
         app = MagicMock()
+        app.config.target_repo = Path.cwd()
+        app.pinned_chunk_ids = set()
+        app.seen_chunk_ids = set()
         app.search_engine.search.return_value = list(hits)
+        app.storage.lookup_repo_id.return_value = 1
+        app.storage.get_chunk_by_id.side_effect = lambda chunk_id: {
+            "chunk_id": chunk_id,
+            "repo_id": 1,
+        }
         app.storage.compute_facets.return_value = {
             "language": {}, "kind": {}, "repo": {},
         }

@@ -67,8 +67,8 @@ def merge_hits(
 
     out: list[SearchHit] = []
     used_chunk_ids: set[str] = set()
-    # Bucket by rel_path for the adjacency pass.
-    by_path: dict[str, list[SearchHit]] = {}
+    # Bucket by repository + rel_path so same-named files remain independent.
+    by_path: dict[tuple[str | None, str], list[SearchHit]] = {}
     for h in hits:
         if h.chunk_id in used_chunk_ids:
             continue
@@ -84,14 +84,14 @@ def merge_hits(
             continue
         used_chunk_ids.add(h.chunk_id)
         used_chunk_ids.add(merged.chunk_id)
-        by_path.setdefault(merged.rel_path, []).append(merged)
+        by_path.setdefault(_path_key(merged), []).append(merged)
         out.append(merged)
 
     # Adjacency merge — walk each file's hits in start_line order, merge
     # any pair whose gap < adjacency_lines.
     final: list[SearchHit] = []
     for h in out:
-        siblings = by_path.get(h.rel_path, [])
+        siblings = by_path.get(_path_key(h), [])
         if len(siblings) <= 1:
             final.append(h)
             continue
@@ -100,7 +100,7 @@ def merge_hits(
         absorbed = False
         for i, prev in enumerate(final):
             if (
-                prev.rel_path == h.rel_path
+                _path_key(prev) == _path_key(h)
                 and h.chunk_id != prev.chunk_id
                 and _adjacent_or_overlap(prev, h, adjacency_lines)
             ):
@@ -154,7 +154,7 @@ def _maybe_merge_parent(
 
 
 def _adjacent_or_overlap(a: SearchHit, b: SearchHit, gap: int) -> bool:
-    if a.rel_path != b.rel_path:
+    if _path_key(a) != _path_key(b):
         return False
     lo_a, hi_a = a.start_line, a.end_line
     lo_b, hi_b = b.start_line, b.end_line
@@ -163,6 +163,11 @@ def _adjacent_or_overlap(a: SearchHit, b: SearchHit, gap: int) -> bool:
     if hi_b < lo_a:
         return (lo_a - hi_b) <= gap
     return True  # overlap
+
+
+def _path_key(hit: SearchHit) -> tuple[str | None, str]:
+    repo_key = hit.repo.normalized_key if hit.repo is not None else None
+    return repo_key, hit.rel_path
 
 
 def _absorb(host: SearchHit, other: SearchHit, storage: Storage) -> SearchHit:

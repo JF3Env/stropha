@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, PropertyMock, patch
 import pytest
 
 from stropha.inference import (
+    capture_inference_calls,
     generate,
     get_backend,
     is_mlx_available,
@@ -247,6 +248,23 @@ class TestGenerate:
             generate("prompt", backend="ollama")
 
             mock_get.assert_called_with(prefer="ollama")
+
+    def test_capture_inference_calls_records_dispatch_without_prompt(self):
+        with patch("stropha.inference.backend.get_backend") as mock_get:
+            mock_backend = MagicMock()
+            mock_backend.name = "test"
+            mock_backend.generate.return_value = "generated text"
+            mock_get.return_value = mock_backend
+
+            with capture_inference_calls() as calls:
+                generate("sensitive prompt", max_tokens=123)
+
+        assert len(calls) == 1
+        assert calls[0]["backend"] == "test"
+        assert calls[0]["max_tokens"] == 123
+        assert calls[0]["status"] == "completed"
+        assert calls[0]["output_chars"] == len("generated text")
+        assert "prompt" not in calls[0]
 
 
 # --------------------------------------------------------------------------- #

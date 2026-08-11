@@ -18,6 +18,7 @@ from stropha.adapters.retrieval.streams.graph_vec import (
     GraphVecStream,
     _cosine,
 )
+from stropha.ingest.git_meta import RepoIdentity
 from stropha.ingest.graph_vec_loader import GraphVecLoader, _pack_vec, _unpack_vec
 from stropha.ingest.graphify_loader import GraphifyLoader
 from stropha.models import Chunk
@@ -70,10 +71,11 @@ def _seed_graph(storage: Storage, graph_path: Path,
 
 
 def _seed_chunk(storage: Storage, *, rel_path: str, start: int, end: int,
-                content: str = "code", embedding_dim: int = 4) -> None:
+                content: str = "code", embedding_dim: int = 4,
+                repo_id: int | None = None) -> None:
     """Insert a chunk row so the GraphVec stream can hydrate hits from it."""
     chunk = Chunk(
-        chunk_id=f"sha-{rel_path}-{start}",
+        chunk_id=f"sha-{repo_id}-{rel_path}-{start}",
         rel_path=rel_path, language="python", kind="function",
         symbol=None, parent_chunk_id=None,
         start_line=start, end_line=end,
@@ -83,6 +85,7 @@ def _seed_chunk(storage: Storage, *, rel_path: str, start: int, end: int,
     storage.upsert_chunk(
         chunk, embedding=embedding,
         embedding_model="stub-v1", embedding_dim=embedding_dim,
+        repo_id=repo_id,
     )
 
 
@@ -236,6 +239,56 @@ def test_stream_finds_most_similar_node(tmp_path: Path, storage: Storage,
     # higher than math.
     assert len(hits) >= 1
     assert hits[0].rel_path == "src/auth.py"
+
+
+def test_stream_scopes_graph_nodes_and_path_hydration_by_repo(storage: Storage) -> None:
+    def register(key: str) -> int:
+        return storage.register_repo(
+            RepoIdentity(
+                normalized_key=key,
+                remote_url=f"https://{key}.git",
+                root_path=Path(f"/tmp/{key.rsplit('/', 1)[-1]}"),
+                default_branch="main",
+                head_commit="abc",
+            )
+        )
+
+    repo_a = register("github.com/example/a")
+    repo_b = register("github.com/example/b")
+    for repo_id, label in ((repo_a, "A"), (repo_b, "B")):
+        _seed_chunk(
+            storage,
+            rel_path="src/shared.py",
+            start=1,
+            end=10,
+            content=f"repo {label}",
+            repo_id=repo_id,
+        )
+        storage._conn.execute(
+            """INSERT INTO graph_nodes
+               (node_id, label, source_file, source_location, embedding,
+                embedding_model, embedding_dim, repo_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                f"{repo_id}:shared",
+                f"Shared{label}",
+                "src/shared.py",
+                "L1",
+                _pack_vec([1.0, 0.0, 0.0, 0.0]),
+                "stub-v1",
+                4,
+                repo_id,
+            ),
+        )
+    storage.commit()
+
+    stream = GraphVecStream(GraphVecConfig(k=5, min_similarity=0.0), storage=storage)
+    hits = stream.search("shared", [1.0, 0.0, 0.0, 0.0], repo_id=repo_b)
+
+    assert len(hits) == 1
+    assert hits[0].repo is not None
+    assert hits[0].repo.normalized_key == "github.com/example/b"
+    assert hits[0].snippet == "repo B"
 
 
 def test_stream_drops_below_min_similarity(tmp_path: Path, storage: Storage) -> None:

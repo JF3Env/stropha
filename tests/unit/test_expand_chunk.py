@@ -115,6 +115,13 @@ def _make_app(storage_lookup: dict[str, SearchHit | None]) -> MagicMock:
     app.storage.lookup_by_chunk_id.side_effect = (
         lambda cid: storage_lookup.get(cid)
     )
+    app.storage.get_chunk_by_id.side_effect = lambda cid: (
+        {"chunk_id": cid, "repo_id": 1}
+        if storage_lookup.get(cid) is not None
+        else None
+    )
+    app.storage.lookup_repo_id.return_value = 1
+    app.config.target_repo = Path.cwd()
     app.session_id = None
     return app
 
@@ -166,6 +173,32 @@ class TestExpandChunk:
         assert result.result is not None
         # Original snippet preserved (no rendering applied).
         assert "def f()" in result.result.snippet
+
+    def test_foreign_chunk_is_not_expanded_without_broad_opt_in(self) -> None:
+        from stropha.server import expand_chunk
+
+        app = _make_app({"foreign": _hit("foreign")})
+        app.storage.get_chunk_by_id.side_effect = lambda _: {
+            "chunk_id": "foreign",
+            "repo_id": 2,
+        }
+
+        scoped = expand_chunk("foreign", ctx=_make_ctx(app))
+        broad = expand_chunk("foreign", include_other_repos=True, ctx=_make_ctx(app))
+
+        assert scoped.found is False
+        assert broad.found is True
+
+    def test_unresolved_repository_fails_closed(self) -> None:
+        from stropha.server import expand_chunk
+
+        app = _make_app({"foreign": _hit("foreign")})
+        app.storage.lookup_repo_id.return_value = None
+
+        result = expand_chunk("foreign", ctx=_make_ctx(app))
+
+        assert result.found is False
+        app.storage.lookup_by_chunk_id.assert_not_called()
 
 
 class TestExpandChunks:

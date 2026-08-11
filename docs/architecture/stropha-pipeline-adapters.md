@@ -1143,14 +1143,17 @@ pipeline:
 | `ollama` | `adapters/enricher/ollama.py` | LLM local | One-line summary via Ollama HTTP (`qwen2.5-coder:1.5b`). Fail-graceful. |
 | `mlx` | `adapters/enricher/mlx.py` | LLM local | Mesma proposta do `ollama` mas via `mlx-lm` nativo Apple Silicon. Optional dep `[mlx]`. Lazy-load. |
 
-### Embedder (5)
+### Embedder (8)
 
 | Adapter | Arquivo | Modelo padrão | Cost / network |
 |---|---|---|---|
 | `local` (default) | `adapters/embedder/local.py` | `mixedbread-ai/mxbai-embed-large-v1` @ 1024d | local ONNX, ~1.7 GB on disk |
 | `voyage` | `adapters/embedder/voyage.py` | `voyage-code-3` @ 512d (Matryoshka) | cloud, requires `VOYAGE_API_KEY` |
-| `bge-m3` | `adapters/embedder/bge_m3.py` | `BAAI/bge-m3` @ 1024d | local ONNX, multilingual fallback |
-| `mlx` | `adapters/embedder/mlx.py` | configurável | local Apple Silicon, optional dep `[mlx-embed]` |
+| `bge-m3` | `adapters/embedder/bge_m3.py` | `BAAI/bge-m3` @ 1024d | local Apple Silicon via `[mlx-embed]`, multilingual |
+| `mlx` | `adapters/embedder/mlx.py` | registry MLX or Qwen3-Embedding | local Apple Silicon via `mlx-embedding-models` or `mlx-lm`; optional dep `[mlx-embed]` |
+| `nvidia` | `adapters/embedder/hardware.py` | configurável (SentenceTransformers) | native CUDA / PyTorch engine |
+| `amd` | `adapters/embedder/hardware.py` | configurável (SentenceTransformers) | native ROCm / PyTorch engine |
+| `intel-npu` | `adapters/embedder/hardware.py` | configurável (SentenceTransformers) | native OpenVINO NPU engine |
 | `model2vec` | `adapters/embedder/model2vec.py` | `minishlab/potion-code-16M` @ 256d | local static lookup; primary or optional secondary lane |
 
 ### Storage (1)
@@ -1158,13 +1161,13 @@ pipeline:
 | Adapter | Arquivo | Notas |
 |---|---|---|
 | `sqlite-vec` (default) | `adapters/storage/sqlite_vec.py` | Subclass do `stropha.storage.Storage` legacy — herda a superfície read/write completa. Schema v1→v14. |
-| `postgres` | `adapters/storage/postgres.py` | pgvector com paridade de schema v14 e índice HNSW. |
+| `postgres` | `adapters/storage/postgres.py` | pgvector com paridade de schema v14. HNSW usa `vector_l2_ops` até 2000d e índice de expressão `halfvec_l2_ops` entre 2001d e 4000d, mantendo o vetor armazenado em precisão completa. |
 
 ### Retrieval coordinator (1)
 
 | Adapter | Arquivo | Notas |
 |---|---|---|
-| `hybrid-rrf` (default) | `adapters/retrieval/hybrid_rrf.py` | RRF (k=60) sobre N streams configuráveis em `config.streams.{name: {adapter, config}}`. `adapter_id` digests a composição de streams (drift). Skipa `embed_query` quando nenhuma stream dense está habilitada. |
+| `hybrid-rrf` (default) | `adapters/retrieval/hybrid_rrf.py` | RRF (k=60) sobre N streams configuráveis em `config.streams.{name: {adapter, config}}`. `adapter_id` digests a composição de streams (drift). Skipa `embed_query` quando nenhuma stream dense está habilitada. Propaga o `repo_id` opcional para todos os caminhos single/multi-query e streams. |
 
 ### Retrieval stream sub-adapters (5)
 
@@ -1175,6 +1178,17 @@ pipeline:
 | `like-tokens` (default) | `adapters/retrieval/streams/like_tokens.py` | Symbol-token `LIKE` match — identificadores. |
 | `graph-vec` (opt-in default-on quando graph existe) | `adapters/retrieval/streams/graph_vec.py` | Cosine brute-force sobre `graph_nodes.embedding`. Trilha A L3. |
 | `model2vec-cosine` (opt-in) | `adapters/retrieval/streams/model2vec_cosine.py` | ANN sobre o espaço secundário 256-d; embebe a query literal reescrita com a mesma instância Model2Vec usada no backfill. |
+
+O contrato interno de retrieval usa `repo_id: int | None` keyword-only. ID
+concreto restringe dense, BM25, symbol, Model2Vec e GraphVec antes do budget de
+candidatos; `None` reserva-se à busca all-repo explicitamente solicitada pelas
+fronteiras públicas. MCP, CLI e frontend resolvem o repositório corrente por
+padrão e falham fechados se ele não estiver registrado.
+
+Adapters de retrieval/storage usados por buscas scoped devem implementar o
+keyword `repo_id` e filtrar antes de ranking/`LIMIT`. Para compatibilidade com
+adapters antigos, chamadas internas broad (`repo_id=None`) omitem o keyword onde
+prático; chamadas com ID concreto nunca fazem fallback sem escopo.
 
 `BuiltStages.secondary_embedder` é `None` quando o stream não está configurado.
 Quando habilitado, o builder cria uma única instância Model2Vec, valida

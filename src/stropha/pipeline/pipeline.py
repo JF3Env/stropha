@@ -515,6 +515,23 @@ class Pipeline:
     ) -> RepoStats:
         identity = detect_repo(repo_path)
         repo_id = self._storage.register_repo(identity)
+        # A checkout may first be indexed before it is a Git repo or before an
+        # origin is configured. Once its stable remote identity is available,
+        # those fallback identities are never selected again and cannot
+        # reconcile deleted files, so discard their obsolete index data.
+        root = identity.root_path
+        for fallback_key in (f"path:{root}", f"local:{root}"):
+            if fallback_key == identity.normalized_key:
+                continue
+            fallback_id = self._storage.lookup_repo_id(fallback_key)
+            if fallback_id is None or fallback_id == repo_id:
+                continue
+            self._storage.clear_repo(fallback_id)
+            log.info(
+                "pipeline.repo_fallback_cleared",
+                repo=identity.normalized_key,
+                fallback_repo=fallback_key,
+            )
         log.info(
             "pipeline.repo_registered",
             repo=identity.normalized_key,

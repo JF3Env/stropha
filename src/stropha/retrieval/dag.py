@@ -107,6 +107,7 @@ def execute_plan(
     search_engine: Any,
     storage: Any | None,
     context_budget: int,
+    repo_id: int | None = None,
 ) -> AssembleContextResult:
     """Execute every step of ``plan`` and return one bundle.
 
@@ -119,6 +120,8 @@ def execute_plan(
             when the plan includes any ``find_*`` steps.
         context_budget: total token budget for the consolidated
             bundle. Required (positive). The packer enforces it.
+        repo_id: optional repository scope for every semantic and graph
+            retrieval. ``None`` intentionally searches across repositories.
 
     Returns:
         An :class:`AssembleContextResult` identical in shape to
@@ -142,7 +145,10 @@ def execute_plan(
             query = step.args.get("query", plan.task)
             top_k = int(step.args.get("top_k", 5))
             try:
-                hits = search_engine.search(query, top_k=top_k)
+                search_kwargs: dict[str, Any] = {"top_k": top_k}
+                if repo_id is not None:
+                    search_kwargs["repo_id"] = repo_id
+                hits = search_engine.search(query, **search_kwargs)
             except Exception as exc:
                 log.warning(
                     "dag.search_code_failed",
@@ -170,7 +176,10 @@ def execute_plan(
             if step.tool == "find_callers":
                 from .graph import find_callers
 
-                raw = find_callers(storage, symbol, depth=1, limit=5)
+                graph_kwargs: dict[str, Any] = {"depth": 1, "limit": 5}
+                if repo_id is not None:
+                    graph_kwargs["repo_id"] = repo_id
+                raw = find_callers(storage, symbol, **graph_kwargs)
                 normalised = _normalize_to_hits(raw)
                 for h in normalised:
                     if h.chunk_id in seen_chunk_ids:
@@ -180,7 +189,10 @@ def execute_plan(
             elif step.tool == "find_tests_for":
                 from .graph import find_tests_for
 
-                raw = find_tests_for(storage, symbol, limit=5)
+                graph_kwargs = {"limit": 5}
+                if repo_id is not None:
+                    graph_kwargs["repo_id"] = repo_id
+                raw = find_tests_for(storage, symbol, **graph_kwargs)
                 normalised = _normalize_to_hits(raw)
                 for h in normalised:
                     if h.chunk_id in seen_chunk_ids:
@@ -190,7 +202,10 @@ def execute_plan(
             elif step.tool == "find_rationale":
                 from .graph import find_rationale
 
-                raw = find_rationale(storage, symbol, limit=5)
+                graph_kwargs = {"limit": 5}
+                if repo_id is not None:
+                    graph_kwargs["repo_id"] = repo_id
+                raw = find_rationale(storage, symbol, **graph_kwargs)
                 normalised = _normalize_to_hits(raw)
                 for h in normalised:
                     if h.chunk_id in seen_chunk_ids:

@@ -227,6 +227,7 @@ def assemble_context(
     diff_repo: Any = None,
     diff_ref_a: str | None = None,
     diff_ref_b: str | None = None,
+    repo_id: int | None = None,
 ) -> AssembleContextResult:
     """One-shot assembly: search → optional graph extensions → pack → render.
 
@@ -266,6 +267,8 @@ def assemble_context(
             tree (uncommitted + staged) diff against HEAD.
         diff_ref_b: ending git ref. Defaults to ``HEAD`` when
             ``diff_ref_a`` is set.
+        repo_id: optional repository scope for every semantic and graph
+            retrieval. ``None`` intentionally searches across repositories.
 
     Returns:
         :class:`AssembleContextResult` with the rendered bundle and the
@@ -285,9 +288,10 @@ def assemble_context(
     primary_search_k = top_k
     if diff_scope:
         primary_search_k = max(top_k * 5, 30)
-    primary_hits: list[SearchHit] = list(
-        search_engine.search(task, top_k=primary_search_k)
-    )
+    search_kwargs: dict[str, Any] = {"top_k": primary_search_k}
+    if repo_id is not None:
+        search_kwargs["repo_id"] = repo_id
+    primary_hits: list[SearchHit] = list(search_engine.search(task, **search_kwargs))
 
     if diff_scope:
         # Filter to only files in the diff. On failure (git missing,
@@ -346,9 +350,10 @@ def assemble_context(
             if not hit.symbol:
                 continue
             try:
-                extras = _find_callers(
-                    storage, hit.symbol, depth=1, limit=5,
-                )
+                graph_kwargs: dict[str, Any] = {"depth": 1, "limit": 5}
+                if repo_id is not None:
+                    graph_kwargs["repo_id"] = repo_id
+                extras = _find_callers(storage, hit.symbol, **graph_kwargs)
             except Exception as exc:
                 log.warning(
                     "assemble.find_callers_failed",
@@ -374,9 +379,10 @@ def assemble_context(
             if not hit.symbol:
                 continue
             try:
-                extras = _find_tests_for(
-                    storage, hit.symbol, limit=5,
-                )
+                graph_kwargs = {"limit": 5}
+                if repo_id is not None:
+                    graph_kwargs["repo_id"] = repo_id
+                extras = _find_tests_for(storage, hit.symbol, **graph_kwargs)
             except Exception as exc:
                 log.warning(
                     "assemble.find_tests_failed",
@@ -402,7 +408,10 @@ def assemble_context(
             if not hit.symbol:
                 continue
             try:
-                resp = _find_rationale(storage, hit.symbol, limit=5)
+                graph_kwargs = {"limit": 5}
+                if repo_id is not None:
+                    graph_kwargs["repo_id"] = repo_id
+                resp = _find_rationale(storage, hit.symbol, **graph_kwargs)
             except Exception as exc:
                 log.warning(
                     "assemble.find_rationale_failed",

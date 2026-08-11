@@ -32,17 +32,20 @@ Usage:
 from .anthropic_backend import AnthropicBackend
 from .backend import (
     InferenceBackend,
+    capture_inference_calls,
     generate,
     get_backend,
     is_anthropic_available,
     is_deepseek_available,
     is_lms_available,
     is_mlx_available,
+    is_moa_available,
     is_ollama_available,
 )
 from .deepseek_backend import DeepSeekBackend
 from .lms_backend import LmsBackend
 from .mlx_backend import MlxBackend
+from .moa_backend import MoaBackend
 from .ollama_backend import OllamaBackend
 
 __all__ = [
@@ -51,12 +54,15 @@ __all__ = [
     "InferenceBackend",
     "LmsBackend",
     "MlxBackend",
+    "MoaBackend",
     "OllamaBackend",
+    "capture_inference_calls",
     "generate",
     "get_backend",
     "is_anthropic_available",
     "is_deepseek_available",
     "is_lms_available",
     "is_mlx_available",
+    "is_moa_available",
     "is_ollama_available",
 ]

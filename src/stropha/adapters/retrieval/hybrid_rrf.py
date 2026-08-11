@@ -243,6 +243,7 @@ class HybridRrfRetrieval(RetrievalStage):
         *,
         top_k: int | None = None,
         conversation_context: str | None = None,
+        repo_id: int | None = None,
     ) -> list[SearchHit]:
         if not query.strip() or not self._streams:
             return []
@@ -257,10 +258,18 @@ class HybridRrfRetrieval(RetrievalStage):
         )
         
         if multi_query_enabled:
-            return self._search_multi_query(query, k, conversation_context=conversation_context)
+            return self._search_multi_query(
+                query,
+                k,
+                conversation_context=conversation_context,
+                repo_id=repo_id,
+            )
         else:
             return self._search_single_query(
-                query, k, conversation_context=conversation_context
+                query,
+                k,
+                conversation_context=conversation_context,
+                repo_id=repo_id,
             )
 
     def _search_single_query(
@@ -270,6 +279,7 @@ class HybridRrfRetrieval(RetrievalStage):
         *,
         search_query: str | None = None,
         conversation_context: str | None = None,
+        repo_id: int | None = None,
     ) -> list[SearchHit]:
         """Execute search with a single query (the standard path)."""
         from ...config import get_config
@@ -321,7 +331,10 @@ class HybridRrfRetrieval(RetrievalStage):
         for name, stream in self._streams.items():
             # Use search_query for sparse/symbol streams (may be rewritten)
             # query_vec already uses dense_query (may be HyDE-rewritten)
-            hits = stream.search(search_query, query_vec)
+            if repo_id is None:
+                hits = stream.search(search_query, query_vec)
+            else:
+                hits = stream.search(search_query, query_vec, repo_id=repo_id)
             if hits:
                 ranked_by_name[name] = hits
         if not ranked_by_name:
@@ -403,6 +416,7 @@ class HybridRrfRetrieval(RetrievalStage):
         k: int,
         *,
         conversation_context: str | None = None,
+        repo_id: int | None = None,
     ) -> list[SearchHit]:
         """Execute search with multiple paraphrases, fusing results via RRF.
         
@@ -421,7 +435,10 @@ class HybridRrfRetrieval(RetrievalStage):
         if len(paraphrases) <= 1:
             # Fallback to single query if paraphrase generation failed
             return self._search_single_query(
-                query, k, conversation_context=conversation_context
+                query,
+                k,
+                conversation_context=conversation_context,
+                repo_id=repo_id,
             )
         
         # Search with each paraphrase
@@ -434,6 +451,7 @@ class HybridRrfRetrieval(RetrievalStage):
                 cand_k,
                 search_query=paraphrase,  # Paraphrase for actual search
                 conversation_context=conversation_context,
+                repo_id=repo_id,
             )
             if hits:
                 all_results.append(hits)

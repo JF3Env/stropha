@@ -13,7 +13,9 @@ from pathlib import Path
 
 import pytest
 
+from stropha.ingest.git_meta import RepoIdentity
 from stropha.ingest.graphify_loader import GraphifyLoader
+from stropha.models import Chunk
 from stropha.retrieval.graph import (
     find_callers,
     find_rationale,
@@ -31,7 +33,8 @@ from stropha.storage import Storage
 def _seed_graph(storage: Storage, graph_path: Path,
                 nodes: list[dict], edges: list[dict],
                 communities: dict | None = None,
-                community_labels: dict | None = None) -> None:
+                community_labels: dict | None = None,
+                repo_id: int | None = None) -> None:
     """Write a graph file and load it into the storage mirror."""
     payload: dict = {"nodes": nodes, "links": edges}
     if communities is not None:
@@ -40,7 +43,40 @@ def _seed_graph(storage: Storage, graph_path: Path,
         payload["community_labels"] = community_labels
     graph_path.parent.mkdir(parents=True, exist_ok=True)
     graph_path.write_text(json.dumps(payload), encoding="utf-8")
-    GraphifyLoader(storage, graph_path.parent.parent).load()
+    GraphifyLoader(storage, graph_path.parent.parent, repo_id=repo_id).load()
+
+
+def _repo(storage: Storage, root: Path, key: str) -> int:
+    return storage.register_repo(
+        RepoIdentity(
+            normalized_key=key,
+            remote_url=None,
+            root_path=root,
+            default_branch="main",
+            head_commit="abc",
+        )
+    )
+
+
+def _symbol_chunk(storage: Storage, repo_id: int, chunk_id: str, symbol: str) -> None:
+    storage.upsert_chunk(
+        Chunk(
+            chunk_id=chunk_id,
+            rel_path="src/shared.py",
+            language="python",
+            kind="function",
+            symbol=symbol,
+            parent_chunk_id=None,
+            start_line=1,
+            end_line=2,
+            content=f"def {chunk_id.replace('-', '_')}(): pass",
+            content_hash=f"hash-{chunk_id}",
+        ),
+        [0.0] * 4,
+        "stub",
+        4,
+        repo_id=repo_id,
+    )
 
 
 @pytest.fixture
@@ -63,6 +99,20 @@ def test_graph_loaded_true_after_load(tmp_path: Path, storage: Storage) -> None:
         nodes=[{"id": "a", "label": "A"}], edges=[],
     )
     assert graph_loaded(storage) is True
+
+
+def test_graph_loaded_is_repository_scoped(tmp_path: Path, storage: Storage) -> None:
+    repo_a = _repo(storage, tmp_path / "a", "local:a")
+    repo_b = _repo(storage, tmp_path / "b", "local:b")
+    _seed_graph(
+        storage,
+        tmp_path / "a" / "graphify-out" / "graph.json",
+        nodes=[{"id": "a", "label": "A"}],
+        edges=[],
+        repo_id=repo_a,
+    )
+    assert graph_loaded(storage, repo_id=repo_a) is True
+    assert graph_loaded(storage, repo_id=repo_b) is False
 
 
 def test_has_rationale_edges_false_when_none(tmp_path: Path, storage: Storage) -> None:
@@ -127,6 +177,88 @@ def test_resolve_returns_none_when_no_match(tmp_path: Path, storage: Storage) ->
         nodes=[{"id": "n1", "label": "Foo"}], edges=[],
     )
     assert resolve_symbol_to_node(storage, "Bar") is None
+
+
+def test_exact_symbol_resolution_scopes_before_limit(tmp_path: Path, storage: Storage) -> None:
+    repo_a = _repo(storage, tmp_path / "a", "local:a")
+    repo_b = _repo(storage, tmp_path / "b", "local:b")
+    for repo_id, name in ((repo_b, "foreign"), (repo_a, "local")):
+        _seed_graph(
+            storage,
+            tmp_path / name / "graphify-out" / "graph.json",
+            nodes=[{"id": "target", "label": "Shared"}],
+            edges=[],
+            repo_id=repo_id,
+        )
+    assert resolve_symbol_to_node(storage, "Shared", repo_id=repo_a) == f"{repo_a}:target"
+
+
+def test_smart_graph_and_symbol_routes_scope_duplicate_names(
+    tmp_path: Path, storage: Storage,
+) -> None:
+    from unittest.mock import MagicMock
+
+    from stropha.retrieval.query_router import QueryIntent, RoutedQuery
+    from stropha.retrieval.smart_search import smart_search
+
+    repo_a = _repo(storage, tmp_path / "a", "local:a")
+    repo_b = _repo(storage, tmp_path / "b", "local:b")
+    for repo_id, name in ((repo_b, "foreign"), (repo_a, "local")):
+        _seed_graph(
+            storage,
+            tmp_path / name / "graphify-out" / "graph.json",
+            nodes=[
+                {"id": "target", "label": "Shared", "source_file": "src/shared.py"},
+                {"id": "caller", "label": f"{name}_caller", "source_file": "src/shared.py"},
+            ],
+            edges=[
+                {
+                    "source": "caller",
+                    "target": "target",
+                    "relation": "calls",
+                    "confidence": "EXTRACTED",
+                }
+            ],
+            repo_id=repo_id,
+        )
+        _symbol_chunk(storage, repo_id, f"{name}-chunk", "Shared")
+    storage.commit()
+
+    router = MagicMock()
+    router.route.return_value = RoutedQuery(
+        intent=QueryIntent.FIND_CALLERS,
+        symbol="Shared",
+        original_query="what calls Shared",
+        confidence=1.0,
+        reason="test",
+    )
+    graph_result = smart_search(
+        "what calls Shared",
+        storage,
+        MagicMock(),
+        router=router,
+        repo_id=repo_a,
+    )
+    assert [node["label"] for node in graph_result.graph_result["callers"]] == [
+        "local_caller"
+    ]
+
+    router.route.return_value = RoutedQuery(
+        intent=QueryIntent.GET_SYMBOL,
+        symbol="Shared",
+        original_query="Shared",
+        confidence=1.0,
+        reason="test",
+    )
+    symbol_result = smart_search(
+        "Shared",
+        storage,
+        MagicMock(),
+        router=router,
+        top_k=1,
+        repo_id=repo_a,
+    )
+    assert [hit.chunk_id for hit in symbol_result.hits] == ["local-chunk"]
 
 
 # --------------------------------------------------------------------------- find_callers

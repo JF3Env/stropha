@@ -204,7 +204,10 @@ class TestModuleSurface:
 def _make_ctx(symbols_by_query: dict[str, list[str]]) -> MagicMock:
     app = MagicMock()
 
-    def _lookup(name: str, limit: int = 10) -> list:
+    def _lookup(
+        name: str, limit: int = 10, *, repo_id: int | None = None,
+    ) -> list:
+        del repo_id
         return [MagicMock(symbol=s) for s in symbols_by_query.get(name, [])][:limit]
 
     app.storage.lookup_by_symbol.side_effect = _lookup

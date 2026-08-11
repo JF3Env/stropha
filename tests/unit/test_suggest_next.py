@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -367,12 +368,19 @@ def _make_app(
     lookup_raises: bool = False,
 ) -> MagicMock:
     app = MagicMock()
+    app.config.target_repo = Path.cwd()
+    app.storage.lookup_repo_id.return_value = 1
     if lookup_raises:
         app.storage.lookup_by_chunk_id.side_effect = RuntimeError("boom")
     else:
         app.storage.lookup_by_chunk_id.side_effect = (
             lambda cid: hits_by_id.get(cid)
         )
+    app.storage.get_chunk_by_id.side_effect = lambda cid: (
+        {"chunk_id": cid, "repo_id": 1}
+        if hits_by_id.get(cid) is not None
+        else None
+    )
     app.seen_chunk_ids = list(seen) if seen else []
     # graph_loaded / has_rationale_edges are module-level helpers we
     # patch via monkeypatch in the test (see fixtures below).
@@ -393,13 +401,13 @@ def patch_graph(monkeypatch: pytest.MonkeyPatch) -> None:
     the AppContext mock so tests can toggle them per-case."""
     import stropha.server as srv
 
-    def _gl(storage: object) -> bool:
+    def _gl(storage: object, **_: object) -> bool:
         # The MagicMock for app.storage references the parent mock;
         # walk up to find the _graph_loaded_val we set in _make_app.
         # In practice tests pass the value via the mock's parent.
         return getattr(storage._mock_parent, "_graph_loaded_val", True)
 
-    def _hr(storage: object) -> bool:
+    def _hr(storage: object, **_: object) -> bool:
         return getattr(storage._mock_parent, "_has_rationale_val", True)
 
     monkeypatch.setattr(srv, "graph_loaded", _gl)
@@ -481,3 +489,24 @@ class TestSuggestNextToolMCP:
             "FooClass", ["c1"], max_suggestions=999, ctx=_make_ctx(app),
         )
         assert len(out2.suggestions) <= 20
+
+    def test_foreign_chunk_is_filtered(self, patch_graph: None) -> None:
+        from stropha.server import suggest_next_tool_mcp
+
+        app = _make_app({"foreign": _Hit(chunk_id="foreign", symbol="Foreign")})
+        app.storage.get_chunk_by_id.side_effect = lambda _: {"repo_id": 2}
+
+        out = suggest_next_tool_mcp("Foreign", ["foreign"], ctx=_make_ctx(app))
+
+        assert out.based_on_hits == 0
+
+    def test_unresolved_repository_fails_closed(self, patch_graph: None) -> None:
+        from stropha.server import suggest_next_tool_mcp
+
+        app = _make_app({"foreign": _Hit(chunk_id="foreign", symbol="Foreign")})
+        app.storage.lookup_repo_id.return_value = None
+
+        out = suggest_next_tool_mcp("Foreign", ["foreign"], ctx=_make_ctx(app))
+
+        assert out.suggestions == []
+        assert out.graph_loaded is False

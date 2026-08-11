@@ -1,14 +1,11 @@
 """Base inference backend and auto-detection logic.
 
-The inference system supports two backends:
-1. MLX (Apple Silicon) - faster, more efficient, no daemon needed
-2. Ollama - cross-platform, easier model management
+Auto-detection prefers local MLX when available and falls back to Ollama. Other
+local or remote OpenAI-compatible backends require explicit selection.
 
-Auto-detection prefers MLX when available, falling back to Ollama.
-
-Configuration (stropha.yaml):
+Configuration (``~/.stropha/config.yaml``):
     inference:
-      backend: null  # "mlx", "ollama", or null for auto-detect
+      backend: null  # "mlx", "ollama", "moa", cloud backend, or null
       mlx_model: mlx-community/Qwen2.5-Coder-1.5B-Instruct-4bit
       ollama_model: qwen2.5-coder:1.5b
       ollama_host: http://localhost:11434  # also reads OLLAMA_HOST env
@@ -16,7 +13,11 @@ Configuration (stropha.yaml):
 
 from __future__ import annotations
 
+import time
 from abc import ABC, abstractmethod
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import TYPE_CHECKING
 
 from ..config import get_config
@@ -29,6 +30,21 @@ log = get_logger(__name__)
 
 # Cached backend instance
 _BACKEND: InferenceBackend | None = None
+_INFERENCE_CALLS: ContextVar[list[dict[str, object]] | None] = ContextVar(
+    "stropha_inference_calls",
+    default=None,
+)
+
+
+@contextmanager
+def capture_inference_calls() -> Iterator[list[dict[str, object]]]:
+    """Capture centrally dispatched inference calls in the current context."""
+    calls: list[dict[str, object]] = []
+    token = _INFERENCE_CALLS.set(calls)
+    try:
+        yield calls
+    finally:
+        _INFERENCE_CALLS.reset(token)
 
 
 class InferenceBackend(ABC):
@@ -140,6 +156,13 @@ def is_lms_available() -> bool:
     return get_config().secrets.has_lms
 
 
+def is_moa_available() -> bool:
+    """Check whether the configured local MoA Gateway is reachable."""
+    from .moa_backend import MoaBackend
+
+    return MoaBackend().is_available
+
+
 def get_backend(prefer: str | None = None) -> InferenceBackend:
     """Get the best available inference backend.
 
@@ -175,6 +198,7 @@ def get_backend(prefer: str | None = None) -> InferenceBackend:
     from .deepseek_backend import DeepSeekBackend
     from .lms_backend import LmsBackend
     from .mlx_backend import MlxBackend
+    from .moa_backend import MoaBackend
     from .ollama_backend import OllamaBackend
 
     # Try preferred backend first. The local ``backend`` slot is the
@@ -239,6 +263,16 @@ def get_backend(prefer: str | None = None) -> InferenceBackend:
         _BACKEND = backend
         return _BACKEND
 
+    if prefer == "moa":
+        backend = MoaBackend()
+        if backend.is_available:
+            _BACKEND = backend
+            log.info("inference.backend_selected", backend="moa")
+            return _BACKEND
+        log.warning("inference.moa_unavailable")
+        _BACKEND = backend
+        return _BACKEND
+
     # Auto-detect: prefer MLX (faster, more efficient). DeepSeek and
     # Anthropic are NEVER auto-selected — see docstring.
     if is_mlx_available():
@@ -274,13 +308,36 @@ def generate(
     Returns:
         Generated text, or None on failure.
     """
+    started = time.perf_counter()
     be = get_backend(prefer=backend)
-    return be.generate(
-        prompt,
-        max_tokens=max_tokens,
-        temperature=temperature,
-        model=model,
-    )
+    result: str | None = None
+    status = "failed"
+    try:
+        result = be.generate(
+            prompt,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            model=model,
+        )
+        status = "completed" if result else "failed"
+        return result
+    except Exception:
+        status = "error"
+        raise
+    finally:
+        calls = _INFERENCE_CALLS.get()
+        if calls is not None:
+            calls.append(
+                {
+                    "started_perf": started,
+                    "duration_ms": (time.perf_counter() - started) * 1000,
+                    "backend": be.name,
+                    "model": model,
+                    "max_tokens": max_tokens,
+                    "status": status,
+                    "output_chars": len(result) if result else 0,
+                }
+            )
 
 
 def reset_backend() -> None:

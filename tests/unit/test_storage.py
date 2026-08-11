@@ -167,6 +167,26 @@ def test_file_outline(storage: Storage) -> None:
     assert [o["symbol"] for o in outline] == ["F", "F.x"]
 
 
+def test_file_outline_filters_duplicate_path_by_repo(storage: Storage) -> None:
+    local_repo = storage.register_repo(_identity("github.com/example/local"))
+    foreign_repo = storage.register_repo(_identity("github.com/example/foreign"))
+    storage.upsert_chunk(
+        _make_chunk("sha256:local-outline", "F.java", "...", symbol="Local"),
+        _vec(0), "m", 4, repo_id=local_repo,
+    )
+    storage.upsert_chunk(
+        _make_chunk("sha256:foreign-outline", "F.java", "...", symbol="Foreign"),
+        _vec(1), "m", 4, repo_id=foreign_repo,
+    )
+    storage.commit()
+
+    scoped = storage.file_outline("F.java", repo_id=local_repo)
+    broad = storage.file_outline("F.java")
+
+    assert [entry["symbol"] for entry in scoped] == ["Local"]
+    assert {entry["symbol"] for entry in broad} == {"Local", "Foreign"}
+
+
 def test_meta_roundtrip(storage: Storage) -> None:
     storage.set_meta("foo", "bar")
     storage.commit()
@@ -228,6 +248,80 @@ def test_search_hit_carries_repo(storage: Storage) -> None:
 
     sym = storage.lookup_by_symbol("Foo", limit=1)
     assert sym and sym[0].repo and sym[0].repo.normalized_key == "github.com/foo/bar"
+
+
+def test_search_lanes_filter_repo_before_ranking_and_limit(storage: Storage) -> None:
+    local_repo = storage.register_repo(_identity("github.com/example/local"))
+    foreign_repo = storage.register_repo(_identity("github.com/example/foreign"))
+    storage.upsert_chunk(
+        _make_chunk(
+            "sha256:foreign",
+            "foreign.java",
+            "Needle Needle Needle Needle",
+            symbol="Needle",
+        ),
+        _vec(0),
+        "m",
+        4,
+        repo_id=foreign_repo,
+    )
+    storage.upsert_chunk(
+        _make_chunk(
+            "sha256:local",
+            "local.java",
+            "Needle",
+            symbol="LongerNeedleSymbol",
+        ),
+        _vec(1),
+        "m",
+        4,
+        repo_id=local_repo,
+    )
+    storage.commit()
+
+    assert storage.search_dense(_vec(0), k=1)[0].chunk_id == "sha256:foreign"
+    assert storage.search_dense(_vec(0), k=1, repo_id=local_repo)[0].chunk_id == (
+        "sha256:local"
+    )
+    assert storage.search_bm25("Needle", k=1, repo_id=local_repo)[0].chunk_id == (
+        "sha256:local"
+    )
+    assert storage.search_symbol_tokens("Needle", k=1, repo_id=local_repo)[
+        0
+    ].chunk_id == "sha256:local"
+    assert storage.lookup_by_symbol("Needle", limit=1, repo_id=local_repo)[
+        0
+    ].chunk_id == "sha256:local"
+
+
+def test_secondary_search_filters_repo_before_limit(storage: Storage) -> None:
+    local_repo = storage.register_repo(_identity("github.com/example/local"))
+    foreign_repo = storage.register_repo(_identity("github.com/example/foreign"))
+    for chunk_id, repo_id, axis in (
+        ("sha256:foreign", foreign_repo, 0),
+        ("sha256:local", local_repo, 1),
+    ):
+        chunk = _make_chunk(chunk_id, f"{chunk_id}.java", "Needle")
+        storage.upsert_chunk(chunk, _vec(axis), "m", 4, repo_id=repo_id)
+        storage.upsert_secondary_embeddings(
+            [
+                {
+                    "chunk_id": chunk_id,
+                    "content_hash": chunk.content_hash,
+                    "embedding": _secondary_vec(axis),
+                }
+            ],
+            "model2vec:v1",
+        )
+    storage.commit()
+
+    hits = storage.search_secondary_embeddings(
+        _secondary_vec(0),
+        "model2vec:v1",
+        k=1,
+        repo_id=local_repo,
+    )
+    assert [hit.chunk_id for hit in hits] == ["sha256:local"]
 
 
 def test_chunk_without_repo_id_yields_none_repo(storage: Storage) -> None:

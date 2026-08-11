@@ -33,8 +33,8 @@ from mcp.server.fastmcp import Context
 from pydantic import BaseModel, Field
 
 from . import __version__
-from .config import Config, get_config, get_config_info
-from .errors import StrophaError
+from .config import Config, get_config, get_config_info, reset_config
+from .errors import ConfigError, EmbeddingDimensionMismatchError, StrophaError
 from .logging import configure_logging, get_logger
 from .meta.decorator import traced
 from .pipeline import build_stages, load_pipeline_config
@@ -67,6 +67,15 @@ from .server_discovery_tools import (
     get_symbol_impl,
     list_repos_impl,
     smart_search_tool_impl,
+)
+from .server_frontend import (
+    answer_index_question,
+    config_path,
+    configuration_catalog,
+    merge_config_document,
+    read_config_document,
+    redact_config_document,
+    write_config_document,
 )
 from .server_graph_tools import (
     assert_snippet_freshness_impl,
@@ -150,8 +159,11 @@ from .server_models import (
 )
 from .server_runtime import (
     AppContext,
+    chunk_belongs_to_repo,
     ctx_from_mcp,
+    get_shared_runtime,
     persist_session_state,
+    reload_shared_runtime,
 )
 from .server_runtime import (
     lifespan as server_lifespan,
@@ -248,6 +260,353 @@ async def _health_check(request):
     return JSONResponse({"status": "ok", "version": __version__})
 
 
+# ---- frontend JSON API -----------------------------------------------------
+
+_FRONTEND_UPDATE_LOCK_ATTR = "_stropha_frontend_update_lock"
+
+
+async def _frontend_runtime():
+    return await get_shared_runtime(
+        mcp,
+        version=__version__,
+        get_config_fn=get_config,
+        configure_logging_fn=configure_logging,
+        load_pipeline_config_fn=load_pipeline_config,
+        build_stages_fn=build_stages,
+        watch_controller_cls=WatchController,
+    )
+
+
+async def _frontend_reload_runtime():
+    return await reload_shared_runtime(
+        mcp,
+        get_config_fn=get_config,
+        configure_logging_fn=configure_logging,
+        load_pipeline_config_fn=load_pipeline_config,
+        build_stages_fn=build_stages,
+        watch_controller_cls=WatchController,
+    )
+
+
+def _frontend_cors_headers(request) -> dict[str, str]:
+    from urllib.parse import urlsplit
+
+    origin = request.headers.get("origin")
+    if not origin:
+        return {}
+    parsed = urlsplit(origin)
+    if parsed.scheme not in {"http", "https"} or parsed.hostname not in {
+        "localhost",
+        "127.0.0.1",
+        "::1",
+    }:
+        return {}
+    return {
+        "Access-Control-Allow-Origin": origin,
+        "Access-Control-Allow-Methods": "GET, PATCH, POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type",
+        "Vary": "Origin",
+    }
+
+
+def _frontend_is_local(request) -> bool:
+    from ipaddress import ip_address
+
+    if request.client is None:
+        return False
+    try:
+        return ip_address(request.client.host).is_loopback
+    except ValueError:
+        return False
+
+
+def _frontend_json(request, payload: dict, *, status_code: int = 200):
+    from starlette.responses import JSONResponse
+
+    return JSONResponse(
+        payload,
+        status_code=status_code,
+        headers=_frontend_cors_headers(request),
+    )
+
+
+@mcp.custom_route("/", methods=["GET"])
+async def _frontend_root(request):
+    from starlette.responses import RedirectResponse
+
+    if not _frontend_is_local(request):
+        return _frontend_json(request, {"error": "Frontend API is local-only"}, status_code=403)
+    return RedirectResponse("/dashboard", status_code=307)
+
+
+@mcp.custom_route("/dashboard", methods=["GET"])
+async def _frontend_dashboard(request):
+    from pathlib import Path
+
+    from starlette.responses import FileResponse
+
+    if not _frontend_is_local(request):
+        return _frontend_json(request, {"error": "Frontend API is local-only"}, status_code=403)
+    page = Path(__file__).with_name("dashboard") / "index.html"
+    return FileResponse(page, media_type="text/html")
+
+
+@mcp.custom_route("/api/status", methods=["GET", "OPTIONS"])
+async def _frontend_status(request):
+    """Report the active pipeline and local MoA connectivity."""
+    import asyncio
+
+    if not _frontend_is_local(request):
+        return _frontend_json(request, {"error": "Frontend API is local-only"}, status_code=403)
+    if request.method == "OPTIONS":
+        return _frontend_json(request, {})
+    try:
+        runtime = await _frontend_runtime()
+        from .inference import get_backend
+        from .inference.moa_backend import MoaBackend
+
+        active = await asyncio.to_thread(
+            get_backend,
+            prefer=runtime.config.inference.backend,
+        )
+        moa = active if isinstance(active, MoaBackend) else MoaBackend()
+        if moa is active:
+            active_health = moa_health = await asyncio.to_thread(moa.health_check)
+        else:
+            active_health, moa_health = await asyncio.gather(
+                asyncio.to_thread(active.health_check),
+                asyncio.to_thread(moa.health_check),
+            )
+        models = await asyncio.to_thread(moa.list_models)
+        stats = await asyncio.to_thread(runtime.built.storage.stats)
+        repos = stats.get("repos") or []
+    except Exception as exc:
+        log.warning("frontend.status_failed", error=str(exc))
+        return _frontend_json(request, {"error": "Could not inspect runtime"}, status_code=503)
+    return _frontend_json(
+        request,
+        {
+            "version": __version__,
+            "pipeline": {
+                "embedder": runtime.built.embedder.adapter_id,
+                "storage": runtime.built.storage.adapter_id,
+                "retrieval": runtime.built.retrieval.adapter_id,
+            },
+            "index": {
+                "chunks": stats.get("chunks", 0),
+                "files": stats.get("files", 0),
+                "repos": len(repos) if isinstance(repos, list) else repos,
+            },
+            "inference": {
+                "backend": active.name,
+                "identity": active.identity,
+                "healthy": active_health[0],
+                "message": active_health[1],
+            },
+            "moa": {
+                "endpoint": runtime.config.inference.moa_base_url,
+                "model": runtime.config.inference.moa_model,
+                "healthy": moa_health[0],
+                "message": moa_health[1],
+                "models": models,
+            },
+        },
+    )
+
+
+@mcp.custom_route("/api/config", methods=["GET", "PATCH", "OPTIONS"])
+async def _frontend_config(request):
+    """Read or atomically update the daemon's live configuration."""
+    import asyncio
+
+    if not _frontend_is_local(request):
+        return _frontend_json(request, {"error": "Frontend API is local-only"}, status_code=403)
+    if request.method == "OPTIONS":
+        return _frontend_json(request, {})
+    if request.method == "GET":
+        try:
+            document = read_config_document()
+        except ConfigError as exc:
+            return _frontend_json(request, {"error": str(exc)}, status_code=500)
+        return _frontend_json(
+            request,
+            {"config": redact_config_document(document), "version": __version__},
+        )
+
+    try:
+        patch = await request.json()
+    except Exception:
+        return _frontend_json(request, {"error": "Request body must be JSON"}, status_code=400)
+    if not isinstance(patch, dict):
+        return _frontend_json(
+            request, {"error": "Configuration patch must be an object"}, status_code=422
+        )
+
+    lock = getattr(mcp, _FRONTEND_UPDATE_LOCK_ATTR, None)
+    if lock is None:
+        lock = asyncio.Lock()
+        setattr(mcp, _FRONTEND_UPDATE_LOCK_ATTR, lock)
+
+    async with lock:
+        path = config_path()
+        existed = path.is_file()
+        previous: dict = {}
+        try:
+            previous = read_config_document(path)
+            candidate = merge_config_document(previous, patch)
+            write_config_document(candidate, path)
+            reset_config()
+            from .inference.backend import reset_backend
+
+            reset_backend()
+            runtime = await _frontend_reload_runtime()
+        except EmbeddingDimensionMismatchError as exc:
+            # The candidate is valid but fixed-width vector tables require a
+            # rebuild before it can replace the current runtime.
+            runtime = await _frontend_runtime()
+            return _frontend_json(
+                request,
+                {
+                    "config": redact_config_document(candidate),
+                    "active": {
+                        "embedder": runtime.built.embedder.adapter_id,
+                        "storage": runtime.built.storage.adapter_id,
+                        "retrieval": runtime.built.retrieval.adapter_id,
+                        "inference": runtime.config.inference.backend,
+                    },
+                    "pending_rebuild": True,
+                    "message": str(exc),
+                },
+                status_code=202,
+            )
+        except Exception as exc:
+            if existed:
+                write_config_document(previous, path)
+            else:
+                path.unlink(missing_ok=True)
+            reset_config()
+            from .inference.backend import reset_backend
+
+            reset_backend()
+            status = 422 if isinstance(exc, (StrophaError, ValueError)) else 500
+            message = str(exc) if status == 422 else "Could not apply configuration"
+            return _frontend_json(request, {"error": message}, status_code=status)
+
+    return _frontend_json(
+        request,
+        {
+            "config": redact_config_document(candidate),
+            "active": {
+                "embedder": runtime.built.embedder.adapter_id,
+                "storage": runtime.built.storage.adapter_id,
+                "retrieval": runtime.built.retrieval.adapter_id,
+                "inference": runtime.config.inference.backend,
+            },
+        },
+    )
+
+
+@mcp.custom_route("/api/config/schema", methods=["GET", "OPTIONS"])
+async def _frontend_config_schema(request):
+    """Return safe field metadata and registered adapter schemas for the dashboard."""
+    if not _frontend_is_local(request):
+        return _frontend_json(request, {"error": "Frontend API is local-only"}, status_code=403)
+    if request.method == "OPTIONS":
+        return _frontend_json(request, {})
+    return _frontend_json(request, configuration_catalog())
+
+
+@mcp.custom_route("/api/query", methods=["POST", "OPTIONS"])
+async def _frontend_query(request):
+    """Answer a frontend question from retrieved index evidence."""
+    import asyncio
+
+    if not _frontend_is_local(request):
+        return _frontend_json(request, {"error": "Frontend API is local-only"}, status_code=403)
+    if request.method == "OPTIONS":
+        return _frontend_json(request, {})
+    try:
+        payload = await request.json()
+    except Exception:
+        return _frontend_json(request, {"error": "Request body must be JSON"}, status_code=400)
+    if not isinstance(payload, dict):
+        return _frontend_json(request, {"error": "Request body must be an object"}, status_code=422)
+
+    question = payload.get("question")
+    if not isinstance(question, str) or not question.strip():
+        return _frontend_json(request, {"error": "question is required"}, status_code=422)
+    question = question.strip()
+    if len(question) > 8000:
+        return _frontend_json(
+            request, {"error": "question exceeds 8000 characters"}, status_code=422
+        )
+    try:
+        top_k = int(payload.get("top_k", 8))
+        max_tokens = int(payload.get("max_tokens", 512))
+    except (TypeError, ValueError):
+        return _frontend_json(
+            request, {"error": "top_k and max_tokens must be integers"}, status_code=422
+        )
+    if not 1 <= top_k <= 20 or not 64 <= max_tokens <= 2048:
+        return _frontend_json(
+            request,
+            {"error": "top_k must be 1..20 and max_tokens must be 64..2048"},
+            status_code=422,
+        )
+    include_other_repos = payload.get("include_other_repos", False)
+    if not isinstance(include_other_repos, bool):
+        return _frontend_json(
+            request, {"error": "include_other_repos must be a boolean"}, status_code=422
+        )
+    raw_history = payload.get("history", [])
+    if not isinstance(raw_history, list):
+        return _frontend_json(request, {"error": "history must be an array"}, status_code=422)
+    history: list[dict[str, str]] = []
+    history_chars = 0
+    for item in raw_history[-12:]:
+        if not isinstance(item, dict):
+            return _frontend_json(
+                request, {"error": "history entries must be objects"}, status_code=422
+            )
+        role = item.get("role")
+        content = item.get("content")
+        if role not in {"user", "assistant"} or not isinstance(content, str):
+            return _frontend_json(
+                request,
+                {"error": "history entries require user/assistant role and text content"},
+                status_code=422,
+            )
+        history_chars += len(content)
+        if history_chars > 24000:
+            return _frontend_json(
+                request, {"error": "history exceeds 24000 characters"}, status_code=422
+            )
+        history.append({"role": role, "content": content})
+
+    try:
+        runtime = await _frontend_runtime()
+        from .inference import generate
+
+        result = await asyncio.to_thread(
+            answer_index_question,
+            runtime,
+            question,
+            top_k=top_k,
+            max_tokens=max_tokens,
+            generate_fn=generate,
+            history=history,
+            include_other_repos=include_other_repos,
+        )
+    except Exception as exc:
+        log.warning("frontend.query_failed", error=str(exc))
+        return _frontend_json(
+            request,
+            {"error": "Could not answer from the configured index and inference backend"},
+            status_code=503,
+        )
+    return _frontend_json(request, result)
+
+
 # ---- response models --------------------------------------------------------
 
 # ---- helpers ---------------------------------------------------------------
@@ -299,7 +658,7 @@ def _apply_filters(
     exclude_tests: bool = False,
 ) -> list:
     """Apply post-retrieval filters to search hits.
-    
+
     Note: This is post-filtering on already-retrieved candidates. For large
     result sets, pre-filtering in SQL would be more efficient (future work).
     """
@@ -322,6 +681,8 @@ def _apply_filters(
         "For a known exact symbol name (e.g., 'UserService.createUser'), use get_symbol instead. "
         "Filters: language=['java','python'], path_prefix='src/', kind=['method','class'], exclude_tests=True. "
         "Set recursive=True to auto-merge related chunks for more context. "
+        "Results default to the current repository; set include_other_repos=True explicitly "
+        "to search every indexed repository. "
         "Results include file path (relative to repo root), line numbers, and snippet."
     ),
 )
@@ -343,6 +704,7 @@ def search_code(
     relevance_decay: bool = False,
     dedup: bool = False,
     conversation_aware: bool = False,
+    include_other_repos: bool = False,
     *,
     ctx: Context,
 ) -> SearchResponse:
@@ -360,6 +722,8 @@ def search_code(
         recursive: If True, auto-merge sibling chunks (same parent) and adjacent chunks.
         repo_url: Optional git URL to search (e.g., https://github.com/org/repo).
                   The repo is cloned and indexed on first access, then cached.
+        include_other_repos: Search all indexed repositories. False scopes results
+            to the current target repository. Ignored when repo_url is provided.
         refresh: If True with repo_url, re-clone and re-index the remote repository.
         context_budget: Optional token budget for result packing (WIN-208). When
             set, results are greedily packed in score order up to this many
@@ -394,7 +758,7 @@ def search_code(
             queries like "tests for it" carry implicit references
             from earlier turns into the dense match.
     """
-    from .tools.git_url import is_git_url, search_git_url
+    from .tools.git_url import is_git_url, search_git_url_scoped
     return search_code_impl(
         query,
         top_k,
@@ -405,6 +769,7 @@ def search_code(
         include_facets,
         recursive,
         repo_url,
+        include_other_repos,
         refresh,
         context_budget,
         compress,
@@ -417,8 +782,9 @@ def search_code(
         persist_session_state=_persist_session_state,
         track_search_savings_fn=track_search_savings,
         is_git_url_fn=is_git_url,
-        search_git_url_fn=search_git_url,
+        search_git_url_fn=search_git_url_scoped,
         apply_filters_fn=_apply_filters,
+        resolve_target_repo_id_fn=_resolve_target_repo_id,
         stropha_error_cls=StrophaError,
         log=log,
     )
@@ -455,15 +821,26 @@ def reset_dedup(*, ctx: Context) -> ResetDedupResponse:
         "queries without re-issuing the search. Pinning wins over "
         "dedup (WIN-217): pinned chunks are NEVER filtered out, even "
         "after they've been served. Idempotent — pinning the same id "
-        "twice is a no-op."
+        "twice is a no-op. Defaults to the current repository; "
+        "include_other_repos=True permits pins from any indexed repository."
     ),
 )
 @traced("pin_chunks")
-def pin_chunks(chunk_ids: list[str], *, ctx: Context) -> PinResponse:
+def pin_chunks(
+    chunk_ids: list[str],
+    include_other_repos: bool = False,
+    *,
+    ctx: Context,
+) -> PinResponse:
     """Add ``chunk_ids`` to the session's pin set."""
+    app = _ctx(ctx)
+    repo_id = None if include_other_repos else _resolve_target_repo_id(app)
+    if repo_id is None and not include_other_repos:
+        return PinResponse(pinned=[], added=0)
     return pin_chunks_impl(
         chunk_ids,
-        _ctx(ctx),
+        app,
+        repo_id=repo_id,
         persist_session_state=_persist_session_state,
         log=log,
     )
@@ -496,13 +873,22 @@ def unpin_chunks(chunk_ids: list[str], *, ctx: Context) -> PinResponse:
         "WIN-218 — return the current pin set with each chunk's metadata "
         "(path, line range, symbol). Missing ids (chunks deleted after "
         "they were pinned) appear with found=False so the agent can "
-        "decide whether to unpin them."
+        "decide whether to unpin them. Defaults to the current repository; "
+        "include_other_repos=True resolves pins from every indexed repository."
     ),
 )
 @traced("list_pins")
-def list_pins(*, ctx: Context) -> ListPinsResponse:
+def list_pins(
+    include_other_repos: bool = False,
+    *,
+    ctx: Context,
+) -> ListPinsResponse:
     """Resolve every pinned chunk_id into a structured response."""
-    return list_pins_impl(_ctx(ctx), to_result=_to_result)
+    app = _ctx(ctx)
+    repo_id = None if include_other_repos else _resolve_target_repo_id(app)
+    if repo_id is None and not include_other_repos:
+        return ListPinsResponse(entries=[], found_count=0, missing_count=0)
+    return list_pins_impl(app, to_result=_to_result, repo_id=repo_id)
 
 
 @mcp.tool(
@@ -516,7 +902,9 @@ def list_pins(*, ctx: Context) -> ListPinsResponse:
         "- 'trace feature X' → trace_feature (graph)\n"
         "- Conceptual questions → search_code (semantic)\n\n"
         "Returns results plus metadata explaining which tool was used and why. "
-        "Prefer this over manually choosing tools when the query type is ambiguous."
+        "Prefer this over manually choosing tools when the query type is ambiguous. "
+        "Defaults to the current repository; set include_other_repos=True only "
+        "for an explicit cross-repository search."
     ),
 )
 @traced("smart_search")
@@ -524,24 +912,41 @@ def smart_search_tool(
     query: str,
     top_k: int = 10,
     use_llm_router: bool = False,
+    include_other_repos: bool = False,
     *,
     ctx: Context,
 ) -> SmartSearchResponse:
     """Smart search with automatic query routing.
-    
+
     Args:
         query: Natural-language question or technical terms.
         top_k: 1–30. Default 10.
         use_llm_router: If True, use LLM for ambiguous queries (slower but more accurate).
+        include_other_repos: Search every indexed repository. False scopes
+            all semantic, symbol, and graph routes to the current repository.
     """
+    app = _ctx(ctx)
+    repo_id = None if include_other_repos else _resolve_target_repo_id(app)
+    if repo_id is None and not include_other_repos:
+        return SmartSearchResponse(
+            results=[],
+            total_candidates=0,
+            query=query,
+            intent="search_code",
+            symbol=None,
+            tool_used="search_code",
+            confidence=0.0,
+            graph_available=False,
+        )
     return smart_search_tool_impl(
         query,
         top_k,
         use_llm_router,
-        _ctx(ctx),
+        app,
         to_result=_to_result,
         smart_search_fn=smart_search,
         graph_loaded_fn=graph_loaded,
+        repo_id=repo_id,
         log=log,
     )
 
@@ -554,13 +959,24 @@ def smart_search_tool(
         "Use for: 'where is UserService defined', 'find the createUser method'. "
         "Accepts: simple names ('FsrsCalculator'), qualified names ('StudyService.submitAnswer'), "
         "or partial matches ('submitAnswer'). "
+        "Defaults to the current repository; include_other_repos=True broadens the lookup. "
         "Returns file path, line numbers, and code snippet for each match."
     ),
 )
 @traced("get_symbol")
-def get_symbol(symbol: str, limit: int = 5, *, ctx: Context) -> list[SearchResult]:
+def get_symbol(
+    symbol: str,
+    limit: int = 5,
+    include_other_repos: bool = False,
+    *,
+    ctx: Context,
+) -> list[SearchResult]:
     """Find by symbol name. Returns up to `limit` matches, exact-match first."""
-    return get_symbol_impl(symbol, limit, _ctx(ctx), to_result=_to_result)
+    app = _ctx(ctx)
+    repo_id = None if include_other_repos else _resolve_target_repo_id(app)
+    if repo_id is None and not include_other_repos:
+        return []
+    return get_symbol_impl(symbol, limit, app, to_result=_to_result, repo_id=repo_id)
 
 
 @mcp.tool(
@@ -588,13 +1004,23 @@ def list_repos(*, ctx: Context) -> list[RepoSummary]:
         "Returns the symbolic structure: classes, methods, functions with their line ranges. "
         "Use this to decide WHICH parts of a file to read, instead of reading the whole file. "
         "Example: get_file_outline('src/services/user.py') → shows all classes/methods, "
-        "then you can Read just lines 45-67 for the specific method you need."
+        "then you can Read just lines 45-67 for the specific method you need. Defaults to "
+        "the current repository; include_other_repos=True broadens path matching."
     ),
 )
 @traced("get_file_outline")
-def get_file_outline(path: str, *, ctx: Context) -> list[OutlineEntry]:
+def get_file_outline(
+    path: str,
+    include_other_repos: bool = False,
+    *,
+    ctx: Context,
+) -> list[OutlineEntry]:
     """Return the chunk-level outline of a file path (repo-relative)."""
-    return get_file_outline_impl(path, _ctx(ctx))
+    app = _ctx(ctx)
+    repo_id = None if include_other_repos else _resolve_target_repo_id(app)
+    if repo_id is None and not include_other_repos:
+        return []
+    return get_file_outline_impl(path, app, repo_id=repo_id)
 
 
 @mcp.tool(
@@ -606,13 +1032,15 @@ def get_file_outline(path: str, *, ctx: Context) -> list[OutlineEntry]:
         "then expands only the chunks it actually needs. Mirrors Claude "
         "Code's file-on-demand pattern. Returns ``found=False`` when the "
         "chunk_id is unknown (e.g. the index was rebuilt and the id is "
-        "stale) — never raises."
+        "stale) — never raises. Defaults to the current repository; "
+        "include_other_repos=True permits dereferencing any indexed repository."
     ),
 )
 @traced("expand_chunk")
 def expand_chunk(
     chunk_id: str,
     card_level: str = "full",
+    include_other_repos: bool = False,
     *,
     ctx: Context,
 ) -> ExpandChunkResponse:
@@ -630,7 +1058,13 @@ def expand_chunk(
         :class:`ExpandChunkResponse` with ``found`` and (when found)
         the rendered :class:`SearchResult`.
     """
-    return expand_chunk_impl(chunk_id, card_level, _ctx(ctx), to_result=_to_result)
+    app = _ctx(ctx)
+    repo_id = None if include_other_repos else _resolve_target_repo_id(app)
+    if repo_id is None and not include_other_repos:
+        return ExpandChunkResponse(chunk_id=chunk_id, found=False, result=None)
+    return expand_chunk_impl(
+        chunk_id, card_level, app, to_result=_to_result, repo_id=repo_id
+    )
 
 
 @mcp.tool(
@@ -640,18 +1074,33 @@ def expand_chunk(
         "to dereference them in one MCP call. Useful when assemble_context "
         "returned a bundle of line-card handles and the agent decided to "
         "expand several at once. Missing chunk_ids appear in the response "
-        "with found=False; the call never partially fails."
+        "with found=False; the call never partially fails. Defaults to the "
+        "current repository; include_other_repos=True permits all repositories."
     ),
 )
 @traced("expand_chunks")
 def expand_chunks(
     chunk_ids: list[str],
     card_level: str = "full",
+    include_other_repos: bool = False,
     *,
     ctx: Context,
 ) -> ExpandChunksResponse:
     """Batch dereference. Returns a parallel list — one response per id."""
-    return expand_chunks_impl(chunk_ids, card_level, _ctx(ctx), to_result=_to_result)
+    app = _ctx(ctx)
+    repo_id = None if include_other_repos else _resolve_target_repo_id(app)
+    if repo_id is None and not include_other_repos:
+        return ExpandChunksResponse(
+            results=[
+                ExpandChunkResponse(chunk_id=chunk_id, found=False, result=None)
+                for chunk_id in chunk_ids
+            ],
+            found_count=0,
+            missing_count=len(chunk_ids),
+        )
+    return expand_chunks_impl(
+        chunk_ids, card_level, app, to_result=_to_result, repo_id=repo_id
+    )
 
 
 # ---- graph tools (RFC §5 — Trilha A 1.5b) ----------------------------------
@@ -668,6 +1117,13 @@ def _graph_unavailable() -> dict:
             "graphify graph not loaded. Run `graphify .` in the repo root to "
             "bootstrap, then `stropha index` to mirror it into SQLite."
         ),
+    }
+
+
+def _graph_repo_unavailable() -> dict:
+    return {
+        "graph_loaded": False,
+        "message": "Current repository could not be resolved; graph query was not run.",
     }
 
 
@@ -817,7 +1273,8 @@ class InvestigationPlanResponse(BaseModel):
         "the agent executes in order. The planner does NOT run the "
         "steps itself — it returns a plan; you stay in control of "
         "cost / benefit per step. Use when 'how does X work?' would "
-        "otherwise take 3-4 chained calls."
+        "otherwise take 3-4 chained calls. Defaults to the current "
+        "repository; include_other_repos=True explicitly broadens the plan."
     ),
 )
 @traced("plan_investigation")
@@ -827,13 +1284,30 @@ def plan_investigation(
     include_callers: bool = True,
     include_tests: bool = True,
     include_rationale: bool = True,
+    include_other_repos: bool = False,
     *,
     ctx: Context,
 ) -> InvestigationPlanResponse:
-    """Return an ordered investigation plan for ``task``."""
+    """Return an ordered investigation plan for ``task``.
+
+    Args:
+        task: Natural-language investigation target.
+        top_k: Maximum primary symbols to plan around.
+        include_callers: Include caller-discovery steps.
+        include_tests: Include test-discovery steps.
+        include_rationale: Include rationale steps when the graph is loaded.
+        include_other_repos: Search all indexed repositories. False scopes
+            planning to the current repository.
+    """
     from .retrieval.investigation import plan_investigation as _plan
 
     app = _ctx(ctx)
+    repo_id = None if include_other_repos else _resolve_target_repo_id(app)
+    if repo_id is None and not include_other_repos:
+        return InvestigationPlanResponse(
+            task=task,
+            notes=["Current repository could not be resolved; planning was not run."],
+        )
     plan = _plan(
         task,
         search_engine=app.search_engine,
@@ -842,6 +1316,7 @@ def plan_investigation(
         include_callers=include_callers,
         include_tests=include_tests,
         include_rationale=include_rationale,
+        repo_id=repo_id,
     )
     return InvestigationPlanResponse(
         task=plan.task,
@@ -1150,6 +1625,7 @@ def co_occurrence(
         "PREFER THIS for 'who calls X?' or 'what uses X?' queries. "
         "Graph traversal is more precise than text search for call relationships. "
         "Returns callers with file paths and line numbers. "
+        "Defaults to the current repository; include_other_repos=True broadens traversal. "
         "Requires graphify graph (returns {graph_loaded: false} if missing)."
     ),
 )
@@ -1160,13 +1636,19 @@ def find_callers(
     ctx: Context,
     depth: int = 1,
     limit: int = 20,
+    include_other_repos: bool = False,
 ) -> dict:
     """Return callers of ``symbol`` (BFS up incoming `calls` edges, depth ≤ 3)."""
+    app = _ctx(ctx)
+    repo_id = None if include_other_repos else _resolve_target_repo_id(app)
+    if repo_id is None and not include_other_repos:
+        return _graph_repo_unavailable() | {"symbol": symbol}
     return find_callers_impl(
         symbol,
-        _ctx(ctx),
+        app,
         depth=depth,
         limit=limit,
+        repo_id=repo_id,
         graph_loaded_fn=graph_loaded,
         unavailable_fn=_graph_unavailable,
         graph_find_callers_fn=graph_find_callers,
@@ -1179,7 +1661,8 @@ def find_callers(
         "Find all code related to a symbol via any relationship type. "
         "Bidirectional graph traversal — finds both 'X uses Y' and 'Y uses X'. "
         "Filter with relations=['calls','implements','references'] if needed. "
-        "Use for exploring dependencies and connections around a symbol."
+        "Use for exploring dependencies and connections around a symbol. "
+        "Defaults to the current repository; include_other_repos=True broadens traversal."
     ),
 )
 @traced("find_related")
@@ -1190,14 +1673,20 @@ def find_related(
     depth: int = 1,
     limit: int = 20,
     relations: list[str] | None = None,
+    include_other_repos: bool = False,
 ) -> dict:
     """Return any node connected to ``symbol`` via the graph."""
+    app = _ctx(ctx)
+    repo_id = None if include_other_repos else _resolve_target_repo_id(app)
+    if repo_id is None and not include_other_repos:
+        return _graph_repo_unavailable() | {"symbol": symbol}
     return find_related_impl(
         symbol,
-        _ctx(ctx),
+        app,
         depth=depth,
         limit=limit,
         relations=relations,
+        repo_id=repo_id,
         graph_loaded_fn=graph_loaded,
         unavailable_fn=_graph_unavailable,
         graph_find_related_fn=graph_find_related,
@@ -1210,7 +1699,8 @@ def find_related(
         "Return all nodes in the same community as `symbol_or_community_id`. "
         "Communities are pre-computed by graphify clustering and represent "
         "tight cohesive groups (e.g. 'Hybrid Retrieval & RRF'). Use this to "
-        "see everything that participates in a coherent feature/module."
+        "see everything that participates in a coherent feature/module. "
+        "Defaults to the current repository; include_other_repos=True broadens membership."
     ),
 )
 @traced("get_community")
@@ -1219,12 +1709,18 @@ def get_community(
     *,
     ctx: Context,
     limit: int = 50,
+    include_other_repos: bool = False,
 ) -> dict:
     """Return the community membership of a symbol or community id."""
+    app = _ctx(ctx)
+    repo_id = None if include_other_repos else _resolve_target_repo_id(app)
+    if repo_id is None and not include_other_repos:
+        return _graph_repo_unavailable() | {"query": symbol_or_community_id}
     return get_community_impl(
         symbol_or_community_id,
-        _ctx(ctx),
+        app,
         limit=limit,
+        repo_id=repo_id,
         graph_loaded_fn=graph_loaded,
         unavailable_fn=_graph_unavailable,
         graph_get_community_fn=graph_get_community,
@@ -1237,7 +1733,8 @@ def get_community(
         "Return rationale-style nodes (typically docs / ADRs / design "
         "comments) that explain why `symbol` exists or was built this way. "
         "Walks `rationale_for` edges from the graphify graph. Returns empty "
-        "when no rationale edges target the symbol."
+        "when no rationale edges target the symbol. Defaults to the current "
+        "repository; include_other_repos=True broadens traversal."
     ),
 )
 @traced("find_rationale")
@@ -1246,12 +1743,18 @@ def find_rationale(
     *,
     ctx: Context,
     limit: int = 10,
+    include_other_repos: bool = False,
 ) -> dict:
     """Return rationale nodes (docs/ADRs) explaining ``symbol``."""
+    app = _ctx(ctx)
+    repo_id = None if include_other_repos else _resolve_target_repo_id(app)
+    if repo_id is None and not include_other_repos:
+        return _graph_repo_unavailable() | {"symbol": symbol}
     return find_rationale_impl(
         symbol,
-        _ctx(ctx),
+        app,
         limit=limit,
+        repo_id=repo_id,
         graph_loaded_fn=graph_loaded,
         has_rationale_edges_fn=has_rationale_edges,
         unavailable_fn=_graph_unavailable,
@@ -1265,7 +1768,8 @@ def find_rationale(
         "PREFER THIS for 'what tests cover X?' or 'find tests for X'. "
         "Finds test files that exercise a symbol via graph + path heuristics. "
         "Default patterns: test_*, *_test, *.spec.*, *.test.*, /tests/, /test/. "
-        "Pass custom test_path_patterns for non-standard test conventions."
+        "Pass custom test_path_patterns for non-standard test conventions. "
+        "Defaults to the current repository; include_other_repos=True broadens traversal."
     ),
 )
 @traced("find_tests_for")
@@ -1275,13 +1779,19 @@ def find_tests_for(
     ctx: Context,
     limit: int = 20,
     test_path_patterns: list[str] | None = None,
+    include_other_repos: bool = False,
 ) -> dict:
     """Return tests that exercise ``symbol`` (path-pattern filtered)."""
+    app = _ctx(ctx)
+    repo_id = None if include_other_repos else _resolve_target_repo_id(app)
+    if repo_id is None and not include_other_repos:
+        return _graph_repo_unavailable() | {"symbol": symbol}
     return find_tests_for_impl(
         symbol,
-        _ctx(ctx),
+        app,
         limit=limit,
         test_path_patterns=test_path_patterns,
+        repo_id=repo_id,
         graph_loaded_fn=graph_loaded,
         unavailable_fn=_graph_unavailable,
         graph_find_tests_for_fn=graph_find_tests_for,
@@ -1294,7 +1804,8 @@ def find_tests_for(
         "Trace how a feature flows through the codebase. "
         "Given a description like 'user submits an answer', finds entry points "
         "and follows the call chain to show all participating code. "
-        "Great for understanding end-to-end flows and Gherkin scenario traces."
+        "Great for understanding end-to-end flows and Gherkin scenario traces. "
+        "Defaults to the current repository; include_other_repos=True broadens traversal."
     ),
 )
 @traced("trace_feature")
@@ -1304,13 +1815,19 @@ def trace_feature(
     ctx: Context,
     max_paths: int = 5,
     max_depth: int = 6,
+    include_other_repos: bool = False,
 ) -> dict:
     """Walk the call graph from feature-matching entry points."""
+    app = _ctx(ctx)
+    repo_id = None if include_other_repos else _resolve_target_repo_id(app)
+    if repo_id is None and not include_other_repos:
+        return _graph_repo_unavailable() | {"feature": feature}
     return trace_feature_impl(
         feature,
-        _ctx(ctx),
+        app,
         max_paths=max_paths,
         max_depth=max_depth,
+        repo_id=repo_id,
         graph_loaded_fn=graph_loaded,
         unavailable_fn=_graph_unavailable,
         graph_trace_feature_fn=graph_trace_feature,
@@ -1443,7 +1960,8 @@ class AssembleContextResponse(BaseModel):
         "headers + fenced code blocks; ``sections`` is the structured "
         "view if you'd rather work in JSON. Set diff_scope=True for "
         "PR-review workflows: results are filtered to chunks in the "
-        "current git diff (WIN-211)."
+        "current git diff (WIN-211). Defaults to the current repository; "
+        "include_other_repos=True explicitly broadens every retrieval step."
     ),
 )
 @traced("assemble_context")
@@ -1457,6 +1975,7 @@ def assemble_context(
     diff_scope: bool = False,
     diff_ref_a: str | None = None,
     diff_ref_b: str | None = None,
+    include_other_repos: bool = False,
     *,
     ctx: Context,
 ) -> AssembleContextResponse:
@@ -1487,6 +2006,8 @@ def assemble_context(
             noisy. Diff is computed against the configured target_repo.
         diff_ref_a: starting git ref. None = working tree diff.
         diff_ref_b: ending git ref. None + diff_ref_a set = HEAD.
+        include_other_repos: Search every indexed repository. False scopes
+            primary retrieval and graph extensions to the current repository.
     """
     from .retrieval.assemble import assemble_context as _assemble
 
@@ -1500,6 +2021,15 @@ def assemble_context(
             sections=[],
             total_tokens=0,
             budget_tokens=0,
+        )
+    repo_id = None if include_other_repos else _resolve_target_repo_id(app)
+    if repo_id is None and not include_other_repos:
+        return AssembleContextResponse(
+            task=task,
+            bundle="",
+            sections=[],
+            total_tokens=0,
+            budget_tokens=context_budget,
         )
     # When diff_scope is requested, the target repo for the diff is
     # the configured ``target_repo`` so the agent doesn't have to
@@ -1519,6 +2049,7 @@ def assemble_context(
         diff_repo=diff_repo,
         diff_ref_a=diff_ref_a,
         diff_ref_b=diff_ref_b,
+        repo_id=repo_id,
     )
     return AssembleContextResponse(
         task=result.task,
@@ -1552,7 +2083,8 @@ def assemble_context(
         "rationale internally, packs the union under a budget, and "
         "returns the same ``AssembleContextResponse`` shape as "
         "``assemble_context``. Use for 'tell me about X' tasks "
-        "where you'd otherwise chain N MCP calls."
+        "where you'd otherwise chain N MCP calls. Defaults to the current "
+        "repository; include_other_repos=True broadens both planner and DAG."
     ),
 )
 @traced("execute_investigation")
@@ -1563,10 +2095,22 @@ def execute_investigation(
     include_callers: bool = True,
     include_tests: bool = True,
     include_rationale: bool = True,
+    include_other_repos: bool = False,
     *,
     ctx: Context,
 ) -> AssembleContextResponse:
-    """Plan + execute an investigation in one server-side call."""
+    """Plan + execute an investigation in one server-side call.
+
+    Args:
+        task: Natural-language investigation target.
+        context_budget: Total token budget for the consolidated bundle.
+        top_k: Maximum primary symbols used by the planner.
+        include_callers: Include caller traversal in the plan and DAG.
+        include_tests: Include test traversal in the plan and DAG.
+        include_rationale: Include rationale traversal when available.
+        include_other_repos: Search all indexed repositories. False scopes
+            both planner and DAG execution to the current repository.
+    """
     from .retrieval.dag import execute_plan
     from .retrieval.investigation import plan_investigation as _plan
 
@@ -1579,6 +2123,15 @@ def execute_investigation(
             total_tokens=0,
             budget_tokens=0,
         )
+    repo_id = None if include_other_repos else _resolve_target_repo_id(app)
+    if repo_id is None and not include_other_repos:
+        return AssembleContextResponse(
+            task=task,
+            bundle="",
+            sections=[],
+            total_tokens=0,
+            budget_tokens=context_budget,
+        )
     plan = _plan(
         task,
         search_engine=app.search_engine,
@@ -1587,12 +2140,14 @@ def execute_investigation(
         include_callers=include_callers,
         include_tests=include_tests,
         include_rationale=include_rationale,
+        repo_id=repo_id,
     )
     result = execute_plan(
         plan,
         search_engine=app.search_engine,
         storage=app.storage,
         context_budget=context_budget,
+        repo_id=repo_id,
     )
     return AssembleContextResponse(
         task=result.task,
@@ -1708,6 +2263,17 @@ def _inference_snapshot(cfg: Config) -> dict:
                 "max_retries": cfg.inference.lms_max_retries,
                 "think": cfg.inference.lms_think,
                 "location": "internal (OpenAI-compatible LMS)",
+            }
+        )
+    elif backend == "moa":
+        base.update(
+            {
+                "model": cfg.inference.moa_model,
+                "endpoint": cfg.inference.moa_base_url,
+                "api_key_set": cfg.secrets.has_moa,
+                "timeout_s": cfg.inference.moa_timeout,
+                "max_retries": cfg.inference.moa_max_retries,
+                "location": "local (MoA Gateway)",
             }
         )
     elif backend == "deepseek":
@@ -2048,7 +2614,8 @@ class SuggestNextResponse(BaseModel):
         "x.py', etc.) with confidence scores. Pure heuristics, no LLM "
         "call. When chunk_ids is omitted, uses the session's seen "
         "chunk_ids (last 10). Never raises — empty list when no "
-        "actionable signal."
+        "actionable signal. Defaults to the current repository; "
+        "include_other_repos=True broadens chunk and graph inspection."
     ),
 )
 @traced("suggest_next_tool")
@@ -2056,6 +2623,7 @@ def suggest_next_tool_mcp(
     query: str = "",
     chunk_ids: list[str] | None = None,
     max_suggestions: int = 5,
+    include_other_repos: bool = False,
     *,
     ctx: Context,
 ) -> SuggestNextResponse:
@@ -2064,6 +2632,14 @@ def suggest_next_tool_mcp(
 
     app = _ctx(ctx)
     max_suggestions = max(1, min(int(max_suggestions), 20))
+    repo_id = None if include_other_repos else _resolve_target_repo_id(app)
+    if repo_id is None and not include_other_repos:
+        return SuggestNextResponse(
+            query=query,
+            suggestions=[],
+            based_on_hits=0,
+            graph_loaded=False,
+        )
 
     # Resolve which chunks to inspect: explicit list wins; otherwise
     # fall back to the most recent ones the agent has seen.
@@ -2075,11 +2651,13 @@ def suggest_next_tool_mcp(
             hit = app.storage.lookup_by_chunk_id(cid)
         except Exception:  # pragma: no cover - defensive
             hit = None
-        if hit is not None:
+        if hit is not None and chunk_belongs_to_repo(app.storage, cid, repo_id):
             hits.append(hit)
 
-    has_graph = graph_loaded(app.storage)
-    has_rationale = has_rationale_edges(app.storage) if has_graph else False
+    has_graph = graph_loaded(app.storage, repo_id=repo_id)
+    has_rationale = (
+        has_rationale_edges(app.storage, repo_id=repo_id) if has_graph else False
+    )
 
     raw = _suggest(
         query, hits,
@@ -2093,7 +2671,9 @@ def suggest_next_tool_mcp(
         suggestions=[
             SuggestionEntry(
                 tool=s.tool,
-                args=dict(s.args),
+                args=(dict(s.args) | {"include_other_repos": True})
+                if include_other_repos
+                else dict(s.args),
                 reason=s.reason,
                 confidence=s.confidence,
             )
@@ -2267,17 +2847,30 @@ def apply_task_recipe(
         "implements, is a <kind>, is in <file>, has tests. Returns "
         "tri-state verdict (True / False / null) with evidence and, "
         "when False, the actual edges so the agent can correct its "
-        "model without re-querying. Never raises."
+        "model without re-querying. Defaults to the current repository; "
+        "include_other_repos=True broadens graph resolution. Never raises."
     ),
 )
 @traced("verify_claim")
 def verify_claim_tool(
     claim: str,
+    include_other_repos: bool = False,
     *,
     ctx: Context,
 ) -> VerdictResponse:
     """Parse + verify a claim against the graph."""
-    return verify_claim_impl(claim, _ctx(ctx), graph_loaded_fn=graph_loaded)
+    app = _ctx(ctx)
+    repo_id = None if include_other_repos else _resolve_target_repo_id(app)
+    if repo_id is None and not include_other_repos:
+        return VerdictResponse(
+            raw_text=claim,
+            parsed=False,
+            verified=None,
+            reason="Current repository could not be resolved; claim was not verified.",
+        )
+    return verify_claim_impl(
+        claim, app, graph_loaded_fn=graph_loaded, repo_id=repo_id
+    )
 
 
 @mcp.tool(
@@ -2288,18 +2881,31 @@ def verify_claim_tool(
         "verdict (exists/missing) plus near-miss suggestions on "
         "misses, so the agent can pick the correct name without a "
         "second search. Defensive: callable exceptions become notes, "
-        "never propagate; empty / duplicate names skipped."
+        "never propagate; empty / duplicate names skipped. Defaults to "
+        "the current repository; include_other_repos=True broadens lookup."
     ),
 )
 @traced("check_symbols")
 def check_symbols_tool(
     symbols: list[str],
     max_suggestions: int = 5,
+    include_other_repos: bool = False,
     *,
     ctx: Context,
 ) -> HallucinationGuardResponse:
     """Run the hallucination guard against the live index."""
-    return check_symbols_impl(symbols, _ctx(ctx), max_suggestions=max_suggestions)
+    app = _ctx(ctx)
+    repo_id = None if include_other_repos else _resolve_target_repo_id(app)
+    if repo_id is None and not include_other_repos:
+        return HallucinationGuardResponse(
+            checks=[],
+            present_count=0,
+            missing_count=0,
+            notes=["Current repository could not be resolved; symbols were not checked."],
+        )
+    return check_symbols_impl(
+        symbols, app, max_suggestions=max_suggestions, repo_id=repo_id
+    )
 
 
 @mcp.tool(
@@ -2310,21 +2916,33 @@ def check_symbols_tool(
         "affected, deduplicated across the input list. Use AFTER an "
         "edit to know what else needs verification. Composes the "
         "existing find_callers / find_tests_for / find_related / "
-        "find_rationale graph readers under one call."
+        "find_rationale graph readers under one call. Defaults to the current "
+        "repository; include_other_repos=True broadens traversal."
     ),
 )
 @traced("blast_radius")
 def blast_radius_tool(
     symbols: list[str],
+    include_other_repos: bool = False,
     *,
     ctx: Context,
 ) -> BlastRadiusResponse:
     """Build a blast-radius report for the changed symbols."""
+    app = _ctx(ctx)
+    repo_id = None if include_other_repos else _resolve_target_repo_id(app)
+    if repo_id is None and not include_other_repos:
+        return BlastRadiusResponse(
+            changed_symbols=[symbol.strip() for symbol in symbols if symbol.strip()],
+            graph_loaded=False,
+            summary="Current repository could not be resolved; blast radius was not computed.",
+            notes=["graph_loaded=False"],
+        )
     return blast_radius_impl(
         symbols,
-        _ctx(ctx),
+        app,
         graph_loaded_fn=graph_loaded,
         has_rationale_edges_fn=has_rationale_edges,
+        repo_id=repo_id,
     )
 
 
@@ -2337,7 +2955,8 @@ def blast_radius_tool(
         "exists and whether its content has drifted. Defensive — "
         "lookup exceptions surface as fresh=null with a reason. "
         "Use strict=true for byte-exact comparison; default is "
-        "whitespace-normalised."
+        "whitespace-normalised. Defaults to the current repository; "
+        "include_other_repos=True permits any indexed chunk."
     ),
 )
 @traced("assert_snippet_freshness")
@@ -2345,15 +2964,26 @@ def assert_snippet_freshness_tool(
     chunk_id: str,
     expected_snippet: str,
     strict: bool = False,
+    include_other_repos: bool = False,
     *,
     ctx: Context,
 ) -> FreshnessResponse:
     """Verify a cached snippet against the live index."""
+    app = _ctx(ctx)
+    repo_id = None if include_other_repos else _resolve_target_repo_id(app)
+    if repo_id is None and not include_other_repos:
+        return FreshnessResponse(
+            chunk_id=chunk_id,
+            fresh=None,
+            reason="Current repository could not be resolved; freshness was not checked.",
+            expected_snippet=expected_snippet,
+        )
     return assert_snippet_freshness_impl(
         chunk_id,
         expected_snippet,
-        _ctx(ctx),
+        app,
         strict=bool(strict),
+        repo_id=repo_id,
     )
 
 
@@ -2365,7 +2995,8 @@ def assert_snippet_freshness_tool(
         "plus (when transitive_depth>=1) tests covering immediate "
         "callers. Returns a ready-to-paste run_command (pytest "
         "by default; pass runner='go test' / 'npm test' for other "
-        "ecosystems). Never raises."
+        "ecosystems). Defaults to the current repository; "
+        "include_other_repos=True broadens traversal. Never raises."
     ),
 )
 @traced("test_impact")
@@ -2373,16 +3004,27 @@ def test_impact_tool(
     symbols: list[str],
     transitive_depth: int = 1,
     runner: str = "pytest",
+    include_other_repos: bool = False,
     *,
     ctx: Context,
 ) -> TestImpactResponse:
     """Compute the impacted test set for the changed symbols."""
+    app = _ctx(ctx)
+    repo_id = None if include_other_repos else _resolve_target_repo_id(app)
+    if repo_id is None and not include_other_repos:
+        return TestImpactResponse(
+            changed_symbols=[symbol.strip() for symbol in symbols if symbol.strip()],
+            graph_loaded=False,
+            run_command="",
+            notes=["graph_loaded=False", "Current repository could not be resolved."],
+        )
     return test_impact_impl(
         symbols,
-        _ctx(ctx),
+        app,
         transitive_depth=transitive_depth,
         runner=runner,
         graph_loaded_fn=graph_loaded,
+        repo_id=repo_id,
     )
 
 
@@ -2397,17 +3039,29 @@ def test_impact_tool(
         "[file:line] / [file:start-end] citation tokens, and "
         "resolves each against the index. Returns per-sentence "
         "verdicts plus aggregate counts (cited / uncited / broken). "
-        "Use to prevent 'vibes' assertions from shipping."
+        "Use to prevent 'vibes' assertions from shipping. Defaults to "
+        "the current repository; include_other_repos=True broadens validation."
     ),
 )
 @traced("audit_citations")
 def audit_citations_tool(
     text: str,
+    include_other_repos: bool = False,
     *,
     ctx: Context,
 ) -> CitationAuditResponse:
     """Audit the agent's text for verifiable citations."""
-    return audit_citations_impl(text, _ctx(ctx))
+    app = _ctx(ctx)
+    repo_id = None if include_other_repos else _resolve_target_repo_id(app)
+    if repo_id is None and not include_other_repos:
+        return CitationAuditResponse(
+            claims=[],
+            total_claims=0,
+            cited_claims=0,
+            uncited_claims=0,
+            notes=["Current repository could not be resolved; citations were not audited."],
+        )
+    return audit_citations_impl(text, app, repo_id=repo_id)
 
 
 # ---- spec_consistency (WIN-250) -------------------------------------------
@@ -2426,7 +3080,8 @@ def _default_spec_loader(repo_root: str) -> dict[str, str]:
         "forward-only / etc. that mentions a changed symbol or file. "
         "Helps avoid silently violating an undocumented contract. "
         "Severity: HIGH (MUST/NEVER) / MEDIUM (should/avoid) / "
-        "LOW (note)."
+        "LOW (note). This tool is repository-local and reads specs only "
+        "from the configured current target repository."
     ),
 )
 @traced("spec_consistency")
@@ -2437,10 +3092,17 @@ def spec_consistency_tool(
     ctx: Context,
 ) -> SpecConsistencyResponse:
     """Check the changes against documented invariants."""
+    app = _ctx(ctx)
+    target_repo = app.config.target_repo
+    if target_repo is None:
+        return SpecConsistencyResponse(
+            invariants_found=0,
+            notes=["No current target repository is configured; specs were not scanned."],
+        )
     return spec_consistency_impl(
         changed_symbols,
         changed_files,
-        _ctx(ctx),
+        repo_root=str(target_repo),
         default_spec_loader_fn=_default_spec_loader,
     )
 
@@ -2458,17 +3120,29 @@ def spec_consistency_tool(
         "_spec.py, Spec.java, …), symbol name (contract, interface, "
         "api, behavior), or tag/annotation. The agent uses this to "
         "see WHICH tests must keep passing for the public surface "
-        "to stay intact."
+        "to stay intact. Defaults to the current repository; "
+        "include_other_repos=True broadens graph resolution."
     ),
 )
 @traced("contract_tests")
 def contract_tests_tool(
     symbol: str,
+    include_other_repos: bool = False,
     *,
     ctx: Context,
 ) -> ContractTestsResponse:
     """Surface contract tests for ``symbol``."""
-    return contract_tests_impl(symbol, _ctx(ctx), graph_loaded_fn=graph_loaded)
+    app = _ctx(ctx)
+    repo_id = None if include_other_repos else _resolve_target_repo_id(app)
+    if repo_id is None and not include_other_repos:
+        return ContractTestsResponse(
+            target_symbol=symbol,
+            graph_loaded=False,
+            notes=["graph_loaded=False", "Current repository could not be resolved."],
+        )
+    return contract_tests_impl(
+        symbol, app, graph_loaded_fn=graph_loaded, repo_id=repo_id
+    )
 
 
 # ---- working_set (WIN-253) -------------------------------------------------
@@ -2513,7 +3187,8 @@ class WorkingSetResponse(BaseModel):
         "recent chunks) into a markdown bundle ready to plug into "
         "the next LLM prompt. Pinned chunks are always included; "
         "recent chunks are packed under budget_tokens. Defaults to "
-        "the current session; pass session_id to query another."
+        "the current session and current repository; pass session_id "
+        "to query another session. include_other_repos=True broadens hydration."
     ),
 )
 @traced("working_set")
@@ -2521,6 +3196,7 @@ def working_set_tool(
     session_id: str = "",
     budget_tokens: int = 4000,
     max_recent: int = 20,
+    include_other_repos: bool = False,
     *,
     ctx: Context,
 ) -> WorkingSetResponse:
@@ -2529,6 +3205,13 @@ def working_set_tool(
 
     app = _ctx(ctx)
     sid = (session_id or "").strip() or app.session_id
+    repo_id = None if include_other_repos else _resolve_target_repo_id(app)
+    if repo_id is None and not include_other_repos:
+        return WorkingSetResponse(
+            session_id=sid,
+            budget_tokens=max(0, int(budget_tokens)),
+            notes=["Current repository could not be resolved; working set was not built."],
+        )
 
     if session_id:
         # Pull pinned + seen from the sessions table via SessionRecord.
@@ -2547,7 +3230,9 @@ def working_set_tool(
 
     def _lookup(cid: str):
         try:
-            return app.storage.lookup_by_chunk_id(cid)
+            if chunk_belongs_to_repo(app.storage, cid, repo_id):
+                return app.storage.lookup_by_chunk_id(cid)
+            return None
         except Exception:
             return None
 
@@ -2592,9 +3277,22 @@ def working_set_resource() -> str:
     """
     from .retrieval.working_set import build_working_set
 
+    cfg = get_config()
+    target_repo = cfg.target_repo
+    if target_repo is None:
+        return "# Working set\n\n_current repository unavailable._\n"
     resolved = load_pipeline_config()
     built = build_stages(resolved)
     with built.storage as storage:
+        try:
+            from .ingest.git_meta import detect
+
+            identity = detect(target_repo)
+            repo_id = storage.lookup_repo_id(identity.normalized_key)
+        except Exception:
+            repo_id = None
+        if repo_id is None:
+            return "# Working set\n\n_current repository unavailable._\n"
         try:
             record = storage.get_latest_session()
         except Exception:
@@ -2604,7 +3302,9 @@ def working_set_resource() -> str:
 
         def _lookup(cid: str):
             try:
-                return storage.lookup_by_chunk_id(cid)
+                if chunk_belongs_to_repo(storage, cid, repo_id):
+                    return storage.lookup_by_chunk_id(cid)
+                return None
             except Exception:
                 return None
 
