@@ -369,7 +369,7 @@ class CloudCodeProposer(CodeProposerMixin, CloudAgenticProposer):
     Same shape as :class:`LocalCodeProposer` but uses
     :class:`CloudAgenticProposer` (Anthropic or DeepSeek). Opt-in only —
     requires explicit ``inference.backend`` configuration; never auto-
-    selected per CLAUDE.md §3.6.
+    selected per the CLAUDE.md **Local-only by default** invariant.
     """
 
     enable_code: bool = field(default=True)

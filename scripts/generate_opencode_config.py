@@ -18,7 +18,6 @@ import json
 import sys
 from pathlib import Path
 
-
 DEFAULT_URL = "http://127.0.0.1:9741/mcp"
 
 

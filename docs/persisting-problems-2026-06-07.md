@@ -3,9 +3,14 @@
 > **Date:** 2026-06-07
 > **Author:** investigation session (OpenCode)
 > **Jira (system of record):** stropha tooling → epic **WIN-421** (WIN-422 / WIN-423 / WIN-424); mimoria → **MIM-33** (Fase 1 hardening) + epic **MIM-34** (Fase 2 conceptual fix). This file is now a root-cause reference; status lives in Jira.
-> **Scope:** Problems that still persist after the Stropha engine change
+> **Status:** Historical problem report with resolution audit.
+> **Resolution audit:** 2026-08-11 at stropha commit
+> `b0d391d7d67606a04666d8e9a48cfbef24c1726d`.
+> **Scope:** Problems that still persisted after the Stropha engine change
 > `46ec16b → 5dab77c`, discovered while benchmarking the tenant↔Stripe
-> investigation against the mimoria codebase.
+> investigation against the mimoria codebase. The root-cause sections below are
+> preserved in their original tense; use the resolution matrix and Jira for
+> current status.
 > **Repos involved (one shared index):**
 > - `github.com/jonatasfischer/stropha` — served at `/Users/jonatas/sources/rag` (6,908 chunks)
 > - `github.com/jonatasfischer/mimoria` — `/Users/jonatas/sources/mimoria` (5,500 chunks), index head `2468903c`
@@ -13,6 +18,17 @@
 ---
 
 ## Executive summary
+
+### Resolution matrix
+
+| Problem | Current status | Evidence at audited commit | Residual scope |
+|---|---|---|---|
+| WIN-422 — reportable weak bundles lack `trace_id` | **Resolved for the reported failure** | `AssembleContextResponse.trace_id` is auto-stamped, covering both `assemble_context` and `execute_investigation`. | Trace exposure remains opt-in by response model; not every tool response is intended to be reportable. |
+| WIN-423 — memory bound to configured target | **Resolved** | Memory APIs accept `repo`; repo id, provenance HEAD, and staleness diff resolve against that repo/entry's own `local_path`. | Callers omitting `repo` still intentionally default to the configured target. |
+| WIN-424 — freshness compares source to outline card | **Resolved** | Freshness reads the live source slice and accepts normalized containment against source or stored card; missing comparable text returns undetermined. | Strict mode remains exact by design. |
+| MIM-33 / MIM-34 — tenant/Stripe model | **Outside this repo; status not re-audited** | No mimoria source was changed or audited in this cleanup. | Jira remains authoritative. |
+
+### Original 2026-06-07 findings
 
 | # | Problem | Jira | Where | Severity | Effort |
 |---|---------|------|-------|----------|--------|
@@ -31,7 +47,7 @@ several subsystems were written assuming a single repo (`app.config.target_repo`
 > **Jira:** WIN-422 (epic WIN-421)
 
 ### Symptom
-`search_code` and `smart_search` now return a top-level `trace_id` (the
+`search_code` and `smart_search_tool` now return a top-level `trace_id` (the
 `5dab77c` fix). But `execute_investigation` / `assemble_context` — the tools
 most likely to return a weak bundle — return **no** `trace_id`, so
 `report_bad_result` cannot be called for them. The feedback loop the

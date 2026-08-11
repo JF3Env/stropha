@@ -15,7 +15,7 @@ and expands them in two ways:
 
 Local-only, no LLM, no embeddings. Pure SQL + dataclass juggling.
 
-Configuration (stropha.yaml):
+Configuration (``~/.stropha/config.yaml``):
     retrieval_features:
       recursive_enabled: true
       recursive_adjacency: 5  # line gap considered adjacent
@@ -36,12 +36,12 @@ DEFAULT_ADJACENCY_LINES = 5
 
 
 def _enabled() -> bool:
-    """Check if recursive retrieval is enabled via stropha.yaml."""
+    """Check whether unified configuration enables recursive retrieval."""
     return get_config().retrieval_features.recursive_enabled
 
 
 def _adjacency_lines() -> int:
-    """Get the adjacency line gap from stropha.yaml."""
+    """Get the configured adjacency line gap."""
     return get_config().retrieval_features.recursive_adjacency
 
 

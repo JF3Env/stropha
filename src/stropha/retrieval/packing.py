@@ -5,7 +5,7 @@ classification by +7.7 accuracy points AND simultaneously consumes
 ~4× fewer tokens. The "fewer tokens" half of that gain comes from
 *context shaping*: instead of returning a fixed ``top_k`` slice of
 chunks regardless of size, the retriever packs as many high-rank
-chunks as the caller's context budget allows and stops there.
+chunks as the caller's result-token budget allows and stops there.
 
 Why a separate packer
 ---------------------
@@ -16,8 +16,8 @@ Three failure modes follow:
 1. **Over-packing**: top_k=10 of 1000-line chunks blows the agent's
    context window. The agent dumps half the response into the
    "previous tool output" buffer and runs out of room for reasoning.
-2. **Under-packing**: top_k=3 of 30-line stubs leaves 90% of the
-   agent's budget unused. The agent had room for the surrounding
+2. **Under-packing**: top_k=3 of 30-line stubs leaves most of the
+   result budget unused. The agent had room for the surrounding
    methods but doesn't get them.
 3. **No back-pressure**: the caller has no way to say "give me as
    much as fits in 4K tokens" — only "give me 10 things".
@@ -27,7 +27,8 @@ A budget-aware packer solves all three: the caller passes
 hits in order, summing the per-hit token estimate, and stops at the
 first hit that would overflow. The truncated tail is returned as
 ``spilled`` for observability (so the operator can see "we had 15
-more relevant hits but ran out of room").
+more relevant hits but ran out of room"). This is a budget for the
+returned snippets, not the caller's entire model context window.
 
 Spill policy
 ------------

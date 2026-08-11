@@ -37,7 +37,8 @@ the failed result — the next index run will retry the chunk.
 Batched enrichment (Fix 3): :meth:`enrich_batch` packs N chunks into a single
 LLM call by asking the model to return a JSON array of descriptions. Effective
 throughput multiplies by N under the same rate-limit budget. Enabled via
-``inference.enricher_batch_size: N`` in ``stropha.yaml`` (default 1 = per-chunk).
+``inference.enricher_batch_size: N`` in ``~/.stropha/config.yaml``
+(default 1 = per-chunk).
 """
 
 from __future__ import annotations

@@ -22,19 +22,18 @@ from ...stages.router import RouterStage
 class PatternRouterConfig(BaseModel):
     """Config for the pattern-based router.
 
-    ``use_llm_fallback`` controls whether the underlying
-    ``route_query`` is allowed to consult an LLM for ambiguous
-    cases when ``retrieval_features.query_router_llm: true``. This
-    adapter exposes it so the Meta-Harness can toggle it as a
-    search-space dimension distinct from the LLM-only router.
+    ``use_llm_fallback=True`` forces the underlying ``route_query`` to
+    consult an LLM for ambiguous cases. ``False`` does not force it off;
+    it delegates to ``retrieval_features.query_router_llm``. The effective
+    behavior is therefore enabled when either setting is true.
     """
 
     use_llm_fallback: bool = Field(
         default=False,
         description=(
-            "Permit route_query to escalate to LLM classification "
-            "for ambiguous queries. Only fires when the global "
-            "retrieval_features.query_router_llm flag is also on."
+            "Force route_query to escalate ambiguous queries to LLM "
+            "classification. False delegates to the global "
+            "retrieval_features.query_router_llm setting."
         ),
     )
 

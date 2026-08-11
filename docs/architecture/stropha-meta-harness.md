@@ -1,22 +1,47 @@
 # Meta-Harness — implementation plan for stropha
 
-> **Status:** Proposed (plan — nothing shipped).
+> **Status:** Historical RFC with partial delivery. The phased body records the
+> 2026-05 plan; it is not a current claim that "nothing shipped". The audited
+> delivery matrix below is authoritative for implementation status.
 > **Version:** 1.0 (RFC)
 > **Date:** 2026-05-21
+> **Delivery audit:** 2026-08-11. Baseline commit
+> `b0d391d7d67606a04666d8e9a48cfbef24c1726d`; current operational rows were
+> reconciled with the live source tree on that date.
 > **Audience:** maintainers of `stropha` and LLM agents operating it.
 > **Companion documents:**
 > - `docs/comparisons/stropha-vs-meta-harness.md` — the concept analysis + 118 improvement options this plan operationalizes.
 > - `docs/architecture/stropha-pipeline-adapters.md` — the adapter framework that *is* the search space.
-> - `CLAUDE.md §3` — the invariants this plan must not break.
+> - `CLAUDE.md` **Invariants (do NOT break)** — the constraints this plan must not break.
 > **Primary source:** Lee et al., *Meta-Harness: End-to-End Optimization of Model Harnesses*, arXiv:2603.28052 [cs.AI], 2026 — see §11 for the full citation, links, and the implementation-relevant findings.
 
 ---
 
 ## 0. TL;DR
 
-A **Meta-Harness** is an outer loop that searches over a harness's code/config to optimize it end-to-end, using an agentic *proposer* with full-history access to every prior candidate's code, scores, and execution traces. stropha already owns the one rare prerequisite — a declarative, addressable search space (the adapter framework). It is missing the entire optimizer apparatus.
+A **Meta-Harness** is an outer loop that searches over a harness's code/config to optimize it end-to-end, using an agentic *proposer* with full-history access to every prior candidate's code, scores, and execution traces. At the time of the RFC, stropha owned the declarative adapter search space but not the optimizer apparatus; the delivery matrix below records the subsequent partial implementation.
 
-This plan builds that apparatus in **7 phases**. Phases 0–4 (≈3–4 weeks) deliver a **working, fully local Meta-Harness** that searches stropha's configuration space. Phases 5–6 (≈3 more weeks) add code-level search and continuous operation. No phase breaks a `CLAUDE.md §3` invariant; Phases 0–4 require **no schema migration** (the artifact store is filesystem-first, matching the paper and keeping it grep-able by an agentic proposer).
+This RFC proposed that apparatus in **7 phases**. Its schedule and future-tense
+exit criteria are retained as planning history. See the matrix below for what is
+actually wired at the audited commit.
+
+### 0.1 Delivery matrix
+
+| Phase | Audited status | Delivered evidence | Current gap |
+|---|---|---|---|
+| 0 — traces/store/outcomes | **Delivered** | `meta/{trace,store,outcome,backfill,feedback}.py`; traced MCP calls and explicit bad-result feedback | Label quality still depends on post-hoc signals and calibration. |
+| 1 — evaluator/fitness | **Delivered as library** | `meta/{fitness,evaluator,gate,frontier}.py` | The public `meta run` path does not invoke the production evaluator. |
+| 2 — reproducibility | **Delivered as library/CLI** | `meta/{snapshot,index_cache}.py`; `stropha meta snapshot` | Reproducibility helpers are not composed into `meta run`. |
+| 3 — search space | **Delivered** | bundled manifest + `meta/search_space.py` validation/sampling | The manifest remains curated; registry metadata cannot infer every constraint. |
+| 4 — outer loop | **Infrastructure only** | loop, Pareto frontier, bandit, local-agentic and cloud-agentic proposers | `stropha meta run` scores candidates with a deterministic random stub, not real retrieval fitness. |
+| 5 — code search | **Infrastructure only** | code proposers, pytest gate and subprocess adapter sandbox | Not selected or evaluated by the public run command; the subprocess is isolation, not a security boundary. |
+| 6 — promotion/operation | **Delivered with a bounded scope** | status/report/promote/prune commands; promotion deep-merges into canonical `~/.stropha/config.yaml`, preserves unrelated keys/secrets, defaults to diff-only, and writes only with explicit `--apply`; hook can trigger bounded bandit iterations | Sleep-time operation still inherits the Phase 4 stub-evaluator limitation. |
+
+**Current limitations:** there is no end-to-end production optimization loop
+until `meta run` composes snapshot/cache, the real evaluator, and candidate
+isolation. Hook-triggered runs therefore exercise loop infrastructure rather
+than production retrieval fitness. The historical plan body below intentionally
+keeps the original names and estimates for traceability.
 
 ---
 
@@ -28,9 +53,9 @@ This plan builds that apparatus in **7 phases**. Phases 0–4 (≈3–4 weeks) d
 
 **Out of scope.** Making stropha a richer *harness* (statefulness, context shaping, guidance — `stropha-vs-meta-harness.md` §A–§C). That is a parallel track (§9): it is not a blocker for the loop, it only widens the search space.
 
-**Non-negotiable constraints (`CLAUDE.md §3`).**
+**Non-negotiable constraints** (`CLAUDE.md`, section **Invariants (do NOT break)**).
 - Forward-only, idempotent schema migrations — Phases 0–4 add none; if Phase 5+ needs SQL it is a forward-only `v8`.
-- Local-only default — the loop, store, evaluator, and a bandit proposer are 100% local. The *agentic* proposer needs a strong coding model and is therefore **opt-in**, gated like `VOYAGE_API_KEY`.
+- Local-only default — the loop, store, evaluator, and a bandit proposer are 100% local. The *agentic* proposer needs a strong coding model and is therefore **opt-in**, gated by an explicitly configured inference backend and its YAML secret when required.
 - Non-blocking post-commit hook — sleep-time operation (Phase 6) runs only in the existing detached `nohup`+`flock` background.
 - Never bypass the adapter framework — config search varies `stropha.yaml`; code search (Phase 5) adds adapters via `@register_adapter`, guarded by `pytest`.
 
@@ -202,7 +227,9 @@ Candidates must be compared under identical conditions, and re-indexing per cand
 **Deliverables**
 - `meta/snapshot.py`: `stropha meta snapshot` creates a pinned git worktree at a chosen SHA under `.stropha/meta/snapshot/src/`. All candidate evaluations run against this frozen tree (option #118).
 - **Index cache** — the key efficiency lever. An index is keyed by a hash of only the *indexing-relevant* `adapter_id`s (walker + chunker + enricher + embedder + storage). Candidates differing only in retrieval/reranker config **share** a cached index; candidates that change indexing trigger one rebuild against the snapshot, cached at `.stropha/meta/snapshot/indexes/<index_hash>/index.db`. Without this, every candidate pays a full re-embed.
-- Per-candidate isolation: each evaluation gets its own `STROPHA_INDEX_PATH` (a copy-on-write clone of the cached index) so concurrent candidates never corrupt each other (option #12).
+- Per-candidate isolation: each evaluation receives an in-memory `paths.index`
+  override pointing at a copy-on-write clone of the cached index, so concurrent
+  candidates never corrupt each other (option #12).
 
 **Files** new `meta/snapshot.py`; edits to `evaluator.py` (consume the cache), `cli.py` (`meta snapshot`).
 **Schema** none.
@@ -260,7 +287,7 @@ Close the loop into continuous, safe operation.
 
 **Deliverables**
 - `meta/promote.py` + `stropha meta promote <id>`: emits a **diff** of `stropha.yaml` (or a branch + commit) for human review. It never auto-applies — promoting a harness change is a shared-state action and stays human-gated, consistent with the §3 spirit on risky operations.
-- Sleep-time operation (option #116): an optional hook step runs a *bounded* number of bandit-proposer iterations in the **existing detached post-commit background** (`flock`-guarded, budget-capped). The hook foreground still exits in <100 ms (§3 invariant 5). Off by default; enabled via `stropha hook install --meta`.
+- Sleep-time operation (option #116): an optional hook step runs a *bounded* number of bandit-proposer iterations in the **existing detached post-commit background** (`flock`-guarded, budget-capped). The hook foreground still exits in <100 ms (`CLAUDE.md` invariant **Hook <= 100 ms before fork**). Off by default; enabled via `stropha hook install --meta`.
 - `stropha meta report` leaderboard; regression alert when the live `stropha.yaml` falls behind a discovered candidate by a margin on held-out.
 
 **Files** new `meta/promote.py`; edits to `cli.py`, `tools/hook_install.py`, `cost.py` (meta-loop cost rows).
@@ -295,7 +322,7 @@ Phase 0 is the hard dependency for everything. Phases 1+2 and Phase 3 can procee
 | **Proxy-metric overfitting** — optimizing Recall@K yields harnesses good at Recall@K, not at helping agents. | The composite fitness (§Phase 1) blends NDCG + token-efficiency + tiered outcome_score + latency. The held-out split (Phase 1) catches overfit. Roadmap: a retrieval-conditioned end-to-end task eval (`stropha-vs-meta-harness.md` #110) as the true fitness once trace volume allows. |
 | **Edit-only labeling would train the wrong tuner** — a label that flags chunks as "useful" only when their file ends up in `git diff` systematically underweights definition lookups, interface reading, type lookups, documentation, config schema reads, test-contract reads, and pure-explanation queries — likely the majority of real retrievals. The tuner would learn to deprioritize exactly the read-only retrievals AI agents most rely on for correct-on-first-try code. | The tiered labeling in §Phase 0 (T1 edit + T2 definition-of-used-symbol + T3 graph-neighborhood + T4 follow-up engagement + T5/T6 negative signals + T7 neutral-unknown) explicitly treats absence of edit as **neutral, not negative**. T2 uses the existing graphify symbol graph to bridge "edited line X" → "definitions consulted to write X correctly". Fitness weight `w₄·outcome_score` consumes the *tiered* score, never raw T1 overlap. The Phase 1 read-only-retrieval test gates the design against regression. |
 | **Re-indexing cost per candidate** dominates loop wall-clock. | The index cache (Phase 2) keyed by indexing-`adapter_id`s; bias the search-space manifest so cheap retrieval-only knobs are explored first. |
-| **Local-only tension** — a good agentic proposer needs a strong model. | The bandit proposer is the local default and the MVP path; the agentic proposer is opt-in and gated like `VOYAGE_API_KEY`. The loop, store, and evaluator are always 100% local. |
+| **Local-only tension** — a good agentic proposer needs a strong model. | The bandit proposer is the local default and the MVP path; the agentic proposer is opt-in and gated by explicit inference configuration. The loop, store, and evaluator are always 100% local. |
 | **A proposed code candidate breaks the process** (Phase 5). | Subprocess isolation + `pytest` gate before scoring; production `adapters/` never touched. |
 | **Trace volume / disk growth.** Paper §1 reports a single evaluation can produce up to **10,000,000 tokens** of diagnostic information (≈30-40 MB at 3-4 bytes/token). At our scale a search-code trace is closer to 5-10 KB, but a full Phase 4 run captures ~60 candidates × the trace tail × the per-eval golden run, which at the upper bound is single-digit GB per run. | Traces are JSONL with rotation. Concrete pruning rule: keep top-10 + bottom-10 + last-50 (the paper Appendix D notes worst candidates are informative). Periodic compaction (monthly default) drops trace bodies older than 90 days while keeping `config.yaml` + `scores.json` + `meta.json` indefinitely. `stropha cost` reports per-run disk footprint. |
 | **Proposer capability cap.** Paper §5 explicitly notes: "our experiments demonstrate that harness search can work with one particularly strong coding-agent proposer (Claude Code); a broader study of how the effect varies across proposer agents remains for future work." A local 7B-32B model may not reach Opus 4.6's "median 82 files per iteration / 20+ candidates per step" diagnostic depth. The `inference-helper` proposer mode (Phase 4) is therefore an extrapolation beyond the paper's validated regime. | Treat `inference-helper` as a v1 prototype, not a guaranteed reproduction of the paper's gains. Benchmark it against Best-of-N (Table 4 control, 34.0 median vs Meta-Harness 50.0) to measure how much of the structural gain it actually captures. If the gap is small, escalating to the cloud `agentic` proposer becomes a documented, evidence-backed cost decision rather than a leap of faith. |
@@ -404,7 +431,7 @@ Each phase below traces back to a concrete result in the paper. Read this table 
 | `src/stropha/pipeline/config.py` | YAML + env + CLI config cascade — the shape of a candidate `config.yaml` |
 | `src/stropha/server.py`, `src/stropha/retrieval/search.py` | Where `TraceRecorder` is wired in (Phase 0) |
 | `src/stropha/tools/hook_install.py` | The post-commit hook template — extended for outcome back-fill (Phase 0) and sleep-time operation (Phase 6) |
-| `CLAUDE.md §3` | The invariants every phase must respect |
+| `CLAUDE.md` **Invariants (do NOT break)** | The invariants every phase must respect |
 
 ### 11.4 Prior art
 

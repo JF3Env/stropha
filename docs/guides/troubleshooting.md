@@ -1,487 +1,341 @@
 # Troubleshooting Guide
 
-> Solutions to common stropha issues.
+## Installation
 
----
+### `No module named 'fastembed'` Or Missing Tree-Sitter Support
 
-## Installation Issues
+The base package does not include the default local embedding and AST chunking
+dependencies. Install the local extra:
 
-### "sqlite3 was built without extension loading"
-
-**Error:**
-```
-StorageError: Your Python sqlite3 was built without extension loading.
+```bash
+uv sync --extra local
 ```
 
-**Solution:**
-Install Python via uv or pyenv (system Python on macOS often lacks this):
+With pip:
+
+```bash
+pip install -e ".[local]"
+```
+
+### SQLite Extension Loading Is Unavailable
+
+Use a Python build with SQLite extension loading enabled, such as a Python
+installed by uv:
 
 ```bash
 uv python install 3.12
-uv sync
+uv sync --extra local
 ```
 
-### "No module named 'sqlite_vec'"
+## Configuration
 
-**Error:**
-```
-ModuleNotFoundError: No module named 'sqlite_vec'
-```
+`~/.stropha/config.yaml` is the only settings file. Project-level and `.env`
+files, and old per-setting environment controls, do not configure the current
+pipeline.
 
-**Solution:**
+Inspect what stropha resolved:
+
 ```bash
-uv sync  # Reinstall dependencies
+uv run stropha pipeline show
+uv run stropha pipeline validate
 ```
 
----
+`STROPHA_TARGET_REPO` is still accepted as a runtime target argument. Prefer an
+explicit `--repo /path/to/project` for commands when diagnosing scope problems.
 
-## Indexing Issues
+## Indexing
 
-### "No files found to index"
+### No Files Are Indexed
 
-**Causes:**
-1. Not in a git repository
-2. `.strophaignore` is too aggressive
-3. All files exceed size limit
+Check the target, ignore rules, and resulting counts:
 
-**Solutions:**
 ```bash
-# Check you're in a git repo
 git status
-
-# Check ignore patterns
-cat .strophaignore
-
-# Try with verbose logging
-STROPHA_LOG_LEVEL=DEBUG stropha index
+uv run stropha index --repo /path/to/project
+uv run stropha stats
 ```
 
-### Indexing is extremely slow
+The default file-size limit is 512 KiB. Configure larger intentional source
+files in `~/.stropha/config.yaml`:
 
-**Causes:**
-1. Using cloud embedder (Voyage) instead of local
-2. Very large files being processed
-3. Ollama enricher with slow model
+```yaml
+walker:
+  max_file_bytes: 1048576
 
-**Solutions:**
+pipeline:
+  walker:
+    adapter: git-ls-files
+    config:
+      max_file_bytes: 1048576
+```
+
+Exclude generated and minified content with `.strophaignore` rather than raising
+the limit indiscriminately.
+
+### Embedding Dimension Mismatch
+
+The configured primary vector dimension does not match the existing fixed-width
+tables. Confirm the intended embedder, then rebuild the index:
+
 ```bash
-# Use local embedder
-stropha index --embedder local
-
-# Check for large files
-find . -size +1M -type f | head -20
-
-# Add large files to .strophaignore
-echo "*.min.js" >> .strophaignore
+uv run stropha pipeline show
+uv run stropha index --rebuild --repo /path/to/project [--repo /path/to/another]
 ```
 
-### "Embedding dim mismatch"
+A dimension change clears all derived search data for the entire shared SQLite
+or PostgreSQL index. Include every indexed repository in the rebuild; otherwise
+repositories omitted from the command remain unsearchable.
 
-**Error:**
-```
-StorageError: Embedding dim mismatch: got 1024, expected 512
-```
+Changing only an enricher normally needs a regular index pass, not a destructive
+rebuild; drift detection reprocesses affected chunks.
 
-**Cause:** Index was created with a different embedder.
+### Indexing Is Slow
 
-**Solution:**
+Common causes are an LLM-backed enricher, cloud embeddings, large intentional
+files, or a full graph refresh. Inspect the resolved pipeline and start from the
+local hierarchical baseline:
+
 ```bash
-# Rebuild with current embedder
-stropha index --rebuild
+uv run stropha pipeline show
+uv run stropha index --enricher hierarchical --embedder local
 ```
 
----
+Do not rely on fixed throughput numbers from another machine or repository.
 
-## Search Issues
+## Search
 
-### "No results" for valid queries
+### No Results For Known Code
 
-**Causes:**
-1. Index doesn't exist or is empty
-2. Query doesn't match indexed content
-3. Filters are too restrictive
-
-**Solutions:**
 ```bash
-# Check index exists and has content
-stropha stats
-
-# Try without filters
-stropha search "your query"
-
-# Check with debug logging
-STROPHA_LOG_LEVEL=DEBUG stropha search "your query"
+uv run stropha stats
+uv run stropha search "KnownSymbol"
 ```
 
-### Search returns irrelevant results
+`stropha stats` opens the configured storage backend. With SQLite, opening a
+missing path can initialize an empty database. Check that chunk counts are
+nonzero and that the expected repository appears; success alone does not prove
+that an earlier index completed.
 
-**Causes:**
-1. Query is too generic
-2. Index has stale content
-3. Wrong embedder model
+Also remove restrictive filters and confirm the current target repository.
+Within MCP, use `get_symbol("KnownSymbol")` for an exact identifier.
 
-**Solutions:**
+### Search Is Slow
+
+HyDE, query rewriting, and multi-query expansion add inference calls. Disable
+them in the user YAML while diagnosing:
+
+```yaml
+retrieval_features:
+  hyde_enabled: false
+  query_rewrite_enabled: false
+  multi_query_enabled: false
+
+pipeline:
+  retrieval:
+    adapter: hybrid-rrf
+    config:
+      recursive_enabled: false
+```
+
+The semantic query-cache implementation is not connected to the production
+search path, so enabling `cache_enabled` is not a valid latency fix.
+
+If you edited the YAML directly while the daemon was running, restart it:
+
 ```bash
-# Use more specific query terms
-stropha search "FsrsCalculator class"
-
-# Rebuild index
-stropha index --rebuild
-
-# Try exact symbol lookup instead
-# (via MCP: get_symbol("FsrsCalculator"))
-```
-
-### Search is slow
-
-**Causes:**
-1. HyDE or multi-query enabled
-2. Large index without cache
-3. Ollama not running (for HyDE)
-
-**Solutions:**
-```bash
-# Disable slow features
-export STROPHA_HYDE_ENABLED=0
-export STROPHA_MULTI_QUERY_ENABLED=0
-
-# Enable query cache
-export STROPHA_QUERY_CACHE_ENABLED=1
-
-# Check Ollama status
-curl http://localhost:11434/api/tags
-```
-
----
-
-## MCP Server Issues
-
-### Server doesn't start
-
-**Error:**
-```
-Error: Failed to start MCP server
-```
-
-**Solutions:**
-```bash
-# Check uv is available
-which uv
-
-# Start the shared singleton (foregrounds via nohup, returns when healthy)
+bin/stropha-mcp-ensure --stop
 bin/stropha-mcp-ensure
+```
 
-# Check status / health
+## MCP Daemon
+
+### Server Does Not Start
+
+```bash
+which uv
+bin/stropha-mcp-ensure
 bin/stropha-mcp-ensure --status
 curl http://127.0.0.1:9741/health
-
-# Verbose start (run in foreground)
-STROPHA_LOG_LEVEL=DEBUG uv run stropha-mcp --port 9741
-
-# Tail the daemon log
-tail -f ~/.cache/stropha/mcp-server.log
 ```
 
-### Tools not appearing in client
+The launcher checks both process health and a real MCP initialization request.
+If `--status` reports a wedged endpoint, use the stop/start recovery it prints
+and inspect `~/.cache/stropha/mcp-server.log`.
 
-**Causes:**
-1. MCP config URL is wrong
-2. Server name doesn't match
-3. Daemon isn't running
-4. Client needs restart
+For foreground diagnosis, set logging in `~/.stropha/config.yaml`, stop the
+shared daemon, and run:
 
-**Solutions:**
-1. Verify the URL: `http://127.0.0.1:9741/mcp` (override host/port with
-   `STROPHA_MCP_HOST` / `STROPHA_MCP_PORT`)
-2. Check server name is `stropha_rag`
-3. `bin/stropha-mcp-ensure --status`
-4. Restart the MCP client
-
-```json
-{
-  "mcpServers": {
-    "stropha_rag": {
-      "url": "http://127.0.0.1:9741/mcp",
-      "transport": "streamable-http"
-    }
-  }
-}
+```yaml
+logging:
+  level: DEBUG
 ```
 
-> stropha is **HTTP-only**. Subprocess-spawning configs (`command`,
-> `args`, per-process `env`) are not supported.
-
-### "graph_loaded: false" from graph tools
-
-**Cause:** graphify graph not loaded.
-
-**Solution:**
 ```bash
-# Generate the graphify graph
-cd /path/to/your/repo
+uv run stropha-mcp --host 127.0.0.1 --port 9741
+```
+
+### Tools Do Not Appear
+
+Verify that the client uses server name `stropha_rag`, remote URL
+`http://127.0.0.1:9741/mcp`, and streamable HTTP. Remove subprocess fields such
+as `command`, `args`, and per-process `env`. Restart the client after changing
+its MCP configuration.
+
+The public router tool is named `smart_search_tool`.
+
+### Configuration Change Is Not Active
+
+- Dashboard `PATCH /api/config` writes the YAML and replaces a compatible warm
+  runtime immediately.
+- Direct file edits require a daemon restart.
+- Walker, chunker, enricher, and graph changes need a subsequent index pass to
+  update stored content.
+- A primary dimension conflict returns HTTP 202 with `pending_rebuild: true`;
+  the old runtime remains active. Run `stropha index --rebuild`, then restart
+  the daemon or submit the patch again.
+
+## Watcher And Hooks
+
+### Saved Changes Are Not Appearing
+
+The MCP watcher starts when the shared runtime is first requested, not merely
+when the shell launcher process starts. Check `mcp.watch` and the target:
+
+```yaml
+mcp:
+  watch: true
+  watch_interval: 1.0
+  watch_debounce: 2.0
+```
+
+The watcher updates the persistent index after a debounce period. It is not a
+RAM overlay, and its default lightweight pass does not refresh graphify data or
+graph vectors on each save.
+
+### Hook Is Not Running
+
+```bash
+uv run stropha hook status --target /path/to/project
+uv run stropha hook install --force --target /path/to/project
+```
+
+Use the hook path and log path reported by `status`. The installer honors
+`core.hooksPath`, so `.git/hooks/post-commit` may be the wrong file. `status`
+also reports the installed script version; avoid hard-coded minimum versions
+because the generated hook evolves.
+
+The hook invokes one normal `stropha index --repo <target>` background job. The
+pipeline, not the shell hook, runs graphify. The normal auto mode uses
+hash-based reconcile; Git-diff incremental mode requires an explicit
+`--incremental` CLI request.
+
+If the hook must be bypassed for one operation:
+
+```bash
+STROPHA_HOOK_SKIP=1 git commit -m "message"
+uv run stropha index --repo /path/to/project
+```
+
+## Graph
+
+### `graph_loaded: false`
+
+```bash
 graphify .
-
-# Re-run index to load graph
-stropha index
+uv run stropha index
 ```
 
----
+Graph-gated tools intentionally return this explicit state instead of a silent
+empty result. Ensure `graphify-out/graph.json` belongs to the target repository
+and rerun indexing so the pipeline can load it.
 
-## Hook Issues
+## Database Recovery
 
-### Hook not running
-
-**Causes:**
-1. Hook not installed
-2. Hook not executable
-3. STROPHA_HOOK_SKIP is set
-
-**Solutions:**
-```bash
-# Check hook status
-stropha hook status
-
-# Reinstall
-stropha hook install --force
-
-# Check executable bit
-ls -la .git/hooks/post-commit
-
-# Unset skip variable
-unset STROPHA_HOOK_SKIP
-```
-
-### Hook blocking commits
-
-**Error:** Commits take several seconds.
-
-**Cause:** Hook should fork immediately but might be blocking.
-
-**Solutions:**
-```bash
-# Check hook version (should be v4+)
-stropha hook status
-
-# Reinstall to get latest version
-stropha hook install --force
-
-# Temporary workaround
-export STROPHA_HOOK_SKIP=1
-git commit -m "message"
-unset STROPHA_HOOK_SKIP
-```
-
-### Hook errors in log
-
-**Check the log:**
-```bash
-cat ~/.cache/stropha-hook.log | tail -50
-```
-
-**Common issues:**
-
-1. **"uv not found"**: Set `STROPHA_HOOK_UV=/path/to/uv`
-2. **"graphify not found"**: Set `STROPHA_HOOK_GRAPHIFY=/path/to/graphify` or `STROPHA_HOOK_NO_GRAPHIFY=1`
-3. **Timeout**: Increase `STROPHA_HOOK_TIMEOUT=1200`
-
----
-
-## Graph Issues
-
-### Graph tools return empty results
-
-**Causes:**
-1. graphify hasn't been run
-2. Graph file is outdated
-3. Symbol name doesn't match
-
-**Solutions:**
-```bash
-# Generate/update graph
-cd /your/repo
-graphify .
-
-# Reload into stropha
-stropha index
-
-# Check graph stats
-stropha stats | grep graph
-```
-
-### "community_id is None" warnings
-
-**Cause:** graphify ran without community detection.
-
-**Solution:**
-```bash
-# Re-run graphify with community detection
-graphify . --communities
-stropha index
-```
-
----
-
-## Database Issues
-
-### "database is locked"
-
-**Cause:** Multiple processes accessing the index.
-
-**Solutions:**
-```bash
-# Wait for other processes to finish
-sleep 5 && stropha index
-
-# Check for zombie processes
-ps aux | grep stropha
-
-# Force unlock (last resort)
-rm .stropha/index.db-shm .stropha/index.db-wal
-```
-
-### Corrupted index
-
-**Symptoms:** Strange errors, missing data, crashes.
-
-**Solution:**
-```bash
-# Rebuild from scratch
-rm -rf .stropha/
-stropha index
-```
-
-### Index too large
-
-**Check size:**
-```bash
-du -h .stropha/index.db
-stropha stats
-```
-
-**Solutions:**
-1. Add more patterns to `.strophaignore`
-2. Use manifest to exclude directories
-3. Consider separate indexes for different projects
-
----
-
-## Enricher Issues
-
-### Ollama enricher fails silently
-
-**Symptoms:** Index completes but search quality is poor.
-
-**Check:**
-```bash
-# Is Ollama running?
-curl http://localhost:11434/api/tags
-
-# Is the model pulled?
-ollama list | grep qwen2.5-coder
-
-# Check enricher in use
-stropha pipeline show
-```
-
-**Solution:**
-```bash
-# Start Ollama
-ollama serve
-
-# Pull the model
-ollama pull qwen2.5-coder:1.5b
-
-# Re-index
-stropha index --enricher contextual
-```
-
-### MLX enricher not available
-
-**Error:**
-```
-ImportError: mlx_lm not available
-```
-
-**Solution (macOS Apple Silicon only):**
-```bash
-uv pip install mlx-lm
-```
-
----
-
-## Environment Issues
-
-### Environment variables not taking effect
-
-**Check precedence:**
-1. Command-line flags (highest)
-2. Environment variables
-3. YAML config file
-4. `.env` file
-5. Defaults (lowest)
+First identify the configured backend and location:
 
 ```bash
-# Verify env var is set
-echo $STROPHA_INDEX_PATH
-
-# Check resolved config
-stropha pipeline show
+uv run stropha pipeline show
+uv run stropha stats
 ```
 
-### Wrong repository being indexed
+Do not use SQLite file commands against PostgreSQL, and never delete SQLite
+`-wal` or `-shm` files to clear a lock. They can contain committed data not yet
+checkpointed into the main file.
 
-**Check:**
-```bash
-# Which repo?
-echo $STROPHA_TARGET_REPO
-pwd
+### SQLite: Database Is Locked
 
-# Force specific repo
-STROPHA_TARGET_REPO=/path/to/repo stropha index
-```
-
----
-
-## Getting Help
-
-### Collect Debug Information
+1. Let active indexing or hook jobs finish.
+2. Stop the MCP daemon and any `stropha watch` process.
+3. Retry the command.
+4. If the lock persists, inspect which process has the configured database open
+   before terminating only that known stropha process.
 
 ```bash
-# System info
-uv --version
-python --version
-uname -a
-
-# stropha info
-stropha --version
-stropha stats
-stropha pipeline show
-
-# Logs
-STROPHA_LOG_LEVEL=DEBUG stropha index 2>&1 | tee debug.log
+bin/stropha-mcp-ensure --stop
+uv run stropha index --repo /path/to/project
 ```
 
-### Report Issues
+Do not remove WAL or shared-memory sidecars while any process can have the
+database open.
 
-File issues at: https://github.com/your-org/stropha/issues
+### SQLite: Suspected Corruption
+
+Stop every stropha process using the database, then run SQLite's integrity check
+against the path shown by `pipeline show`:
+
+```bash
+bin/stropha-mcp-ensure --stop
+sqlite3 /path/from/pipeline-show 'PRAGMA integrity_check;'
+```
+
+If the result is not `ok`, preserve the main database and any `-wal` and `-shm`
+sidecars together before attempting recovery. Because the index is derived from
+source, the simplest safe recovery is usually to move that complete stopped
+database set to a backup location, run `stropha index --rebuild`, and keep the
+backup until the rebuilt index is verified. Do not remove an entire `.stropha`
+directory: configuration and secrets live under `~/.stropha`, and the configured
+index may be elsewhere.
+
+### PostgreSQL
+
+For the PostgreSQL adapter, first verify server connectivity, credentials,
+database availability, and the pgvector extension. Use PostgreSQL backup and
+restore tools for physical or logical recovery. Once the server is healthy,
+`stropha index --rebuild --repo /path/to/project` can reconstruct the derived
+index rows for the selected repository. Do not delete Docker volumes or database
+schemas as a generic lock or corruption fix.
+
+If the launcher manages the opt-in local container, include
+`STROPHA_USE_POSTGRES=1` when checking its launcher status. Externally managed
+PostgreSQL is never started or stopped by the launcher.
+
+## Enrichers
+
+### Contextual Enrichment Fails
+
+The `contextual` enricher uses `inference.backend`; it is not inherently an
+Ollama adapter. Inspect both selections:
+
+```bash
+uv run stropha pipeline show
+uv run stropha pipeline validate
+```
+
+If `inference.backend: ollama` is selected, check the configured Ollama host and
+model. If the pipeline enricher itself is `ollama`, that separate adapter calls
+Ollama directly and uses its own adapter configuration.
+
+Failed contextual generation falls back to raw content and is not cached as a
+successful enrichment. Fix the backend and rerun indexing to retry those chunks.
+
+## Reporting Issues
+
+File issues at <https://github.com/JonatasFischer/stropha/issues>.
 
 Include:
-1. stropha version
+
+1. `stropha --version`
 2. OS and Python version
-3. Error message (full traceback)
-4. Steps to reproduce
-5. Debug log output
-
----
-
-## Quick Reference: Common Fixes
-
-| Problem | Quick Fix |
-|---------|-----------|
-| No results | `stropha stats` to check index exists |
-| Slow search | `STROPHA_HYDE_ENABLED=0` |
-| Hook not running | `stropha hook install --force` |
-| Graph tools empty | `graphify . && stropha index` |
-| Embedding mismatch | `stropha index --rebuild` |
-| Database locked | Wait or `rm .stropha/*.db-*` |
-| Ollama errors | `ollama serve && ollama pull qwen2.5-coder:1.5b` |
+3. `stropha pipeline show` with secrets removed
+4. Full error text and reproduction steps
+5. Relevant daemon or hook logs with credentials and source secrets redacted

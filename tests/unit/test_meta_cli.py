@@ -28,7 +28,10 @@ def _make_meta(tmp_path: Path) -> Path:
     meta = tmp_path / "meta"
     store = ArtifactStore(meta)
     for i, q in enumerate([0.3, 0.6, 0.9, 0.5]):
-        rec = store.register_candidate({"v": i}, label=f"v{i}")
+        rec = store.register_candidate(
+            {"embedder": {"adapter": "local", "config": {"model": f"model-{i}"}}},
+            label=f"v{i}",
+        )
         store.write_scores(rec.id, {
             "quality": q,
             "context_efficiency": 0.5,
@@ -213,7 +216,7 @@ class TestMetaReportBaseline:
     def _promote(
         self, meta: Path, cwd: Path, candidate_id: str
     ) -> None:
-        """Convenience: run `meta promote --apply` against a temp cwd."""
+        """Convenience: promote to an explicit temporary config."""
         import os
 
         prev = Path.cwd()
@@ -222,7 +225,8 @@ class TestMetaReportBaseline:
             result = CliRunner().invoke(
                 app,
                 ["meta", "promote", candidate_id,
-                 "--meta-dir", str(meta), "--apply"],
+                 "--meta-dir", str(meta),
+                 "--target", str(cwd / "config.yaml"), "--apply"],
             )
             assert result.exit_code == 0, result.output
         finally:
@@ -373,22 +377,26 @@ class TestMetaPromote:
     def test_default_emits_diff_does_not_write(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """No flag → unified diff is printed, no file is created."""
+        """No flag diffs the canonical config path without writing it."""
         meta = _make_meta(tmp_path)
         rec = ArtifactStore(meta).list_candidates()[0]
         target_cwd = tmp_path / "cwd"
         target_cwd.mkdir()
         monkeypatch.chdir(target_cwd)
+        monkeypatch.setenv("HOME", str(tmp_path))
+        target = tmp_path / ".stropha" / "config.yaml"
         result = CliRunner().invoke(
             app,
             ["meta", "promote", rec.id, "--meta-dir", str(meta)],
         )
         assert result.exit_code == 0, result.output
         # Diff header markers — unified diff always emits these for an
-        # add-from-empty (the cwd has no stropha.yaml).
+        # add-from-empty (the canonical config does not exist).
         assert "+++" in result.output or "---" in result.output
-        # No file was created.
+        # Neither the retired cwd target nor the canonical target was created.
         assert not (target_cwd / "stropha.yaml").exists()
+        assert not target.exists()
+        assert str(target) in result.output.replace("\n", "")
         # Footer reminds the operator how to commit the change.
         assert "--apply" in result.output
 
@@ -403,6 +411,7 @@ class TestMetaPromote:
         target_cwd = tmp_path / "cwd"
         target_cwd.mkdir()
         monkeypatch.chdir(target_cwd)
+        monkeypatch.setenv("HOME", str(tmp_path))
         result = CliRunner().invoke(
             app,
             ["meta", "promote", rec.id,
@@ -411,42 +420,48 @@ class TestMetaPromote:
         assert result.exit_code == 0
         assert "--dry-run is deprecated" in result.output
         # Still does not write.
-        assert not (target_cwd / "stropha.yaml").exists()
+        assert not (tmp_path / ".stropha" / "config.yaml").exists()
 
-    def test_apply_writes_stropha_yaml(
+    def test_apply_writes_canonical_config(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """``--apply`` is the explicit opt-in that writes stropha.yaml."""
+        """``--apply`` writes the canonical unified config by default."""
         meta = _make_meta(tmp_path)
         rec = ArtifactStore(meta).list_candidates()[0]
         target_cwd = tmp_path / "cwd"
         target_cwd.mkdir()
         monkeypatch.chdir(target_cwd)
+        monkeypatch.setenv("HOME", str(tmp_path))
         result = CliRunner().invoke(
             app,
             ["meta", "promote", rec.id, "--meta-dir", str(meta),
              "--apply"],
         )
         assert result.exit_code == 0
-        assert (target_cwd / "stropha.yaml").is_file()
+        assert (tmp_path / ".stropha" / "config.yaml").is_file()
+        assert not (target_cwd / "stropha.yaml").exists()
         assert "Promoted" in result.output
 
     def test_noop_when_candidate_matches_current(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """If the current stropha.yaml is already identical to the
-        candidate, the CLI surfaces the no-op and exits 0 — no diff,
+        """If the merged config is already current, the CLI exits 0 — no diff,
         no rewrite."""
         meta = _make_meta(tmp_path)
         rec = ArtifactStore(meta).list_candidates()[0]
         target_cwd = tmp_path / "cwd"
         target_cwd.mkdir()
         monkeypatch.chdir(target_cwd)
-        # Seed the cwd with the candidate's own config first.
+        monkeypatch.setenv("HOME", str(tmp_path))
+        target = tmp_path / ".stropha" / "config.yaml"
+        target.parent.mkdir()
+        # Seed the canonical target with the normalized candidate config.
         import yaml as _yaml
 
-        (target_cwd / "stropha.yaml").write_text(
-            _yaml.safe_dump(rec.config, sort_keys=True, default_flow_style=False),
+        target.write_text(
+            _yaml.safe_dump(
+                {"pipeline": rec.config}, sort_keys=True, default_flow_style=False
+            ),
             encoding="utf-8",
         )
         result = CliRunner().invoke(
@@ -459,11 +474,15 @@ class TestMetaPromote:
     def test_apply_to_explicit_target_path(
         self, tmp_path: Path
     ) -> None:
-        """The ``--target`` option overrides ./stropha.yaml so promotion
-        can land in a sibling project or a snapshot directory."""
+        """``--target`` uses the same merge semantics as the default path."""
         meta = _make_meta(tmp_path)
         rec = ArtifactStore(meta).list_candidates()[0]
-        elsewhere = tmp_path / "elsewhere" / "stropha.yaml"
+        elsewhere = tmp_path / "elsewhere" / "config.yaml"
+        elsewhere.parent.mkdir()
+        elsewhere.write_text(
+            "secrets:\n  voyage_api_key: keep-me\nlogging:\n  level: DEBUG\n",
+            encoding="utf-8",
+        )
         result = CliRunner().invoke(
             app,
             ["meta", "promote", rec.id, "--meta-dir", str(meta),
@@ -471,19 +490,28 @@ class TestMetaPromote:
         )
         assert result.exit_code == 0
         assert elsewhere.is_file()
+        import yaml as _yaml
+
+        written = _yaml.safe_load(elsewhere.read_text(encoding="utf-8"))
+        assert written["secrets"] == {"voyage_api_key": "keep-me"}
+        assert written["logging"] == {"level": "DEBUG"}
+        assert written["pipeline"] == rec.config
 
     def test_malformed_target_yaml_exits_nonzero(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A broken ``stropha.yaml`` must not be silently overwritten —
+        """A broken canonical config must not be silently overwritten —
         the CLI errors out so the operator can investigate."""
         meta = _make_meta(tmp_path)
         rec = ArtifactStore(meta).list_candidates()[0]
         target_cwd = tmp_path / "cwd"
         target_cwd.mkdir()
         monkeypatch.chdir(target_cwd)
+        monkeypatch.setenv("HOME", str(tmp_path))
+        target = tmp_path / ".stropha" / "config.yaml"
+        target.parent.mkdir()
         # Plant invalid YAML (mismatched braces).
-        (target_cwd / "stropha.yaml").write_text(
+        target.write_text(
             "this is: { not valid: ]]]", encoding="utf-8"
         )
         result = CliRunner().invoke(
@@ -495,6 +523,13 @@ class TestMetaPromote:
         # multiple lines, but the phrase itself stays intact.
         normalized = " ".join(result.output.split())
         assert "not valid YAML" in normalized
+
+    def test_help_describes_canonical_merged_target(self) -> None:
+        result = CliRunner().invoke(app, ["meta", "promote", "--help"])
+        assert result.exit_code == 0
+        normalized = " ".join(result.output.split())
+        assert "~/.stropha/config.yaml" in normalized
+        assert "merged into explicit targets" in normalized
 
 
 # ---------------------------------------------------------------------------

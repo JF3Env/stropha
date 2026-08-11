@@ -12,7 +12,8 @@ so that ``build_stages()`` and ``Config.resolve_index_path()`` ALWAYS agree
 on which SQLite file to open. Without this, the CLI's storage adapter
 would open ``~/.stropha/index.db`` while the MCP server's ``get_config``
 tool would report ``./.stropha/index.db`` — silently splitting the index
-into two files. See ``CLAUDE.md`` §3 for the invariant.
+into two files. See the ``CLAUDE.md`` **SQLite FTS5 writes are explicit**
+invariant.
 
 The path string is expanded (``~`` and ``$VARS``) at adapter
 instantiation time.

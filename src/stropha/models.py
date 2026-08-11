@@ -20,7 +20,7 @@ class SourceFile(BaseModel):
 
 @dataclass(frozen=True)
 class FileDelta:
-    """One file-level change emitted by the incremental walker (Phase B).
+    """One file-level change emitted by the incremental walker.
 
     Maps to the four ``git diff --name-status`` actions:
 
@@ -60,9 +60,9 @@ class StoredFileMeta:
 
 
 class Chunk(BaseModel):
-    """An indexable unit. Phase 0 = whole file. Phase 1 adds AST kinds.
+    """An indexable source unit, from a whole file to a structured AST chunk.
 
-    Phase 1 (pipeline-adapters) augments the row with the enricher's output
+    The adapter-aware pipeline augments the row with the enricher's output
     (``embedding_text``) and the adapter id that produced it
     (``enricher_id``) so the pipeline can detect drift (config change →
     re-enrich + re-embed automatically, no ``--rebuild`` needed).
@@ -81,7 +81,7 @@ class Chunk(BaseModel):
     # Embedding metadata is set after the embedder runs.
     embedding_model: str | None = None
     embedding_dim: int | None = None
-    # Enricher metadata is set after the enricher runs (pipeline-adapters Phase 1).
+    # Enricher metadata is set after the enricher runs.
     embedding_text: str | None = None
     """Exact text that was fed to the embedder. Equals ``content`` for
     ``enricher=noop``. Persisted so drift detection can compare against
@@ -93,8 +93,8 @@ class Chunk(BaseModel):
 class RepoRef(BaseModel):
     """Stable identifier of the git repository a chunk belongs to.
 
-    Returned alongside every ``SearchHit`` so an MCP client can run
-    ``git clone <url>`` to retrieve the source. See
+    Attached to a ``SearchHit`` when repository metadata is available, allowing
+    an MCP client to run ``git clone <url>`` to retrieve the source. See
     ``ingest/git_meta.py:RepoIdentity`` for the producer.
 
     Every file reference includes both the git origin URL (for remote
@@ -146,8 +146,7 @@ class SearchHit(BaseModel):
     chunk_id: str
     repo: RepoRef | None = Field(
         default=None,
-        description="Source repository identity. None for legacy chunks "
-        "indexed before schema v2.",
+        description="Source repository identity when available.",
     )
     streams: dict[str, float] | None = Field(
         default=None,
@@ -186,10 +185,8 @@ class SessionRecord(BaseModel):
     """One row of the schema v8 ``sessions`` table (WIN-221, EPIC 1.9).
 
     Persists per-session agent state across MCP-server restarts. The
-    initial columns cover WIN-217 (seen_chunk_ids) and WIN-218
-    (pinned_chunk_ids); future stories in the epic extend the row
-    via :meth:`Storage._add_column_if_missing` without breaking
-    existing readers.
+    columns cover deduplication, pinned chunks, scratchpad state and
+    extensible session metadata.
 
     JSON-encoded set fields live as ``frozenset[str]`` in memory so
     callers can use the usual ``in`` / ``add`` / ``update`` patterns;
@@ -210,11 +207,7 @@ class SessionRecord(BaseModel):
     )
     meta: dict[str, object] = Field(
         default_factory=dict,
-        description=(
-            "Catchall for future EPIC-1.9 stories (project memory, "
-            "episodic memory, scratchpad). Forward-compatible with "
-            "follow-on column additions."
-        ),
+        description="Extensible session-scoped metadata.",
     )
     scratchpad: str = Field(
         default="",

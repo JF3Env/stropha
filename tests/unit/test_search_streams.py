@@ -41,7 +41,7 @@ def _engine(
     embedder = MagicMock()
     embedder.embed_query.return_value = [0.0] * 8
     # Bypass the recursive-merge step by stubbing what `merge_hits` calls into.
-    # `recursive.merge_hits` is a pass-through when STROPHA_RECURSIVE_RETRIEVAL
+    # `recursive.merge_hits` is a pass-through when recursive retrieval
     # is unset, which is the case in unit tests.
     return SearchEngine(storage=storage, embedder=embedder)
 

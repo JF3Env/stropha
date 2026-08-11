@@ -59,15 +59,16 @@ def _build_embedder(
 ) -> tuple[VoyageEmbedder, MagicMock]:
     """Construct a VoyageEmbedder with a mocked voyageai module.
 
-    Pre-resolves the lazy client inside the env/sys.modules patch so
+    Pre-resolves the lazy client inside the config/sys.modules patch so
     subsequent embed calls in tests hit the cached mock — without this
     the lazy-init key check would fire after the patch is released.
     """
     if voyageai_module is None:
         voyageai_module, _ = _make_mock_voyageai()
+    fake_config = SimpleNamespace(secrets=SimpleNamespace(voyage_api_key="sk-fake"))
     with (
         patch.dict("sys.modules", {"voyageai": voyageai_module}),
-        patch.dict("os.environ", {"VOYAGE_API_KEY": "sk-fake"}),
+        patch("stropha.config.get_config", return_value=fake_config),
     ):
         embedder = VoyageEmbedder(config=config)
         embedder._get_client()  # eager-cache mocked Client for later asserts
@@ -84,7 +85,6 @@ class TestVoyageEmbedderConfig:
         assert cfg.model == "voyage-4-large"
         assert cfg.dim == 512
         assert cfg.batch_size == 128
-        assert cfg.api_key_env == "VOYAGE_API_KEY"
         assert cfg.max_tokens_per_batch == 96_000
         assert cfg.chars_per_token == pytest.approx(3.5)
 
@@ -116,18 +116,20 @@ class TestVoyageEmbedderRegistration:
 
 
 class TestVoyageEmbedderInit:
-    def test_init_with_default_config_uses_env_key(self) -> None:
-        """Client construction is lazy: env key is read on first embed call."""
+    def test_environment_key_is_ignored_in_favor_of_yaml(self) -> None:
+        """Client construction is lazy and authentication is YAML-only."""
         voyageai_module, _ = _make_mock_voyageai()
+        fake_config = SimpleNamespace(secrets=SimpleNamespace(voyage_api_key="sk-yaml"))
         with (
             patch.dict("sys.modules", {"voyageai": voyageai_module}),
-            patch.dict("os.environ", {"VOYAGE_API_KEY": "sk-real"}),
+            patch.dict("os.environ", {"VOYAGE_API_KEY": "sk-env"}),
+            patch("stropha.config.get_config", return_value=fake_config),
         ):
             embedder = VoyageEmbedder()
             # __init__ must not build the Client — only first use does.
             voyageai_module.Client.assert_not_called()
             embedder.embed_query("hi")
-        voyageai_module.Client.assert_called_once_with(api_key="sk-real")
+        voyageai_module.Client.assert_called_once_with(api_key="sk-yaml")
 
     def test_init_with_explicit_api_key_kwarg(self) -> None:
         """Explicit override flows through on first embed call."""
@@ -172,7 +174,7 @@ class TestVoyageEmbedderInit:
     def test_init_without_api_key_does_not_raise(self) -> None:
         """MCP server constructs every adapter at startup; the retrieval-only
         path may never touch the embedder. Missing-key check is deferred to
-        first embed call so the server can start without VOYAGE_API_KEY."""
+        first embed call so the server can start without a configured secret."""
         voyageai_module, _ = _make_mock_voyageai()
         with (
             patch.dict("sys.modules", {"voyageai": voyageai_module}),

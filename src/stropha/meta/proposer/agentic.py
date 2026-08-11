@@ -2,10 +2,11 @@
 
 The cloud path. Pays per-token but routinely beats the local 1.5B
 LLM at structured-output tasks like 'emit a single config JSON'.
-Opt-in only — never auto-selected by the loop. Per CLAUDE.md §3.6 the
+Opt-in only — never auto-selected by the loop. Per the CLAUDE.md
+**Local-only by default** invariant, the
 local-only default invariant stays intact; this proposer is loaded
 explicitly via ``inference.backend: anthropic`` (or deepseek) in
-``stropha.yaml``.
+``~/.stropha/config.yaml``.
 """
 
 from __future__ import annotations

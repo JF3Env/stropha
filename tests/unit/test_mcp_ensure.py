@@ -20,16 +20,12 @@ def test_postgres_container_is_disabled_by_default(tmp_path: Path) -> None:
     bin_dir.mkdir()
     marker = tmp_path / "docker-called"
     _fake_docker(bin_dir, marker)
-    config = tmp_path / "config.yaml"
-    config.write_text("pipeline:\n  storage:\n    adapter: postgres\n")
-
     result = subprocess.run(
         ["sh", str(SCRIPT), "--status"],
         env={
             **os.environ,
             "HOME": str(tmp_path),
             "PATH": f"{bin_dir}:{os.environ['PATH']}",
-            "STROPHA_CONFIG_FILE": str(config),
             "STROPHA_MCP_PORT": "57991",
         },
         check=False,
@@ -70,6 +66,8 @@ def test_postgres_container_management_is_explicitly_opt_in(tmp_path: Path) -> N
 def test_launcher_tracks_the_real_listener_after_uv_handoff() -> None:
     source = SCRIPT.read_text()
 
+    assert 'CONFIG_FILE="${HOME}/.stropha/config.yaml"' in source
+    assert "STROPHA_CONFIG_FILE" not in source
     ready_branch = source.split("for i in $(seq 1 30); do", maxsplit=1)[1]
     assert "_track_listener_pid || true" in ready_branch
     assert 'echo "$1" > "$PIDFILE"' in source

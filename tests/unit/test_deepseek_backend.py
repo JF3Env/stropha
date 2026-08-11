@@ -66,7 +66,7 @@ class TestDeepSeekBackend:
         # Trailing slash is stripped.
         assert backend._base_url == "https://proxy.example.com/v1"
 
-    def test_env_var_api_key_pickup(self, isolated_test_env):
+    def test_yaml_api_key_pickup(self, isolated_test_env):
         """YAML secrets.deepseek_api_key feeds DeepSeekBackend._api_key."""
         from stropha.config import reset_config
 
@@ -424,7 +424,8 @@ class TestDeepSeekBackend:
         backend = DeepSeekBackend()
         ok, message = backend.health_check()
         assert ok is False
-        assert "DEEPSEEK_API_KEY" in message
+        assert "secrets.deepseek_api_key" in message
+        assert "~/.stropha/config.yaml" in message
 
     def test_health_check_ok_when_model_listed(self):
         listing = {"data": [{"id": "deepseek-chat"}, {"id": "deepseek-reasoner"}]}
@@ -454,6 +455,7 @@ class TestDeepSeekBackend:
             ok, message = backend.health_check()
             assert ok is False
             assert "auth" in message.lower()
+            assert "secrets.deepseek_api_key" in message
 
 
 # --------------------------------------------------------------------------- #

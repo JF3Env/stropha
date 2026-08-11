@@ -8,9 +8,9 @@ Routes queries like:
 - Everything else → search_code (hybrid retrieval)
 
 Uses pattern matching first (zero cost), then optional LLM classification
-for ambiguous queries when query_router_llm: true in stropha.yaml.
+for ambiguous queries when ``retrieval_features.query_router_llm`` is true.
 
-Configuration (stropha.yaml):
+Configuration (``~/.stropha/config.yaml``):
     retrieval_features:
       query_router_llm: false  # pattern-based by default
 """
@@ -196,7 +196,8 @@ def route_query(
     Args:
         query: The user's search query.
         use_llm: Whether to use LLM for ambiguous queries. Defaults to
-                 STROPHA_QUERY_ROUTER_LLM env var (0 = off, 1 = on).
+                 ``retrieval_features.query_router_llm`` in
+                 ``~/.stropha/config.yaml``.
     
     Returns:
         RoutedQuery with intent, extracted symbol, and confidence.

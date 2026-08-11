@@ -136,11 +136,56 @@ def test_configuration_catalog_exposes_options_schemas_and_toggle_impacts() -> N
     )
     assert dispatcher["schema"]["properties"]["languages"]["default"] == {}
 
+    retrieval_stage = next(stage for stage in catalog["pipeline"] if stage["stage"] == "retrieval")
+    hybrid_rrf = next(
+        adapter for adapter in retrieval_stage["adapters"] if adapter["name"] == "hybrid-rrf"
+    )
+    assert set(hybrid_rrf["schema"]["properties"]) >= {
+        "adaptive_weighting",
+        "multi_query_count",
+        "recursive_adjacency",
+        "recursive_enabled",
+    }
+
     retrieval = next(section for section in catalog["sections"] if section["id"] == "retrieval")
+    retrieval_paths = {field["path"] for field in retrieval["fields"]}
+    assert retrieval_paths >= {
+        "retrieval_features.hyde_code_tuned",
+        "retrieval_features.hyde_enabled",
+        "retrieval_features.multi_query_enabled",
+        "retrieval_features.query_rewrite_enabled",
+        "retrieval_features.query_router_llm",
+    }
+    assert retrieval_paths.isdisjoint(
+        {
+            "retrieval_features.adaptive_weighting",
+            "retrieval_features.cache_enabled",
+            "retrieval_features.cache_size",
+            "retrieval_features.cache_ttl",
+            "retrieval_features.multi_query_count",
+            "retrieval_features.query_decomposition_enabled",
+            "retrieval_features.query_decomposition_llm",
+            "retrieval_features.recursive_adjacency",
+            "retrieval_features.recursive_enabled",
+        }
+    )
     hyde = next(field for field in retrieval["fields"] if field["path"].endswith("hyde_enabled"))
     assert hyde["type"] == "boolean"
     assert "LLM call" in hyde["enabled"]
     assert "original query" in hyde["disabled"]
+
+    index = next(section for section in catalog["sections"] if section["id"] == "index")
+    index_paths = {field["path"] for field in index["fields"]}
+    assert index_paths == {
+        "graph.confidence",
+        "graph.fts_augment",
+        "graph.graphify_out",
+        "paths.index",
+    }
+    graph_fts = next(field for field in index["fields"] if field["path"] == "graph.fts_augment")
+    assert "node and community labels" in graph_fts["help"]
+    assert "base content/path/symbol lexical document" in graph_fts["help"]
+    assert "relationships" not in graph_fts["help"]
 
     rerankers = catalog["subadapter_catalog"]["reranker"]
     assert [adapter["name"] for adapter in rerankers] == [
@@ -370,23 +415,33 @@ def test_frontend_dashboard_is_served_locally() -> None:
         assert 'data-settings-group="raw"' in response.text
         assert "Exclusive storage:" in response.text
         assert "duplicate adapter path alias is hidden" in response.text
-        assert "Shared provider" in response.text
-        assert "enabled automatically by every active consumer" in response.text
+        assert "configured inference backend" in response.text
+        assert "Sources are shown alongside the answer" in response.text
+        assert "does not guarantee that MoA ran or that citations were audited" in response.text
+        assert "Every answer stays tethered to a source" not in response.text
+        assert "Configured inference backend" in response.text
+        assert "use this configured backend when they need inference" in response.text
         assert "Shared inference workload" in response.text
-        assert "Uses shared inference" in response.text
-        assert "active automatically" in response.text
+        assert "Uses configured inference" in response.text
+        assert "configured backend" in response.text
         assert "Grounded answers" in response.text
         assert 'id="inference-use-count"' in response.text
         assert "File watcher disabled:" in response.text
         assert "Interval and debounce settings are hidden" in response.text
         assert "name === 'multi_query_count' && !multiQueryEnabled" in response.text
         assert "name === 'recursive_adjacency' && !recursiveEnabled" in response.text
-        assert "field.path === 'retrieval_features.multi_query_count'" in response.text
-        assert "field.path === 'retrieval_features.recursive_adjacency'" in response.text
+        assert "retrieval_features.query_decomposition" not in response.text
+        assert "field.path === 'retrieval_features.multi_query_count'" not in response.text
+        assert "field.path === 'retrieval_features.recursive_adjacency'" not in response.text
         assert "function rerankerMarkup(value, path)" in response.text
         assert 'data-reranker-path="${escapeHtml(path)}"' in response.text
         assert "field.type = 'string-list'" in response.text
         assert "(unavailable)" in response.text
+        assert "Compatible PATCH changes hot-swap the warm runtime" in response.text
+        assert "embedding-dimension changes remain pending rebuild" in response.text
+        assert "Validating configuration for a live hot-swap" in response.text
+        assert "remains pending an index rebuild and restart" in response.text
+        assert "Runtime hot-swapped. New queries use this configuration." in response.text
         assert "Weights stay deferred until first indexing" in response.text
         assert "Model weights will load during first indexing" in response.text
         assert "getPath(" not in response.text

@@ -116,6 +116,7 @@ def pipeline_config_from_dict(
         storage_cfg = cfg.setdefault("storage", {}).setdefault("config", {})
         if not storage_cfg.get("path"):
             from ..config.models import _default_index_path
+
             storage_cfg["path"] = str(_default_index_path())
 
     log.debug("pipeline.config.from_dict", resolved=cfg)
@@ -141,7 +142,9 @@ def load_pipeline_config(
     where each section has ``adapter`` (str|None) and ``config`` (dict).
     """
     if environ is not None:
-        log.debug("pipeline.config.environ_ignored", reason="env vars no longer used for pipeline config")
+        log.debug(
+            "pipeline.config.environ_ignored", reason="env vars no longer used for pipeline config"
+        )
 
     cfg = copy.deepcopy(_DEFAULTS)
     sources: list[str] = []
@@ -158,15 +161,25 @@ def load_pipeline_config(
         # the standard CLI / test override path that explicitly passes
         # a storage path via `overrides`.
         raw_yaml = _read_raw_yaml(user_yaml)
-        yaml_paths_index_explicit = (
-            (raw_yaml.get("paths") or {}).get("index")
-        )
+        yaml_paths_index_explicit = (raw_yaml.get("paths") or {}).get("index")
         yaml_pipeline_section = raw_yaml.get("pipeline", raw_yaml)
         if isinstance(yaml_pipeline_section, dict):
             yaml_storage_path_explicit = (
-                ((yaml_pipeline_section.get("storage") or {}).get("config") or {}).get("path")
+                (yaml_pipeline_section.get("storage") or {}).get("config") or {}
+            ).get("path")
+        unified_walker = raw_yaml.get("walker")
+        if isinstance(unified_walker, dict) and "max_file_bytes" in unified_walker:
+            _merge(
+                cfg,
+                {"walker": {"config": {"max_file_bytes": unified_walker["max_file_bytes"]}}},
             )
-        _merge(cfg, _read_yaml(user_yaml))
+        pipeline_yaml = _read_yaml(user_yaml)
+        if "pipeline" not in raw_yaml and isinstance(pipeline_yaml.get("walker"), dict):
+            pipeline_yaml = copy.deepcopy(pipeline_yaml)
+            pipeline_yaml["walker"].pop("max_file_bytes", None)
+            if not pipeline_yaml["walker"]:
+                pipeline_yaml.pop("walker")
+        _merge(cfg, pipeline_yaml)
         sources.append(str(user_yaml))
 
     # 1a. Conflict guard at YAML level only. If the user wrote BOTH
@@ -196,6 +209,7 @@ def load_pipeline_config(
     if cfg["embedder"].get("adapter") is None:
         try:
             from ..config import get_config
+
             has_voyage = get_config().secrets.has_voyage
         except Exception:
             has_voyage = False
@@ -208,9 +222,11 @@ def load_pipeline_config(
     if not storage_cfg.get("path"):
         try:
             from ..config import get_config
+
             unified_index = get_config().resolve_index_path()
         except Exception:
             from ..config.models import _default_index_path
+
             unified_index = _default_index_path()
         storage_cfg["path"] = str(unified_index)
         sources.append("default(paths.index)")

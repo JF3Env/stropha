@@ -22,8 +22,8 @@ Design:
   ``--full-refresh`` if you want a complete pass.
 
 MCP Integration:
-- When ``STROPHA_MCP_WATCH=1`` (default), the MCP server starts the
-  watcher in a background thread during lifespan. This ensures queries
+- When ``mcp.watch: true`` in ``~/.stropha/config.yaml`` (the default), the MCP
+  server starts the watcher in a background thread during lifespan. This ensures queries
   always see recent edits without requiring a separate ``stropha watch``.
 - The watcher can be stopped via ``WatchController.stop()`` or by
   setting the threading.Event passed to ``watch_repo_async()``.
@@ -82,14 +82,18 @@ def _snapshot(repo: Path, *, max_file_bytes: int = 524_288) -> _Snapshot:
 
 
 def _format_changes(
-    changed: Iterable[Path], removed: Iterable[Path], *, root: Path,
+    changed: Iterable[Path],
+    removed: Iterable[Path],
+    *,
+    root: Path,
 ) -> str:
     parts: list[str] = []
     changed_list = sorted(changed)
     removed_list = sorted(removed)
     if changed_list:
-        rels = [str(p.relative_to(root)) if p.is_relative_to(root) else str(p)
-                for p in changed_list[:5]]
+        rels = [
+            str(p.relative_to(root)) if p.is_relative_to(root) else str(p) for p in changed_list[:5]
+        ]
         more = ""
         if len(changed_list) > 5:
             more = f" (+{len(changed_list) - 5} more)"
@@ -191,6 +195,7 @@ def _reindex(repo: Path, *, full_refresh: bool) -> None:
                 repos=[repo],
                 enricher_concurrency=inference.enricher_concurrency,
                 enricher_batch_size=inference.effective_batch_size(),
+                graphify=full_refresh,
             )
             stats = pipeline.run()
         log.info(

@@ -1,5 +1,8 @@
 """Query Decomposition — split complex queries into atomic sub-queries.
 
+Integration status: the legacy ``SearchEngine`` can call this module, but the
+production adapter-backed ``RetrievalStage`` does not currently use it.
+
 For natural language questions that ask about multiple things:
     "how does the scheduler calculate mastery and when does it schedule cards"
     → Sub-queries:
@@ -19,7 +22,7 @@ Backend selection (automatic):
 - Pattern-based decomposition for clear conjunctions (zero cost)
 - LLM decomposition for ambiguous queries (query_decomposition_llm: true)
 
-Configuration (stropha.yaml):
+Configuration (``~/.stropha/config.yaml``):
     retrieval_features:
       query_decomposition_enabled: true
       query_decomposition_llm: false  # use LLM for ambiguous cases
@@ -172,7 +175,8 @@ def decompose_query(
     Args:
         query: The user's search query.
         use_llm: Whether to use LLM for ambiguous cases. Defaults to
-                 STROPHA_QUERY_DECOMPOSITION_LLM env var.
+                 ``retrieval_features.query_decomposition_llm`` in
+                 ``~/.stropha/config.yaml``.
         force: If True, always attempt decomposition even if query
                doesn't appear compound.
     
@@ -237,5 +241,5 @@ def decompose_query(
 
 
 def is_decomposition_enabled() -> bool:
-    """Check if query decomposition is enabled via stropha.yaml."""
+    """Check whether unified configuration enables query decomposition."""
     return get_config().retrieval_features.query_decomposition_enabled

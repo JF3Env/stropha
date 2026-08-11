@@ -23,7 +23,8 @@ axes:
   # --- indexing axes (drive re-embedding) ---
   embedder:
     # voyage-4-large emits Matryoshka vectors truncated to `dim`; sweeping
-    # the dim is the headline quality/footprint tradeoff. Needs VOYAGE_API_KEY.
+    # the dim is the headline quality/footprint tradeoff. Needs
+    # secrets.voyage_api_key in ~/.stropha/config.yaml.
     - {adapter: voyage, dim: 256}
     - {adapter: voyage, dim: 512}
     - {adapter: voyage, dim: 1024}

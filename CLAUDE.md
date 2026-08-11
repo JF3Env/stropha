@@ -21,7 +21,7 @@ tools (`find_callers`, `find_tests_for`, etc.) traverse the graphify symbol grap
 ## How to run
 
 ```bash
-uv sync                                    # one-time setup
+uv sync --extra local --extra dev          # one-time setup
 uv run stropha index                       # index target repo
 uv run stropha search "query"              # hybrid search
 uv run stropha stats                       # index metadata
@@ -49,8 +49,10 @@ via `STROPHA_MCP_HOST` / `STROPHA_MCP_PORT`). Health probe: `GET /health`.
 2. **Drift detection** -- every config flag that changes adapter output
    MUST be baked into `adapter_id`. The pipeline uses
    `(content_hash, embedding_model, enricher_id)` as freshness key.
-3. **Forward-only schema migrations** -- `Storage._migrate()` uses
-   `IF NOT EXISTS` / `_add_column_if_missing`. Never DROP. Must be idempotent.
+3. **Forward-only schema migrations** -- every storage adapter owns an
+   idempotent, forward-only migration path. SQLite's `Storage._migrate()` uses
+   `IF NOT EXISTS` / `_add_column_if_missing`; PostgreSQL provides the equivalent
+   adapter migration. Never DROP.
 4. **`Pipeline.run()` owns graphify lifecycle** -- only call site for
    `graphify update` -> `GraphifyLoader` -> `GraphVecLoader` -> `augment_fts`.
    Do not reorder.
@@ -60,8 +62,12 @@ via `STROPHA_MCP_HOST` / `STROPHA_MCP_PORT`). Health probe: `GET /health`.
    instantly. All real work in detached background.
 7. **Local-only by default** -- no mandatory cloud dependency.
    Voyage/Anthropic/OpenAI stay optional.
-8. **`fts_chunks` contentless-with-external-content** -- always explicit
-   `INSERT INTO fts_chunks(rowid, content, rel_path)`. Never UPDATE.
+8. **SQLite FTS5 writes are explicit** -- the `sqlite-vec` adapter's
+   `fts_chunks` table is contentless-with-external-content. Replace rows with
+   `DELETE` followed by explicit
+   `INSERT INTO fts_chunks(rowid, content, rel_path)`; never `UPDATE` it.
+   PostgreSQL uses its own `chunks.fts` tsvector path and is not subject to this
+   SQLite-specific rule.
 9. **Search-time toggles don't require re-index** -- HyDE and recursive
    merge are query-path only.
 10. **Primary and secondary vector spaces stay independent** -- the primary
@@ -81,7 +87,9 @@ via `STROPHA_MCP_HOST` / `STROPHA_MCP_PORT`). Health probe: `GET /health`.
 
 1. Never invent symbols or APIs -- read `.venv/` source if unsure.
 2. Never bypass the adapter framework -- use `@register_adapter` + protocol.
-3. Never write to the index outside `storage/sqlite.py`.
+3. Never write to the index outside the active storage adapter implementation
+   (`storage/sqlite.py` for `sqlite-vec`, `adapters/storage/postgres.py` for
+   PostgreSQL).
 4. Never silently empty the `find_*` tools.
 5. Never index secrets.
 6. Spec drift = update `docs/architecture/` specs in the same commit.
@@ -92,16 +100,17 @@ via `STROPHA_MCP_HOST` / `STROPHA_MCP_PORT`). Health probe: `GET /health`.
 Configuration lives in **`~/.stropha/config.yaml`** — single source of
 truth. No project-level `stropha.yaml`, no `.env` overlay, no
 `STROPHA_*_*` env vars for settings. The only env vars still honoured
-at runtime are `STROPHA_TARGET_REPO` (a runtime argument: *which* repo
-to operate on) and `STROPHA_HOOK_*` (escape hatches for the detached
-post-commit hook subprocess; see `src/stropha/config/__init__.py`
-`_ENV_REGISTRY` for the canonical list). API keys (`voyage_api_key`,
-`anthropic_api_key`, `deepseek_api_key`, `lms_api_key`) live under `secrets:` in the
+are process/runtime arguments for target selection, the shared MCP launcher,
+session/tracing identity, hook escape hatches, and opt-in local PostgreSQL
+container management; see `src/stropha/config/__init__.py` `_ENV_REGISTRY` for
+the canonical list. API keys (`voyage_api_key`, `anthropic_api_key`,
+`deepseek_api_key`, `lms_api_key`, `moa_api_key`) live under `secrets:` in the
 YAML. See `get_config` MCP tool for live runtime state.
 
-Adapters register via `@register_adapter(stage=..., name=...)` across
-6 stages: walker, chunker, enricher, embedder, storage, retrieval.
-Run `stropha adapters list` or `stropha pipeline show` for the live state.
+Adapters register via `@register_adapter(stage=..., name=...)` across the core
+pipeline stages and nested stages such as language chunkers, retrieval streams,
+rerankers, and routers. Run `stropha adapters list` or `stropha pipeline show`
+for the live inventory; do not copy hard-coded totals into current docs.
 
 Schema is at v14 (SQLite/PostgreSQL). v14 adds the independent 256-d
 Model2Vec chunk-vector space. All migrations are forward-only and idempotent.

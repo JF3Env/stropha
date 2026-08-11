@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
@@ -25,10 +26,12 @@ from stropha.adapters.retrieval.streams.vec_cosine import (
     VecCosineConfig,
     VecCosineStream,
 )
+from stropha.config.models import Config, RetrievalFeatures
 from stropha.errors import ConfigError
 from stropha.meta.stream_weights import StreamWeightProfile, write_stream_weight_profile
 from stropha.models import RepoRef, SearchHit
 from stropha.pipeline.registry import all_adapters
+from stropha.server import _features_snapshot
 
 # ---------------------------------------------------------------------------
 # Stubs
@@ -62,9 +65,7 @@ class _RecordingStorage:
         self.calls.append(("dense", (k, repo_id)))
         return [self._hit(i + 1, f"d{i}") for i in range(k)]
 
-    def search_bm25(
-        self, query: str, k: int, *, repo_id: int | None = None
-    ) -> list[SearchHit]:
+    def search_bm25(self, query: str, k: int, *, repo_id: int | None = None) -> list[SearchHit]:
         self.calls.append(("bm25", (k, repo_id)))
         return [self._hit(i + 1, f"b{i}") for i in range(k)]
 
@@ -77,29 +78,46 @@ class _RecordingStorage:
 
 class _StubEmbedder:
     @property
-    def stage_name(self) -> str: return "embedder"
+    def stage_name(self) -> str:
+        return "embedder"
+
     @property
-    def adapter_name(self) -> str: return "stub"
+    def adapter_name(self) -> str:
+        return "stub"
+
     @property
-    def adapter_id(self) -> str: return "stub"
+    def adapter_id(self) -> str:
+        return "stub"
+
     @property
-    def model_name(self) -> str: return "stub"
+    def model_name(self) -> str:
+        return "stub"
+
     @property
-    def dim(self) -> int: return 4
+    def dim(self) -> int:
+        return 4
+
     @property
-    def batch_size(self) -> int: return 16
+    def batch_size(self) -> int:
+        return 16
+
     @property
     def config_schema(self):
         from pydantic import BaseModel
 
         class _C(BaseModel):
             pass
+
         return _C
+
     def health(self):
         from stropha.pipeline.base import StageHealth
+
         return StageHealth(status="ready", message="stub")
+
     def embed_documents(self, texts):
         return [[0.0] * 4 for _ in texts]
+
     def embed_query(self, text):
         return [1.0, 0.0, 0.0, 0.0]
 
@@ -180,9 +198,7 @@ def test_hybrid_rrf_calls_all_default_streams() -> None:
 
 def test_hybrid_rrf_propagates_repo_id_to_every_stream() -> None:
     storage = _RecordingStorage()
-    retrieval = HybridRrfRetrieval(
-        HybridRrfConfig(), storage=storage, embedder=_StubEmbedder()
-    )
+    retrieval = HybridRrfRetrieval(HybridRrfConfig(), storage=storage, embedder=_StubEmbedder())
 
     retrieval.search("hello world", repo_id=42)
 
@@ -207,12 +223,78 @@ def test_hybrid_rrf_propagates_repo_id_through_multi_query() -> None:
     assert {details[1] for _, details in storage.calls} == {42}
 
 
+def test_adaptive_weighting_ignores_legacy_environment_toggle(monkeypatch) -> None:
+    monkeypatch.setenv("STROPHA_ADAPTIVE_WEIGHTING", "0")
+    retrieval = HybridRrfRetrieval(
+        HybridRrfConfig(adaptive_weighting=True),
+        storage=_RecordingStorage(),
+        embedder=_StubEmbedder(),
+    )
+
+    assert retrieval._get_stream_weights("UserService") is not None
+
+
+def test_recursive_merge_ignores_legacy_environment_toggle(monkeypatch) -> None:
+    monkeypatch.setenv("STROPHA_RECURSIVE_RETRIEVAL", "1")
+    retrieval = HybridRrfRetrieval(
+        HybridRrfConfig(recursive_enabled=False),
+        storage=_RecordingStorage(),
+        embedder=_StubEmbedder(),
+    )
+    hit = object()
+
+    with patch("stropha.retrieval.recursive.merge_hits") as merge_hits:
+        result = retrieval._maybe_recursive_merge([hit])  # type: ignore[list-item]
+
+    assert result == [hit]
+    merge_hits.assert_not_called()
+
+
+def test_feature_snapshot_reports_effective_retrieval_adapter_config() -> None:
+    retrieval = HybridRrfRetrieval(
+        HybridRrfConfig(
+            adaptive_weighting=False,
+            hyde_enabled=True,
+            multi_query_count=4,
+            query_rewrite_enabled=True,
+            recursive_enabled=False,
+            recursive_adjacency=9,
+        ),
+        storage=_RecordingStorage(),
+        embedder=_StubEmbedder(),
+    )
+    config = Config(
+        retrieval_features=RetrievalFeatures(
+            adaptive_weighting=True,
+            recursive_enabled=True,
+            recursive_adjacency=2,
+        )
+    )
+    app = SimpleNamespace(
+        config=config,
+        built=SimpleNamespace(retrieval=retrieval),
+    )
+
+    snapshot = _features_snapshot(app)  # type: ignore[arg-type]
+
+    assert snapshot["adaptive_weighting"]["enabled"] is False
+    assert snapshot["hyde"]["enabled"] is True
+    assert snapshot["multi_query"]["configured_count"] == 4
+    assert snapshot["query_rewrite"]["enabled"] is True
+    assert snapshot["recursive_retrieval"] == {
+        "enabled": False,
+        "adjacency": 9,
+        "purpose": "Auto-merge adjacent chunks + promote parent when siblings hit.",
+    }
+
+
 def test_hybrid_rrf_disables_stream_set_to_null() -> None:
     storage = _RecordingStorage()
     embedder = _StubEmbedder()
     r = HybridRrfRetrieval(
         HybridRrfConfig(streams={"symbol": None}),
-        storage=storage, embedder=embedder,
+        storage=storage,
+        embedder=embedder,
     )
     hits = r.search("x")
     seen = {c[0] for c in storage.calls}
@@ -238,7 +320,8 @@ def test_hybrid_rrf_skips_embedder_when_no_dense_stream() -> None:
     embedder = _CountingEmbedder()
     r = HybridRrfRetrieval(
         HybridRrfConfig(streams={"dense": None}),
-        storage=storage, embedder=embedder,
+        storage=storage,
+        embedder=embedder,
     )
     r.search("xyz")
     assert embedder.calls == 0
@@ -274,7 +357,8 @@ def test_hybrid_rrf_adapter_id_changes_with_stream_swap() -> None:
     a = HybridRrfRetrieval(HybridRrfConfig(), storage=storage, embedder=embedder).adapter_id
     b = HybridRrfRetrieval(
         HybridRrfConfig(streams={"dense": {"adapter": "vec-cosine", "config": {"k": 100}}}),
-        storage=storage, embedder=embedder,
+        storage=storage,
+        embedder=embedder,
     ).adapter_id
     assert a != b
 
@@ -285,7 +369,8 @@ def test_hybrid_rrf_unknown_sub_adapter_raises() -> None:
     with pytest.raises(ConfigError):
         HybridRrfRetrieval(
             HybridRrfConfig(streams={"dense": {"adapter": "no-such"}}),
-            storage=storage, embedder=embedder,
+            storage=storage,
+            embedder=embedder,
         )
 
 
@@ -301,17 +386,19 @@ def test_hybrid_rrf_applies_learned_weights_for_hit_repo(tmp_path: Path) -> None
         def search_dense(
             self, vec: list[float], k: int, *, repo_id: int | None = None
         ) -> list[SearchHit]:
-            hit = self._hit(1, "dense").model_copy(update={
-                "repo": RepoRef(normalized_key="repo-a"),
-            })
+            hit = self._hit(1, "dense").model_copy(
+                update={
+                    "repo": RepoRef(normalized_key="repo-a"),
+                }
+            )
             return [hit]
 
-        def search_bm25(
-            self, query: str, k: int, *, repo_id: int | None = None
-        ) -> list[SearchHit]:
-            hit = self._hit(1, "sparse").model_copy(update={
-                "repo": RepoRef(normalized_key="repo-a"),
-            })
+        def search_bm25(self, query: str, k: int, *, repo_id: int | None = None) -> list[SearchHit]:
+            hit = self._hit(1, "sparse").model_copy(
+                update={
+                    "repo": RepoRef(normalized_key="repo-a"),
+                }
+            )
             return [hit]
 
     write_stream_weight_profile(

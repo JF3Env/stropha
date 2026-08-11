@@ -1,12 +1,11 @@
-"""Hybrid retrieval (spec §6.1): dense (vec) + sparse (FTS5) fused via RRF.
+"""Hybrid retrieval: dense + sparse + symbol streams fused via RRF.
 
-Phase 1: no reranker yet — spec §16 puts Voyage `rerank-2.5` in Phase 2.
+The configurable retrieval adapter can optionally rerank the fused candidates.
 """
 
 from __future__ import annotations
 
-import os
-
+from ..config import get_config
 from ..embeddings.base import Embedder
 from ..logging import get_logger
 from ..models import SearchHit
@@ -42,26 +41,28 @@ class SearchEngine:
         """Three-stream hybrid retrieval, fused with RRF.
 
         Streams:
-        - dense  — sqlite-vec ANN over the embedder (semantic similarity).
-        - sparse — FTS5 BM25 over content + path + symbol (lexical recall).
+        - dense  — vector search from the selected storage backend.
+        - sparse — full-text search over content + path + symbol.
         - symbol — direct match on the `symbol` column for identifier tokens
                    in the query (spec §6.3.5 query routing).
         Empty streams are dropped before fusion.
 
         Query decomposition (optional):
-        When enabled (decompose=True or STROPHA_QUERY_DECOMPOSITION_ENABLED=1),
+        When enabled explicitly or by ``retrieval_features.query_decomposition_enabled``
+        in ``~/.stropha/config.yaml``,
         compound queries like "how does X work and what calls Y" are split
         into atomic sub-queries, searched separately, and fused via RRF.
 
         Token-budget packing (WIN-208):
         When ``context_budget`` is set, the score-ranked output is greedy-
-        packed up to that token budget (using ``estimate_content_tokens``)
+        packed up to that result-token budget (using ``estimate_content_tokens``)
         and the truncated tail is dropped. The returned list never exceeds
         the budget — except in the single-first-hit-oversize escape path,
         where the top hit is returned alone even if oversize so the caller
         sees something rather than nothing. ``top_k`` still bounds the
         upper end of what's considered for packing; the packed result may
-        contain fewer items.
+        contain fewer items. This budgets returned snippets, not the caller's
+        entire model context window.
 
         Extractive compression (WIN-210):
         When ``compress=True``, each hit's ``snippet`` is replaced with
@@ -84,7 +85,7 @@ class SearchEngine:
 
         # Check for query decomposition
         if decompose is None:
-            decompose = os.environ.get("STROPHA_QUERY_DECOMPOSITION_ENABLED", "0") == "1"
+            decompose = get_config().retrieval_features.query_decomposition_enabled
 
         if decompose:
             from .query_decomposition import decompose_query
@@ -252,8 +253,8 @@ class SearchEngine:
                 k=rrf_k,
                 top_k=top_k,
             )
-        # Recursive retrieval / auto-merge (Phase 3 §6.4). No-op when
-        # STROPHA_RECURSIVE_RETRIEVAL is unset / 0 — back-compat preserved.
+        # Recursive retrieval / auto-merge. Configuration is sourced from
+        # retrieval_features in ~/.stropha/config.yaml.
         from .recursive import merge_hits
         return merge_hits(fused, self._storage)
 

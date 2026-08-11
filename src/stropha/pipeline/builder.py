@@ -7,8 +7,7 @@ Build order:
     walker → chunker → enricher → primary embedder → optional secondary embedder
     → storage(primary dim) → retrieval(storage, both embedders)
 
-The chunker stage (Phase 3) is built lazily by the Pipeline using the
-legacy ``stropha.ingest.chunker.Chunker`` until §10.3 ships its adapter.
+Every listed stage is constructed from the resolved adapter configuration.
 """
 
 from __future__ import annotations
@@ -35,7 +34,7 @@ log = get_logger(__name__)
 class BuiltStages:
     """Set of constructed adapters returned by :func:`build_stages`.
 
-    Six core stages cover index + retrieval. ``router`` (WIN-234) is
+    The core stages cover indexing and retrieval. ``router`` (WIN-234) is
     optional — a query-time router for smart_search dispatch that
     defaults to the pattern-based adapter when the config doesn't
     declare one. Pipeline / CLI consume this dataclass directly —
@@ -97,8 +96,8 @@ def build_stages(
 
     ``open_storage=False`` skips storage + retrieval construction and
     returns ``None`` for those slots. Useful for ``stropha pipeline show``
-    when the user has not yet populated an index file (avoids opening a
-    SQLite connection just to print config).
+    when the user has not yet populated an index (avoids opening the
+    selected storage backend just to print config).
 
     ``force_rebuild=True`` is propagated to the storage adapter so it can
     drop+recreate dim-dependent tables before the consistency check
@@ -124,8 +123,8 @@ def build_stages(
             raise ConfigError(
                 f"Invalid config for pipeline.storage adapter={storage_name!r}: {exc}"
             ) from exc
-        # Forward force_rebuild — only the sqlite-vec adapter honours it
-        # today, but the kwarg lets every future StorageStage opt in.
+        # Storage adapters may use force_rebuild to recreate
+        # dimension-dependent data before validating the active embedder.
         try:
             storage = storage_cls(
                 storage_cfg,
@@ -181,7 +180,7 @@ def build_stages(
 
     # WIN-234: router is an optional, query-time stage. Default to
     # the pattern-based adapter when the config doesn't declare one
-    # so existing pre-WIN-234 stropha.yaml files keep working.
+    # so existing unified configs without a router keep working.
     router: RouterStage | None = None
     router_section = resolved_config.get("router") or {}
     router_name = router_section.get("adapter") or "pattern"

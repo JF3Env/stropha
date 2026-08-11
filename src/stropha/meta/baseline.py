@@ -1,7 +1,7 @@
 """Production-baseline tracking + regression alerts (WIN-204).
 
-The Meta-Harness produces candidates; the operator promotes one to live
-``stropha.yaml`` via ``stropha meta promote --apply``. After that point
+The Meta-Harness produces candidates; the operator promotes one into the live
+unified config via ``stropha meta promote --apply``. After that point
 the operator's question becomes:
 
     "Is the bandit finding something better than what I just promoted?"

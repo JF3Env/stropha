@@ -133,7 +133,7 @@ def is_ollama_available() -> bool:
 def is_deepseek_available() -> bool:
     """Cheap availability probe for DeepSeek.
 
-    Only checks that ``DEEPSEEK_API_KEY`` is set — we deliberately do
+    Only checks that ``secrets.deepseek_api_key`` is set — we deliberately do
     NOT make a network round-trip on every probe. Real failures surface
     inside :meth:`DeepSeekBackend.generate` as ``None`` with a logged
     error. This matches the local-first invariant (no surprise network
@@ -145,7 +145,7 @@ def is_deepseek_available() -> bool:
 def is_anthropic_available() -> bool:
     """Cheap availability probe for Anthropic.
 
-    Only checks that ``ANTHROPIC_API_KEY`` is set — mirrors the
+    Only checks that ``secrets.anthropic_api_key`` is set — mirrors the
     DeepSeek policy: never auto-probe a cloud endpoint at startup.
     """
     return get_config().secrets.has_anthropic
@@ -178,9 +178,9 @@ def get_backend(prefer: str | None = None) -> InferenceBackend:
 
     Auto-detection NEVER selects ``deepseek``, ``anthropic``, or ``lms`` — these
     are cloud backends and must be opted into explicitly via
-    ``inference.backend: deepseek|anthropic`` in ``stropha.yaml`` (or
+    ``inference.backend: deepseek|anthropic`` in ``~/.stropha/config.yaml`` (or
     ``prefer='deepseek'|'anthropic'``). This preserves the
-    ``CLAUDE.md`` §3.6 local-only-by-default invariant.
+    ``CLAUDE.md`` **Local-only by default** invariant.
     """
     global _BACKEND
 
@@ -231,10 +231,10 @@ def get_backend(prefer: str | None = None) -> InferenceBackend:
             _BACKEND = backend
             log.info("inference.backend_selected", backend="deepseek")
             return _BACKEND
-        # DEEPSEEK_API_KEY missing → don't silently fall back to a local
+        # Configured API key missing → don't silently fall back to a local
         # model (the user explicitly asked for DeepSeek). Cache the
         # instance anyway so `health_check()` reports the actionable
-        # "set DEEPSEEK_API_KEY" message. Consumers see ``None`` from
+        # YAML-secret guidance. Consumers see ``None`` from
         # ``generate`` per the contract.
         log.warning("inference.deepseek_no_api_key")
         _BACKEND = backend

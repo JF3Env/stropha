@@ -13,10 +13,10 @@ Cache invalidation:
 - Manual: clear_cache() can be called on index update
 
 This is a pure in-memory cache. It does NOT persist across process restarts.
-For MCP servers that run as long-lived processes, this provides significant
-latency savings for repeated queries.
+It is not currently called by the production ``RetrievalStage`` or MCP search
+path; callers must integrate it explicitly before expecting latency savings.
 
-Configuration (stropha.yaml):
+Standalone configuration values (``~/.stropha/config.yaml``):
     retrieval_features:
       cache_enabled: true
       cache_size: 500
@@ -26,15 +26,15 @@ Usage:
     from stropha.retrieval.cache import SemanticCache
 
     cache = SemanticCache(max_size=1000, ttl_seconds=3600)
-    
+
     # Check cache
     cached = cache.get(query_vec, top_k=10, filters={"language": ["python"]})
     if cached is not None:
         return cached
-    
+
     # Compute result
     result = expensive_search(query, top_k=10)
-    
+
     # Store in cache
     cache.set(query_vec, result, top_k=10, filters={"language": ["python"]})
 """
@@ -55,38 +55,39 @@ log = get_logger(__name__)
 
 
 def _enabled() -> bool:
-    """Check if query cache is enabled via stropha.yaml."""
+    """Check whether unified configuration enables the standalone cache."""
     return get_config().retrieval_features.cache_enabled
 
 
 def _max_size() -> int:
-    """Get cache size from stropha.yaml."""
+    """Get the configured standalone cache size."""
     return get_config().retrieval_features.cache_size
 
 
 def _ttl_seconds() -> float:
-    """Get cache TTL from stropha.yaml."""
+    """Get the configured standalone cache TTL."""
     return get_config().retrieval_features.cache_ttl
 
 
 @dataclass
 class CacheEntry:
     """A cached search result with metadata."""
+
     chunk_ids: list[str]
     scores: list[float]
     created_at: float = field(default_factory=time.time)
-    
+
     def is_expired(self, ttl: float) -> bool:
         return time.time() - self.created_at > ttl
 
 
 def _quantize_vector(vec: list[float], precision: int = 2) -> tuple[float, ...]:
     """Quantize vector to reduce dimensionality for cache key.
-    
+
     Args:
         vec: The embedding vector.
         precision: Number of decimal places to round to.
-        
+
     Returns:
         Quantized vector as a tuple (hashable).
     """
@@ -113,19 +114,19 @@ class SemanticCache:
         ttl_seconds: float | None = None,
     ) -> None:
         """Initialize the cache.
-        
+
         Args:
-            enabled: Whether cache is enabled. Defaults to env var.
-            max_size: Maximum number of entries. Defaults to env var.
-            ttl_seconds: Time-to-live for entries. Defaults to env var.
+            enabled: Whether cache is enabled. Defaults to unified config.
+            max_size: Maximum number of entries. Defaults to unified config.
+            ttl_seconds: Time-to-live for entries. Defaults to unified config.
         """
         self._enabled = enabled if enabled is not None else _enabled()
         self._max_size = max_size if max_size is not None else _max_size()
         self._ttl = ttl_seconds if ttl_seconds is not None else _ttl_seconds()
-        
+
         # OrderedDict for LRU eviction
         self._cache: OrderedDict[str, CacheEntry] = OrderedDict()
-        
+
         # Stats
         self._hits = 0
         self._misses = 0
@@ -151,37 +152,37 @@ class SemanticCache:
         filters: dict[str, Any] | None = None,
     ) -> list[SearchHit] | None:
         """Get cached result if available and not expired.
-        
+
         Args:
             query_vec: The query embedding vector.
             top_k: Number of results requested.
             filters: Filter parameters (language, path_prefix, etc.)
-            
+
         Returns:
             List of SearchHit if cached, None otherwise.
         """
         if not self._enabled:
             return None
-            
+
         key = self._make_key(query_vec, top_k, filters)
         entry = self._cache.get(key)
-        
+
         if entry is None:
             self._misses += 1
             return None
-            
+
         if entry.is_expired(self._ttl):
             # Remove expired entry
             del self._cache[key]
             self._misses += 1
             log.debug("cache.expired", key=key[:20])
             return None
-        
+
         # Move to end (most recently used)
         self._cache.move_to_end(key)
         self._hits += 1
         log.debug("cache.hit", key=key[:20])
-        
+
         # Reconstruct SearchHit objects (minimal version - just chunk_id and score)
         # The caller should have access to storage to hydrate full details if needed
         return [
@@ -208,7 +209,7 @@ class SemanticCache:
         filters: dict[str, Any] | None = None,
     ) -> None:
         """Store search results in cache.
-        
+
         Args:
             query_vec: The query embedding vector.
             results: The search results to cache.
@@ -217,15 +218,15 @@ class SemanticCache:
         """
         if not self._enabled:
             return
-            
+
         key = self._make_key(query_vec, top_k, filters)
-        
+
         # Evict oldest entries if at capacity
         while len(self._cache) >= self._max_size:
             oldest_key = next(iter(self._cache))
             del self._cache[oldest_key]
             log.debug("cache.evict", key=oldest_key[:20])
-        
+
         # Store minimal data (chunk_ids + scores)
         entry = CacheEntry(
             chunk_ids=[h.chunk_id for h in results],
@@ -236,7 +237,7 @@ class SemanticCache:
 
     def invalidate(self) -> int:
         """Clear all cache entries.
-        
+
         Returns:
             Number of entries cleared.
         """
@@ -247,14 +248,11 @@ class SemanticCache:
 
     def remove_expired(self) -> int:
         """Remove all expired entries.
-        
+
         Returns:
             Number of entries removed.
         """
-        expired = [
-            key for key, entry in self._cache.items()
-            if entry.is_expired(self._ttl)
-        ]
+        expired = [key for key, entry in self._cache.items() if entry.is_expired(self._ttl)]
         for key in expired:
             del self._cache[key]
         if expired:
@@ -271,7 +269,9 @@ class SemanticCache:
             "ttl_seconds": self._ttl,
             "hits": self._hits,
             "misses": self._misses,
-            "hit_rate": self._hits / (self._hits + self._misses) if (self._hits + self._misses) > 0 else 0.0,
+            "hit_rate": self._hits / (self._hits + self._misses)
+            if (self._hits + self._misses) > 0
+            else 0.0,
         }
 
     @property

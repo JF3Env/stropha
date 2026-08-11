@@ -13,7 +13,7 @@ Per RFC §6.1 (``docs/architecture/stropha-graphify-integration.md``):
   dropped at load time. Default ``EXTRACTED`` only — the high-precision
   subset derived deterministically from the AST.
 
-Configuration (stropha.yaml):
+Configuration (``~/.stropha/config.yaml``):
     graph:
       confidence: EXTRACTED  # EXTRACTED, INFERRED, or comma-separated
       fts_augment: true
@@ -35,7 +35,6 @@ Usage:
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -55,7 +54,7 @@ _VALID_CONFIDENCE = {"EXTRACTED", "INFERRED", "AMBIGUOUS"}
 
 
 def _resolve_confidence_filter(config_value: str | None = None) -> tuple[str, ...]:
-    """Parse confidence filter from stropha.yaml into a tuple of tiers.
+    """Parse the unified configuration's confidence filter into tiers.
 
     Empty / unset / invalid values fall back to :data:`DEFAULT_CONFIDENCE`.
     """
@@ -157,12 +156,12 @@ class GraphifyLoader:
     def _resolve_graph_path(repo_root: Path) -> Path:
         """Default location: ``<repo_root>/graphify-out/graph.json``.
 
-        Honours ``STROPHA_GRAPHIFY_OUT`` for users who keep the graph
-        outside the repo (shared workspace, separate volume).
+        ``graph.graphify_out`` in ``~/.stropha/config.yaml`` can point to an
+        output directory outside the repository.
         """
-        override = os.environ.get("STROPHA_GRAPHIFY_OUT")
-        if override:
-            return Path(override).expanduser() / "graph.json"
+        configured = get_config().graph.graphify_out
+        if configured:
+            return configured.expanduser() / "graph.json"
         return repo_root / "graphify-out" / "graph.json"
 
     @property

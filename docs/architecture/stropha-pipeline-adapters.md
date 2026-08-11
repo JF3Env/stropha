@@ -1,13 +1,17 @@
 # Pipeline & Adapters — Architecture
 
-> **Status:** Implemented (Phase 1–4 shipped). The protocol surface, registry, builder e drift-detection contract definidos aqui rodam em produção; o §A no final do doc lista os adapters concretos registrados HOJE.
+> **Status:** Implemented. This document preserves the 2026-05-15 RFC and its
+> delivery history. Sections that describe the pre-delivery state, proposed file
+> moves, env aliases, or project-local configuration are historical. The current
+> configuration contract is in **Configuration** below; the live adapter inventory
+> comes from `stropha adapters list` / `stropha pipeline show`, not a copied total.
 > **Versão:** 1.0 (RFC) → 1.1 (delivery)
 > **Data:** 2026-05-15 (RFC) — 2026-05-15 (delivery)
 > **Audiência:** maintainers do projeto `stropha` e agentes LLM operando-o.
 > **Documentos relacionados:**
 > - `docs/architecture/stropha-system.md` (spec mestre)
 > - `docs/architecture/stropha-graphify-integration.md` (integração graphify + post-commit)
-> - `CLAUDE.md §2.3` (snapshot vivo dos adapters)
+> - `CLAUDE.md` **Key architecture** (authoritative current configuration and schema)
 
 ---
 
@@ -16,7 +20,7 @@
 Cada **nó da pipeline** do stropha (walker, chunker, enricher, embedder, storage, retrieval) é uma **responsabilidade discreta** com **um adapter ativo por vez**, selecionado por configuração. Cada adapter:
 
 1. Implementa o `Stage` protocol da sua responsabilidade.
-2. Tem **seção própria** de config (YAML + env + CLI overrides com cascading priority).
+2. Tem **seção própria** em `~/.stropha/config.yaml`, com CLI overrides pontuais.
 3. Aparece em `stropha pipeline show` com parâmetros visíveis — **sem caixa preta**.
 4. Auto-registra via decorator no import-time; descoberto por `stropha adapters list`.
 5. Pode ser substituído trocando uma string na config; mismatch contra estado persistido aciona re-processamento automático.
@@ -45,7 +49,8 @@ O stropha já tem 50% do padrão implementado, mas inconsistente:
 ### 1.2 Lacunas que justificam refatoração
 
 1. **Inconsistência cognitiva**: cada stage tem padrão diferente; agentes (humanos e LLM) precisam aprender 6 padrões.
-2. **Config dispersa**: env vars sem hierarquia visível (`STROPHA_LOCAL_EMBED_MODEL`, `STROPHA_VOYAGE_EMBED_MODEL`, etc.) — não há um lugar único pra ver "como está montada a pipeline".
+2. **Config dispersa (histórico pré-delivery)**: env vars sem hierarquia visível
+   motivaram a fonte única atual, `~/.stropha/config.yaml`.
 3. **Extensibilidade ad-hoc**: adicionar novo embedder hoje é fácil (protocol existe); adicionar novo storage backend (Qdrant, pgvector) requer reescrita não-óbvia.
 4. **Falta de sub-pipeline first-class**: o chunker JÁ é sub-pipeline mas isso fica implícito; quando o retrieval virar sub-pipeline (futuro: alternar streams individualmente) o padrão não suporta.
 5. **Enricher pendente**: a Phase 2 do spec mestre prevê contextual retrieval. Implementar isolado é desperdício — vale fazer dentro do padrão unificado.
@@ -55,8 +60,8 @@ O stropha já tem 50% do padrão implementado, mas inconsistente:
 1. **Single-active**: um adapter por stage por vez. Sem chain, sem composição implícita. Composição é responsabilidade do USUÁRIO do adapter, não do adapter framework.
 2. **Configuração visível**: principais parâmetros sempre expostos. Sub-pipelines NÃO escondem config interna — fazem nesting estruturado.
 3. **Intercambiabilidade**: trocar adapter é trocar string. Zero touch no código.
-4. **Detect-and-rebuild**: trocar adapter força re-processamento mínimo dos chunks afetados. Cache transparente em SQLite (`(content_hash, adapter_id)` keys).
-5. **Backward-compat total**: env vars atuais (`STROPHA_INDEX_PATH`, etc.) continuam funcionando como aliases pra novas chaves. Defaults sem config produzem comportamento atual.
+4. **Detect-and-rebuild**: trocar adapter força re-processamento mínimo dos chunks afetados. O storage adapter ativo persiste as freshness keys.
+5. **Fonte única**: settings vivem em `~/.stropha/config.yaml`; não há overlay por projeto nem aliases `STROPHA_*_*` para settings.
 6. **Discovery automático**: adapters em `adapters/<stage>/<name>.py` se auto-registram. Adicionar um é adicionar um arquivo.
 7. **Validação no startup**: config validada via pydantic schemas antes do pipeline executar. Erros estruturados apontam exatamente qual chave em qual adapter está errada.
 
@@ -254,23 +259,23 @@ Sub-pipeline ≠ chain. Sub-pipeline tem um adapter "pai" que CONTROLA seus filh
 
 ### 5.1 Fontes e precedência
 
-Três fontes, fundidas com prioridade:
+Contrato atual:
 
 ```
-CLI flags  >  Env vars  >  YAML file  >  Built-in defaults
+CLI override explícito  >  ~/.stropha/config.yaml  >  built-in defaults
 ```
 
-1. **YAML primário**: `./stropha.yaml` (per-projeto) + `~/.stropha/config.yaml` (per-usuário). Projeto vence usuário em conflitos.
-2. **Env vars**: pontuais, scriptable.
-3. **CLI flags**: ad-hoc.
-
-Sem nenhuma config, comportamento atual reproduzido exatamente (zero breaking change).
+`~/.stropha/config.yaml` é a única fonte persistente de settings. Não existe
+`./stropha.yaml`, overlay `.env`, nem convenção genérica `STROPHA_*_*` para
+configuração. Environment variables are restricted to the process/runtime
+registry: target selection, shared MCP launcher, session/tracing identity,
+detached-hook escape hatches, and opt-in local PostgreSQL container management.
+None participates in the settings precedence above.
 
 ### 5.2 YAML — exemplo end-to-end
 
 ```yaml
-# stropha.yaml — full canonical pipeline configuration
-version: 1
+# ~/.stropha/config.yaml
 
 pipeline:
   walker:
@@ -282,7 +287,6 @@ pipeline:
   chunker:
     adapter: tree-sitter-dispatch
     config:
-      max_chars_per_chunk: 24000
       languages:
         java:           { adapter: ast-generic }
         typescript:     { adapter: ast-generic }
@@ -297,13 +301,13 @@ pipeline:
         _fallback:      { adapter: file-level }
 
   enricher:
-    adapter: hierarchical             # noop | hierarchical | ollama | anthropic | mlx
+    adapter: hierarchical             # inspect alternatives with adapters list
     config:
       include_parent_skeleton: true
       include_repo_url: false
 
   embedder:
-    adapter: local                    # local | voyage | mlx | openai
+    adapter: local                    # inspect alternatives with adapters list
     config:
       model: mixedbread-ai/mxbai-embed-large-v1
       batch_size: 32
@@ -312,8 +316,6 @@ pipeline:
     adapter: sqlite-vec
     config:
       path: ~/.stropha/index.db
-      vec_distance: l2
-      fts_tokenizer: unicode61
 
   retrieval:
     adapter: hybrid-rrf
@@ -321,61 +323,37 @@ pipeline:
       top_k: 10
       rrf_k: 60
       streams:
-        dense:  { k: 50 }
-        sparse: { k: 50, expand_camelcase: true }
-        symbol: { k: 20 }
+        dense:
+          adapter: vec-cosine
+          config: { k: 50 }
+        sparse:
+          adapter: fts5-bm25
+          config: { k: 50 }
+        symbol:
+          adapter: like-tokens
+          config: { k: 20 }
 ```
 
-### 5.3 Env vars — mapping
+### 5.3 Runtime arguments
 
-Cada caminho no YAML mapeia pra um env var via convenção `STROPHA_<STAGE>__<KEY>__<SUBKEY>=...` (`__` separa níveis hierárquicos):
-
-| YAML path | Env var |
-|---|---|
-| `pipeline.enricher.adapter` | `STROPHA_ENRICHER` |
-| `pipeline.enricher.config.model` | `STROPHA_ENRICHER__MODEL` |
-| `pipeline.embedder.adapter` | `STROPHA_EMBEDDER` |
-| `pipeline.embedder.config.model` | `STROPHA_EMBEDDER__MODEL` |
-| `pipeline.embedder.config.batch_size` | `STROPHA_EMBEDDER__BATCH_SIZE` |
-| `pipeline.storage.config.path` | `STROPHA_STORAGE__PATH` ou (legado) `STROPHA_INDEX_PATH` |
-| `pipeline.retrieval.config.rrf_k` | `STROPHA_RETRIEVAL__RRF_K` |
-| `pipeline.retrieval.config.streams.dense.k` | `STROPHA_RETRIEVAL__STREAMS__DENSE__K` |
-| `pipeline.chunker.config.languages.java.adapter` | `STROPHA_CHUNKER__LANGUAGES__JAVA__ADAPTER` |
-
-### 5.4 Legacy env aliases (back-compat)
-
-| Legacy (atual) | Nova chave equivalente |
-|---|---|
-| `STROPHA_INDEX_PATH` | `STROPHA_STORAGE__PATH` |
-| `STROPHA_LOCAL_EMBED_MODEL` | `STROPHA_EMBEDDER__MODEL` (quando `STROPHA_EMBEDDER=local`) |
-| `STROPHA_VOYAGE_EMBED_MODEL` | `STROPHA_EMBEDDER__MODEL` (quando `STROPHA_EMBEDDER=voyage`) |
-| `STROPHA_VOYAGE_EMBED_DIM` | `STROPHA_EMBEDDER__DIM` |
-| `STROPHA_TARGET_REPO` | (mantida — não é pipeline config; é argumento do `index`) |
-| `STROPHA_LOG_LEVEL` | (mantida — não é pipeline config) |
-| `STROPHA_MAX_FILE_BYTES` | `STROPHA_WALKER__MAX_FILE_BYTES` |
-
-Translation layer roda no `pipeline/config.py:load_config()`. Legacy vars têm prioridade igual à env nova; conflito entre legacy e nova é resolvido por log warning + preferência pela nova.
+CLI flags podem substituir settings para uma invocação sem criar outra fonte
+persistente. The canonical process/runtime env list is `_ENV_REGISTRY` in
+`src/stropha/config/__init__.py`. Env vars for settings cited in historical
+sections of this RFC are unsupported.
 
 ### 5.5 Secrets
 
-API keys NUNCA entram no YAML. Permanecem como env vars exclusivamente:
-
-- `VOYAGE_API_KEY`
-- `ANTHROPIC_API_KEY`
-- `OPENAI_API_KEY`
-- `MOONSHOT_API_KEY` (Kimi)
-- etc.
-
-YAML referencia via nome quando precisar customizar:
+API keys ficam no próprio YAML sob `secrets:`. O dashboard e `get_config`
+redigem esses valores; exemplos e logs nunca devem conter segredos reais:
 
 ```yaml
-embedder:
-  adapter: voyage
-  config:
-    api_key_env: VOYAGE_API_KEY      # nome do env var, não o valor
+secrets:
+  voyage_api_key: null
+  anthropic_api_key: null
+  deepseek_api_key: null
+  lms_api_key: null
+  moa_api_key: null
 ```
-
-Default: cada adapter sabe qual env var ler.
 
 ---
 
@@ -410,7 +388,7 @@ stropha search "..." --retrieval dense-only    # override só pra essa query
 ### 6.3 `stropha pipeline show` output esboçado
 
 ```
-Pipeline composition (resolved from: stropha.yaml + 2 env overrides)
+Pipeline composition (resolved from: ~/.stropha/config.yaml)
 ══════════════════════════════════════════════════════════════════
 
   walker     git-ls-files                                ✓ ready
@@ -440,9 +418,9 @@ Pipeline composition (resolved from: stropha.yaml + 2 env overrides)
              rrf_k:      60
              streams:    dense(k=50) + sparse(k=50) + symbol(k=20)
 
-Overrides:
-  STROPHA_ENRICHER=hierarchical          (env)
-  STROPHA_EMBEDDER__MODEL=mxbai-…        (env)
+Invocation overrides:
+  --enricher hierarchical
+  --embedder local
 ```
 
 ### 6.4 `stropha adapters list` output
@@ -461,12 +439,12 @@ enricher   noop                   ✓ ready     Identity (no transformation)
 enricher   hierarchical           ✓ ready     Prepend parent chunk skeleton
 enricher   ollama                 ✗ down      Daemon unreachable at localhost:11434
                                               Configured model: qwen2.5-coder:14b (not pulled)
-enricher   anthropic              ✗ no key    ANTHROPIC_API_KEY not set
+enricher   anthropic              ✗ no key    secrets.anthropic_api_key not set
 enricher   mlx                    ⚠ planned   Not yet implemented
 enricher   openai                 ⚠ planned   Not yet implemented
 
 embedder   local                  ✓ ready     fastembed/ONNX local
-embedder   voyage                 ✗ no key    VOYAGE_API_KEY not set
+embedder   voyage                 ✗ no key    secrets.voyage_api_key not set
 embedder   mlx                    ⚠ planned   Not yet implemented
 
 storage    sqlite-vec             ✓ ready     SQLite + sqlite-vec extension
@@ -704,7 +682,7 @@ Entregáveis:
 14. Tests (>15 casos novos)
 15. Docs (update CLAUDE.md, stropha-system.md)
 
-**Critério de saída**: `stropha index` reproduz comportamento atual. `stropha pipeline show` mostra embedder/enricher novos + outros stages como "legacy". Trocar `STROPHA_ENRICHER` entre `noop`/`hierarchical` aciona re-enrichment automático sem `--rebuild`.
+**Critério de saída**: `stropha index` reproduz comportamento atual. `stropha pipeline show` mostra embedder/enricher novos + outros stages como "legacy". Trocar `pipeline.enricher.adapter` em `~/.stropha/config.yaml` entre `noop`/`hierarchical` aciona re-enrichment automático sem `--rebuild`.
 
 ### 10.2 Phase 2 — Walker + Storage + Retrieval (~2 dias)
 
@@ -775,7 +753,9 @@ Cada um cabe no padrão; nenhum requer mudança no core.
 
 **Contexto**: env-only vs YAML vs TOML vs JSON.
 
-**Decisão**: YAML primário, env override, CLI override no topo. Sem YAML, defaults reproduzem comportamento atual.
+**Decisão atual (supersede a formulação do RFC)**: `~/.stropha/config.yaml` é a
+fonte persistente única; CLI overrides ficam no topo. Não há projeto
+`stropha.yaml`, `.env` overlay ou env cascade de settings.
 
 **Justificativa**: Config hierárquica (sub-pipelines, per-language adapters) fica ilegível em env vars planas. YAML é o padrão da indústria pra config humana (Kubernetes, GitHub Actions, dbt, etc.). Comentários inline ajudam exploração.
 
@@ -801,11 +781,13 @@ Cada um cabe no padrão; nenhum requer mudança no core.
 
 **Trade-off**: Schema gain de 1 coluna + 1 tabela. Aceito.
 
-### ADR-005 — Backward-compat total via translation layer
+### ADR-005 — Backward-compat via translation layer (histórico, superseded)
 
-**Contexto**: env vars atuais (`STROPHA_INDEX_PATH`, `STROPHA_LOCAL_EMBED_MODEL`, etc.) — manter ou quebrar?
+**Contexto histórico**: o RFC avaliou manter aliases de env vars de settings.
 
-**Decisão**: Manter como aliases por pelo menos 2 versões major. Translation layer em `pipeline/config.py:load_config()` mapeia legacy → novo. Conflito legacy vs novo → warning + preferência ao novo.
+**Decisão no RFC**: manter aliases por duas versões major. Essa janela terminou;
+o contrato atual usa `~/.stropha/config.yaml`, CLI overrides, e somente os
+argumentos de processo/runtime enumerados por `_ENV_REGISTRY`.
 
 **Justificativa**: Zero fricção pra usuários existentes. Documentação migra gradualmente.
 
@@ -857,9 +839,11 @@ Cada um cabe no padrão; nenhum requer mudança no core.
 
 ---
 
-## 12. Decisões em aberto
+## 12. Decisões em aberto (histórico do RFC)
 
-A decidir no momento de implementar. Defaults recomendados em **negrito**.
+Registro preservado das opções avaliadas antes da implementação; não é uma lista
+de decisões atuais. A decisão entregue é a fonte única
+`~/.stropha/config.yaml` descrita em **Configuration**.
 
 | # | Decisão | Opções | Default recomendado |
 |---|---|---|---|
@@ -878,12 +862,14 @@ A decidir no momento de implementar. Defaults recomendados em **negrito**.
 
 ## 13. Compatibilidade backward
 
-### 13.1 Garantias
+### 13.1 Garantias históricas da migração
 
 1. **Zero código existente quebra** após Phase 1.
-2. Env vars atuais (todas as documentadas em `.env.example`) continuam funcionando.
-3. `.mcp.json` em `/Users/jonatas/sources/mimoria/` continua válido sem edição.
-4. Índices SQLite existentes (`~/.stropha/index.db`) abrem normalmente — apenas ganham colunas adicionais via migration v2 → v3.
+2. A camada de adapter foi entregue sem quebrar os comandos principais.
+3. A configuração e o transporte MCP mudaram depois desta migração: o contrato
+   atual é `~/.stropha/config.yaml` + daemon HTTP compartilhado.
+4. Índices existentes avançam somente por migrations idempotentes do storage
+   adapter ativo; SQLite e PostgreSQL mantêm caminhos próprios.
 5. CLI commands (`stropha index`, `stropha search`, `stropha stats`) preservam exit codes, flags e output format.
 6. Tests existentes (52 passando) continuam passando.
 
@@ -901,8 +887,8 @@ A decidir no momento de implementar. Defaults recomendados em **negrito**.
 
 - Stage protocol contract test (cada adapter satisfaz contract)
 - Registry: register / lookup / unknown name → ConfigError
-- Config loader: YAML parsing, env override, CLI override, precedência
-- Legacy translation: STROPHA_INDEX_PATH → pipeline.storage.config.path
+- Config loader: `~/.stropha/config.yaml`, CLI override e precedência
+- Runtime-only env registry: validate the canonical `_ENV_REGISTRY`
 - Validation: pydantic errors estruturados
 - Cross-stage consistency: embedder.dim ↔ storage.embedding_dim
 - Adapter health: ready/warning/error com mensagens
@@ -942,8 +928,7 @@ pipeline.stage.start                  stage=enricher adapter=ollama
 pipeline.stage.done                   stage=enricher adapter=ollama duration_ms=… items=…
 pipeline.stage.health                 stage=enricher status=ready
 pipeline.stage.error                  stage=enricher adapter=ollama error=…
-config.load                           sources=[yaml, env, cli] overrides=…
-config.legacy_alias                   from=STROPHA_INDEX_PATH to=pipeline.storage.config.path
+config.load                           source=~/.stropha/config.yaml overrides=cli
 adapter.registered                    stage=enricher name=hierarchical
 adapter.config_invalid                stage=enricher key=timeout_s message=…
 enricher.cache_hit                    content_hash=… adapter_id=…
@@ -966,7 +951,7 @@ stropha_adapter_health_status{stage, adapter, status}
 | Risco | Probabilidade | Impacto | Mitigação |
 |---|---|---|---|
 | Refactor introduz regressão silenciosa | Médio | Alto | Suíte de regression test executada em CI; Phase 1 não toca walker/chunker/storage/retrieval |
-| Config YAML divergente entre máquinas (per-projeto não commitado) | Médio | Médio | `.gitignore` lists `stropha.yaml` por default; `stropha.yaml.example` versionado |
+| Config YAML divergente entre máquinas | Médio | Médio | Inspecionar a fonte única com `get_config` / `stropha pipeline show` |
 | Auto-import importa modules pesados antes de necessário | Baixo | Médio | Adapter `__init__` é cheap (só decorator); imports pesados (ONNX, requests) ficam lazy nos métodos |
 | Adapter de terceiro com bug derruba pipeline inteira | N/A (v1) | N/A | Plugin externo fora de escopo |
 | Schema migration v2 → v3 falha em DB legado | Baixo | Alto | Migration idempotente; ALTER TABLE com guard; backup automático sugerido antes de upgrade |
@@ -1020,6 +1005,11 @@ stropha_adapter_health_status{stage, adapter, status}
 
 ## 19. Apêndice — exemplos de YAML
 
+> **Historical RFC examples, not runnable configuration.** Adapter names,
+> nesting, and secret injection in these sketches predate the canonical config
+> schema. Generate current configuration from `~/.stropha/config.yaml`, CLI
+> help, and adapter introspection rather than copying these blocks.
+
 ### 19.1 Stack 100% local
 
 ```yaml
@@ -1063,6 +1053,9 @@ pipeline:
 
 ```yaml
 version: 1
+secrets:
+  anthropic_api_key: <key>
+  voyage_api_key: <key>
 pipeline:
   walker:    { adapter: git-ls-files }
   chunker:   { adapter: tree-sitter-dispatch }
@@ -1070,13 +1063,11 @@ pipeline:
     adapter: anthropic
     config:
       model: claude-haiku-4-5
-      api_key_env: ANTHROPIC_API_KEY
   embedder:
     adapter: voyage
     config:
       model: voyage-code-3
       dim: 512
-      api_key_env: VOYAGE_API_KEY
   storage:
     adapter: sqlite-vec
     config: { path: ~/.stropha/index.db }
@@ -1109,11 +1100,14 @@ pipeline:
 
 ---
 
-## §A — Appendix: Adapters concretos registrados (delivery snapshot)
+## §A — Appendix: Adapters concretos registrados (audited delivery snapshot)
 
-> Este apêndice é a forma compacta da `stropha adapters list` no HEAD atual. Reflete o que está em produção; quando adicionar um adapter novo, atualize esta tabela na mesma PR.
+> Audited 2026-08-11 at commit `b0d391d7d67606a04666d8e9a48cfbef24c1726d`.
+> This is a historical snapshot, not a timeless inventory. Use
+> `stropha adapters list`, `stropha pipeline show`, or `get_config` for the live
+> registry and active composition.
 
-### Walker (4)
+### Walker
 
 | Adapter | Arquivo | Uso típico |
 |---|---|---|
@@ -1122,7 +1116,7 @@ pipeline:
 | `nested-git` | `adapters/walker/nested_git.py` | Monorepos com submódulos / vendored repos. Descobre `.git/` aninhados até `max_depth=4`, rebase paths para a raiz. |
 | `git-diff` | `adapters/walker/git_diff.py` | Indexação incremental baseada em `git diff`. Detecta arquivos modificados/adicionados/renomeados entre commits. |
 
-### Chunker (1 dispatcher + 5 language sub-adapters)
+### Chunker and language chunkers
 
 | Adapter | Stage | Arquivo | Uso |
 |---|---|---|---|
@@ -1132,8 +1126,9 @@ pipeline:
 | `sfc-split` | `language-chunker` | `adapters/chunker/languages/sfc_split.py` | Vue Single-File Components (`<script>` / `<template>` / `<style>`). |
 | `regex-feature-scenario` | `language-chunker` | `adapters/chunker/languages/regex_feature_scenario.py` | Gherkin `.feature` — split Feature/Scenario via regex (tree-sitter-language-pack não inclui gherkin). |
 | `file-level` | `language-chunker` | `adapters/chunker/languages/file_level.py` | Fallback para linguagens não suportadas — um chunk por arquivo. |
+| `yaml-structure` | `language-chunker` | `adapters/chunker/languages/yaml_structure.py` | YAML estrutural por mappings/sequences, preservando paths de chave. |
 
-### Enricher (5)
+### Enricher
 
 | Adapter | Arquivo | Custo | Quando usar |
 |---|---|---|---|
@@ -1142,13 +1137,14 @@ pipeline:
 | `graph-aware` | `adapters/enricher/graph_aware.py` | zero (precisa de Storage injetada) | Prepend community label + node label do graphify. Boost de recall BM25/FTS lexical sem custo de embedding (L2). |
 | `ollama` | `adapters/enricher/ollama.py` | LLM local | One-line summary via Ollama HTTP (`qwen2.5-coder:1.5b`). Fail-graceful. |
 | `mlx` | `adapters/enricher/mlx.py` | LLM local | Mesma proposta do `ollama` mas via `mlx-lm` nativo Apple Silicon. Optional dep `[mlx]`. Lazy-load. |
+| `contextual` | `adapters/enricher/contextual.py` | backend de inference configurado | Contextual retrieval batched com identidade de prompt/config no `adapter_id`. |
 
-### Embedder (8)
+### Embedder
 
 | Adapter | Arquivo | Modelo padrão | Cost / network |
 |---|---|---|---|
 | `local` (default) | `adapters/embedder/local.py` | `mixedbread-ai/mxbai-embed-large-v1` @ 1024d | local ONNX, ~1.7 GB on disk |
-| `voyage` | `adapters/embedder/voyage.py` | `voyage-code-3` @ 512d (Matryoshka) | cloud, requires `VOYAGE_API_KEY` |
+| `voyage` | `adapters/embedder/voyage.py` | `voyage-code-3` @ 512d (Matryoshka) | cloud, requires `secrets.voyage_api_key` |
 | `bge-m3` | `adapters/embedder/bge_m3.py` | `BAAI/bge-m3` @ 1024d | local Apple Silicon via `[mlx-embed]`, multilingual |
 | `mlx` | `adapters/embedder/mlx.py` | registry MLX or Qwen3-Embedding | local Apple Silicon via `mlx-embedding-models` or `mlx-lm`; optional dep `[mlx-embed]` |
 | `nvidia` | `adapters/embedder/hardware.py` | configurável (SentenceTransformers) | native CUDA / PyTorch engine |
@@ -1156,28 +1152,50 @@ pipeline:
 | `intel-npu` | `adapters/embedder/hardware.py` | configurável (SentenceTransformers) | native OpenVINO NPU engine |
 | `model2vec` | `adapters/embedder/model2vec.py` | `minishlab/potion-code-16M` @ 256d | local static lookup; primary or optional secondary lane |
 
-### Storage (1)
+### Storage
 
 | Adapter | Arquivo | Notas |
 |---|---|---|
 | `sqlite-vec` (default) | `adapters/storage/sqlite_vec.py` | Subclass do `stropha.storage.Storage` legacy — herda a superfície read/write completa. Schema v1→v14. |
 | `postgres` | `adapters/storage/postgres.py` | pgvector com paridade de schema v14. HNSW usa `vector_l2_ops` até 2000d e índice de expressão `halfvec_l2_ops` entre 2001d e 4000d, mantendo o vetor armazenado em precisão completa. |
 
-### Retrieval coordinator (1)
+### Retrieval coordinator
 
 | Adapter | Arquivo | Notas |
 |---|---|---|
 | `hybrid-rrf` (default) | `adapters/retrieval/hybrid_rrf.py` | RRF (k=60) sobre N streams configuráveis em `config.streams.{name: {adapter, config}}`. `adapter_id` digests a composição de streams (drift). Skipa `embed_query` quando nenhuma stream dense está habilitada. Propaga o `repo_id` opcional para todos os caminhos single/multi-query e streams. |
 
-### Retrieval stream sub-adapters (5)
+### Retrieval stream sub-adapters
 
 | Adapter | Arquivo | Lane semântica |
 |---|---|---|
-| `vec-cosine` (default) | `adapters/retrieval/streams/vec_cosine.py` | Dense ANN sobre `vec_chunks` (sqlite-vec). |
-| `fts5-bm25` (default) | `adapters/retrieval/streams/fts5_bm25.py` | Sparse BM25 sobre `fts_chunks` (FTS5). |
+| `vec-cosine` (default composition) | `adapters/retrieval/streams/vec_cosine.py` | Dense retrieval delegated to the active storage adapter. |
+| `fts5-bm25` (default composition) | `adapters/retrieval/streams/fts5_bm25.py` | Sparse BM25 delegated to SQLite FTS5 or PostgreSQL `chunks.fts`. |
 | `like-tokens` (default) | `adapters/retrieval/streams/like_tokens.py` | Symbol-token `LIKE` match — identificadores. |
-| `graph-vec` (opt-in default-on quando graph existe) | `adapters/retrieval/streams/graph_vec.py` | Cosine brute-force sobre `graph_nodes.embedding`. Trilha A L3. |
+| `graph-vec` (opt-in) | `adapters/retrieval/streams/graph_vec.py` | Cosine sobre `graph_nodes.embedding`; retorna vazio quando o lane não foi materializado. |
 | `model2vec-cosine` (opt-in) | `adapters/retrieval/streams/model2vec_cosine.py` | ANN sobre o espaço secundário 256-d; embebe a query literal reescrita com a mesma instância Model2Vec usada no backfill. |
+
+The built-in default composition enables `vec-cosine`, `fts5-bm25`, and
+`like-tokens`. Registered stream count is not the active-stream count; optional
+`graph-vec` and `model2vec-cosine` lanes appear only when configured.
+
+### Reranker
+
+| Adapter | Arquivo |
+|---|---|
+| `noop` | `adapters/retrieval/reranker/noop.py` |
+| `cross-encoder` | `adapters/retrieval/reranker/cross_encoder.py` |
+| `code-aware` | `adapters/retrieval/reranker/code_aware.py` |
+| `llm` | `adapters/retrieval/reranker/llm.py` |
+
+### Router
+
+| Adapter | Arquivo |
+|---|---|
+| `noop` | `adapters/router/noop.py` |
+| `pattern` | `adapters/router/pattern.py` |
+| `llm` | `adapters/router/llm.py` |
+| `escalating` | `adapters/router/escalating.py` |
 
 O contrato interno de retrieval usa `repo_id: int | None` keyword-only. ID
 concreto restringe dense, BM25, symbol, Model2Vec e GraphVec antes do budget de

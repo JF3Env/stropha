@@ -1,15 +1,26 @@
 # Meta-Harness RFC — deep evaluation
 
-> **Status:** Evaluation · 2026-05-22 (rev 3 — added §8 paper-vs-docs alignment review after fetching the actual arXiv paper)
+> **Status:** Historical evaluation snapshot · 2026-05-22 (rev 3)
 > **Subject:** `docs/architecture/stropha-meta-harness.md` (RFC, Status `Proposed`, dated 2026-05-21)
-> **Companion docs reviewed:** `docs/comparisons/stropha-vs-meta-harness.md`; `CLAUDE.md` (snapshot §2 + invariants §3); source tree at `HEAD` after the meta-harness merge.
+> **Snapshot note:** the original audit recorded `HEAD` without its SHA. This
+> document was reclassified/audited for historical accuracy on 2026-08-11 at
+> commit `b0d391d7d67606a04666d8e9a48cfbef24c1726d`; body claims and file:line
+> references describe the 2026-05-22 snapshot, not current HEAD.
+> **Companion docs reviewed:** `docs/comparisons/stropha-vs-meta-harness.md`;
+> `CLAUDE.md` **Key architecture** and **Invariants (do NOT break)**.
 > **Method:** the RFC's expected features were checked against the actual code, one phase at a time. Every claim is anchored to `file:line`. This document does not propose a new design — it stress-tests the proposed one.
+> **Current delta:** all seven phase packages now have implementation artifacts,
+> but `stropha meta run` still uses a random stub evaluator and does not compose
+> snapshots/index cache/code sandbox. See the authoritative delivery matrix in
+> `stropha-meta-harness.md`.
 
 ---
 
 ## 0. TL;DR
 
-The RFC is **structurally sound and shippable as-is** for Phases 0–2. The decomposition matches the paper (Lee et al., 2026, arXiv:2603.28052), respects every `CLAUDE.md §3` invariant, and lands on stropha's actual strengths (the adapter framework as a declarative search space).
+At the audited 2026-05 snapshot, the RFC was **structurally sound and shippable
+as-is** for Phases 0–2. The decomposition matched the paper and the named
+`CLAUDE.md` invariants then in force.
 
 It also **understates how much of Phase 1 is already done**, **overstates how mechanical Phases 2, 3, and 5 are**, and — most consequentially — **proposes a supervision label that confuses "edited" with "used"**, which would train the tuner to deprioritize exactly the read-only retrievals AI agents most rely on. Specifically:
 
@@ -37,14 +48,16 @@ It also **understates how much of Phase 1 is already done**, **overstates how me
 The RFC has three layers of claims: the **architecture** (§3 of the RFC — modules, CLI commands, store layout), the **phase deliverables** (§4 of the RFC, seven phases), and the **invariant compatibility statement** (§1 of the RFC). This evaluation walks all three:
 
 - §2 — phase-by-phase evaluation. For each phase: what the RFC promises, what code reality looks like *today*, the gap, risks/contradictions, and a calibrated effort note. Each phase ends with a **verdict** (`Accept`, `Accept with changes`, or `Re-scope`).
-- §3 — invariant compatibility audit against `CLAUDE.md §3`.
+- §3 — invariant compatibility audit against `CLAUDE.md` **Invariants (do NOT break)**.
 - §4 — critical findings the RFC understates or contradicts.
 - §5 — open questions the RFC should resolve before Phase 4 lands.
 - §6 — recommended adjustments to the plan.
 - §7 — bottom line.
 - §8 — **paper-vs-docs alignment review (rev 3)** — the actual arXiv paper has been read in full; this section records the misalignments found and the RFC patches applied.
 
-Every `file:line` reference points to the current `HEAD` after the meta-harness merge. Paper references use `§X.Y` (paper section) / `App. X` (paper appendix) / `Alg. 1 line N` notation.
+Every `file:line` reference points to the source snapshot audited on 2026-05-22,
+whose SHA was not recorded. Paper references use `§X.Y` (paper section) /
+`App. X` (paper appendix) / `Alg. 1 line N` notation.
 
 ---
 
@@ -66,7 +79,7 @@ Every `file:line` reference points to the current `HEAD` after the meta-harness 
 | Per-search trace consumer | **EXTANT.** `cost.py:211-217` already aggregates `search.served` into `SavingsCost`. The rendering branch at `cost.py:301-312` is dead code that lights up the moment a producer fires. | `cost.py:211-217,301-312` |
 | `.stropha/` discovery pattern | **EXTANT** — `Config.resolve_index_path()` (`config/models.py:116,324`) centralises per-target-repo `.stropha/` rooting; a sibling `resolve_meta_path()` mirrors trivially. `tools/init_project.py:126-150` creates the dir. | `config/models.py:116,324`; `tools/init_project.py:126-150` |
 | Hook template extensibility | **NO PLUGIN SLOTS.** The hook body is one monolithic `dedent` f-string at `tools/hook_install.py:172-339`. Steps are appended inside the existing `nohup sh -c "..."` heredoc (`hook_install.py:313-336`). The graphify step at `hook_install.py:320-330` is the only precedent for a guarded conditional step. | `tools/hook_install.py:172-339` |
-| Hook foreground ≤100 ms before fork | **EXTANT and invariant-protected.** Pre-fork section ends at the `nohup ... &` at `hook_install.py:313`; everything before is variable assembly and skip-check `[ -f ... ] && exit 0`. A meta-sleep step inside the `nohup` body inherits the guarantee. | `hook_install.py:228-313`; `CLAUDE.md §3` invariant #5 |
+| Hook foreground ≤100 ms before fork | **EXTANT and invariant-protected.** Pre-fork section ends at the `nohup ... &` at `hook_install.py:313`; everything before is variable assembly and skip-check `[ -f ... ] && exit 0`. A meta-sleep step inside the `nohup` body inherits the guarantee. | `hook_install.py:228-313`; `CLAUDE.md` invariant **Hook <= 100 ms before fork** |
 | Schema migration needed? | **NO** — RFC correctly says filesystem-only. v6 (`files` table at `storage/sqlite.py:426-446`) is the latest indexing-relevant migration; v7 added `repo_id` to graph tables. No conflict. | `storage/sqlite.py:49` (`SCHEMA_VERSION=7`) |
 | **Graphify symbol graph available to outcome labeler** | **EXTANT** — `graph_nodes` / `graph_edges` already store `calls`, `imports`, `references`, `defines` edges (per `graphify-out` mirror + schema v4 onward). The T2 (definition-of-used-symbol) labeling tier reads these tables, no new graph code needed. | `storage/sqlite.py` (graph tables), `retrieval/graph.py` |
 | **Session correlation across MCP tool calls** | **MISSING** — no current `session_id` propagation. Each MCP call is independent; `_ctx(mcp_ctx)` (`server.py:290-291`) returns only the lifespan `AppContext`, not a per-session id. T4 (engagement) labeling needs a session id that ties `search_code` → subsequent `get_symbol` / `find_callers` / etc. FastMCP's `Context` may expose this; if not, a stropha-side per-process UUID rotated per `mcp.startup` is the fallback. | `server.py:290-291` |
@@ -137,7 +150,9 @@ Every `file:line` reference points to the current `HEAD` after the meta-harness 
 
 ### Phase 2 — Reproducibility: pinned snapshots + index cache
 
-**RFC claim:** `meta/snapshot.py` — `stropha meta snapshot` pins a git worktree; index cache keyed by indexing-`adapter_id`s; per-candidate `STROPHA_INDEX_PATH` isolation. Effort: M (~3-4d).
+**RFC claim:** `meta/snapshot.py` — `stropha meta snapshot` pins a git worktree;
+index cache keyed by indexing-`adapter_id`s; per-candidate in-memory
+`paths.index` isolation. Effort: M (~3-4d).
 
 **Current code reality:**
 
@@ -188,7 +203,7 @@ Every `file:line` reference points to the current `HEAD` after the meta-harness 
 | Auto-import of `stropha.adapters` populates the registry | **EXTANT** — `adapters/__init__.py:_autoload()` uses `pkgutil.walk_packages` (recursive) at module import. Triggered from `builder.py:18`. | `adapters/__init__.py:26`; `builder.py:18` |
 | "Indexing-relevant vs query-time" knob flag on Config fields | **MISSING** — no metadata. The split is implicit in which stage owns the field (walker/chunker/enricher/embedder/storage = indexing; retrieval = query-time). | (grep) |
 | Categorical "valid choice set" for string fields (e.g. `embedder.model`) | **MISSING** — the embedder model field is a plain `str` (`embedder/local.py:30-33`). Valid HuggingFace IDs are unbounded; the proposer needs a hand-curated list. | `embedder/local.py:30-33` |
-| Cross-adapter compatibility constraints (e.g. `embedder=voyage` ⇒ `VOYAGE_API_KEY`) | **MISSING** — encoded only in prose. | `embedder/voyage.py` |
+| Cross-adapter compatibility constraints (for example, Voyage credentials in `secrets.voyage_api_key`) | **MISSING** — adapter health validates runtime availability rather than the search-space manifest. | `embedder/voyage.py` |
 | Per-stream `k` knob inspection | **PARTIAL** — `vec-cosine`, `fts5-bm25`, `like-tokens`, `graph-vec` each digest `k` into their `adapter_id` (e.g. `streams/vec_cosine.py:39` — `f"vec-cosine:k={k}"`). The actual config knob lives under `pipeline.retrieval.config.streams.<name>.config.k` per `HybridRrfConfig` — note the **double-nested `config` key**, which is unusual and worth verifying against the RFC's proposed manifest examples. | `adapters/retrieval/streams/*.py`; `adapters/retrieval/hybrid_rrf.py:148` |
 | `stropha.yaml` shape | **DIVERGES FROM RFC EXAMPLES.** RFC line 182 example: `retrieval.streams.vec-cosine.k ∈ [10,100]`. Current YAML uses `pipeline.retrieval.config.streams.<name>.config.k`. The manifest YAML must use real paths. | `stropha.yaml`; `pipeline/config.py:_DEFAULTS` |
 
@@ -260,12 +275,12 @@ Every `file:line` reference points to the current `HEAD` after the meta-harness 
 | Subprocess sandbox pattern | **NONE** — no precedent of a subprocess running a *Python module* with isolated `sys.path` and stdin/stdout pipes in `src/`. The 7 subprocess sites shell out to `git` or `which uv`. | grep |
 | `@register_adapter` namespacing | **PARTIAL** — the registry's `_REGISTRY[(stage, name)] = cls` (`pipeline/registry.py:36-38`) refuses duplicate `(stage, name)`. There is no notion of "register under a candidate namespace" today. A clean implementation prefixes candidate adapter names (e.g. `meta-candidate-abc123.hierarchical-tweaked`) or maintains a separate registry per candidate. | `pipeline/registry.py:36-38` |
 | `pytest` invocation from Python | **NOT IN `src/`** but the project's CI calls it; running `subprocess.run(["uv", "run", "pytest", "-q"], capture_output=True, timeout=...)` from a candidate evaluator is straightforward, following the `uv`-discovery pattern at `tools/hook_install.py:159`. | `tools/hook_install.py:159` |
-| Production `adapters/` never modified | **CULTURAL** — invariant by `CLAUDE.md §3` #2 ("Never bypass the adapter framework"). Phase 5 must enforce this by isolating candidate adapters in a per-candidate directory. | `CLAUDE.md §3.2` |
+| Production `adapters/` never modified | **CULTURAL** — constrained by `CLAUDE.md` **Hygiene rules**, item **Never bypass the adapter framework**. Phase 5 must enforce this by isolating candidate adapters in a per-candidate directory. | `CLAUDE.md` **Hygiene rules** |
 
 **Gap.** Two genuinely hard pieces:
 
 1. **Subprocess isolation that runs the full stropha eval against a candidate adapter** but with the candidate's `adapters/` directory prepended to `sys.path`. The candidate adapter inherits the candidate's `config.yaml`; its registration target is the same `(stage, name)` key as production — so the candidate must override an existing entry. Strategy: spawn `uv run python -m stropha.meta.eval_subprocess --candidate <id>` which calls `_reset_for_tests()` (`registry.py:79-81`) and then imports the candidate's `adapters/` before the production `adapters/`. The `_reset_for_tests()` helper is honest about what it is (test-only), so a properly-named production equivalent (`registry.reset()`) should be added.
-2. **`pytest` gate** as a side-validator: run the production test suite (which exercises every registered adapter) *with the candidate adapter active* to ensure the candidate doesn't break anything else. This is broadly correct but expensive — a full `uv run pytest -q` takes ~16s per CLAUDE.md §2.6 baseline. At 100 candidates per loop run, that is 1600s = 27 minutes of pure pytest. Mitigation: run only the relevant `tests/unit/test_*<stage>*.py` per candidate, escalating to full suite only on the running-best candidate before promotion.
+2. **`pytest` gate** as a side-validator: run the production test suite (which exercises every registered adapter) *with the candidate adapter active* to ensure the candidate doesn't break anything else. This is broadly correct but expensive; the historical audit measured ~16s for a full `uv run pytest -q`. At 100 candidates per loop run, that is 1600s = 27 minutes of pure pytest. Mitigation: run only the relevant `tests/unit/test_*<stage>*.py` per candidate, escalating to full suite only on the running-best candidate before promotion.
 
 **Risks / contradictions:**
 
@@ -292,7 +307,7 @@ Every `file:line` reference points to the current `HEAD` after the meta-harness 
 |---|---|---|
 | `stropha.yaml` writer in `src/` | **NONE** — zero matches for `stropha.yaml.*write`, `with open(.../stropha.yaml.*'w'`, or any yaml.dump targeting `stropha.yaml`. Only YAML write site is `ingest/glossary.py:323` for the glossary file. | grep |
 | Config-diff renderer | **NONE** — `pipeline show` (`cli.py:652-705`) renders state, not diffs. Zero `difflib` references in `src/`. Rich rendering layer is mature. | grep |
-| Hook foreground ≤100 ms invariant | **EXTANT** — already protected (`tools/hook_install.py:228-313`). | `CLAUDE.md §3` invariant #5 |
+| Hook foreground ≤100 ms invariant | **EXTANT** — already protected (`tools/hook_install.py:228-313`). | `CLAUDE.md` invariant **Hook <= 100 ms before fork** |
 | Detached `nohup` + `flock` in hook | **EXTANT** — `tools/hook_install.py:313-336`. | `tools/hook_install.py:313-336` |
 | Hook version bump pattern | **EXTANT** — `HOOK_VERSION = 4` at `tools/hook_install.py:49`, `_BLOCK_RE.sub` replaces atomically. | `tools/hook_install.py:49,402-405` |
 | `STROPHA_HOOK_*` env vars | **EXTANT** — 8 documented vars. Adding `STROPHA_HOOK_META=1` follows the existing template. | `tools/hook_install.py:206-219` |
@@ -319,7 +334,7 @@ Every `file:line` reference points to the current `HEAD` after the meta-harness 
 
 ---
 
-## 3. Invariant compatibility audit (`CLAUDE.md §3`)
+## 3. Invariant compatibility audit (`CLAUDE.md` named invariants)
 
 | # | Invariant | RFC compliance | Notes |
 |---|---|---|---|
@@ -328,11 +343,12 @@ Every `file:line` reference points to the current `HEAD` after the meta-harness 
 | 3 | **`Pipeline.run()` owns post-processing order** | ✓ | `meta/evaluator.py` calls `Pipeline.run()` (or equivalent) per candidate; does not reorder graph/FTS post-processing. |
 | 4 | **Graph-gated MCP tools never return silent empty** | n/a | The RFC adds no new graph-gated tools. |
 | 5 | **Hook ≤ 100 ms before fork** | ✓ | Both Phase 0 outcome backfill and Phase 6 sleep-time live inside the existing `nohup sh -c "..."` body (`tools/hook_install.py:313-336`). The pre-fork section is untouched. |
-| 6 | **Local-only by default** | ✓ for MVP. Phase 4 agentic proposer is opt-in, gated like `VOYAGE_API_KEY`. Concerns: (a) the RFC could be sharper that the bandit MVP requires zero new deps; (b) recommended addition of an `inference-helper` proposer mode (see Phase 4 §2 above) strengthens this. |
+| 6 | **Local-only by default** | ✓ for MVP. Phase 4 agentic proposer is opt-in and requires explicit inference configuration. Concerns: (a) the RFC could be sharper that the bandit MVP requires zero new deps; (b) recommended addition of an `inference-helper` proposer mode (see Phase 4 §2 above) strengthens this. |
 | 7 | **`fts_chunks` is contentless-with-external-content** | n/a | The RFC does not touch FTS. |
 | 8 | **Search-time toggles do not require re-index** | ✓ | Critical for Phase 2's cache key: HyDE / recursive merge / multi-query are NOT in the indexing-relevant hash. RFC line 169 implicitly respects this by listing "walker + chunker + enricher + embedder + storage" as cache-key inputs. Worth making explicit. |
 
-All 8 invariants survive. The RFC is internally consistent with `CLAUDE.md §3`.
+All invariants audited in that snapshot survived. This is a historical verdict;
+use the named current invariants in `CLAUDE.md` for new changes.
 
 ---
 
@@ -419,7 +435,9 @@ The RFC's agentic-proposer plan assumes Claude Code (or another agent CLI) is in
 
 ### 4.10 Test count drift
 
-`CLAUDE.md §2.6` says 806 tests; `CLAUDE.md §6` (history bottom) says "Total suite: 383 tests, all green". The merge introduces no new tests but the inherited inconsistency is worth resolving before Phase 0 lands its 25 new tests on top.
+The 2026-05 `CLAUDE.md` snapshot carried conflicting hard-coded test totals (806
+vs 383). Current `CLAUDE.md` intentionally avoids a copied test count; use the
+test runner output instead.
 
 **Action:** Reconcile the snapshot test count (pre-existing issue, unrelated to the RFC, but worth fixing).
 

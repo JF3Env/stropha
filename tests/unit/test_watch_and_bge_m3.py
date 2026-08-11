@@ -8,13 +8,20 @@ about the snapshot diff helpers, which are deterministic and small.
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from stropha.adapters.embedder.bge_m3 import BgeM3Config, BgeM3Embedder
 from stropha.pipeline.registry import lookup_adapter
-from stropha.watch import WatchController, _format_changes, _Snapshot, _snapshot
+from stropha.watch import (
+    WatchController,
+    _format_changes,
+    _reindex,
+    _Snapshot,
+    _snapshot,
+)
 
 # --------------------------------------------------------------------------- snapshot diff
 
@@ -71,7 +78,9 @@ def test_format_changes_empty() -> None:
 
 def test_format_changes_only_changed() -> None:
     out = _format_changes(
-        [Path("/x/a.py"), Path("/x/b.py")], [], root=Path("/x"),
+        [Path("/x/a.py"), Path("/x/b.py")],
+        [],
+        root=Path("/x"),
     )
     assert "2 changed" in out
     assert "a.py" in out
@@ -79,7 +88,9 @@ def test_format_changes_only_changed() -> None:
 
 def test_format_changes_only_removed() -> None:
     out = _format_changes(
-        [], [Path("/x/old.py")], root=Path("/x"),
+        [],
+        [Path("/x/old.py")],
+        root=Path("/x"),
     )
     assert "1 removed" in out
 
@@ -122,6 +133,45 @@ def test_watch_controller_stop_without_start_is_noop(tmp_path: Path) -> None:
     ctrl.stop()  # Should not raise
 
 
+@pytest.mark.parametrize("full_refresh", [False, True])
+def test_reindex_only_runs_graph_lifecycle_for_full_refresh(
+    tmp_path: Path, full_refresh: bool
+) -> None:
+    storage = MagicMock()
+    built = SimpleNamespace(
+        storage=storage,
+        embedder=MagicMock(),
+        secondary_embedder=None,
+        enricher=MagicMock(),
+        walker=MagicMock(),
+        chunker=MagicMock(),
+    )
+    inference = SimpleNamespace(
+        enricher_concurrency=1,
+        effective_batch_size=lambda: 1,
+    )
+    stats = SimpleNamespace(
+        files_visited=1,
+        chunks_seen=1,
+        chunks_embedded=1,
+        chunks_skipped_fresh=0,
+    )
+
+    with (
+        patch("stropha.watch.load_pipeline_config", return_value={}),
+        patch("stropha.watch.build_stages", return_value=built),
+        patch(
+            "stropha.watch.get_config",
+            return_value=SimpleNamespace(inference=inference),
+        ),
+        patch("stropha.watch.Pipeline") as pipeline_cls,
+    ):
+        pipeline_cls.return_value.run.return_value = stats
+        _reindex(tmp_path, full_refresh=full_refresh)
+
+    assert pipeline_cls.call_args.kwargs["graphify"] is full_refresh
+
+
 # --------------------------------------------------------------------------- bge-m3 registry
 
 
@@ -142,6 +192,7 @@ def test_bge_m3_adapter_id_prefix() -> None:
     # adapter_name is a @property on instances; check via class-level
     # attribute access by reading the source contract.
     import inspect
+
     src = inspect.getsource(BgeM3Embedder.adapter_name.fget)  # type: ignore[union-attr]
     assert '"bge-m3"' in src
 

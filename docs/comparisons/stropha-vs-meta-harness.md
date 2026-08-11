@@ -1,8 +1,14 @@
 # stropha as a harness — and the Meta-Harness that optimizes it
 
-**Status:** Conceptual analysis · 2026-05-21 (rev. 3 — realigned to the published Meta-Harness vocabulary)
-**Scope:** stropha @ HEAD (the *concept*, not a line-by-line audit), positioned against the **harness / Meta-Harness** distinction from the literature.
-**Goal:** locate stropha precisely in that vocabulary, show what it would take to make it a full *harness* and then a *Meta-Harness target*, and enumerate **118 realistic, state-of-the-art improvement options** — without breaking the §3 invariants (drift detection, forward-only migrations, local-only default, non-blocking hook).
+**Status:** Historical conceptual analysis · 2026-05-21 (rev. 3)
+**History audit:** 2026-08-11 at stropha commit
+`b0d391d7d67606a04666d8e9a48cfbef24c1726d`
+**Scope:** the stropha concept and implementation snapshot described on
+2026-05-21. `HEAD`, "today", missing-feature, and roadmap claims in the body are
+historical, not claims about current HEAD. The current Meta-Harness delivery
+matrix is in `docs/architecture/stropha-meta-harness.md`.
+**Goal:** preserve the vocabulary analysis and 118-option catalog without
+breaking `CLAUDE.md` **Invariants (do NOT break)**.
 
 **Primary source:**
 > Yoonho Lee, Roshen Nair, Qizheng Zhang, Kangwook Lee, Omar Khattab, Chelsea Finn. *Meta-Harness: End-to-End Optimization of Model Harnesses.* arXiv:2603.28052 [cs.AI], submitted 2026-03-30. Stanford · KRAFTON · MIT. CC BY 4.0.
@@ -11,12 +17,14 @@
 > The implementation plan derived from this analysis is `docs/architecture/stropha-meta-harness.md`.
 
 **Other sources verified:**
-- `CLAUDE.md` §2 (snapshot), §3 (invariants), §6 (history)
+- `CLAUDE.md` **Key architecture** and **Invariants (do NOT break)**
 - `src/stropha/server.py` (`grep @mcp.tool` → 9 tool decorators), `src/stropha/adapters/**` (registry tree)
 - `src/stropha/retrieval/*`, `src/stropha/eval/harness.py`, `src/stropha/cost.py`
 - `ROADMAP.md`, `docs/comparisons/stropha-vs-semble.md`, `docs/architecture/stropha-system.md`
 
-> This is an *analysis*, not a spec. Nothing here is shipped. The §3 invariants and the local-only directive bound every option below; cloud-dependent items are flagged.
+> This is a historical analysis, not a spec or current delivery inventory. The
+> named `CLAUDE.md` invariants and local-only directive bound every option below;
+> cloud-dependent items are flagged.
 
 ---
 
@@ -79,7 +87,7 @@ The interesting observation is the second clause. The paper notes that automatio
 | Freshness | `adapter_id` drift detection + `files` dirty cache + git-diff walker + commit hook | **Production** |
 | Statefulness | — (`query_cache` is exact-match, not session state) | **Missing** |
 | Information shaping | — (`recursive` merge is the closest; off by default) | **Missing** |
-| Guidance | — (`smart_search` routes one query; never advises the agent) | **Missing** |
+| Guidance | — (`smart_search_tool` routes one query; never advises the agent) | **Missing** |
 
 Three production organs, three missing — and the three present (sourcing, world model, freshness) are the ones that take years to get right.
 
@@ -111,7 +119,7 @@ The 118 options below are tagged by which gap they close: **[Harness]** options 
 
 ## 5. 118 improvement options
 
-Continuously numbered 1–118. **Effort:** S (<1d) · M (1–4d) · L (>1w). **Impact** is on agent task success, not micro-benchmarks. Each group is tagged **[Harness]** (makes stropha a better context-determining harness) or **[Meta-Harness]** (builds the automated optimization loop). Every option respects §3 (forward-only migrations, drift detection, local-only default, non-blocking hook); cloud-dependent items are flagged `[cloud]` and stay optional.
+Continuously numbered 1–118. **Effort:** S (<1d) · M (1–4d) · L (>1w). **Impact** is on agent task success, not micro-benchmarks. Each group is tagged **[Harness]** (makes stropha a better context-determining harness) or **[Meta-Harness]** (builds the automated optimization loop). Every option respects the named `CLAUDE.md` invariants (forward-only migrations, drift detection, local-only default, non-blocking hook); cloud-dependent items are flagged `[cloud]` and stay optional.
 
 ### A. Context shaping — turn "return chunks" into "determine a working set" · **[Harness — information]**
 
@@ -141,7 +149,7 @@ Continuously numbered 1–118. **Effort:** S (<1d) · M (1–4d) · L (>1w). **I
 | 17 | Episodic task memory | "Last time you touched FSRS code you also had to update the migration." Mined from session + git history. | L | High |
 | 18 | Memory consolidation | Background job compacts episodic entries into semantic memory — runs in the existing hook's detached background. | L | Med |
 | 19 | Environment-bootstrap warm start | On session open, gather a repo snapshot (languages, build tools, test runner, entry points) before the first agent turn — the paper's TerminalBench-2 trick that eliminates 2–4 exploratory turns. | M | High |
-| 20 | Memory provenance + TTL | Every memory carries a source commit; drift detection (§3.1) marks it stale automatically. | S | Med |
+| 20 | Memory provenance + TTL | Every memory carries a source commit; the **Drift detection** invariant marks it stale automatically. | S | Med |
 | 21 | Writable scratchpad resource | An MCP resource the agent uses as durable per-repo notes between turns. | M | Med |
 | 22 | Cross-session semantic cache | Promote `query_cache` from exact-match to a shared, semantic, session-spanning cache. | M | Med |
 
@@ -167,7 +175,7 @@ Continuously numbered 1–118. **Effort:** S (<1d) · M (1–4d) · L (>1w). **I
 |---|---|---|---|---|
 | 34 | Tiered usage-feedback labeling | Log which returned chunks the agent actually used — **not just edited**. `git diff` overlap (T1) catches direct edits; the existing graphify symbol graph bridges to **T2 — chunks whose defined symbols appear in changed code** (the read-the-class-to-use-it case); same-session MCP follow-up calls give T4 engagement; explicit `report_bad_result` (#41) gives T6 negative. Absence of all signals is T7-neutral, not "miss". The label source for the whole loop — see `stropha-meta-harness.md` §Phase 0 for the tier table. | M | High |
 | 35 | Learned RRF weights | Outcome backfill now fits regularized per-repo stream multipliers from tiered feedback and `results[].streams` attribution. Atomic profiles hot-reload into hybrid RRF, combine with query-adaptive weights, and safely fall back when evidence is absent or invalid. This replaces globally equal weighting with the first narrow meta-optimization while retaining `k=60` rank smoothing. | M | High |
-| 36 | Auto-eval on every commit | Run the golden set in the hook's detached background; track Recall@K over time; alert on regression. Stays non-blocking (§3.5). | M | High |
+| 36 | Auto-eval on every commit | Run the golden set in the hook's detached background; track Recall@K over time; alert on regression. Preserves **Hook <= 100 ms before fork**. | M | High |
 | 37 | Golden-set auto-expansion | Mine new golden queries from real sessions: (query, the chunk that got edited) is a free labeled pair. | M | High |
 | 38 | Counterfactual stream logging | Log what each *disabled* stream *would* have returned, to estimate each stream's marginal value. | M | Med |
 | 39 | Regression bisection | When Recall@K drops, bisect over commits/config changes (drift detection makes the changes addressable). | M | Med |
@@ -211,7 +219,7 @@ Continuously numbered 1–118. **Effort:** S (<1d) · M (1–4d) · L (>1w). **I
 | 67 | Matryoshka-aware storage | Store one embedding; query at a truncated dimension for a cheap coarse pass, then refine at full dim. | M | Med |
 | 68 | Reranker on by default | Ship the ROADMAP's `mxbai-rerank` cross-encoder enabled for small candidate sets — the `reranker` stage already exists. | M | High |
 | 69 | Code-aware rerank signals | Definition boost, identifier stemming, noise penalty for `test_*`/`legacy/` — semble parity, into the existing `code_aware` reranker. | M | High |
-| 70 | Adaptive per-query stream weighting | Symbol queries boost the lexical lane, NL queries boost dense. `STROPHA_ADAPTIVE_WEIGHTING` is partial — make the weights query-conditioned, not binary. | M | Med |
+| 70 | Adaptive per-query stream weighting | Symbol queries boost the lexical lane, NL queries boost dense. `retrieval_features.adaptive_weighting` is partial — make the weights query-conditioned, not binary. | M | Med |
 | 71 | Multi-vector chunks | Separate embeddings for signature / docstring / body; match the most relevant facet of the chunk. | L | Med |
 | 72 | Propositional indexing | Index atomic factual propositions extracted from docs/comments, not just raw chunks. | L | Med |
 | 73 | Repo-local embedder fine-tune | Contrastive fine-tune of the local embedder on the repo's own confusable identifier pairs. Local-only, optional. | L | Med |
@@ -326,7 +334,7 @@ Six to make stropha a **harness**, six to make it **Meta-Harness-ready**.
 - **Floor 2 — Meta-Harness-ready.** Emits code + scores + execution traces into an artifact store; `eval` is a real, task-conditioned fitness function. (§D, §J, §K)
 - **Floor 3 — Meta-Harness.** The outer loop runs: an agentic proposer searches stropha's declarative adapter space, end-to-end optimized against held-out task success. (§L)
 
-Each floor is independently shippable and independently valuable — stropha is a far better RAG backend at Floor 1 even if Floor 3 never runs. None of the floors breaks a §3 invariant: statefulness needs a forward-only v8 migration, the proposer loop runs in the already-detached hook process, and every LLM-powered option uses the local Ollama/MLX backends or MCP sampling (#92), keeping the local-only default intact.
+Each floor is independently shippable and independently valuable — stropha is a far better RAG backend at Floor 1 even if Floor 3 never runs. None of the floors breaks a named `CLAUDE.md` invariant: statefulness needs a forward-only migration, the proposer loop runs in the already-detached hook process, and every LLM-powered option uses local backends or optional MCP sampling (#92), keeping the local-only default intact.
 
 **Bottom line.** In the vocabulary of Lee et al. (2026), stropha today is the *context-sourcing component of a harness* — it has solved the hard prerequisite of finding the right material. Floors 1–2 turn it into a full *harness*: stateful, shaping, guiding, instrumented. Floor 3 is the *Meta-Harness* — and stropha is an unusually ready target for one, because its adapter framework already is the declarative, addressable search space that, the paper argues, is the precondition for automated context engineering to beat hand-tuning. The graph, the drift detector, the `adapter_id` digests, and the `eval` golden set are not just harness organs — they are the scaffolding a Meta-Harness optimizes over. stropha does not have to *become* something foreign to host one; it has to finish being itself.
 

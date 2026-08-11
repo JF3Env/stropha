@@ -3,8 +3,8 @@
 Each module defines the contract a specific stage's adapters must satisfy.
 Concrete implementations live under ``stropha.adapters.<stage>``.
 
-Phase 1 shipped ``embedder`` and ``enricher``. Phase 2 adds ``walker``,
-``storage``, ``retrieval``. Phase 3 adds ``chunker``. Phase 5 adds ``reranker``.
+Core protocols include walking, chunking, enrichment, embedding, storage,
+retrieval, reranking and retrieval streaming.
 """
 
 from .chunker import ChunkerStage, LanguageChunkerStage

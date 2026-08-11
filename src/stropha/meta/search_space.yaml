@@ -11,8 +11,8 @@
 #
 #   stages:        adapter choices per pipeline stage (WIN-176 indexing
 #                  vs WIN-177 query split surfaces here).
-#   features:      retrieval-feature toggles + ranges from stropha.yaml
-#                  `retrieval_features` block.
+#   features:      retrieval-feature toggles + ranges promoted into the
+#                  canonical user configuration.
 #   constraints:   pairs that MUST or MUST-NOT co-occur (WIN-185).
 #
 # The loader (WIN-183, meta/search_space.py) consumes this directly.
@@ -63,11 +63,6 @@ features:
     type: bool
     default: true
 
-  query_decomposition:
-    indexing: false
-    type: bool
-    default: false
-
   query_rewrite:
     indexing: false
     type: bool
@@ -95,25 +90,6 @@ features:
     range: [1, 20]
     default: 5
 
-  cache_enabled:
-    indexing: false
-    type: bool
-    default: false
-
-  cache_size:
-    indexing: false
-    type: int
-    range: [100, 10000]
-    step: 100
-    default: 500
-
-  cache_ttl_s:
-    indexing: false
-    type: int
-    range: [60, 86400]
-    step: 60
-    default: 3600
-
   adaptive_weighting:
     indexing: false
     type: bool
@@ -127,20 +103,8 @@ features:
 
 constraints:
 
-  # Voyage embedder requires a cloud API key; the proposer must not
-  # combine it with the local-only invariant (CLAUDE.md §3.6).
-  - kind: requires_env
-    when:
-      embedder: voyage
-    require_env: VOYAGE_API_KEY
-
-  # ollama enricher requires the local daemon. Same shape as above —
-  # the loader degrades to a soft warning when OLLAMA_HOST is not
-  # reachable rather than hard-failing the sample.
-  - kind: requires_env
-    when:
-      enricher: ollama
-    require_env: OLLAMA_HOST
+  # Adapter health checks runtime availability. Credentials and endpoints come
+  # from ~/.stropha/config.yaml, never environment constraints.
 
   # multi_query_count is meaningful only when multi_query=true.
   # The sampler should set count to its default when multi_query=false.

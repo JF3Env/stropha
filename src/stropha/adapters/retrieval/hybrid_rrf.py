@@ -32,7 +32,6 @@ the symbol stream while keeping dense + sparse).
 
 from __future__ import annotations
 
-import contextlib
 import hashlib
 from pathlib import Path
 from typing import Any
@@ -53,8 +52,8 @@ from ...stages.storage import StorageStage
 
 # Legacy single-stream defaults — preserves Phase 1/2 behavior.
 _DEFAULT_STREAMS: dict[str, dict[str, Any] | None] = {
-    "dense":  {"adapter": "vec-cosine",  "config": {"k": 50}},
-    "sparse": {"adapter": "fts5-bm25",   "config": {"k": 50}},
+    "dense": {"adapter": "vec-cosine", "config": {"k": 50}},
+    "sparse": {"adapter": "fts5-bm25", "config": {"k": 50}},
     "symbol": {"adapter": "like-tokens", "config": {"k": 20}},
 }
 
@@ -79,8 +78,7 @@ class HybridRrfConfig(BaseModel):
             "Enable adaptive query weighting. Detects symbol-like queries "
             "(CamelCase, snake_case, qualified names) and adjusts stream weights "
             "accordingly. Symbol queries boost lexical/symbol streams; natural "
-            "language queries boost dense semantic matching. "
-            "Set STROPHA_ADAPTIVE_WEIGHTING=0 to disable."
+            "language queries boost dense semantic matching."
         ),
     )
     learned_weights_enabled: bool = Field(
@@ -102,15 +100,14 @@ class HybridRrfConfig(BaseModel):
         description=(
             "Enable HyDE (Hypothetical Document Embeddings). "
             "Generates a hypothetical code snippet via LLM before dense embedding. "
-            "Requires Ollama running locally. Set STROPHA_HYDE_ENABLED=1 or this flag."
+            "Requires Ollama running locally."
         ),
     )
     query_rewrite_enabled: bool = Field(
         default=False,
         description=(
             "Enable query rewriting. LLM expands natural language into code terms. "
-            "Affects ALL streams (dense, sparse, symbol). "
-            "Requires Ollama. Set STROPHA_QUERY_REWRITE_ENABLED=1 or this flag."
+            "Affects ALL streams (dense, sparse, symbol). Requires Ollama."
         ),
     )
     multi_query_enabled: bool = Field(
@@ -118,7 +115,7 @@ class HybridRrfConfig(BaseModel):
         description=(
             "Enable multi-query expansion. Generates 3-5 paraphrases of the query, "
             "searches with each, and fuses results via RRF. Increases recall for "
-            "conceptual queries. Requires Ollama. Set STROPHA_MULTI_QUERY_ENABLED=1."
+            "conceptual queries. Requires Ollama."
         ),
     )
     multi_query_count: int = Field(
@@ -132,8 +129,7 @@ class HybridRrfConfig(BaseModel):
         description=(
             "Enable recursive retrieval / auto-merging. When multiple sibling "
             "chunks from the same parent match, promotes to the parent chunk. "
-            "Also merges adjacent chunks on the same file. "
-            "Requires STROPHA_RECURSIVE_RETRIEVAL=1 or this flag."
+            "Also merges adjacent chunks on the same file."
         ),
     )
     recursive_adjacency: int = Field(
@@ -199,14 +195,10 @@ class HybridRrfRetrieval(RetrievalStage):
 
     @property
     def adapter_id(self) -> str:
-        canonical = sorted(
-            (name, s.adapter_id) for name, s in self._streams.items()
-        )
+        canonical = sorted((name, s.adapter_id) for name, s in self._streams.items())
         reranker_id = self._reranker.adapter_id if self._reranker else "none"
         learned_id = (
-            self._learned_weights.fingerprint()
-            if self._learned_weights is not None
-            else "off"
+            self._learned_weights.fingerprint() if self._learned_weights is not None else "off"
         )
         digest = hashlib.sha256(repr(canonical).encode("utf-8")).hexdigest()[:8]
         return (
@@ -248,15 +240,14 @@ class HybridRrfRetrieval(RetrievalStage):
         if not query.strip() or not self._streams:
             return []
         k = top_k or self._config.top_k
-        
+
         from ...config import get_config
-        
+
         # Check if multi-query expansion is enabled
         multi_query_enabled = (
-            self._config.multi_query_enabled
-            or get_config().retrieval_features.multi_query_enabled
+            self._config.multi_query_enabled or get_config().retrieval_features.multi_query_enabled
         )
-        
+
         if multi_query_enabled:
             return self._search_multi_query(
                 query,
@@ -283,7 +274,7 @@ class HybridRrfRetrieval(RetrievalStage):
     ) -> list[SearchHit]:
         """Execute search with a single query (the standard path)."""
         from ...config import get_config
-        
+
         # Query rewriting: expand natural language to code terms (affects ALL streams)
         if search_query is None:
             search_query = query
@@ -293,37 +284,36 @@ class HybridRrfRetrieval(RetrievalStage):
             )
             if rewrite_enabled:
                 from ...retrieval.query_rewrite import maybe_rewrite_query
+
                 rewritten = maybe_rewrite_query(query, force_enabled=True)
                 if rewritten:
                     search_query = rewritten
-        
+
         # Single embed for the dense streams (avoids paying twice if the
         # user enables multiple dense backends in the future).
-        needs_vec = any(
-            s.adapter_name in ("vec-cosine",) for s in self._streams.values()
-        )
-        
+        needs_vec = any(s.adapter_name in ("vec-cosine",) for s in self._streams.values())
+
         # HyDE: generate hypothetical document for dense embedding only
         # Enabled via config.hyde_enabled OR retrieval_features.hyde_enabled in YAML
         dense_query = search_query
         if needs_vec:
             from ...config import get_config
-            hyde_enabled = (
-                self._config.hyde_enabled
-                or get_config().retrieval_features.hyde_enabled
-            )
+
+            hyde_enabled = self._config.hyde_enabled or get_config().retrieval_features.hyde_enabled
             if hyde_enabled:
                 from ...retrieval.hyde import maybe_hyde_rewrite
-                rewritten = maybe_hyde_rewrite(query, force_enabled=True)  # Use original query for HyDE
+
+                rewritten = maybe_hyde_rewrite(
+                    query, force_enabled=True
+                )  # Use original query for HyDE
                 if rewritten:
                     dense_query = rewritten
 
             if conversation_context and conversation_context.strip():
                 dense_query = (
-                    f"{dense_query}\n\nRecent conversation: "
-                    f"{conversation_context.strip()}"
+                    f"{dense_query}\n\nRecent conversation: {conversation_context.strip()}"
                 )
-        
+
         query_vec = self._embedder.embed_query(dense_query) if needs_vec else None
 
         # Collect results from each stream with names for weighted fusion
@@ -339,7 +329,7 @@ class HybridRrfRetrieval(RetrievalStage):
                 ranked_by_name[name] = hits
         if not ranked_by_name:
             return []
-        
+
         # RRF fusion with adaptive weighting
         if len(ranked_by_name) == 1:
             only_name, only_hits = next(iter(ranked_by_name.items()))
@@ -351,51 +341,42 @@ class HybridRrfRetrieval(RetrievalStage):
         else:
             # Get more candidates if we have a reranker
             fusion_k = self._config.candidate_k if self._reranker else k
-            
+
             # Adaptive weighting based on query type
             weights = self._get_stream_weights(query)
-            
+
             fused = rrf_fuse_named(
                 ranked_by_name,
                 k=self._config.rrf_k,
                 top_k=fusion_k,
                 weights=weights,
                 repo_weights=(
-                    self._learned_weights.weights()
-                    if self._learned_weights is not None
-                    else None
+                    self._learned_weights.weights() if self._learned_weights is not None else None
                 ),
             )
-        
+
         # Optional reranking
         if self._reranker and fused:
             fused = self._reranker.rerank(query, fused, top_k=k)
         else:
             fused = fused[:k]
-        
+
         # Recursive retrieval / auto-merging
         return self._maybe_recursive_merge(fused)
-    
+
     def _get_stream_weights(self, query: str) -> dict[str, float] | None:
         """Get adaptive stream weights based on query classification.
-        
+
         Returns None if adaptive weighting is disabled, which means
         equal weights for all streams.
         """
-        import os
-        
-        adaptive_enabled = (
-            self._config.adaptive_weighting
-            and os.environ.get("STROPHA_ADAPTIVE_WEIGHTING", "1") != "0"
-        )
-        
-        if not adaptive_enabled:
+        if not self._config.adaptive_weighting:
             return None
-        
+
         from ...retrieval.query_classify import get_adaptive_weights
-        
+
         weights = get_adaptive_weights(query)
-        
+
         # Map stream names to weight values
         # The stream names in hybrid-rrf are: dense, sparse, symbol, graph_vec
         stream_weights = {
@@ -419,19 +400,19 @@ class HybridRrfRetrieval(RetrievalStage):
         repo_id: int | None = None,
     ) -> list[SearchHit]:
         """Execute search with multiple paraphrases, fusing results via RRF.
-        
+
         Multi-query expansion generates N paraphrases of the query,
         searches with each, and fuses all results via RRF for better recall.
         """
         from ...retrieval.multi_query import generate_paraphrases
-        
+
         # Generate paraphrases (includes original query as first element)
         paraphrases = generate_paraphrases(
             query,
             force_enabled=True,
             num_paraphrases=self._config.multi_query_count,
         )
-        
+
         if len(paraphrases) <= 1:
             # Fallback to single query if paraphrase generation failed
             return self._search_single_query(
@@ -440,7 +421,7 @@ class HybridRrfRetrieval(RetrievalStage):
                 conversation_context=conversation_context,
                 repo_id=repo_id,
             )
-        
+
         # Search with each paraphrase
         all_results: list[list[SearchHit]] = []
         for paraphrase in paraphrases:
@@ -455,10 +436,10 @@ class HybridRrfRetrieval(RetrievalStage):
             )
             if hits:
                 all_results.append(hits)
-        
+
         if not all_results:
             return []
-        
+
         if len(all_results) == 1:
             fused = all_results[0]
         else:
@@ -466,40 +447,27 @@ class HybridRrfRetrieval(RetrievalStage):
             # Use more candidates since we're combining multiple searches
             fusion_k = self._config.candidate_k if self._reranker else k
             fused = rrf_fuse(*all_results, k=self._config.rrf_k, top_k=fusion_k)
-        
+
         # Optional reranking on the fused results
         if self._reranker and fused:
             fused = self._reranker.rerank(query, fused, top_k=k)
         else:
             fused = fused[:k]
-        
+
         # Recursive retrieval / auto-merging
         return self._maybe_recursive_merge(fused)
 
     def _maybe_recursive_merge(self, hits: list[SearchHit]) -> list[SearchHit]:
         """Apply recursive retrieval / auto-merging if enabled."""
-        import os
-        
-        recursive_enabled = (
-            self._config.recursive_enabled
-            or os.environ.get("STROPHA_RECURSIVE_RETRIEVAL", "0") == "1"
-        )
-        
-        if not recursive_enabled or not hits:
+        if not self._config.recursive_enabled or not hits:
             return hits
-        
+
         from ...retrieval.recursive import merge_hits
-        
-        adjacency = self._config.recursive_adjacency
-        env_adjacency = os.environ.get("STROPHA_RECURSIVE_ADJACENCY")
-        if env_adjacency:
-            with contextlib.suppress(ValueError):
-                adjacency = int(env_adjacency)
-        
+
         return merge_hits(
             hits,
             self._storage,  # type: ignore[arg-type]
-            adjacency_lines=adjacency,
+            adjacency_lines=self._config.recursive_adjacency,
             enabled=True,  # Already checked above
         )
 
@@ -530,22 +498,18 @@ class HybridRrfRetrieval(RetrievalStage):
                 continue  # explicit disable
             adapter_name = spec.get("adapter")
             if not adapter_name:
-                raise ConfigError(
-                    f"retrieval.streams.{name}: missing `adapter` key"
-                )
+                raise ConfigError(f"retrieval.streams.{name}: missing `adapter` key")
             cls = lookup_adapter("retrieval-stream", adapter_name)
             try:
                 cfg_obj = cls.Config(**(spec.get("config") or {}))
             except Exception as exc:
                 raise ConfigError(
-                    f"Invalid config for retrieval.streams.{name} "
-                    f"(adapter={adapter_name!r}): {exc}"
+                    f"Invalid config for retrieval.streams.{name} (adapter={adapter_name!r}): {exc}"
                 ) from exc
             if adapter_name == "model2vec-cosine":
                 if secondary_embedder is None:
                     raise ConfigError(
-                        "model2vec-cosine stream requires the pipeline builder's "
-                        "secondary embedder"
+                        "model2vec-cosine stream requires the pipeline builder's secondary embedder"
                     )
                 out[name] = cls(
                     cfg_obj,
@@ -561,17 +525,16 @@ class HybridRrfRetrieval(RetrievalStage):
         spec = self._config.reranker
         if spec is None:
             return None
-        
+
         adapter_name = spec.get("adapter")
         if not adapter_name:
             raise ConfigError("retrieval.reranker: missing `adapter` key")
-        
+
         cls = lookup_adapter("reranker", adapter_name)
         try:
             cfg_obj = cls.Config(**(spec.get("config") or {}))
         except Exception as exc:
             raise ConfigError(
-                f"Invalid config for retrieval.reranker "
-                f"(adapter={adapter_name!r}): {exc}"
+                f"Invalid config for retrieval.reranker (adapter={adapter_name!r}): {exc}"
             ) from exc
         return cls(cfg_obj)

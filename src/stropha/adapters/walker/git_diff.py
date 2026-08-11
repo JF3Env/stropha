@@ -19,7 +19,6 @@ delta against ``meta['last_indexed_sha_<repo_id>']`` automatically.
 
 from __future__ import annotations
 
-import os
 import subprocess
 from collections.abc import Iterable
 from pathlib import Path
@@ -39,24 +38,9 @@ log = get_logger(__name__)
 _GIT_TIMEOUT_S = 30
 
 
-def _default_rename_threshold() -> int:
-    """`STROPHA_RENAME_THRESHOLD` overrides; default 80%.
-
-    Lower = more aggressive rename detection (more matches, more false
-    positives). Higher = stricter (more renames missed, treated as
-    add+delete). 80 is conservative and tracks git's own heuristics
-    well for typical refactors.
-    """
-    try:
-        val = int(os.environ.get("STROPHA_RENAME_THRESHOLD", "80"))
-    except ValueError:
-        return 80
-    return max(0, min(100, val))
-
-
 class GitDiffWalkerConfig(BaseModel):
     rename_threshold: int = Field(
-        default_factory=_default_rename_threshold,
+        default=80,
         ge=0, le=100,
         description=(
             "Minimum similarity (0-100) for git to call a path pair a "

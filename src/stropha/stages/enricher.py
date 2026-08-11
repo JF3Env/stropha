@@ -1,14 +1,17 @@
 """EnricherStage protocol — transform a chunk before embedding.
 
-Phase 1 introduces two adapters:
+Core adapters include:
 
 - ``noop``         — identity (default; preserves current behavior).
 - ``hierarchical`` — prepends a small skeleton of the parent chunk
                      (class header for a method, file header for a class, …).
+- ``contextual``   — generates contextual prefixes through the unified
+                     inference backend.
+- ``mlx`` / ``ollama`` — dedicated local LLM enrichers.
+- ``graph-aware``  — adds context from the indexed symbol graph.
 
-Future adapters (Phase 2/3): ``ollama``, ``anthropic``, ``mlx``, ``openai`` —
-LLM-generated contextual prefixes per the Anthropic "Contextual Retrieval"
-technique (``docs/architecture/stropha-system.md`` §3.4).
+LLM-generated prefixes follow the Anthropic "Contextual Retrieval" technique
+(``docs/architecture/stropha-system.md`` §3.4).
 
 Drift is detected via the ``adapter_id`` stored on each chunk row
 (``chunks.enricher_id``). When the active enricher's id differs from the

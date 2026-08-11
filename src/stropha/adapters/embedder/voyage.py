@@ -1,11 +1,11 @@
 """Voyage AI embedder adapter.
 
-Active when a Voyage API key is available via explicit override,
-``~/.stropha/config.yaml``, or ``VOYAGE_API_KEY``. The default model is
+Active when a Voyage API key is available via explicit override or
+``secrets.voyage_api_key`` in ``~/.stropha/config.yaml``. The default model is
 ``voyage-4-large`` — Voyage's latest large-form embedder. Earlier
 generations (``voyage-3-large``, ``voyage-code-3``) remain available via
-``embedder.config.model: <id>`` in ``stropha.yaml`` or
-``STROPHA_VOYAGE_EMBED_MODEL=<id>``. All emit Matryoshka vectors which we
+``pipeline.embedder.config.model: <id>`` in ``~/.stropha/config.yaml``.
+All emit Matryoshka vectors which we
 truncate to ``dim`` (default 512).
 
 Per-batch token budget
@@ -29,7 +29,6 @@ they are intentionally absent from ``adapter_id`` (no drift on tuning).
 
 from __future__ import annotations
 
-import os
 from collections.abc import Iterator, Sequence
 from typing import Any
 
@@ -50,10 +49,6 @@ class VoyageEmbedderConfig(BaseModel):
     model: str = Field(default="voyage-4-large")
     dim: int = Field(default=512, ge=64, le=4096)
     batch_size: int = Field(default=128, ge=1, le=512)
-    api_key_env: str = Field(
-        default="VOYAGE_API_KEY",
-        description="Name of the env var that holds the API key.",
-    )
     # Token-aware sub-batching. Voyage's documented per-request limit is
     # 120K tokens (after per-text truncation) for the v3 family. We
     # default to 96K to leave ~20% slack for the cheap chars/token
@@ -120,18 +115,15 @@ class VoyageEmbedder(EmbedderStage):
         # without an active Voyage key when only serving an existing index.
         if self._client is not None:
             return self._client
-        resolved_key = self._api_key_override or os.environ.get(self._config.api_key_env, "")
+        resolved_key = self._api_key_override
         if not resolved_key:
-            try:
-                from ...config import get_config
+            from ...config import get_config
 
-                resolved_key = get_config().secrets.voyage_api_key or ""
-            except Exception:
-                resolved_key = ""
+            resolved_key = get_config().secrets.voyage_api_key or ""
         if not resolved_key:
             raise EmbeddingError(
-                "Voyage API key is empty (no explicit key, config secret, "
-                f"or env var {self._config.api_key_env!r} set)."
+                "Voyage API key is empty; set secrets.voyage_api_key in "
+                "~/.stropha/config.yaml."
             )
         self._client = self._voyageai.Client(api_key=resolved_key)
         return self._client

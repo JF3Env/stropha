@@ -23,9 +23,10 @@ Mapping from the sqlite-vec schema
   produced by :func:`stropha.storage.sqlite._fts_text` (CamelCase split, doubled
   file stem, path/dir tokens) so BM25-style ordering stays comparable.
 
-Phase 1 scope: the full index + dense/bm25/symbol search vertical. Graph,
-session, episode and project-memory tables are not yet ported (those tools fall
-back to their graph-gated empty responses on this backend).
+The PostgreSQL backend provides the same indexing, retrieval, graph, session,
+episode, project-memory and cross-session-cache surfaces as ``sqlite-vec``.
+Shared consumers use the compatibility layer below where they still issue
+SQLite-dialect queries.
 
 The heavy ``psycopg`` import is deferred to :meth:`__init__` so importing this
 module (which the adapter autoloader does for *every* install) stays cheap and
@@ -36,7 +37,6 @@ from __future__ import annotations
 
 import functools
 import json
-import os
 from datetime import UTC, datetime
 from pathlib import Path
 from types import TracebackType
@@ -370,15 +370,12 @@ class _CompatConn:
 
 class PostgresStorageConfig(BaseModel):
     dsn: str = Field(
-        default_factory=lambda: os.environ.get(
-            "STROPHA_PG_DSN",
-            "postgresql://stropha:stropha@127.0.0.1:54329/stropha",
-        ),
+        default="postgresql://stropha:stropha@127.0.0.1:54329/stropha",
         description=(
             "libpq connection string for the Postgres+pgvector backend. "
             "Defaults to the local Docker instance started by "
-            "`STROPHA_USE_POSTGRES=1 bin/stropha-mcp-ensure`. Override via the "
-            "STROPHA_PG_DSN env var or YAML `storage.config.dsn`."
+            "`STROPHA_USE_POSTGRES=1 bin/stropha-mcp-ensure`. Override with "
+            "`pipeline.storage.config.dsn` in ~/.stropha/config.yaml."
         ),
     )
 
@@ -668,9 +665,8 @@ class PostgresStorage:
     def _create_aux_tables(self, cur: Any) -> None:
         """Non-dim-dependent tables. Created once; NOT dropped on dim reset.
 
-        Currently just ``sessions`` (the MCP server persists per-session agent
-        state here). Project-memory / episodes / graph tables are a later phase;
-        their MCP tools are not yet wired to this backend.
+        Includes durable session state, project memory, episodes, the
+        cross-session cache and the graph mirror used by MCP tools.
         """
         cur.execute(
             """

@@ -1,69 +1,31 @@
 # MCP Integration Guide
 
-> **stropha** exposes its MCP tools over **HTTP only** (streamable-http
-> transport). A single shared singleton serves every MCP client
-> concurrently: one process, one warm pipeline/storage runtime, and no
-> subprocess spawning. This guide shows how to start the daemon and point
-> each client at it.
-
----
+stropha exposes MCP over streamable HTTP only. A single daemon serves all
+clients with one shared pipeline and storage runtime. stdio, SSE, and
+per-client subprocess configurations are not supported.
 
 ## Quick Start
-
-### 1. Install stropha
 
 ```bash
 git clone https://github.com/JonatasFischer/stropha.git
 cd stropha
-uv sync
+uv sync --extra local
+
+uv run stropha index --repo /path/to/project
+bin/stropha-mcp-ensure
+bin/stropha-mcp-ensure --status
 ```
 
-### 2. Index your codebase
+The default MCP URL is `http://127.0.0.1:9741/mcp`. Process health is available
+at `http://127.0.0.1:9741/health`.
 
-```bash
-uv run stropha index                                   # current repo
-STROPHA_TARGET_REPO=/path/to/project uv run stropha index   # explicit target
-uv run stropha search "where is the main entry point"
-```
+The daemon process starts first. The heavy adapter graph is built lazily on the
+first MCP or frontend request and remains warm for later sessions. Session
+state, including dedup history, pins, and scratchpads, stays isolated. When
+`mcp.watch` is enabled, the shared runtime starts one polling watcher and closes
+it only when the runtime is replaced or the daemon stops.
 
-### 3. Start the shared MCP server
-
-```bash
-bin/stropha-mcp-ensure          # start (returns when healthy)
-bin/stropha-mcp-ensure --status # check
-bin/stropha-mcp-ensure --stop   # shut down
-```
-
-Defaults:
-
-| | |
-|---|---|
-| URL | `http://127.0.0.1:9741/mcp` |
-| Health probe | `GET /health` |
-| PID file | `~/.cache/stropha/mcp-server.pid` |
-| Log file | `~/.cache/stropha/mcp-server.log` |
-
-Override host / port with `STROPHA_MCP_HOST` / `STROPHA_MCP_PORT`.
-
-The first MCP session builds the configured adapters and starts the watcher.
-Later sessions, including stale-session recovery after a client reconnect,
-reuse that warm runtime. Session state remains isolated: dedup history, pins,
-scratchpad, recent queries, and trace recorder are created per session. The
-watcher and storage connection close only when the daemon shuts down.
-Restart the daemon after changing adapter or storage configuration so the warm
-runtime is rebuilt from the new settings.
-
-### 4. Configure your MCP client
-
-Copy `.mcp.example.json` into the repo that you want the client to read,
-or use one of the client-specific snippets below.
-
----
-
-## Client-Specific Configuration
-
-All clients connect to the same URL. The schema differs slightly by
-client.
+## Client Configuration
 
 ### OpenCode
 
@@ -80,25 +42,10 @@ client.
 }
 ```
 
-### Claude Desktop / Claude Code
+### Claude, Cursor, And Similar Clients
 
-`~/Library/Application Support/Claude/claude_desktop_config.json` (macOS)
-or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
-
-```json
-{
-  "mcpServers": {
-    "stropha_rag": {
-      "url": "http://127.0.0.1:9741/mcp",
-      "transport": "streamable-http"
-    }
-  }
-}
-```
-
-### Cursor
-
-`.cursor/mcp.json` in your project:
+Use the configuration location documented by the client and point its remote
+MCP entry at the shared URL:
 
 ```json
 {
@@ -111,259 +58,175 @@ or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
 }
 ```
 
-### Continue (VS Code)
+Continue and Zed may use a different outer schema, but the transport and URL are
+the same. Do not add `command`, `args`, or a per-client `env` block for stropha.
 
-`~/.continue/config.json`:
+## Tool Selection
 
-```json
-{
-  "mcpServers": [
-    {
-      "name": "stropha_rag",
-      "url": "http://127.0.0.1:9741/mcp",
-      "transport": "streamable-http"
-    }
-  ]
-}
-```
+The MCP schema is the authoritative live inventory. These are the main public
+entry points:
 
-### Zed
+| Tool | Best use |
+|---|---|
+| `search_code` | Conceptual or free-text code search |
+| `smart_search_tool` | Route an ambiguous request to semantic, symbol, or graph retrieval |
+| `get_symbol` | Look up a known class, function, or method |
+| `get_file_outline` | Inspect symbols and line ranges before reading a file |
+| `find_callers` | Find callers through graph edges |
+| `find_tests_for` | Find tests associated with a symbol |
+| `find_related` | Traverse related symbols in either direction |
+| `get_community` | Inspect a graph community |
+| `find_rationale` | Find docs or ADRs linked to a symbol |
+| `trace_feature` | Trace a feature through graph call paths |
+| `assemble_context` | Retrieve and pack a bounded context bundle |
 
-`~/.config/zed/settings.json`:
+Examples:
 
-```json
-{
-  "assistant": {
-    "mcp_servers": {
-      "stropha_rag": {
-        "url": "http://127.0.0.1:9741/mcp",
-        "transport": "streamable-http"
-      }
-    }
-  }
-}
-```
-
-### Other MCP-compatible clients
-
-Any client that speaks the MCP streamable-http transport works. Point
-it at `http://127.0.0.1:9741/mcp`. **stdio is not supported** — there
-is no per-client subprocess.
-
----
-
-## Available Tools
-
-### Search Tools
-
-| Tool | Description |
-|------|-------------|
-| `search_code` | Hybrid semantic + lexical search. Use for "where is X?" or "how does Y work?" |
-| `smart_search` | Route an ambiguous query to scoped semantic, symbol, or graph retrieval. |
-| `plan_investigation` | Propose a scoped entry points → callers → tests → rationale recipe. |
-| `assemble_context` | Run scoped semantic retrieval and optional graph extensions into one bundle. |
-| `execute_investigation` | Plan and execute the scoped investigation DAG in one call. |
-| `get_symbol` | Exact symbol lookup. Cheaper than `search_code` when you know the name. |
-| `get_file_outline` | Get all symbols in a file. Plan reads before consuming context. |
-| `list_repos` | List all indexed repositories. |
-
-Semantic, symbol, direct graph, and composed search tools default to the current
-repository. Set `include_other_repos=true` explicitly to search all indexed
-repositories. If the current repository cannot be resolved, scoped tools fail
-closed; graph-gated tools report `graph_loaded: false` with an actionable message.
-
-### Graph Traversal Tools
-
-These tools require the graphify mirror to be loaded. Index runs
-`graphify update` automatically when the binary is installed.
-
-| Tool | Description |
-|------|-------------|
-| `find_callers` | Who calls this symbol? BFS up `calls` edges. |
-| `find_tests_for` | Find tests that cover a symbol. |
-| `find_related` | Find symbols related to this one (any edge type). |
-| `get_community` | Get all symbols in the same architectural community. |
-| `find_rationale` | Find docs/ADRs explaining why this symbol exists. |
-| `trace_feature` | Trace a feature description to all code that implements it. |
-
-### Debug Tools
-
-| Tool | Description |
-|------|-------------|
-| `get_config` | Show active configuration. Debug which index is being used. |
-
----
-
-## Example Queries
-
-### Finding Code
-
-```
-search_code("where is the FSRS calculator implemented")
+```text
 search_code("how does authentication work", language=["typescript"])
-search_code("API endpoints", path_prefix="src/api/", exclude_tests=True)
-```
-
-### Graph Traversal
-
-```
+get_symbol("FsrsCalculator")
 find_callers("FsrsCalculator", depth=2)
 find_tests_for("submitAnswer")
 trace_feature("user submits an answer and mastery is updated")
-get_community("StudyService")
 ```
 
-### Architecture Understanding
+Search, symbol, graph, and composed tools default to the current repository.
+Pass `include_other_repos=true` only when cross-repository results are intended.
+Graph tools return `graph_loaded: false` with guidance when the graph mirror is
+not available.
 
+## Configuration And Reloading
+
+All settings and secrets live in `~/.stropha/config.yaml`. Project-level and
+`.env` files, and generic environment-variable setting overlays, are not
+supported.
+
+Example daemon settings:
+
+```yaml
+mcp:
+  watch: true
+  watch_interval: 1.0
+  watch_debounce: 2.0
+
+logging:
+  level: INFO
 ```
-search_code("entry point", kind=["class", "function"])
-find_related("Database", relations=["implements", "references"])
-find_rationale("FsrsCalculator")
+
+`STROPHA_TARGET_REPO` is a runtime argument rather than configuration.
+`STROPHA_MCP_HOST` and `STROPHA_MCP_PORT` are operational inputs to
+`bin/stropha-mcp-ensure`. Pipeline, storage, model, logging, and API-key settings
+belong in the YAML file.
+
+The dashboard at `http://127.0.0.1:9741/dashboard` updates configuration through
+`PATCH /api/config`. A successful patch atomically replaces the warm runtime;
+new requests use the replacement while existing sessions can finish with their
+prior adapters.
+
+Indexing-time changes still require an index pass. If a primary vector dimension
+change conflicts with the existing index, the endpoint returns HTTP 202 and
+`pending_rebuild: true`; run:
+
+```bash
+uv run stropha index --rebuild
 ```
 
----
+The old runtime remains active. A primary dimension rebuild clears all derived
+search data for every repository in the shared backend, so include all indexed
+repositories in that pass. After the rebuild, restart the daemon or submit the
+patch again so it can install a compatible replacement. After editing
+`~/.stropha/config.yaml` directly, restart the daemon because the file itself is
+not watched for live reload:
 
-## Environment Variables
-
-### Server (consumed by `bin/stropha-mcp-ensure` and `stropha-mcp`)
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `STROPHA_MCP_HOST` | `127.0.0.1` | Bind address for the daemon |
-| `STROPHA_MCP_PORT` | `9741` | Bind port for the daemon |
-| `STROPHA_TARGET_REPO` | cwd | Repository the server reads from |
-| `STROPHA_INDEX_PATH` | `~/.stropha/index.db` | SQLite index location |
-| `STROPHA_LOG_LEVEL` | `WARNING` | Log verbosity for the server |
-
-### Indexing (consumed by `stropha index`)
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `VOYAGE_API_KEY` | unset | Enable Voyage embeddings (optional, local fallback available) |
-| `STROPHA_LOG_LEVEL` | `INFO` | Log verbosity |
-
-Query-time toggles (HyDE, recursive merge, multi-query, query cache)
-live in `stropha.yaml` under `retrieval_features:` — they no longer
-have env-var equivalents. See the project's `stropha.yaml` for the
-full schema.
-
----
+```bash
+bin/stropha-mcp-ensure --stop
+bin/stropha-mcp-ensure
+```
 
 ## Automatic Index Updates
 
-stropha includes a post-commit hook that updates the index after every
-commit:
+Install the post-commit hook from the stropha checkout:
 
 ```bash
-cd /path/to/your/project
-uv run --directory /path/to/stropha stropha hook install
-
-uv run --directory /path/to/stropha stropha hook status
+uv run stropha hook install --target /path/to/project
+uv run stropha hook status --target /path/to/project
 ```
 
-The hook runs in the background (non-blocking) and refreshes both the
-SQLite index and the graphify graph. Because the MCP server reads the
-same SQLite file, your next query sees the new state immediately — no
-client restart required.
+The installer honors `core.hooksPath`, so the active file is not necessarily
+`.git/hooks/post-commit`. Use `stropha hook status` to see the resolved path and
+installed version. Reinstalling updates only the managed block and preserves
+other hook content.
 
----
+The hook detaches a background job and returns control to Git immediately. It
+runs normal `stropha index --repo <target>` auto mode; the pipeline owns the
+graphify update and graph loading. The next query observes committed index
+updates through the shared storage backend without a client restart.
+
+The daemon watcher is separate. It polls saved working-tree files and writes
+incremental changes to the persistent index. It is not a RAM overlay, and its
+default lightweight refresh does not rebuild graph vectors on every save.
+
+## PostgreSQL
+
+PostgreSQL plus pgvector is a shipped optional storage backend. Install its
+dependency and configure it in the user YAML:
+
+```bash
+uv sync --extra local --extra postgres
+```
+
+```yaml
+pipeline:
+  storage:
+    adapter: postgres
+    config:
+      dsn: postgresql://user:password@127.0.0.1:5432/stropha
+```
+
+The launcher leaves native or externally managed PostgreSQL alone. To ask the
+launcher to manage its opt-in local Docker container:
+
+```bash
+STROPHA_USE_POSTGRES=1 bin/stropha-mcp-ensure
+```
 
 ## Troubleshooting
 
-### "Connection refused" / client can't reach stropha
-
-1. Is the daemon running? `bin/stropha-mcp-ensure --status`
-2. Health check: `curl http://127.0.0.1:9741/health`
-3. Tail the log: `tail -f ~/.cache/stropha/mcp-server.log`
-
-### "No results" from `search_code`
-
-1. Check the index exists: `ls ~/.stropha/index.db`
-2. Verify repo is indexed: `uv run stropha stats`
-3. Try a simpler query to test basic functionality
-
-### Graph tools return `graph_loaded: false`
-
-1. Make sure graphify is installed: `which graphify`
-2. Re-run index: `uv run stropha index` (runs `graphify update` automatically)
-3. Verify graph exists: `ls graphify-out/graph.json`
-
-### Slow indexing
-
-1. Use local embeddings (default) instead of Voyage for large repos
-2. Enable incremental indexing (default in hook v4)
-3. Consider excluding large generated files via `.strophaignore`
-
-### Hook not running
-
-1. Check hook is installed: `cat .git/hooks/post-commit`
-2. Verify permissions: `chmod +x .git/hooks/post-commit`
-3. Check logs: `cat ~/.cache/stropha-hook.log`
-
----
-
-## Advanced Configuration
-
-### YAML Configuration
-
-Create `stropha.yaml` in your repo root:
-
-```yaml
-walker:
-  adapter: git-ls-files
-  config:
-    max_file_bytes: 1048576  # 1MB
-
-enricher:
-  adapter: contextual  # or: hierarchical, graph-aware, noop
-  config:
-    model: qwen2.5-coder:1.5b
-
-embedder:
-  adapter: local  # or: voyage, bge-m3
-  config:
-    model: mixedbread-ai/mxbai-embed-large-v1
-
-retrieval:
-  adapter: hybrid-rrf
-  config:
-    top_k: 10
-
-retrieval_features:
-  hyde_enabled: true
-  multi_query_enabled: true
-  recursive_enabled: true
-```
-
-### Multi-Repo Indexing
-
-Index multiple repos into a single index:
+### Connection Refused
 
 ```bash
-# Via manifest file
-cat > repos.yaml << EOF
-repos:
-  - path: ../frontend
-  - path: ../backend
-  - path: ../shared
-EOF
-
-uv run stropha index --manifest repos.yaml
+bin/stropha-mcp-ensure --status
+curl http://127.0.0.1:9741/health
 ```
 
-Or via command line:
+If status reports a live but unresponsive MCP endpoint, use the recovery command
+it prints, then inspect `~/.cache/stropha/mcp-server.log`.
+
+### No Results
 
 ```bash
-uv run stropha index --repo ../frontend --repo ../backend --repo ../shared
+uv run stropha stats
+uv run stropha search "simple known symbol"
 ```
 
----
+`stropha stats` opens the configured backend. For SQLite, this can initialize an
+empty database at a missing path, so check that chunk counts are nonzero and the
+expected repository appears; command success alone does not prove a prior index
+exists.
 
-## Performance Tips
+### Graph Tools Report `graph_loaded: false`
 
-1. **Keep the daemon alive.** It's a singleton — start once per workstation, every project reads from it.
-2. **Use local embeddings** for development (zero latency, zero cost)
-3. **Enable query cache** for repeated queries (`retrieval_features.cache_enabled: true`)
-4. **Use incremental indexing** (default with hook v4)
-5. **Exclude large files** via `.strophaignore`
-6. **Use `get_symbol` instead of `search_code`** when you know the exact name
+```bash
+graphify .
+uv run stropha index
+```
+
+### Hook Not Running
+
+```bash
+uv run stropha hook status --target /path/to/project
+uv run stropha hook install --force --target /path/to/project
+```
+
+Use the hook path and log path printed by `status`; do not assume a fixed Git
+hook directory or script version.

@@ -458,6 +458,31 @@ def test_cli_search_defaults_to_current_repo_and_has_explicit_opt_in() -> None:
     assert "repo_id" not in retrieval.search.call_args_list[1].kwargs
 
 
+def test_cli_recursive_search_uses_pipeline_override() -> None:
+    storage = MagicMock()
+    storage.lookup_repo_id.return_value = 7
+    retrieval = MagicMock()
+    retrieval.search.return_value = []
+    built = SimpleNamespace(storage=storage, retrieval=retrieval)
+    identity = SimpleNamespace(normalized_key="github.com/example/local")
+
+    with (
+        patch("stropha.cli.load_pipeline_config", return_value={}) as load_config,
+        patch("stropha.cli.build_stages", return_value=built),
+        patch(
+            "stropha.cli._load_config",
+            return_value=SimpleNamespace(target_repo=Path.cwd(), log_level="INFO"),
+        ),
+        patch("stropha.ingest.git_meta.detect", return_value=identity),
+    ):
+        result = CliRunner().invoke(cli_app, ["search", "shared", "--recursive"])
+
+    assert result.exit_code == 0
+    load_config.assert_called_once_with(
+        overrides={"retrieval": {"config": {"recursive_enabled": True}}}
+    )
+
+
 def test_cli_rejects_invalid_nonempty_repo_url() -> None:
     with patch("stropha.cli.build_stages") as build:
         result = CliRunner().invoke(cli_app, ["search", "shared", "not-a-git-url"])

@@ -1,19 +1,21 @@
 """LLM inference backends.
 
 This module provides a unified interface for LLM inference,
-supporting five backends:
+supporting six backends:
 
 - ``mlx``       — local, Apple Silicon native (default when available)
 - ``ollama``    — local, HTTP daemon (fallback)
 - ``deepseek``  — cloud, OpenAI-compatible API (opt-in, requires
-  ``DEEPSEEK_API_KEY``)
+  ``secrets.deepseek_api_key``)
 - ``anthropic`` — cloud, Messages API (opt-in, requires
-   ``ANTHROPIC_API_KEY``)
+   ``secrets.anthropic_api_key``)
 - ``lms``       — internal OpenAI-compatible API (opt-in)
+- ``moa``       — local MoA Gateway, OpenAI-compatible API (opt-in)
 
-Per ``CLAUDE.md`` §3.6, cloud backends are never auto-selected — they
+Per the ``CLAUDE.md`` **Local-only by default** invariant, cloud backends are
+never auto-selected — they
 must be requested explicitly via ``inference.backend`` in
-``stropha.yaml`` or ``prefer='deepseek'|'anthropic'`` in code.
+``~/.stropha/config.yaml`` or the ``prefer`` argument in code.
 
 Usage:
     from stropha.inference import get_backend, generate

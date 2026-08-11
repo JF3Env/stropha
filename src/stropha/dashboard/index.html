@@ -411,7 +411,7 @@
               <div id="empty-state" class="empty-state">
                 <div class="eyebrow">Grounded in your code</div>
                 <h1>Interrogate the index, not your memory.</h1>
-                <p>Stropha retrieves exact evidence from the active repository and asks your local MoA model to reason over it. Every answer stays tethered to a source.</p>
+                <p>Stropha retrieves evidence from the active repository and asks the configured inference backend to reason over it. Sources are shown alongside the answer; the dashboard does not guarantee that MoA ran or that citations were audited.</p>
                 <div class="starter-grid">
                   <button class="starter" data-prompt="Trace the main request flow through this codebase and explain each stage."><small>01 / TRACE</small>How does the main request flow through the system?</button>
                   <button class="starter" data-prompt="What are the most important architectural invariants in this repository, and where are they enforced?"><small>02 / ARCHITECTURE</small>Which invariants must changes preserve?</button>
@@ -459,7 +459,7 @@
           <div class="settings-inner">
             <div class="settings-intro">
               <div><div class="eyebrow">Live daemon configuration</div><h1 id="settings-title">General services</h1></div>
-              <div id="save-state" class="save-state">Changes replace the warm runtime atomically.</div>
+              <div id="save-state" class="save-state">Compatible PATCH changes hot-swap the warm runtime; embedding-dimension changes remain pending rebuild.</div>
             </div>
             <nav class="settings-tabs" aria-label="Configuration groups" role="tablist">
               <button class="settings-tab active" type="button" data-settings-group="general" role="tab" aria-selected="true">General <span id="inference-use-count" class="tab-count">1</span></button>
@@ -519,7 +519,7 @@
       },
       retrieval: {
         title: 'Retrieval technologies',
-        description: 'Query routing, search streams, ranking, reranking, caching, and result assembly.',
+        description: 'Query routing, search streams, ranking, reranking, and result assembly.',
         stages: ['retrieval', 'router'],
         sections: ['retrieval'],
       },
@@ -813,7 +813,6 @@
       if (featureEnabled('hyde_enabled')) consumers.push({id: 'hyde', label: 'HyDE', detail: 'hypothetical code generation', area: 'retrieval', section: 'retrieval'});
       if (featureEnabled('query_rewrite_enabled')) consumers.push({id: 'rewrite', label: 'Query rewrite', detail: 'code-term expansion', area: 'retrieval', section: 'retrieval'});
       if (featureEnabled('multi_query_enabled')) consumers.push({id: 'multi-query', label: 'Multi-query', detail: 'query paraphrases', area: 'retrieval', section: 'retrieval'});
-      if (Boolean(pathValue(state.config, 'retrieval_features.query_decomposition_enabled', false)) && Boolean(pathValue(state.config, 'retrieval_features.query_decomposition_llm', false))) consumers.push({id: 'decomposition', label: 'Query decomposition', detail: 'compound query splitting', area: 'retrieval', section: 'retrieval'});
       if (retrievalConfig.reranker?.adapter === 'llm') consumers.push({id: 'reranker', label: 'LLM reranker', detail: 'candidate scoring', area: 'retrieval', stage: 'retrieval'});
       return consumers;
     }
@@ -821,7 +820,7 @@
     function inferenceUsageMarkup(consumers) {
       if (!consumers.length) return '';
       const chips = consumers.map((consumer) => `<span class="usage-chip">${escapeHtml(consumer.label)} / <b>${escapeHtml(consumer.detail)}</b></span>`).join('');
-      return `<div class="inference-usage"><div class="inference-usage-head"><span>Uses shared inference</span><span>${escapeHtml(inferenceProviderLabel())} / active automatically</span></div><div class="usage-chips">${chips}</div></div>`;
+      return `<div class="inference-usage"><div class="inference-usage-head"><span>Uses configured inference</span><span>${escapeHtml(inferenceProviderLabel())} / configured backend</span></div><div class="usage-chips">${chips}</div></div>`;
     }
 
     function inferenceSectionMarkup(section, index) {
@@ -838,7 +837,7 @@
       const selectorMarkup = selector ? fieldMarkup(selector, pathValue(state.config, selector.path, selector.default)) : '';
       const activeMarkup = providerFields.map((field) => fieldMarkup(field, pathValue(state.config, field.path, field.default))).join('');
       const sharedMarkup = sharedFields.map((field) => fieldMarkup(field, pathValue(state.config, field.path, field.default))).join('');
-      return `<details class="config-section"${index < 2 ? ' open' : ''}><summary><strong>${escapeHtml(section.title)}</strong><span>${escapeHtml(section.description)}</span></summary><div class="inference-subsection"><h3>Shared provider</h3><p>This provider is enabled automatically by every active consumer listed below.</p><div class="field-grid">${selectorMarkup}</div><div class="provider-state"><b>${escapeHtml(providerLabel)}</b> / ${escapeHtml(providerHelp)}</div>${inferenceUsageMarkup(consumers)}</div>${activeMarkup ? `<div class="inference-subsection"><h3>${escapeHtml(providerLabel)} settings</h3><p>Model, endpoint, authentication, timeout, and retry controls for the shared provider.</p><div class="field-grid">${activeMarkup}</div></div>` : ''}${sharedMarkup ? `<div class="inference-subsection"><h3>Shared inference workload</h3><p>Controls applied across providers during enrichment and batched inference work.</p><div class="field-grid">${sharedMarkup}</div></div>` : ''}</details>`;
+      return `<details class="config-section"${index < 2 ? ' open' : ''}><summary><strong>${escapeHtml(section.title)}</strong><span>${escapeHtml(section.description)}</span></summary><div class="inference-subsection"><h3>Configured inference backend</h3><p>Active consumers below use this configured backend when they need inference.</p><div class="field-grid">${selectorMarkup}</div><div class="provider-state"><b>${escapeHtml(providerLabel)}</b> / ${escapeHtml(providerHelp)}</div>${inferenceUsageMarkup(consumers)}</div>${activeMarkup ? `<div class="inference-subsection"><h3>${escapeHtml(providerLabel)} settings</h3><p>Model, endpoint, authentication, timeout, and retry controls for the configured backend.</p><div class="field-grid">${activeMarkup}</div></div>` : ''}${sharedMarkup ? `<div class="inference-subsection"><h3>Shared inference workload</h3><p>Controls applied across providers during enrichment and batched inference work.</p><div class="field-grid">${sharedMarkup}</div></div>` : ''}</details>`;
     }
 
     function renderPipelineConfig() {
@@ -879,16 +878,12 @@
       if (!state.catalog) return;
       const group = SETTINGS_GROUPS[state.settingsGroup];
       const sections = state.catalog.sections.filter((section) => group.sections.includes(section.id));
-      const multiQueryEnabled = Boolean(pathValue(state.config, 'retrieval_features.multi_query_enabled', false));
-      const recursiveEnabled = Boolean(pathValue(state.config, 'retrieval_features.recursive_enabled', false));
       $('#config-groups').innerHTML = sections.map((section, index) => {
         if (section.id === 'inference') return inferenceSectionMarkup(section, index);
         const watcherEnabled = Boolean(pathValue(state.config, 'mcp.watch', true));
         const visibleFields = section.fields.filter((field) => {
           if (field.path === 'paths.index' && selectedAdapter('storage') !== 'sqlite-vec') return false;
           if (!watcherEnabled && ['mcp.watch_interval', 'mcp.watch_debounce'].includes(field.path)) return false;
-          if (field.path === 'retrieval_features.multi_query_count' && !multiQueryEnabled) return false;
-          if (field.path === 'retrieval_features.recursive_adjacency' && !recursiveEnabled) return false;
           return true;
         });
         const fields = visibleFields.map((field) => fieldMarkup(field, pathValue(state.config, field.path, field.default))).join('');
@@ -1083,7 +1078,7 @@
         const isQwenEmbedding = String(targetModel).toLowerCase().includes('qwen3-embedding');
         label.textContent = isQwenEmbedding
           ? 'Validating model metadata. Weights stay deferred until first indexing...'
-          : 'Validating and replacing warm runtime...';
+          : 'Validating configuration for a live hot-swap...';
         const response = await fetch('/api/config', {method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(patch)});
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || 'Configuration rejected');
@@ -1093,14 +1088,14 @@
         await loadStatus();
         if (data.pending_rebuild) {
           label.className = 'save-state';
-          label.textContent = `${data.message} Configuration is saved; rebuild and restart to activate it.`;
+          label.textContent = `${data.message} Configuration is saved and remains pending an index rebuild and restart.`;
           toast('Configuration saved. Index rebuild required.');
           return;
         }
         label.className = 'save-state good';
         label.textContent = isQwenEmbedding
           ? 'Configuration applied. Model weights will load during first indexing.'
-          : 'Runtime replaced. New queries use this configuration.';
+          : 'Runtime hot-swapped. New queries use this configuration.';
         toast('Configuration applied');
       } catch (error) {
         label.className = 'save-state error';

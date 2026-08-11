@@ -2,20 +2,33 @@
 
 Documento de design técnico para um sistema de Retrieval-Augmented Generation (RAG) cuja função é servir como fonte de verdade sobre o codebase Mimoria, exposto ao Claude Code (e outros clientes LLM) via Model Context Protocol (MCP).
 
-> **Status**: este documento é o **mapa do espaço de soluções v1.0** — captura as escolhas de design e suas alternativas. Para o **estado vivo** (o que está shippado HOJE) leia `CLAUDE.md §2 (Current state snapshot)` na raiz do projeto. Quando este doc divergir do que está em produção, `CLAUDE.md` vence.
+> **Status**: este documento é o **mapa do espaço de soluções v1.0** — captura
+> escolhas de design, alternativas e milestones históricos. Para o estado vivo,
+> leia `CLAUDE.md` **Key architecture** e interrogue
+> `stropha pipeline show` / `stropha adapters list`; quando houver divergência,
+> essas fontes vencem.
 >
 > **Implementado (cumulativo, conforme §16):**
 > - Phase 0 (spike) ✓ — walker / chunker dummy / sqlite-vec / CLI.
-> - Phase 1 (MVP MCP) ✓ — tree-sitter chunking, hybrid retrieval (até 5 streams), MCP server `stropha_rag`.
-> - Pipeline-adapters Phase 1–4 (spec `stropha-pipeline-adapters.md`) ✓ — framework Stage/registry + 13 adapters concretos.
-> - Graphify integration Fase 1.5a/b/c/e/f (spec `stropha-graphify-integration.md`) ✓ — mirror SQLite + 6 MCP tools + hook v=3 + L2 retroativo + L3 graph-vec stream.
+> - Phase 1 (MVP MCP) ✓ — tree-sitter chunking, hybrid retrieval configurável,
+>   MCP server `stropha_rag` (the original stdio milestone was later superseded
+>   by the shared HTTP daemon).
+> - Pipeline-adapters Phase 1–4 (spec `stropha-pipeline-adapters.md`) ✓ —
+>   framework Stage/registry; use registry introspection for the current inventory.
+> - Graphify integration Fase 1.5a/b/c/e/f (spec
+>   `stropha-graphify-integration.md`) ✓ — storage-adapter graph mirror, graph
+>   tools, detached hook, lexical augmentation and graph-vector lane.
 > - Phase 2 parcial ✓ — `find_callers` / `find_tests_for`, Recall@K + MRR eval (RAGAS deferred).
 > - Phase 3 parcial ✓ — `trace_feature`, HyDE (via Ollama local), recursive retrieval, soft-index `stropha watch`, cost dashboard.
 > - Phase 4 parcial ✓ — multi-repo `--manifest`, walker `nested-git`, embedder `bge-m3`, hook cross-repo (`--project-dir`).
 >
-> **Diferido por política local-only**: Voyage `rerank-2.5`, Contextual Retrieval (Anthropic), enrichers `anthropic`/`openai`, storage `qdrant`/`pgvector`, deploy remoto / multi-tenant / Web UI.
+> **Historical deferrals:** this list records the v1 planning decision, not the
+> current adapter inventory. PostgreSQL storage and contextual enrichment have
+> since shipped; cloud providers remain optional.
 >
-> Esquema SQLite atual: v7. Esquema v2 adiciona identidade de repositório por chunk; v3 adiciona enricher_id + cache; v4 adiciona graph_nodes/graph_edges/graph_meta; v5 adiciona embedding nos graph_nodes para a 4ª stream RRF; v6 adiciona tabela `files` para cache incremental file-level (Phase A); v7 adiciona `repo_id` a `graph_nodes` e `graph_edges` para suporte multi-repo graphify (múltiplos repos com grafos próprios compartilhando um único índice stropha).
+> **Current schema:** v14 on SQLite and PostgreSQL. Each adapter owns an
+> idempotent, forward-only migration path. Run `stropha stats` for live metadata;
+> the v2-v7 notes later in this document remain delivery history.
 
 ---
 
@@ -359,7 +372,10 @@ Para Mimoria: **não recomendado na fase inicial**. Single-vector + rerank cobre
 | **Turbopuffer** | Cloud (serverless) | S3-backed, pay-per-query | Vendor lock-in | Cargas esporádicas. |
 | **Pinecone** | Cloud managed | Zero ops | Vendor lock-in, custo alto | Quando ops é proibitivo. |
 
-**Recomendação para Mimoria**: `sqlite-vec` na máquina do dev. Tudo em `~/.stropha/index.db`. Migrar para Qdrant local se passar de ~100k chunks ou exigir filtros complexos.
+**Current implementation**: both `sqlite-vec` and PostgreSQL/pgvector are
+registered storage adapters. `sqlite-vec` remains the zero-infrastructure
+default; select the adapter in `~/.stropha/config.yaml`. The other rows are
+design alternatives, not shipped inventory.
 
 ### 5.2 Algoritmos de indexação aproximada (ANN)
 
@@ -380,20 +396,25 @@ a busca densa permanece exata sem HNSW.
 
 | Dado | Store | Por quê |
 |---|---|---|
-| Vetores densos | sqlite-vec | Hybrid query SQL + ANN |
-| Inverted index BM25 | SQLite FTS5 | Mesmo arquivo, transações atômicas |
-| Symbol graph | SQLite (tabelas `nodes`/`edges`) | Joins SQL, transacional |
-| Chunks raw + metadata | SQLite (tabela `chunks`) | Single source of truth |
-| Cache de summaries | SQLite (tabela `summaries`) | Reutilização cross-version do embedding model |
-| Cache de embeddings | SQLite (tabela `embeddings_cache` keyed by `content_hash + model`) | Evita reembedding em rebuild |
+| Vetores densos | storage adapter ativo | `vec_chunks`/sqlite-vec ou `chunks.embedding`/pgvector |
+| Índice lexical | storage adapter ativo | SQLite `fts_chunks` FTS5 ou PostgreSQL `chunks.fts` tsvector |
+| Symbol graph | storage adapter ativo | Tabelas relacionais com migrations equivalentes por adapter |
+| Chunks raw + metadata | storage adapter ativo | Fonte de verdade transacional do adapter |
+| Cache de enrichment | storage adapter ativo | Reuso por `content_hash` + identidade do adapter |
+| Espaço Model2Vec secundário | storage adapter ativo | Lane 256-d independente do vetor primário (schema v14) |
 
-**Tudo em um único arquivo `.db`** simplifica backup, sync via Dropbox/iCloud, e portabilidade. Se ficar > 5 GB, particionar por sub-projeto.
+No adapter SQLite, tudo fica em um único arquivo `.db`; no adapter PostgreSQL,
+os mesmos contratos vivem no banco configurado. Regras de FTS5 contentless e
+arquivo único são específicas de SQLite, não invariantes globais de storage.
 
 ### 5.4 Versionamento e migração
 
-- Cada chunk tem `embedding_model` + `embedding_version`. Mudança de modelo NÃO invalida o índice — coexistência permite A/B teste.
-- Migração de schema via Alembic (Python) ou refinery (Rust).
-- **Rebuild completo**: comando `rag rebuild --model voyage-code-3 --version 2`. Preserva o índice antigo até migração validada.
+- Cada storage adapter migra seu próprio schema de forma forward-only e
+  idempotente; nunca há `DROP` como parte do startup normal.
+- SQLite usa `IF NOT EXISTS` / `_add_column_if_missing`; PostgreSQL fornece o
+  caminho equivalente em `adapters/storage/postgres.py`.
+- O schema corrente é v14 em ambos. Trocas que alteram output entram no
+  `adapter_id`; o pipeline reprocessa apenas os espaços afetados.
 
 ---
 
@@ -405,7 +426,7 @@ a busca densa permanece exata sem HNSW.
 
 Busca semântica, lookup direto de símbolos e consultas diretas ao grafo são
 isolados no repositório em trabalho por padrão. Os tools MCP `search_code`,
-`smart_search`, `get_symbol`, os seis tools de grafo, os analisadores derivados,
+`smart_search_tool`, `get_symbol`, os seis tools de grafo, os analisadores derivados,
 `plan_investigation`, `assemble_context` e `execute_investigation`, o comando
 `stropha search` e `POST /api/query` resolvem o target corrente para `repos.id`
 em cada fronteira pública. Esse ID é propagado por `RetrievalStage`, lookup de
@@ -691,7 +712,8 @@ Schema migrations + lazy backfill: adicionar coluna nullable, preencher em backg
 
 CLI flags: `--full` (force full walk), `--incremental` (force git-diff fast-path, falls back to reconcile if no checkpoint), `--since <sha>` (override checkpoint). Default (no flag) = `auto` = hash reconcile.
 
-Env: `STROPHA_RENAME_THRESHOLD` (default 80) controls `git diff --find-renames=<N>` sensitivity.
+`git.rename_threshold` in `~/.stropha/config.yaml` (default 80) controls
+`git diff --find-renames=<N>` sensitivity.
 
 ---
 
@@ -927,26 +949,26 @@ stropha/
     └── unit/
 ```
 
-### 9.5 Configuração no Claude Code
+### 9.5 Configuração dos clientes MCP
 
-`.mcp.json` na raiz do repo:
+Primeiro inicie/verifique o daemon compartilhado com
+`bin/stropha-mcp-ensure`. Todos os clientes apontam para a mesma URL; eles não
+devem iniciar um subprocesso por projeto.
 
 ```json
 {
   "mcpServers": {
     "stropha": {
-      "command": "uv",
-      "args": ["--directory", "/Users/jonatas/sources/stropha", "run", "mcp-server"],
-      "env": {
-        "VOYAGE_API_KEY": "${VOYAGE_API_KEY}",
-        "STROPHA_INDEX_PATH": "${HOME}/.stropha/index.db"
-      }
+      "url": "http://127.0.0.1:9741/mcp",
+      "transport": "streamable-http"
     }
   }
 }
 ```
 
-Tradeoff: `.mcp.json` versionado significa que o time inteiro herda. Para configs pessoais, usar `.mcp.local.json` (gitignored).
+stdio, SSE, `command`/`args`, and per-client `env` blocks are unsupported. The
+singleton owns one warm pipeline/storage runtime; client sessions isolate only
+their lightweight dedup, pins, scratchpad, recent-query, and trace state.
 
 ### 9.6 Segurança do MCP
 
@@ -1159,15 +1181,13 @@ Append-only log: `(timestamp, user, tool, args_hash, result_hash, latency)`. Ret
 #### Local (desenvolvedor individual)
 
 ```
-┌────────────────────┐
-│ Claude Code        │
-│  └─ stdio ──► mcp-server (Python local)
-│                  └─ index.db (~/.stropha/)
-│                  └─ Voyage API (cloud)
-└────────────────────┘
+MCP clients ── streamable HTTP ──► shared stropha-mcp daemon
+                                      ├─ warm pipeline/adapters
+                                      └─ active storage adapter
 ```
 
-Custo: API embeddings/rerank apenas. Setup: `uv tool install stropha`.
+Custo cloud é opcional; o default permanece local-only. O daemon escuta em
+`http://127.0.0.1:9741/mcp` e expõe `GET /health`.
 
 #### Self-hosted (time)
 
@@ -1176,7 +1196,7 @@ Custo: API embeddings/rerank apenas. Setup: `uv tool install stropha`.
 GitHub Actions ─indexa─┤
                        └─ Postgres (chunks + graph)
                               ▲
-                              │ HTTP+SSE
+                               │ streamable HTTP
                               │
               dev ─► Claude Code ─► mcp-server (deployed)
 ```
@@ -1267,13 +1287,16 @@ Bootstrap inicial (full reindex Mimoria, ~5K chunks): ~US$ 2 one-shot.
 
 **Critério de saída**: query semântica retorna chunk certo no top-3 — ✓.
 
-### Phase 1 — MVP MCP (3-5 dias) ✓
+### Phase 1 — MVP MCP (3-5 dias) ✓ (historical milestone)
 - [x] Tree-sitter parsing para Java, TypeScript, JavaScript, Python, Rust, Go, Kotlin via `tree-sitter-language-pack.process()`.
 - [x] Chunkers custom para Vue SFC (script/template/style), Markdown (heading split), Gherkin (feature/scenario).
 - [x] Chunking semântico hierárquico (skeleton de classe com nome qualificado + lista de membros; método como chunk filho com `parent_chunk_id`).
 - [x] Hybrid search com **três streams** fundidas via RRF (k=60): dense (sqlite-vec) + sparse (FTS5 BM25 com expansão CamelCase + tokens de path + symbol) + symbol-token lookup (query routing §6.3.5).
-- [x] Servidor MCP (`stropha-mcp`) sobre stdio. Tools: `search_code`, `get_symbol`, `get_file_outline`. Resource: `stropha://stats`.
-- [x] Template `.mcp.example.json` para Claude Code / Cursor.
+- [x] Servidor MCP (`stropha-mcp`) inicialmente entregue sobre stdio. **Historical
+  only:** stdio was later removed; the current transport is the shared
+  streamable-HTTP daemon described in **MCP Server**.
+- [x] Template MCP inicialmente entregue para Claude Code / Cursor; the current
+  template is URL-based and never spawns a subprocess.
 - [x] Freshness skip por chunk (re-rodar `index` num repo estável é quase instantâneo).
 - [ ] **Diferido** Reindexação incremental via `git diff` — `index --rebuild` cobre o caso de uso para Phase 1; hooks `post-commit` e soft-index em RAM vão para Phase 3.
 

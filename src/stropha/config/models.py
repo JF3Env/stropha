@@ -5,9 +5,11 @@ No other module should define configuration dataclasses or read environment
 variables directly — everything goes through the unified ``Config`` object
 returned by :func:`stropha.config.get_config`.
 
-All configuration is read from ``~/.stropha/config.yaml``, including secrets
-(API keys).  The only env vars still honoured are ``STROPHA_TARGET_REPO``
-(runtime argument) and ``STROPHA_HOOK_*`` (hook subprocess overrides).
+All settings are read from ``~/.stropha/config.yaml``, including secrets.
+Environment variables are reserved for process/runtime arguments registered in
+``stropha.config._ENV_REGISTRY``: target selection, the shared MCP launcher,
+session/tracing identity, hook escape hatches, and opt-in launcher-managed
+PostgreSQL.
 
 The structure is intentionally nested by concern so that adapters and
 modules ask for the section they care about (``cfg.retrieval_features``,
@@ -122,31 +124,18 @@ class InferenceConfig:
     # Anthropic-Version header (required by the API). Pinned to the
     # last GA version; bump when Anthropic releases a new stable.
     anthropic_version: str = "2023-06-01"
-    # Concurrent in-flight LLM requests during indexing. 1 = serial
-    # (legacy behaviour, no thread overhead). 8 is a good default for
-    # cloud backends (DeepSeek / OpenAI / Anthropic) — each chunk waits
-    # ~5s on network, so 8 in-flight uses the available concurrency without
-    # tripping rate limits at the basic-tier 60 req/min. Local backends
-    # (mlx, ollama) saturate a single GPU regardless — keep at 1.
+    # Concurrent in-flight LLM requests during indexing. 1 is serial.
+    # Higher values may improve remote-backend throughput, subject to provider
+    # capacity; useful local concurrency depends on the available hardware.
     enricher_concurrency: int = 1
-    # Chunks packed into a single LLM call. 1 = legacy per-chunk requests
-    # (one Messages API call per chunk). N>1 makes the contextual enricher
-    # pack N chunks into one structured-JSON prompt — the model returns an
-    # array of descriptions in one round-trip. Multiplies effective
-    # throughput by N under the same rate limit (50 req/min Anthropic →
-    # 50*N chunks/min). Same token cost (Anthropic bills per token, not
-    # per request). Other enrichers (noop, hierarchical, …) ignore this
-    # knob and stay per-chunk.
-    # Suggested: 1 for local backends (mlx, ollama — single GPU); 10 for
-    # cloud (Anthropic, OpenAI, LMS); 5 for DeepSeek (verbose, prone to truncating
-    # responses at higher batch sizes — see deepseek_batch_size below).
+    # Maximum chunks packed into one call by enrichers that implement true
+    # batching. 1 keeps per-chunk requests; larger values reduce request count
+    # but increase prompt and response size. Other enrichers ignore this knob.
     enricher_batch_size: int = 1
     # Per-backend batch-size overrides. ``None`` = use ``enricher_batch_size``.
     # Set when a specific backend needs a tighter batch than the global
-    # default — typically because the model is verbose and runs over the
-    # response max_tokens budget at higher batch sizes, truncating the
-    # JSON array mid-string. Observed in the wild: deepseek-chat starts
-    # losing entries above batch_size=5; claude-haiku-4-5 handles 10 fine.
+    # default, for example when a model's output becomes unreliable at larger
+    # prompt or response sizes.
     deepseek_batch_size: int | None = None
     lms_batch_size: int | None = None
     moa_batch_size: int | None = None
@@ -326,11 +315,13 @@ class GitConfig:
 
     url_cache: Path = field(default_factory=_default_git_url_cache)
     url_ttl: int = 86_400  # 24 hours
+    clone_depth: int = 1
+    clone_timeout: int = 300
     rename_threshold: int = 80  # 0-100, git rename similarity
 
 
 # ---------------------------------------------------------------------------
-# Section: hook (post-commit hook settings — subprocess so ENV only)
+# Section: hook (post-commit hook settings)
 # ---------------------------------------------------------------------------
 
 
@@ -342,9 +333,8 @@ def _default_hook_log() -> Path:
 class HookConfig:
     """Post-commit hook configuration (YAML: ``hook``).
 
-    These values are baked into the generated hook script at install time
-    or read from ENV at runtime by the hook itself (which runs as a
-    subprocess and cannot read the YAML config).
+    These values come from the unified YAML configuration. The detached hook
+    subprocess may apply its supported runtime overrides.
 
     Note: ``index_path`` removed in v=9. The hook always uses the YAML
     ``paths.index`` (resp. ``pipeline.storage.config.path``) — there is
@@ -357,7 +347,6 @@ class HookConfig:
     uv_path: str | None = None
     graphify_path: str | None = None
     skip: bool = False
-    no_graphify: bool = False
     project_dir: Path | None = None
 
 

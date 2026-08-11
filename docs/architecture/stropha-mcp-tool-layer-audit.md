@@ -1,8 +1,13 @@
 # stropha MCP tool layer — structural audit
 
-**Status:** Proposed (analysis only; no code changes shipped with this doc)
-**Date:** 2026-05-25
-**Scope:** `src/stropha/server.py` (~4500 LOC, 48 `@mcp.tool` registrations)
+**Status:** Historical structural audit (analysis snapshot; not current inventory)
+**Original date:** 2026-05-25
+**History audit:** 2026-08-11 at commit
+`b0d391d7d67606a04666d8e9a48cfbef24c1726d`
+**Scope:** the 2026-05-25 `src/stropha/server.py` snapshot (~4500 LOC, 48
+`@mcp.tool` registrations). Counts, line references, findings, and proposals in
+the body are preserved as audited history and must not be read as claims about
+current HEAD. Use MCP `tools/list` and current source for live inventory.
 **Audience:** maintainers considering a tool-layer refactor
 
 ---
@@ -59,7 +64,7 @@ pattern means).
 | Pattern | Count | Tools |
 |---|---:|---|
 | Pure pass-through | 4 | `get_symbol`, `list_repos`, `get_file_outline`, `list_task_recipes` |
-| Glue + delegate | 16 | `list_pins`, `smart_search`, `expand_chunk`, `plan_investigation`, `cache_stats`, `cache_prune`, `bootstrap_environment`, `assemble_context`, `execute_investigation`, `apply_task_recipe`, `assert_snippet_freshness`, `working_set`, `audit_citations`, `spec_consistency`, `check_symbols`, `expand_chunks` |
+| Glue + delegate | 16 | `list_pins`, `smart_search_tool`, `expand_chunk`, `plan_investigation`, `cache_stats`, `cache_prune`, `bootstrap_environment`, `assemble_context`, `execute_investigation`, `apply_task_recipe`, `assert_snippet_freshness`, `working_set`, `audit_citations`, `spec_consistency`, `check_symbols`, `expand_chunks` |
 | Graph-gated, raw-dict return | 6 | `find_callers`, `find_related`, `get_community`, `find_rationale`, `find_tests_for`, `trace_feature` |
 | Graph-gated, typed return | 4 | `blast_radius`, `test_impact`, `contract_tests`, `verify_claim` |
 | Session mutator | 7 | `reset_dedup`, `pin_chunks`, `unpin_chunks`, `scratchpad_read`, `scratchpad_write`, `scratchpad_append`, `scratchpad_clear` |
@@ -68,7 +73,7 @@ pattern means).
 | Inline-heavy orchestrator | 3 | `search_code`, `get_config`, `suggest_next_tool` |
 | Inline + try/except (unique) | 1 | `report_bad_result` |
 
-Total: 4 + 16 + 6 + 4 + 7 + 3 + 4 + 3 + 1 = 48. `smart_search` exhibits
+Total: 4 + 16 + 6 + 4 + 7 + 3 + 4 + 3 + 1 = 48. `smart_search_tool` exhibits
 the inline + try/except shape too but is counted under "Glue + delegate"
 to avoid double-counting; §5.7 covers the exception-handling
 divergences across all three tools that mask exceptions.
@@ -192,7 +197,8 @@ The shared helper at `server.py:1386`:
 human-readable message at all — only `notes=["graph_loaded=False"]`.
 
 Same conceptual signal, four different phrasings. MCP clients see
-inconsistent UX for the same failure mode. CLAUDE.md invariant #4
+inconsistent UX for the same failure mode. The `CLAUDE.md` invariant
+**Graph-gated tools never return silent empty**
 requires graph-gated tools to "never return silent empty" and to
 return an actionable message — `contract_tests_tool` is arguably out
 of compliance.
@@ -235,8 +241,9 @@ one line above each SELECT — at 1586 / 2174 / 2223.)
 
 Three tools reach into `storage._conn` directly. This:
 
-- Violates the spirit of CLAUDE.md invariant #3 (storage writes must
-  live in `storage/sqlite.py`) — the rule is about writes, but the
+- Violates the spirit of the `CLAUDE.md` **Hygiene rules** item
+  **Never write to the index outside the active storage adapter implementation** —
+  the rule is about writes, but the
   same encapsulation principle covers reads that hardwire schema.
 - Hardwires the `repos` table layout in three places. A future schema
   migration that renames the column has to grep server.py.

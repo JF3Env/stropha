@@ -135,7 +135,7 @@ class Pipeline:
                 8 in-flight pipelines that latency efficiently. Local
                 backends (mlx / ollama) saturate a single GPU regardless, so
                 concurrency >1 mostly adds overhead. Default 1 (serial) is
-                safe for any backend; opt in via stropha.yaml's
+                safe for any backend; opt in via ~/.stropha/config.yaml's
                 ``inference.enricher_concurrency`` or ``--concurrency N``
                 CLI flag.
             enricher_batch_size: chunks packed into a single LLM call. 1 =
@@ -496,7 +496,7 @@ class Pipeline:
             log.warning("graph_vec_loader.failed", error=str(exc))
 
         # L2 retroactive FTS augmentation. Toggle via graph.fts_augment in
-        # stropha.yaml (default true). The augmentation is a no-op when
+        # ~/.stropha/config.yaml (default true). The augmentation is a no-op when
         # graph_nodes is empty.
         from ..config import get_config as _get_config
         if _get_config().graph.fts_augment:
@@ -753,11 +753,15 @@ class Pipeline:
         Falls back to ``_index_one_repo_full`` on any git-side failure —
         we never want a transient git error to leave the index stale.
         """
-        from ..adapters.walker.git_diff import GitDiffWalker
+        from ..adapters.walker.git_diff import GitDiffWalker, GitDiffWalkerConfig
+        from ..config import get_config
         from ..errors import WalkerError
         from ..ingest.walker import Walker
 
-        diff_walker = GitDiffWalker()
+        rename_threshold = max(0, min(100, get_config().git.rename_threshold))
+        diff_walker = GitDiffWalker(
+            GitDiffWalkerConfig(rename_threshold=rename_threshold)
+        )
         try:
             deltas = diff_walker.discover_deltas(repo_path, since_sha=since_sha)
         except WalkerError as exc:

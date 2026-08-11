@@ -1,7 +1,11 @@
 # Log de Revisao de Codigo e Documentacao - Stropha/RAG
 
 **Iniciado:** 2026-05-16
-**Status:** Em andamento
+**Status:** Historical/closed log. This file preserves review sessions and the
+facts known on their dates; it is not a current backlog, architecture inventory,
+schema reference, or roadmap. Reclassified 2026-08-11 at commit
+`b0d391d7d67606a04666d8e9a48cfbef24c1726d`. Use `CLAUDE.md`, live CLI/MCP
+introspection, and the issue tracker for current state.
 
 ---
 
@@ -621,4 +625,3 @@ retrieval:
 | Local-first | ✗ | ✗ | ✓ | **✓✓** |
 
 **Stropha agora tem paridade com Cursor em query intelligence, porem 100% local.**
-

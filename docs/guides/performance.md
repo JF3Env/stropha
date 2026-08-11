@@ -1,59 +1,61 @@
 # Performance Tuning Guide
 
-> Tips and best practices for optimizing stropha performance on large codebases.
+Performance depends on repository shape, hardware, models, storage, and enabled
+query features. This guide avoids fixed benchmark claims and focuses on controls
+that are present in the current implementation.
 
----
+## Establish A Baseline
 
-## Quick Wins
-
-### 1. Use Local Embeddings
-
-Local embeddings via fastembed have zero network latency:
+Start with the default local pipeline:
 
 ```bash
-# Default: mixedbread-ai/mxbai-embed-large-v1 (1024 dims)
-# No API key needed, weights download once
-
-# For multilingual codebases:
-stropha index --embedder bge-m3
+uv sync --extra local
+uv run stropha pipeline show
+uv run stropha pipeline validate
+uv run stropha index
+uv run stropha search "a representative query"
 ```
 
-### 2. Enable Query Cache
+The no-key default uses the local embedder, the hierarchical enricher, three RRF
+streams, and no reranker. Measure this baseline on a representative golden set
+before enabling features that add model calls.
 
-For repeated or similar queries, enable the semantic cache:
+## Configuration
 
-```bash
-export STROPHA_QUERY_CACHE_ENABLED=1
-export STROPHA_QUERY_CACHE_SIZE=500    # LRU entries
-export STROPHA_QUERY_CACHE_TTL=3600    # 1 hour
+Tune settings only in `~/.stropha/config.yaml`. Environment-variable controls
+for embedders, query features, file size, index path, and log level are not
+supported.
+
+```yaml
+logging:
+  level: INFO
+
+walker:
+  max_file_bytes: 524288
+
+retrieval_features:
+  hyde_enabled: false
+  query_rewrite_enabled: false
+  multi_query_enabled: false
+
+pipeline:
+  retrieval:
+    adapter: hybrid-rrf
+    config:
+      recursive_enabled: false
 ```
 
-The cache keys by quantized query embedding + filters, so similar queries hit the cache.
+Query-time features apply to new requests without re-indexing. When the daemon
+is running, use the dashboard's `PATCH /api/config` path for live replacement or
+restart the daemon after editing the YAML directly.
 
-### 3. Use Incremental Indexing
+## Large Repositories
 
-The post-commit hook uses incremental indexing by default (v4+):
+### Exclude Generated Content
 
-```bash
-# Check hook version
-stropha hook status
+Use `.strophaignore` for generated, vendored, or minified content:
 
-# Reinstall if needed (gets latest version)
-stropha hook install
-```
-
-Incremental indexing only processes changed files, making re-indexing nearly instant.
-
----
-
-## Large Codebase Strategies
-
-### Repositories with 100k+ Files
-
-1. **Exclude generated files** via `.strophaignore`:
-
-```
-# .strophaignore
+```text
 **/node_modules/**
 **/dist/**
 **/build/**
@@ -63,303 +65,228 @@ Incremental indexing only processes changed files, making re-indexing nearly ins
 **/__pycache__/**
 ```
 
-2. **Use manifest for selective indexing**:
+### File Size Limit
+
+The default maximum file size is 524,288 bytes, or 512 KiB. Increase it only for
+source files that should genuinely be indexed:
+
+```yaml
+walker:
+  max_file_bytes: 1048576
+
+pipeline:
+  walker:
+    adapter: git-ls-files
+    config:
+      max_file_bytes: 1048576
+```
+
+The top-level value supplies the general walker setting, while the pipeline
+adapter block makes the selected adapter's value explicit.
+
+### Select Repositories Explicitly
+
+```bash
+uv run stropha index \
+  --repo ./packages/frontend \
+  --repo ./packages/backend \
+  --repo ./packages/shared
+```
+
+For a reusable list:
 
 ```yaml
 # repos.yaml
 repos:
-  - path: src/
-  - path: lib/
-  - path: tests/
-    enabled: false  # Skip tests for faster indexing
-```
-
-```bash
-stropha index --manifest repos.yaml
-```
-
-3. **Increase file size limit if needed**:
-
-```bash
-export STROPHA_MAX_FILE_BYTES=2097152  # 2MB (default 1MB)
-```
-
-### Monorepos
-
-For monorepos with multiple projects:
-
-```bash
-# Index specific subdirectories
-stropha index --repo ./frontend --repo ./backend --repo ./shared
-
-# Or use manifest
-cat > repos.yaml << EOF
-repos:
   - path: packages/frontend
-  - path: packages/backend  
+  - path: packages/backend
   - path: packages/shared
   - path: packages/deprecated
     enabled: false
-EOF
-stropha index --manifest repos.yaml
 ```
-
----
-
-## Embedder Selection
-
-| Embedder | Latency | Quality | Cost | Best For |
-|----------|---------|---------|------|----------|
-| `local` (mxbai) | ~5ms/chunk | High | Free | Development, most codebases |
-| `bge-m3` | ~5ms/chunk | High | Free | Multilingual codebases on Apple Silicon |
-| `nvidia` | hardware-dependent | High | Free | CUDA-capable NVIDIA systems |
-| `amd` | hardware-dependent | High | Free | ROCm-capable AMD systems |
-| `intel-npu` | hardware-dependent | High | Free | Intel NPU via OpenVINO |
-| `voyage` | ~50ms/chunk | Highest | $$$ | Production with budget |
-
-All local hardware adapters implement the same composed engine contract. CPU uses FastEmbed/ONNX,
-Apple uses MLX, NVIDIA and AMD use native PyTorch execution through CUDA and ROCm, and Intel NPU
-uses OpenVINO. The adapter shell keeps model identity, batching, health, and persistence consistent
-while each engine remains native to its hardware. Missing runtimes produce actionable installation
-errors.
-
-### Switching Embedders
-
-Switching embedders requires re-indexing (embeddings are model-specific):
 
 ```bash
-# Switch to bge-m3 for multilingual support
-uv sync --extra mlx-embed
-stropha index --embedder bge-m3 --rebuild
+uv run stropha index --manifest repos.yaml
 ```
 
-The configurable `mlx` adapter also accepts MLX-converted Qwen3 embedding checkpoints such as
-`mlx-community/Qwen3-Embedding-4B-4bit-DWQ`. These use `mlx-lm`, last-token pooling, and normalized
-embeddings. Configuration only validates the checkpoint metadata; weights are downloaded and loaded
-on the first embedding batch during indexing. Stropha caps the MLX free-buffer cache at 512 MiB and
-clears it after each batch so Metal does not retain memory up to its default device working-set limit.
-Changing checkpoints requires a rebuild.
+## Embedders
 
----
+### Local
 
-## Enricher Tradeoffs
+The local adapter is the normal no-key default and currently uses
+`mixedbread-ai/mxbai-embed-large-v1` unless configured otherwise. Model weights
+download on first use.
 
-| Enricher | Speed | Quality | Dependencies |
-|----------|-------|---------|--------------|
-| `noop` | Instant | Baseline | None |
-| `hierarchical` | Fast | +10% recall | None |
-| `graph-aware` | Fast | +15% recall | graphify graph |
-| `contextual` | Slow | +35% recall | Ollama running |
-
-### Recommendations
-
-- **Development**: `hierarchical` (fast, no dependencies)
-- **Production with Ollama**: `contextual` (best quality)
-- **With graphify**: `graph-aware` (community context)
+Hardware-specific adapters have different optional dependencies. Inspect the
+live registry and schema rather than relying on a copied adapter inventory:
 
 ```bash
-# Use contextual enricher (requires Ollama)
-stropha index --enricher contextual
-
-# Use graph-aware enricher (requires graphify graph)
-graphify .
-stropha index --enricher graph-aware
+uv run stropha adapters list --stage embedder
+uv run stropha pipeline show
 ```
 
----
+### Voyage
 
-## Query-Time Optimization
+Voyage is an optional cloud adapter, not stropha's overall default. Install the
+extra, put the API key under `secrets.voyage_api_key`, and select the adapter in
+`~/.stropha/config.yaml`. The adapter's current model default is
+`voyage-4-large` with a 512-dimensional output.
 
-### Disable Expensive Features for Interactive Use
+```yaml
+pipeline:
+  embedder:
+    adapter: voyage
+    config:
+      model: voyage-4-large
+      dim: 512
+
+secrets:
+  voyage_api_key: <key>
+```
+
+Changing the primary model or dimension changes the vector space. Run an index
+pass; if stropha reports a dimension conflict, use `stropha index --rebuild`.
+A dimension rebuild clears all derived search data across the shared backend,
+so include every repository that must remain searchable.
+
+## Enrichers
+
+| Enricher | Behavior | Main cost |
+|---|---|---|
+| `noop` | Embeds raw chunk content | Lowest indexing work |
+| `hierarchical` | Adds deterministic parent context | Small local CPU cost |
+| `graph-aware` | Adds graph labels and parent context | Requires a loaded graph |
+| `contextual` | Generates semantic context through `inference.backend` | One or batched LLM calls during indexing |
+| `ollama` | Calls Ollama directly for a concise summary | Local Ollama inference |
+
+The `contextual` and `ollama` adapters are distinct. Select `contextual` when
+you want unified backend selection; select `ollama` only when the direct Ollama
+adapter's behavior is intended.
+
+Generated enrichment is cached by content and adapter identity. Changing an
+enricher causes affected chunks to be enriched and embedded again on the next
+index pass.
+
+## Query-Time Features
+
+HyDE, query rewriting, and multi-query expansion invoke the configured inference
+backend and can dominate interactive latency. Recursive merging performs extra
+retrieval work but no LLM call. Keep features disabled until a representative
+evaluation shows that their additional recall is useful.
+
+```yaml
+retrieval_features:
+  hyde_enabled: true
+  query_rewrite_enabled: false
+  multi_query_enabled: false
+
+pipeline:
+  retrieval:
+    adapter: hybrid-rrf
+    config:
+      recursive_enabled: true
+```
+
+The semantic query-cache classes are not integrated into the production search
+path. Do not enable `cache_enabled` expecting lower query latency, and do not use
+cache hit-rate claims for capacity planning.
+
+## Reranking
+
+No reranker is the current default and the recommended starting point. Rerankers
+can improve some datasets while demoting exact code matches on others.
+
+The local `cross-encoder` adapter defaults to `BAAI/bge-reranker-base` and
+requires the `local` extra. The `llm` adapter uses the configured inference
+backend. Both add work after RRF fusion.
+
+```yaml
+pipeline:
+  retrieval:
+    adapter: hybrid-rrf
+    config:
+      candidate_k: 50
+      reranker:
+        adapter: cross-encoder
+        config:
+          model: BAAI/bge-reranker-base
+```
+
+Treat this as an experiment, not a universal recommendation. Compare against
+the no-reranker baseline with the target repository's golden set.
+
+## Retrieval Streams And Memory
+
+The default retrieval uses dense, BM25, and symbol streams. `graph-vec` and
+`model2vec-cosine` are opt-in, allowing up to five configured streams.
+
+The graph-vector stream materializes float32 node embeddings. The raw matrix
+size is:
+
+```text
+node_count * embedding_dimension * 4 bytes
+```
+
+For example, 50,000 nodes at 512 dimensions require about 98 MiB for the raw
+matrix, before array, metadata, storage-driver, and process overhead. The old
+estimate of roughly 50 bytes per node omitted the embedding dimension and was
+not usable for sizing.
+
+Model2Vec uses separate 256-dimensional tables and does not rebuild or replace
+the primary vectors.
+
+## Watcher And Hook
+
+The MCP daemon starts a polling watcher by default after its shared runtime is
+first built. It debounces saves and writes changed working-tree files to the
+persistent index. This is not an in-memory overlay. The lightweight refresh does
+not update graphify data or graph vectors on every save.
+
+The post-commit hook runs detached and uses normal index auto mode. Check its
+resolved location and installed version with:
 
 ```bash
-# Fast search (all enhancements off)
-export STROPHA_HYDE_ENABLED=0
-export STROPHA_MULTI_QUERY_ENABLED=0
-export STROPHA_RECURSIVE_RETRIEVAL=0
+uv run stropha hook status
 ```
 
-### Enable for Batch/Thorough Search
+Re-running `stropha hook install --force` updates the managed block. During a
+large rebase, `STROPHA_HOOK_SKIP=1` remains an explicit hook-process escape
+hatch; run `stropha index` afterward.
+
+## Storage And Stats
+
+`stropha stats` opens the configured backend and reports backend location,
+database size, chunks, files, embedding identities, enrichers, and repositories:
 
 ```bash
-# Maximum recall (slower)
-export STROPHA_HYDE_ENABLED=1
-export STROPHA_MULTI_QUERY_ENABLED=1
-export STROPHA_RECURSIVE_RETRIEVAL=1
+uv run stropha stats
 ```
 
-### Feature Latency Impact
+For SQLite, opening a missing path can initialize an empty database. Verify
+nonzero counts and the expected repository instead of treating command success
+or file existence as proof of a completed index.
 
-| Feature | Latency Impact | Recall Improvement |
-|---------|----------------|-------------------|
-| HyDE | +100-500ms | +10-20% |
-| Multi-query | +200-800ms | +15-25% |
-| Recursive | +10-50ms | +5-10% |
-| Reranker | +50-200ms | +10-15% |
+SQLite WAL mode is managed by stropha. Do not delete `-wal` or `-shm` files to
+improve performance or clear locks. PostgreSQL sizing and maintenance belong to
+PostgreSQL tooling; do not apply SQLite file instructions to that backend.
 
----
-
-## Hook Optimization
-
-### Fast Commit Experience
-
-The hook should exit in <100ms (foreground). Heavy work runs in background:
-
-```bash
-# Check hook timing
-time git commit --allow-empty -m "test"
-
-# If slow, check for blocking calls
-cat ~/.cache/stropha-hook.log | tail -20
-```
-
-### Skip Hook for Large Commits
-
-During big refactors or rebases:
-
-```bash
-export STROPHA_HOOK_SKIP=1
-git rebase main
-unset STROPHA_HOOK_SKIP
-stropha index  # Re-index manually
-```
-
-### Hook Timeout
-
-Default timeout is 600s (10 min). Adjust for very large repos:
-
-```bash
-export STROPHA_HOOK_TIMEOUT=1200  # 20 minutes
-```
-
----
-
-## Database Optimization
-
-### Index Size
-
-Check your index size and composition:
-
-```bash
-stropha stats
-```
-
-Typical sizes:
-- Small repo (<1k files): 10-50 MB
-- Medium repo (1k-10k files): 50-200 MB
-- Large repo (10k-100k files): 200 MB - 1 GB
-
-### Database Location
-
-Place the index on fast storage (SSD):
-
-```bash
-# Use local SSD instead of network storage
-export STROPHA_INDEX_PATH=/fast/ssd/.stropha/index.db
-```
-
-### WAL Mode
-
-SQLite WAL mode is enabled by default for concurrent reads. No action needed.
-
----
-
-## Memory Usage
-
-### Embedding Batch Size
-
-For very large codebases, embeddings are batched. Memory scales with batch size:
-
-- fastembed: ~500MB baseline + ~100MB per 1000 chunks
-- Typical peak: 1-2 GB during indexing
-
-### Graph Nodes
-
-The graph-vec retrieval stream loads all node embeddings into memory:
-- ~50 bytes per node embedding
-- 50k nodes = ~2.5 MB (negligible)
-
----
+Use `stropha vacuum` only for SQLite space reclamation after large deletions.
 
 ## Profiling
 
-### Enable Debug Logging
+Set logging in the user YAML, restart after a direct edit, and inspect structured
+stage timings:
 
-```bash
-export STROPHA_LOG_LEVEL=DEBUG
-stropha index 2>&1 | tee index.log
+```yaml
+logging:
+  level: DEBUG
 ```
 
-### Time Individual Stages
-
 ```bash
-# Time chunking
-time uv run python -c "from stropha.pipeline import Pipeline; ..."
-
-# Check structlog output for per-stage timing
+uv run stropha cost
+uv run stropha cost --json
 ```
 
-### Cost Dashboard
-
-View aggregate timings across hook runs:
-
-```bash
-stropha cost
-stropha cost --json  # Machine-readable
-```
-
----
-
-## Best Practices Summary
-
-| Scenario | Recommendations |
-|----------|-----------------|
-| Development | Local embedder, hierarchical enricher, cache enabled |
-| CI/CD | Incremental indexing, skip heavy enrichers |
-| Production | Voyage embedder (if budget allows), contextual enricher |
-| Large monorepo | Manifest-based indexing, .strophaignore, increased timeout |
-| Interactive search | Disable HyDE/multi-query, enable cache |
-| Thorough analysis | Enable all enhancements, reranker |
-
----
-
-## Benchmarks
-
-### Indexing Speed (Apple M2, local embedder)
-
-| Repo Size | Files | Chunks | Time |
-|-----------|-------|--------|------|
-| Small | 500 | 2,000 | ~30s |
-| Medium | 5,000 | 20,000 | ~5min |
-| Large | 50,000 | 200,000 | ~50min |
-
-### Query Latency (cached, local)
-
-| Feature Set | p50 | p99 |
-|-------------|-----|-----|
-| Baseline | 15ms | 50ms |
-| + HyDE | 150ms | 500ms |
-| + Multi-query | 300ms | 800ms |
-| + Reranker | 50ms | 200ms |
-
----
-
-## Troubleshooting Performance
-
-### Slow Indexing
-
-1. Check for large binary files: `find . -size +1M -type f`
-2. Add to `.strophaignore`
-3. Check enricher: `stropha pipeline show`
-
-### Slow Queries
-
-1. Enable cache: `STROPHA_QUERY_CACHE_ENABLED=1`
-2. Disable HyDE/multi-query for interactive use
-3. Check index stats: `stropha stats`
-
-### High Memory Usage
-
-1. Reduce batch size (if customized)
-2. Use local embedder instead of Voyage
-3. Check for memory leaks: `stropha cost`
+Measure indexing and query behavior on the actual repository. Hardware labels
+and model names alone are not enough to support portable latency or memory
+claims.

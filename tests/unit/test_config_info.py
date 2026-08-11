@@ -2,8 +2,8 @@
 
 We care about three guarantees:
 
-1. ``get_config_info()`` exposes the env vars still in the registry
-   (STROPHA_TARGET_REPO + STROPHA_HOOK_*) and the YAML-backed settings.
+1. ``get_config_info()`` exposes registered process arguments and YAML-backed
+   settings without reviving setting environment fallbacks.
 2. Secrets loaded from YAML are redacted in introspection output.
 3. Back-compat keys are preserved for existing callers.
 """
@@ -34,8 +34,8 @@ def _write_config(tmp_path, content: str) -> None:
     (tmp_path / ".stropha" / "config.yaml").write_text(textwrap.dedent(content))
 
 
-def test_registry_covers_hook_and_target_repo(tmp_path):
-    """The registry must cover STROPHA_TARGET_REPO and all STROPHA_HOOK_* vars.
+def test_registry_covers_runtime_process_variables(tmp_path):
+    """The registry covers runtime, launcher, session, and hook process vars.
 
     Note: STROPHA_HOOK_INDEX_PATH was removed in v=9 — it was wired to
     ``cfg.hook.index_path`` but never propagated to the storage adapter,
@@ -47,9 +47,29 @@ def test_registry_covers_hook_and_target_repo(tmp_path):
 
     expected = {
         "STROPHA_TARGET_REPO",
-        "STROPHA_HOOK_LOG", "STROPHA_HOOK_TIMEOUT", "STROPHA_HOOK_SKIP",
-        "STROPHA_HOOK_UV", "STROPHA_HOOK_GRAPHIFY", "STROPHA_HOOK_NO_GRAPHIFY",
+        "STROPHA_HOOK_LOG",
+        "STROPHA_HOOK_TIMEOUT",
+        "STROPHA_HOOK_SKIP",
+        "STROPHA_HOOK_UV",
+        "STROPHA_HOOK_GRAPHIFY",
         "STROPHA_HOOK_PROJECT_DIR",
+        "STROPHA_HOOK_META_ITERATIONS",
+        "STROPHA_HOOK_NO_META",
+        "STROPHA_HOOK_NO_EVAL",
+        "STROPHA_MCP_HOST",
+        "STROPHA_MCP_PORT",
+        "STROPHA_MCP_PROJECT_DIR",
+        "STROPHA_MCP_PROBE_TIMEOUT",
+        "STROPHA_CLIENT_ID",
+        "STROPHA_TRACES_DIR",
+        "STROPHA_USE_POSTGRES",
+        "STROPHA_PG_CONTAINER",
+        "STROPHA_PG_IMAGE",
+        "STROPHA_PG_PORT",
+        "STROPHA_PG_USER",
+        "STROPHA_PG_PASSWORD",
+        "STROPHA_PG_DB",
+        "STROPHA_PG_VOLUME",
     }
     missing = expected - set(info["sources"])
     assert not missing, f"Missing from registry: {sorted(missing)}"
@@ -57,13 +77,47 @@ def test_registry_covers_hook_and_target_repo(tmp_path):
     assert "STROPHA_HOOK_INDEX_PATH" not in info["sources"]
 
 
+def test_registry_excludes_yaml_backed_settings(tmp_path):
+    _write_config(tmp_path, "")
+    names = set(get_config_info()["sources"])
+
+    assert names.isdisjoint(
+        {
+            "STROPHA_ADAPTIVE_WEIGHTING",
+            "STROPHA_RECURSIVE_RETRIEVAL",
+            "STROPHA_RECURSIVE_ADJACENCY",
+            "STROPHA_GRAPHIFY_OUT",
+            "STROPHA_GIT_URL_CACHE",
+            "STROPHA_GIT_URL_TTL",
+            "STROPHA_RENAME_THRESHOLD",
+            "STROPHA_PG_DSN",
+            "VOYAGE_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "DEEPSEEK_API_KEY",
+        }
+    )
+
+
+def test_registry_redacts_launcher_password(tmp_path, monkeypatch):
+    _write_config(tmp_path, "")
+    monkeypatch.setenv("STROPHA_PG_PASSWORD", "do-not-leak")
+
+    info = get_config_info()
+
+    assert info["env_values"]["STROPHA_PG_PASSWORD"] == "(set)"
+    assert "do-not-leak" not in repr(info)
+
+
 def test_secrets_from_yaml_are_redacted(tmp_path):
     """API keys in YAML must NEVER appear verbatim in the introspection output."""
-    _write_config(tmp_path, """
+    _write_config(
+        tmp_path,
+        """
         secrets:
           voyage_api_key: "pa-secret-do-not-leak"
           anthropic_api_key: "sk-also-secret"
-    """)
+    """,
+    )
 
     info = get_config_info()
     assert info["settings"]["voyage_api_key"] == "(set)"
@@ -84,10 +138,13 @@ def test_secrets_absent_when_not_set(tmp_path):
 
 def test_use_voyage_true_when_key_present(tmp_path):
     """use_voyage must be True when voyage_api_key is set in YAML."""
-    _write_config(tmp_path, """
+    _write_config(
+        tmp_path,
+        """
         secrets:
           voyage_api_key: "pa-test"
-    """)
+    """,
+    )
     info = get_config_info()
     assert info["settings"]["use_voyage"] is True
     assert info["config"]["use_voyage"] is True
@@ -102,12 +159,31 @@ def test_use_voyage_false_without_key(tmp_path):
 
 def test_paths_from_yaml(tmp_path):
     """index_path and target_repo must come from YAML paths section."""
-    _write_config(tmp_path, f"""
+    _write_config(
+        tmp_path,
+        f"""
         paths:
           index: {tmp_path}/.stropha/custom.db
-    """)
+    """,
+    )
     info = get_config_info()
     assert "custom.db" in info["config"]["index_path"]
+
+
+def test_git_clone_settings_from_yaml(tmp_path):
+    _write_config(
+        tmp_path,
+        """
+        git:
+          clone_depth: 7
+          clone_timeout: 42
+    """,
+    )
+
+    cfg = load_config()
+
+    assert cfg.git.clone_depth == 7
+    assert cfg.git.clone_timeout == 42
 
 
 def test_target_repo_env_override(tmp_path, monkeypatch):
@@ -127,8 +203,13 @@ def test_back_compat_keys_preserved(tmp_path):
     info = get_config_info()
     legacy = info["config"]
     for key in (
-        "index_path", "target_repo", "log_level", "max_file_bytes",
-        "use_voyage", "local_embed_model", "voyage_embed_model",
+        "index_path",
+        "target_repo",
+        "log_level",
+        "max_file_bytes",
+        "use_voyage",
+        "local_embed_model",
+        "voyage_embed_model",
         "voyage_embed_dim",
     ):
         assert key in legacy, f"Back-compat key {key!r} missing from info['config']"
@@ -158,12 +239,15 @@ def test_env_groups_partition_registry(tmp_path):
 
 def test_embedder_from_yaml(tmp_path):
     """Embedder model settings are read from YAML, not env vars."""
-    _write_config(tmp_path, """
+    _write_config(
+        tmp_path,
+        """
         embedder:
           voyage_model: voyage-code-3
           voyage_dim: 1024
           local_model: BAAI/bge-small-en-v1.5
-    """)
+    """,
+    )
     cfg = load_config()
     assert cfg.embedder.voyage_model == "voyage-code-3"
     assert cfg.embedder.voyage_dim == 1024
@@ -172,21 +256,27 @@ def test_embedder_from_yaml(tmp_path):
 
 def test_logging_from_yaml(tmp_path):
     """Log level is read from YAML logging.level."""
-    _write_config(tmp_path, """
+    _write_config(
+        tmp_path,
+        """
         logging:
           level: DEBUG
-    """)
+    """,
+    )
     cfg = load_config()
     assert cfg.log_level == "DEBUG"
 
 
 def test_mcp_from_yaml(tmp_path):
     """MCP watch settings are read from YAML."""
-    _write_config(tmp_path, """
+    _write_config(
+        tmp_path,
+        """
         mcp:
           watch: false
           watch_interval: 5.0
-    """)
+    """,
+    )
     cfg = load_config()
     assert cfg.mcp_watch is False
     assert cfg.mcp_watch_interval == 5.0

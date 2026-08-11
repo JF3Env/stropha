@@ -310,7 +310,9 @@ def test_invalid_json_returns_none(tmp_path: Path, storage: Storage) -> None:
 # --------------------------------------------------------------------------- override path
 
 
-def test_env_override_path(monkeypatch, tmp_path: Path, storage: Storage) -> None:
+def test_yaml_override_path(isolated_test_env, tmp_path: Path, storage: Storage) -> None:
+    from stropha.config import reset_config
+
     other = tmp_path / "elsewhere"
     other.mkdir()
     _write_graph(
@@ -318,7 +320,13 @@ def test_env_override_path(monkeypatch, tmp_path: Path, storage: Storage) -> Non
         nodes=[{"id": "ext", "label": "Ext"}],
         edges=[],
     )
-    monkeypatch.setenv("STROPHA_GRAPHIFY_OUT", str(other))
+    config_dir = isolated_test_env / ".stropha"
+    config_dir.mkdir(exist_ok=True)
+    (config_dir / "config.yaml").write_text(
+        f"graph:\n  graphify_out: {other}\n",
+        encoding="utf-8",
+    )
+    reset_config()
     loader = GraphifyLoader(storage, tmp_path)
     assert loader.exists() is True
     res = loader.load()

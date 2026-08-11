@@ -2,7 +2,7 @@
 
 Composition: Walker → Chunker → Embedder → Storage.
 
-Phase 1 (MVP) semantics — single repo:
+Full-walk semantics — single repo:
 - `index` → walk everything, upsert. The per-chunk freshness check
   (`Storage.chunk_is_fresh`) makes a no-op re-run near-instant — no API
   calls, no DB writes. Stale chunks for deleted source are NOT cleaned up
@@ -11,7 +11,7 @@ Phase 1 (MVP) semantics — single repo:
   this when the source tree changed (file deletions, method renames) and
   you want a clean state without affecting other indexed repositories.
 
-Phase 4 (multi-repo) semantics — list of repos:
+Multi-repo semantics — list of repos:
 - The pipeline accepts ``repos: list[Path]``. Each repo is walked and
   indexed sequentially, sharing the same Storage and Embedder.
 - ``chunk_id`` is namespaced by repo (via ``Chunker.chunk(repo_key=…)``)
@@ -19,8 +19,8 @@ Phase 4 (multi-repo) semantics — list of repos:
 - ``--rebuild`` clears chunks and file metadata only for selected repos.
   Repository identities and data belonging to other repos survive.
 
-True git-diff-based incremental (post-commit hooks, soft index for
-working tree) is deferred to Phase 2/3 — see spec §8.
+This legacy pipeline always performs a full walk. Git-diff incremental
+indexing is provided by the adapter-aware ``stropha.pipeline.Pipeline``.
 """
 
 from __future__ import annotations

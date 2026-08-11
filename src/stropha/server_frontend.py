@@ -197,18 +197,9 @@ def configuration_catalog() -> dict[str, Any]:
     retrieval_fields = [
         _catalog_field("retrieval_features.hyde_enabled", "HyDE", "boolean", False, "Embeds an LLM-generated hypothetical implementation for the dense search lane.", enabled="Can improve conceptual recall; adds one LLM call and may drift on ambiguous queries.", disabled="Embeds the original query directly; faster and more literal."),
         _catalog_field("retrieval_features.hyde_code_tuned", "Code-tuned HyDE", "boolean", True, "Uses code-oriented prompts for hypothetical documents.", enabled="Biases HyDE toward production code and symbols.", disabled="Uses generic hypothetical-document prompting."),
-        _catalog_field("retrieval_features.query_decomposition_enabled", "Query decomposition", "boolean", False, "Splits compound questions into focused searches and fuses the results.", enabled="Improves multi-part questions but performs more searches.", disabled="Runs one search for the original question."),
-        _catalog_field("retrieval_features.query_decomposition_llm", "LLM decomposition", "boolean", False, "Uses the inference backend rather than heuristics to split compound questions.", enabled="Produces smarter splits with extra latency and model usage.", disabled="Uses deterministic local decomposition."),
         _catalog_field("retrieval_features.query_router_llm", "LLM query routing", "boolean", False, "Lets the router use the LLM for uncertain structural-vs-semantic decisions.", enabled="Can route ambiguous queries better with an extra model call.", disabled="Uses deterministic pattern routing only."),
         _catalog_field("retrieval_features.query_rewrite_enabled", "Query rewrite", "boolean", False, "Expands natural language into likely code terms before every retrieval stream.", enabled="Can improve vocabulary mismatch; adds an LLM call and may weaken exact queries.", disabled="Searches the user's exact wording."),
         _catalog_field("retrieval_features.multi_query_enabled", "Multi-query", "boolean", False, "Generates several paraphrases and RRF-fuses their results.", enabled="Improves broad recall at the cost of extra generation and searches.", disabled="Runs a single query with lower latency."),
-        _catalog_field("retrieval_features.multi_query_count", "Multi-query count", "integer", 3, "Number of paraphrases when multi-query is enabled.", minimum=1, maximum=5),
-        _catalog_field("retrieval_features.recursive_enabled", "Recursive merge", "boolean", False, "Promotes matching sibling chunks to parents and merges adjacent chunks.", enabled="Returns broader coherent context; individual matches may be less precise.", disabled="Returns independently ranked chunks."),
-        _catalog_field("retrieval_features.recursive_adjacency", "Adjacent line gap", "integer", 5, "Maximum line gap used when recursive merge joins neighboring chunks.", minimum=1, maximum=50),
-        _catalog_field("retrieval_features.cache_enabled", "Query cache", "boolean", False, "Keeps recent query results in an in-memory LRU cache.", enabled="Reduces repeated-query latency and uses process memory until restart.", disabled="Every query executes retrieval against current index state."),
-        _catalog_field("retrieval_features.cache_size", "Cache entries", "integer", 500, "Maximum number of cached query results.", minimum=1, maximum=100000),
-        _catalog_field("retrieval_features.cache_ttl", "Cache TTL seconds", "number", 3600, "How long cached query results remain reusable.", minimum=1, step=1),
-        _catalog_field("retrieval_features.adaptive_weighting", "Adaptive weighting", "boolean", True, "Adjusts dense, lexical, and symbol stream weights by query shape.", enabled="Boosts exact streams for symbol queries and dense retrieval for prose.", disabled="Uses fixed configured stream weights for every query."),
     ]
 
     service_fields = [
@@ -221,11 +212,8 @@ def configuration_catalog() -> dict[str, Any]:
     index_fields = [
         _catalog_field("paths.index", "Index path", "string", "~/.stropha/index.db", "SQLite index path. PostgreSQL storage ignores this file path."),
         _catalog_field("graph.confidence", "Graph confidence", "choice", "EXTRACTED", "Graph edge confidence classes accepted during loading.", options=[{"value": "EXTRACTED", "label": "Extracted only"}, {"value": "INFERRED", "label": "Inferred only"}, {"value": "EXTRACTED,INFERRED", "label": "Extracted + inferred"}]),
-        _catalog_field("graph.fts_augment", "Graph FTS augmentation", "boolean", True, "Adds graph labels and relationships to lexical search documents during indexing.", enabled="Improves structural-term recall and increases index work/storage.", disabled="Keeps lexical documents limited to chunk text."),
+        _catalog_field("graph.fts_augment", "Graph FTS augmentation", "boolean", True, "Appends graph node and community labels to the base content/path/symbol lexical document during indexing.", enabled="Improves recall for node and community labels and increases index work/storage.", disabled="Keeps lexical search to the base content/path/symbol document."),
         _catalog_field("graph.graphify_out", "Graphify output", "nullable-string", None, "Optional graphify output directory; blank uses <target>/graphify-out."),
-        _catalog_field("git.url_cache", "Remote repository cache", "string", "~/.cache/stropha/repos", "Clone cache used when indexing repository URLs."),
-        _catalog_field("git.url_ttl", "Remote cache TTL seconds", "integer", 86400, "How long a cached remote checkout is reused before refresh.", minimum=0),
-        _catalog_field("git.rename_threshold", "Rename similarity", "integer", 80, "Git similarity percentage required to classify a file as renamed.", minimum=0, maximum=100),
     ]
 
     return {
@@ -234,7 +222,7 @@ def configuration_catalog() -> dict[str, Any]:
             {"id": "inference", "title": "Inference", "description": "Answer generation and indexing-time LLM behavior.", "fields": inference_fields},
             {"id": "retrieval", "title": "Retrieval features", "description": "Query-time controls; none require re-indexing.", "fields": retrieval_fields},
             {"id": "service", "title": "Daemon", "description": "File watching and operational logging.", "fields": service_fields},
-            {"id": "index", "title": "Index and graph", "description": "Index location, graph enrichment, and remote repository behavior.", "fields": index_fields},
+            {"id": "index", "title": "Index and graph", "description": "Index location and graph enrichment.", "fields": index_fields},
         ],
         "subadapters": {
             "language-chunker": sorted(name for (stage, name) in registry if stage == "language-chunker"),

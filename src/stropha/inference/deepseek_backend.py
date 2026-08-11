@@ -1,22 +1,22 @@
 """DeepSeek inference backend — cloud LLM via OpenAI-compatible API.
 
 Calls DeepSeek's hosted chat-completions endpoint (``/v1/chat/completions``).
-Requires the ``DEEPSEEK_API_KEY`` environment variable.
+Requires ``secrets.deepseek_api_key`` in ``~/.stropha/config.yaml``.
 
 This backend is **opt-in** because it makes outbound network calls. The
-``CLAUDE.md`` §3.6 "local-only by default" invariant is preserved by
+The ``CLAUDE.md`` **Local-only by default** invariant is preserved by
 :func:`stropha.inference.backend.get_backend` — DeepSeek is never
 auto-selected, only when ``inference.backend: deepseek`` is set in
-``stropha.yaml`` (or ``prefer='deepseek'`` is passed explicitly).
+``~/.stropha/config.yaml`` (or ``prefer='deepseek'`` is passed explicitly).
 
-Configuration (stropha.yaml):
+Configuration (``~/.stropha/config.yaml``):
     inference:
       backend: deepseek
       deepseek_model: deepseek-chat
       deepseek_base_url: https://api.deepseek.com/v1
 
-Authentication (env only — never YAML):
-    DEEPSEEK_API_KEY=sk-...
+    secrets:
+      deepseek_api_key: sk-...
 
 API contract (mirrors :class:`OllamaBackend`):
     - ``generate`` MUST swallow every exception and return ``None`` on
@@ -92,8 +92,8 @@ class DeepSeekBackend(InferenceBackend):
                 ``inference.deepseek_model`` in config.
             base_url: API base URL. Falls back to
                 ``inference.deepseek_base_url`` in config.
-            api_key: Bearer token. Falls back to ``DEEPSEEK_API_KEY``
-                env var (via ``secrets.deepseek_api_key``).
+            api_key: Bearer token. Falls back to ``secrets.deepseek_api_key``
+                in ``~/.stropha/config.yaml``.
             timeout: Per-request timeout in seconds. Falls back to
                 ``inference.deepseek_timeout`` (default 120s — the
                 China-routed DeepSeek endpoint can be slow under load).
@@ -152,7 +152,10 @@ class DeepSeekBackend(InferenceBackend):
             (missing key, network error, bad response, empty content).
         """
         if not self._api_key:
-            log.warning("deepseek.generate_skipped", reason="DEEPSEEK_API_KEY not set")
+            log.warning(
+                "deepseek.generate_skipped",
+                reason="secrets.deepseek_api_key not set in ~/.stropha/config.yaml",
+            )
             return None
 
         target_model = model or self._default_model
@@ -286,7 +289,10 @@ class DeepSeekBackend(InferenceBackend):
         request (to avoid burning quota on every health probe).
         """
         if not self.is_available:
-            return False, "DeepSeek API key not set (DEEPSEEK_API_KEY)"
+            return False, (
+                "DeepSeek API key not set "
+                "(secrets.deepseek_api_key in ~/.stropha/config.yaml)"
+            )
 
         try:
             req = urllib_request.Request(
@@ -307,7 +313,10 @@ class DeepSeekBackend(InferenceBackend):
                 )
         except urllib_error.HTTPError as exc:
             if exc.code in (401, 403):
-                return False, f"DeepSeek auth failed ({exc.code}); check DEEPSEEK_API_KEY"
+                return False, (
+                    f"DeepSeek auth failed ({exc.code}); check "
+                    "secrets.deepseek_api_key in ~/.stropha/config.yaml"
+                )
             return False, f"DeepSeek error {exc.code}: {exc.reason}"
         except Exception as exc:
             return False, f"DeepSeek unreachable: {exc}"

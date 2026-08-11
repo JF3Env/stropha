@@ -14,9 +14,9 @@ Falls back to the raw query when:
 - No inference backend available
 - The generation times out
 - The generated text is empty
-- hyde_enabled is false in stropha.yaml
+- ``retrieval_features.hyde_enabled`` is false in the unified config
 
-Configuration (stropha.yaml):
+Configuration (``~/.stropha/config.yaml``):
     retrieval_features:
       hyde_enabled: true
       hyde_code_tuned: true
@@ -117,7 +117,7 @@ _PATTERNS = [
     (re.compile(r'\b(bug|fix|error|issue|debug)\b', re.I), _PROMPT_CODE_ERROR),
 ]
 
-# Legacy default prompt (used when STROPHA_HYDE_PROMPT is set)
+# Default prompt when no code-specific query pattern matches.
 _DEFAULT_PROMPT = (
     "Write a 2-3 sentence imaginary code snippet or doc paragraph that would "
     "directly answer this developer question:\n\n"
@@ -135,7 +135,7 @@ def _select_prompt(query: str) -> str:
 
 
 def _enabled() -> bool:
-    """Check if HyDE is enabled via stropha.yaml."""
+    """Check whether unified configuration enables HyDE."""
     return get_config().retrieval_features.hyde_enabled
 
 

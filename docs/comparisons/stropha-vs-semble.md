@@ -1,8 +1,15 @@
 # stropha vs. semble — comparação detalhada
 
-**Status:** Análise técnica (revisão 2) · 2026-05-18
-**Escopo:** stropha @ HEAD vs. [MinishLab/semble](https://github.com/MinishLab/semble) (`main`, leitura via README + model cards no HuggingFace)
-**Objetivo:** mapear desvantagens do stropha em relação ao semble e propor melhorias acionáveis sem sacrificar invariantes do stropha (§3 do CLAUDE.md).
+**Status:** Historical technical comparison (revision 2; not current inventory)
+**Original date:** 2026-05-18
+**History audit:** 2026-08-11 at stropha commit
+`b0d391d7d67606a04666d8e9a48cfbef24c1726d`
+**Scope:** the 2026-05-18 stropha/semble snapshots described below. `HEAD`,
+"today", counts, defaults, and roadmap statements in the body refer to that
+snapshot, not current HEAD. Use live registry/config introspection for current
+stropha facts.
+**Objetivo:** preservar a comparação histórica sem sacrificar os invariantes
+nomeados em `CLAUDE.md` **Invariants (do NOT break)**.
 
 **Fontes verificadas neste documento:**
 - `pyproject.toml` (entry-points, deps, extras)
@@ -13,7 +20,9 @@
 - Model card de `minishlab/potion-code-16M` (HuggingFace)
 - README do semble + página do repositório
 
-> **Nota — diferenças vs. CLAUDE.md §2:** o snapshot lá lista 3 embedders / 5 enrichers / 3 walkers, mas o registry tem **4 embedders** (`local`, `voyage`, `bge-m3`, `mlx`), **6 enrichers** (`noop`, `hierarchical`, `graph-aware`, `ollama`, `mlx`, `contextual`), **4 walkers** (`git-ls-files`, `filesystem`, `nested-git`, `git-diff`). CLAUDE.md está defasado; este relatório usa o que o código mostra.
+> **Historical snapshot note:** the then-current `CLAUDE.md` inventory differed
+> from the registry counts listed here. Current `CLAUDE.md` deliberately avoids
+> copied totals; use `stropha adapters list`.
 
 ---
 
@@ -52,13 +61,19 @@ stropha vence em **profundidade estrutural, observabilidade, extensibilidade e c
 - semble usa **Model2Vec / potion-code-16M** (256-d, ~16 M params, vocab ~62.500): a "inferência" é um *table lookup* + pooling — sem multiplicação de matrizes em runtime. Resultado (segundo README): indexação 250 ms, query 1,5 ms.
 - O stropha **não tem adapter de embeddings estáticos** (Model2Vec, GloVe, fastText). Os 4 adapters de embedder existentes (`local`, `voyage`, `bge-m3`, `mlx`) são todos transformer-based. Não existe a opção "rápida e suficientemente boa".
 
-**Impacto prático:** quando um agente do Claude Code chama `search_code` várias vezes seguidas (típico em loops de planning), o stropha paga forward-pass por chamada na dense lane (mesmo com `STROPHA_QUERY_CACHE_ENABLED=1`, isso só ajuda em queries exatamente repetidas); semble paga ~1 ms por construção.
+**Impacto prático:** quando um agente chama `search_code` várias vezes seguidas,
+o stropha paga um forward-pass por chamada na dense lane; o cache semântico
+existente ainda não está integrado ao caminho de retrieval. Semble paga cerca
+de 1 ms por construção no ambiente medido por sua própria avaliação.
 
 **Footprint de índice:** mxbai 1024-d × 4 bytes/dim = 4 KB por chunk só no vetor denso. Em um repo de 50k chunks: ~195 MB só de embeddings densos. Com potion 256-d × 4 bytes: ~49 MB. Stropha não tem quantização binária / int8 — guarda float32 sempre.
 
 ### 2.2 Reranking sem sinais code-aware
 
-stropha funde 4 streams via RRF (k=60, confirmado em `src/stropha/retrieval/rrf.py` e `adapters/retrieval/hybrid_rrf.py`) e opcionalmente roda um cross-encoder (`BAAI/bge-reranker-base` via fastembed `TextCrossEncoder`). **Nenhum dos streams nem o reranker conhece código** — todos tratam o texto como linguagem natural.
+stropha funde três streams por padrão via RRF (dense, BM25 e símbolo), com
+GraphVec e Model2Vec opcionais. Também pode executar rerankers opt-in, incluindo
+heurísticas code-aware e cross-encoder. A composição efetiva deve ser consultada
+com `stropha pipeline show`, não inferida de um total estático.
 
 semble aplica heurísticas explícitas após o RRF (README enumera 5 sinais):
 
@@ -77,7 +92,7 @@ semble aplica heurísticas explícitas após o RRF (README enumera 5 sinais):
 | Passo | stropha | semble |
 |---|---|---|
 | Install | `git clone` + `uv sync` (fastembed + onnxruntime + tree-sitter + voyageai + …). Modelo ONNX (~ 1 GB para mxbai) baixado on-demand pelo fastembed na primeira execução. | `pip install semble` |
-| MCP wire-up | criar `.mcp.json`, ajustar `STROPHA_TARGET_REPO`, opcionalmente `VOYAGE_API_KEY` | `claude mcp add semble -s user -- uvx --from "semble[mcp]" semble` (uma linha) |
+| MCP wire-up | configurar o endpoint HTTP compartilhado; `STROPHA_TARGET_REPO` seleciona o alvo e `secrets.voyage_api_key` no YAML é opcional | `claude mcp add semble -s user -- uvx --from "semble[mcp]" semble` (uma linha) |
 | Primeiro index | `uv run stropha index` (depende do repo + enricher escolhido) | implícito ao chamar `search` (auto-detecta path; também aceita URL git) |
 | Graph stack | graphify (binário Rust separado) + hook install | n/a |
 
@@ -112,7 +127,10 @@ Esse atrito mata o caso "Claude, busque no repo X que eu nem clonei ainda".
 
 `grep -oE 'STROPHA_[A-Z_]+' src/stropha/` retorna **42 env vars distintas** referenciadas no código, das quais ao menos 9 afetam diretamente qualidade de retrieval (HyDE, code-tuned HyDE, recursive merge, multi-query, decomposition, rewrite, cache semântico, FTS augment, query router LLM). semble tem **zero env vars** documentados no README — defaults funcionam.
 
-Mais flexibilidade ≠ melhor produto. Cada flag é uma combinação não testada no benchmark, e o snapshot do CLAUDE.md (§2.5) já não lista 100% delas (faltam `STROPHA_INFERENCE_BACKEND`, `STROPHA_MLX_MODEL`, `STROPHA_OLLAMA_MODEL`, `STROPHA_HYDE_PROMPT`, etc.). O CLAUDE.md como documentação **drifta** mais rápido que a superfície de configuração.
+Mais flexibilidade ≠ melhor produto. Cada flag é uma combinação não testada no
+benchmark. This historical mismatch is why current `CLAUDE.md` **Key
+architecture** points to runtime introspection instead of copying the full
+configuration surface.
 
 ### 2.8 Modelo padrão pesado em disco / memória
 
@@ -120,7 +138,7 @@ Mais flexibilidade ≠ melhor produto. Cada flag é uma combinação não testad
 
 ### 2.9 Acoplamento com graphify
 
-6 das 12 ferramentas MCP do stropha **só funcionam se o usuário rodar graphify**. Isso é uma dependência rust externa, não-publicada-em-crates.io na época deste documento, com overhead próprio de indexação. Quando o grafo está vazio, as ferramentas retornam `{graph_loaded: false}` (cumpre o invariante §3.4) mas a *promessa* de "trace_feature, find_callers, etc." só se cumpre depois de mais setup.
+6 das 12 ferramentas MCP do stropha **só funcionam se o usuário rodar graphify**. Isso é uma dependência rust externa, não-publicada-em-crates.io na época deste documento, com overhead próprio de indexação. Quando o grafo está vazio, as ferramentas retornam `{graph_loaded: false}` (current named invariant **Graph-gated tools never return silent empty**) mas a *promessa* de "trace_feature, find_callers, etc." só se cumpre depois de mais setup.
 
 semble não tem essa promessa, mas também não cobra o setup.
 
@@ -143,7 +161,9 @@ Não para inverter a comparação, mas para não jogar fora o diferencial ao ten
 
 ## 4. Plano de melhoria — pegar o que semble faz melhor sem destruir o que stropha já entrega
 
-Ordenado por **ROI vs. esforço**. Cada item respeita os invariantes §3 do `CLAUDE.md` (drift detection, migrations forward-only, `Pipeline.run()` como composition root, graph-gated tools nunca silenciosos, hook ≤100 ms, local-first, FTS5 contentless-external).
+Ordenado por **ROI vs. esforço**. Cada item respeita `CLAUDE.md` **Invariants
+(do NOT break)** (drift detection, forward-only migrations, graph lifecycle,
+explicit graph gating, non-blocking hook, local-only default, SQLite FTS5 rules).
 
 ### 4.1 Quick wins (1–3 dias cada)
 
@@ -152,9 +172,11 @@ Ordenado por **ROI vs. esforço**. Cada item respeita os invariantes §3 do `CLA
 **Plano:**
 - Novo adapter `@register_adapter(stage="embedder", name="model2vec")` carregando `model2vec` via `pip install model2vec` (extra opcional `[fast]`).
 - Default model: `minishlab/potion-code-16M` (256-d, ~16 M params; vocab ~62.500; max-seq 1 M tokens — confirmado no model card).
-- `adapter_id = f"model2vec:{model_name}:{dim}"` — drift detection liga sozinha (§3.1).
+- `adapter_id = f"model2vec:{model_name}:{dim}"` — protected by the named
+  **Drift detection** invariant.
 - `EmbedderStage.embed_chunks()` chama `model.encode(texts)` (lookup + pooling, sem forward pass de transformer).
-- Documentar em §2.3 do `CLAUDE.md` (e, no caminho, atualizar a contagem "3 embedders" → "5 embedders").
+- Expose via adapter introspection and `CLAUDE.md` **Key architecture** rather
+  than adding another hard-coded total.
 - **Resultado esperado (a confirmar empiricamente via golden set):** dense lane substancialmente mais rápida em CPU; possível regressão de Recall@10 que precisa ser medida — semble reporta NDCG@10 = 0.854, mas isso é com **todas** as heurísticas code-aware (item B), não só o embedder.
 
 #### B. Code-aware reranker como stage opcional
@@ -222,13 +244,16 @@ Ordenado por **ROI vs. esforço**. Cada item respeita os invariantes §3 do `CLA
 ### 4.3 Long-term (>1 semana)
 
 #### I. Modelos maiores opt-in para HyDE
-Já está pendente no §6 do CLAUDE.md (`deepseek-coder-v2`, `codestral`). Manter prioridade média.
+At the historical snapshot this was pending in the project history. Reassess
+against the live registry before prioritizing.
 
 #### J. Late chunking + ColBERT
-Pendente no §6. Maior esforço, ganho marginal sobre as melhorias de retrieval acima.
+Historically pending. Reassess against the live registry; the effort comparison
+is preserved from the original analysis.
 
 #### K. LanceDB storage adapter
-Pendente no §6. Alternativa embarcada ao sqlite-vec, mesmo `StorageStage`. Útil quando o repo passa de ~500k chunks.
+Historically pending. PostgreSQL storage has since shipped; this LanceDB option
+remains only a comparison idea.
 
 ---
 
@@ -246,18 +271,18 @@ Itens I/J/K ficam fora do roadmap inicial — entram quando o benchmark estabili
 
 ## 6. Invariantes preservados
 
-Todas as mudanças propostas respeitam §3 do `CLAUDE.md`:
+Todas as mudanças propostas respeitam os invariantes nomeados de `CLAUDE.md`:
 
 | Invariante | Como é preservado |
 |---|---|
-| §3.1 Drift detection | Cada novo adapter (Model2Vec, code-aware reranker) digere config no `adapter_id`. |
-| §3.2 Schema migrations forward-only | Itens A–H não tocam schema. Se eventualmente precisar (e.g. armazenar `definition_score` por chunk), bump `SCHEMA_VERSION` + `_add_column_if_missing`. |
-| §3.3 `Pipeline.run()` order | Reranker code-aware roda dentro do `RetrievalStage.search()`, não no pipeline de indexação. Order intocada. |
-| §3.4 Graph-gated tools never silent | Nenhuma mudança nas ferramentas de grafo. |
-| §3.5 Hook ≤ 100 ms | Mudanças no fluxo de query/index, não no hook. |
-| §3.6 Local-only por default | Model2Vec e code-aware reranker são 100% locais. PyPI install não exige rede em runtime. |
-| §3.7 FTS5 contentless-external | Não alterado. |
-| §3.8 Search-time toggles sem re-index | Adaptive weighting + tokens-saved são puramente de query — sem invalidação de cache. |
+| Drift detection | Cada novo adapter (Model2Vec, code-aware reranker) digere config no `adapter_id`. |
+| Forward-only schema migrations | Itens A–H não tocam schema. Se eventualmente precisar, cada storage adapter recebe migration idempotente equivalente. |
+| `Pipeline.run()` owns graphify lifecycle | Reranker code-aware roda dentro do `RetrievalStage.search()`, não no pipeline de indexação. Order intocada. |
+| Graph-gated tools never return silent empty | Nenhuma mudança nas ferramentas de grafo. |
+| Hook <= 100 ms before fork | Mudanças no fluxo de query/index, não no hook. |
+| Local-only by default | Model2Vec e code-aware reranker são 100% locais. PyPI install não exige rede em runtime. |
+| SQLite FTS5 writes are explicit | Não alterado; a regra é específica do adapter SQLite. |
+| Search-time toggles don't require re-index | Adaptive weighting + tokens-saved são puramente de query — sem invalidação de cache. |
 
 ---
 

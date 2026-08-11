@@ -1,15 +1,15 @@
-"""Promotion planning — pure functions for diff + apply (WIN-202).
+"""Promotion planning — pure functions for diff + atomic apply (WIN-202).
 
 The Meta-Harness produces candidate configs that *propose* changes to the
-production ``stropha.yaml``. Promotion is human-gated by design (§3 spirit
-of the master spec): the harness never auto-applies. This module produces
-a :class:`PromotionPlan` that captures the current config, the candidate
-config, and a unified diff. The CLI prints the diff by default; ``--apply``
+production unified config. Promotion is human-gated by design (§3 spirit of
+the master spec): the harness never auto-applies. This module produces a
+:class:`PromotionPlan` that captures the current config, the safely merged
+result, and a unified diff. The CLI prints the diff by default; ``--apply``
 opts the operator into writing.
 
 Why diff-only by default
 ------------------------
-Auto-applying candidate configs to ``stropha.yaml`` would:
+Auto-applying candidate configs to the unified config would:
 
 1. Surprise the operator with a live config swap on every ``meta promote``
    run, regardless of intent.
@@ -27,15 +27,16 @@ overwrite the file.
 
 Apply semantics
 ---------------
-``apply_plan`` does a full overwrite of ``target_path`` with the candidate
-config rendered as YAML. This matches the prior behaviour (it is what the
-CLI did before WIN-202) but is now reachable only behind ``--apply``. A
-merge-mode that preserves keys outside the search space is a later
-improvement (recorded in §6 chronological history when added).
+Candidate changes are normalized to the unified runtime shape, then deep-
+merged into the existing document. Structured pipeline candidates land under
+``pipeline``; flat search-space stages and features are translated to their
+runtime sections. ``apply_plan`` atomically writes that pre-computed merged
+document, preserving secrets and unrelated settings.
 """
 
 from __future__ import annotations
 
+import copy
 import difflib
 from dataclasses import dataclass
 from pathlib import Path
@@ -44,6 +45,20 @@ from typing import Any
 import yaml  # type: ignore[import-untyped]
 
 from .store import CandidateRecord
+
+_PIPELINE_STAGES = frozenset({"walker", "chunker", "enricher", "embedder", "storage", "retrieval"})
+_FEATURE_FIELDS = {
+    "hyde": "hyde_enabled",
+    "hyde_code_tuned": "hyde_code_tuned",
+    "query_rewrite": "query_rewrite_enabled",
+    "multi_query": "multi_query_enabled",
+}
+_RETRIEVAL_CONFIG_FIELDS = {
+    "multi_query_count": "multi_query_count",
+    "recursive": "recursive_enabled",
+    "recursive_adjacency": "recursive_adjacency",
+    "adaptive_weighting": "adaptive_weighting",
+}
 
 
 class PromotionError(RuntimeError):
@@ -80,7 +95,7 @@ def _render_yaml(data: dict[str, Any]) -> str:
 
 
 def _read_target(target_path: Path) -> dict[str, Any] | None:
-    """Load the current ``stropha.yaml`` if present.
+    """Load the current unified config if present.
 
     Returns ``None`` when the file is missing (first-time promotion).
     Raises :class:`PromotionError` when the file exists but is malformed —
@@ -92,9 +107,7 @@ def _read_target(target_path: Path) -> dict[str, Any] | None:
     try:
         loaded = yaml.safe_load(target_path.read_text(encoding="utf-8"))
     except yaml.YAMLError as exc:
-        raise PromotionError(
-            f"target {target_path} exists but is not valid YAML: {exc}"
-        ) from exc
+        raise PromotionError(f"target {target_path} exists but is not valid YAML: {exc}") from exc
     if loaded is None:
         # Empty YAML file → treat as empty config (legitimate edge case).
         return {}
@@ -106,9 +119,77 @@ def _read_target(target_path: Path) -> dict[str, Any] | None:
     return loaded
 
 
-def build_plan(
-    candidate: CandidateRecord, target_path: Path
-) -> PromotionPlan:
+def _deep_merge(target: dict[str, Any], changes: dict[str, Any]) -> None:
+    """Deep-merge ``changes`` into ``target`` in place."""
+    for key, value in changes.items():
+        current = target.get(key)
+        adapter_changed = (
+            isinstance(value, dict)
+            and isinstance(current, dict)
+            and "adapter" in value
+            and value["adapter"] != current.get("adapter")
+        )
+        if isinstance(value, dict) and isinstance(current, dict) and not adapter_changed:
+            _deep_merge(current, value)
+        else:
+            target[key] = copy.deepcopy(value)
+
+
+def _candidate_changes(config: dict[str, Any]) -> dict[str, Any]:
+    """Normalize pipeline or flat search-space config to unified sections."""
+    remaining = copy.deepcopy(config)
+    changes: dict[str, Any] = {}
+
+    for section in ("pipeline", "retrieval_features", "graph"):
+        if section not in remaining:
+            continue
+        value = remaining.pop(section)
+        if not isinstance(value, dict):
+            raise PromotionError(f"candidate `{section}` must be a mapping")
+        changes[section] = value
+
+    pipeline = changes.setdefault("pipeline", {})
+    for stage in _PIPELINE_STAGES:
+        if stage not in remaining:
+            continue
+        value = remaining.pop(stage)
+        stage_changes = value if isinstance(value, dict) else {"adapter": value}
+        existing = pipeline.setdefault(stage, {})
+        if not isinstance(existing, dict):
+            raise PromotionError(f"candidate pipeline `{stage}` must be a mapping")
+        _deep_merge(existing, stage_changes)
+
+    if "reranker" in remaining:
+        value = remaining.pop("reranker")
+        reranker = value if isinstance(value, dict) else {"adapter": value}
+        retrieval = pipeline.setdefault("retrieval", {})
+        retrieval_config = retrieval.setdefault("config", {})
+        retrieval_config["reranker"] = reranker
+
+    features = changes.setdefault("retrieval_features", {})
+    for candidate_key, runtime_key in _FEATURE_FIELDS.items():
+        if candidate_key in remaining:
+            features[runtime_key] = remaining.pop(candidate_key)
+
+    for candidate_key, runtime_key in _RETRIEVAL_CONFIG_FIELDS.items():
+        if candidate_key not in remaining:
+            continue
+        retrieval = pipeline.setdefault("retrieval", {})
+        retrieval_config = retrieval.setdefault("config", {})
+        retrieval_config[runtime_key] = remaining.pop(candidate_key)
+
+    if "graph_fts_augment" in remaining:
+        graph = changes.setdefault("graph", {})
+        graph["fts_augment"] = remaining.pop("graph_fts_augment")
+
+    if remaining:
+        unsupported = ", ".join(sorted(remaining))
+        raise PromotionError(f"unsupported candidate config keys: {unsupported}")
+
+    return {key: value for key, value in changes.items() if value}
+
+
+def build_plan(candidate: CandidateRecord, target_path: Path) -> PromotionPlan:
     """Build a :class:`PromotionPlan` for ``candidate`` vs ``target_path``.
 
     Pure function — does not touch the filesystem beyond reading
@@ -116,7 +197,8 @@ def build_plan(
     from tests that mock the CLI layer.
     """
     current = _read_target(target_path)
-    candidate_config = candidate.config or {}
+    candidate_config = copy.deepcopy(current) if current is not None else {}
+    _deep_merge(candidate_config, _candidate_changes(candidate.config or {}))
 
     current_yaml = _render_yaml(current) if current is not None else ""
     candidate_yaml = _render_yaml(candidate_config)
@@ -126,9 +208,7 @@ def build_plan(
     # uses the target path so the operator can copy-paste the diff and
     # know where it lands.
     from_label = (
-        f"a/{target_path.name}"
-        if current is not None
-        else f"a/{target_path.name} (missing)"
+        f"a/{target_path.name}" if current is not None else f"a/{target_path.name} (missing)"
     )
     to_label = f"b/{target_path.name} (candidate {candidate.id})"
     diff_lines = list(
@@ -153,7 +233,7 @@ def build_plan(
 
 
 def apply_plan(plan: PromotionPlan) -> None:
-    """Write ``plan.candidate_config`` to ``plan.target_path`` as YAML.
+    """Atomically write the merged config to ``plan.target_path`` as YAML.
 
     A no-op plan still re-writes the file: idempotent, but cheap. We do
     NOT short-circuit even when ``is_noop`` so that recovery from a
@@ -180,10 +260,7 @@ def render_summary(plan: PromotionPlan) -> str:
             f"{plan.target_path} — apply would be a no-op"
         )
     if plan.current_config is None:
-        return (
-            f"candidate {plan.candidate_id} would create new "
-            f"{plan.target_path}"
-        )
+        return f"candidate {plan.candidate_id} would create new {plan.target_path}"
     return (
         f"candidate {plan.candidate_id} would modify {plan.target_path} "
         f"(diff has {plan.diff_text.count(chr(10))} lines)"

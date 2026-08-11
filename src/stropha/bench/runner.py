@@ -151,8 +151,14 @@ def _patch_graphify_off() -> None:
         return
     from ..pipeline.pipeline import Pipeline
 
-    Pipeline._refresh_graphify_mirror = lambda self: None  # type: ignore[assignment]
-    Pipeline._run_graphify = lambda self: None  # type: ignore[assignment]
+    def _skip_refresh(_pipeline: Pipeline) -> None:
+        return None
+
+    def _skip_update(_pipeline: Pipeline, _repo_stats: Any) -> None:
+        return None
+
+    Pipeline._refresh_graphify_mirror = _skip_refresh  # type: ignore[assignment]
+    Pipeline._run_graphify = _skip_update  # type: ignore[assignment]
     _GRAPHIFY_PATCHED = True
 
 

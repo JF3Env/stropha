@@ -11,13 +11,14 @@ from __future__ import annotations
 import os
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
 from stropha.adapters.walker.git_diff import (
     GitDiffWalker,
     GitDiffWalkerConfig,
-    _default_rename_threshold,
 )
 from stropha.errors import WalkerError
 
@@ -66,21 +67,32 @@ def test_walker_registered_in_registry() -> None:
     assert cls is GitDiffWalker
 
 
-def test_default_rename_threshold_when_unset(monkeypatch) -> None:
-    monkeypatch.delenv("STROPHA_RENAME_THRESHOLD", raising=False)
-    assert _default_rename_threshold() == 80
+def test_default_rename_threshold() -> None:
+    assert GitDiffWalkerConfig().rename_threshold == 80
 
 
-def test_rename_threshold_env_override(monkeypatch) -> None:
-    monkeypatch.setenv("STROPHA_RENAME_THRESHOLD", "55")
-    assert _default_rename_threshold() == 55
+def test_pipeline_incremental_walker_uses_yaml_threshold(monkeypatch, tmp_path) -> None:
+    from stropha.pipeline.pipeline import Pipeline
 
+    seen: list[int] = []
 
-def test_rename_threshold_clamps_to_range(monkeypatch) -> None:
-    monkeypatch.setenv("STROPHA_RENAME_THRESHOLD", "999")
-    assert _default_rename_threshold() == 100
-    monkeypatch.setenv("STROPHA_RENAME_THRESHOLD", "-5")
-    assert _default_rename_threshold() == 0
+    def discover_deltas(self, repo_path, *, since_sha):
+        seen.append(self._config.rename_threshold)
+        return []
+
+    monkeypatch.setattr(GitDiffWalker, "discover_deltas", discover_deltas)
+    monkeypatch.setattr(
+        "stropha.config.get_config",
+        lambda: SimpleNamespace(git=SimpleNamespace(rename_threshold=55)),
+    )
+    pipeline = object.__new__(Pipeline)
+    pipeline._storage = MagicMock()
+    stats = SimpleNamespace(code_changed=True)
+    identity = SimpleNamespace(normalized_key="example/repo")
+
+    pipeline._index_one_repo_incremental(tmp_path, identity, 1, stats, "abc123")
+
+    assert seen == [55]
 
 
 def test_adapter_id_includes_threshold() -> None:

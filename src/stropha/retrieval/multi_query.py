@@ -22,12 +22,12 @@ Falls back to single-query search when:
 - No inference backend available
 - Generation times out
 - Generated paraphrases are empty
-- multi_query_enabled: false in stropha.yaml
+- ``retrieval_features.multi_query_enabled`` is false in the unified config
 
 Caching: Paraphrases are cached in-memory by query to avoid repeated
 LLM calls for the same query.
 
-Configuration (stropha.yaml):
+Configuration (``~/.stropha/config.yaml``):
     retrieval_features:
       multi_query_enabled: true
       multi_query_count: 3  # number of paraphrases
@@ -63,7 +63,7 @@ _CACHE_MAX_SIZE = 1000
 
 
 def _enabled() -> bool:
-    """Check if multi-query expansion is enabled via stropha.yaml."""
+    """Check whether unified configuration enables multi-query expansion."""
     return get_config().retrieval_features.multi_query_enabled
 
 
@@ -73,7 +73,7 @@ def _prompt_template() -> str:
 
 
 def _num_paraphrases() -> int:
-    """Get number of paraphrases from stropha.yaml."""
+    """Get the configured number of paraphrases."""
     return get_config().retrieval_features.multi_query_count
 
 
@@ -150,7 +150,8 @@ def generate_paraphrases(
     lines = [line.strip() for line in text.split("\n") if line.strip()]
     # Filter out lines that are too short or look like metadata
     paraphrases = [
-        line for line in lines
+        line
+        for line in lines
         if len(line) > 5 and not line.startswith(("1.", "2.", "3.", "-", "*", "#"))
     ]
 
@@ -212,7 +213,7 @@ class MultiQueryExpander:
 
     @property
     def is_enabled(self) -> bool:
-        """Check if multi-query is enabled via config or env var."""
+        """Check explicit or unified-config multi-query enablement."""
         return self._enabled or _enabled()
 
 

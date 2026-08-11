@@ -1,7 +1,7 @@
 """MCP server entry point.
 
-Wires Config → configured pipeline stages inside a FastMCP lifespan,
-and exposes the Phase 1 tool surface from spec §9.2:
+Wires Config → configured pipeline stages inside a FastMCP lifespan and
+registers the MCP tool surface. Core discovery examples include:
 
 - `search_code`         — hybrid retrieval (dense + BM25 + RRF).
 - `get_symbol`          — direct symbol lookup.
@@ -9,18 +9,18 @@ and exposes the Phase 1 tool surface from spec §9.2:
 - `list_repos`          — enumerate repositories present in the index.
 - `index_stats` resource (stropha://stats).
 
-Every search result carries a ``repo`` field (URL, default branch, HEAD)
-so a remote MCP client can ``git clone`` the source. The server speaks
+Search results include a ``repo`` field (URL, default branch, HEAD) when
+repository metadata is available, so a remote MCP client can ``git clone``
+the source. The server speaks
 the MCP ``streamable-http`` transport at ``http://<host>:<port>/mcp``;
 ``bin/stropha-mcp-ensure`` is the canonical daemon launcher and MCP
 clients connect to it as a ``remote`` server.
 
-Background file watcher (enabled by default via ``STROPHA_MCP_WATCH=1``):
-The server starts a background thread that polls the target repo for file
-changes. After a debounce period (default 2s of no further changes), it
-triggers a light re-index pass so MCP queries always see recent edits
-without requiring a separate ``stropha watch`` command. Disable with
-``STROPHA_MCP_WATCH=0`` if you prefer manual indexing or use the hook only.
+Background file watcher:
+When ``mcp.watch`` is enabled in ``~/.stropha/config.yaml`` (the default), the
+shared runtime polls the target repository and triggers a debounced light
+re-index so MCP queries see saved edits. Disable that YAML setting when manual
+indexing or the post-commit hook is sufficient.
 """
 
 from __future__ import annotations
@@ -28,6 +28,7 @@ from __future__ import annotations
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any
 
 from mcp.server.fastmcp import Context
 from pydantic import BaseModel, Field
@@ -185,6 +186,7 @@ log = get_logger(__name__)
 
 # ---- composition root ------------------------------------------------------
 
+
 @asynccontextmanager
 async def _lifespan(app: RestartTolerantFastMCP) -> AsyncIterator[AppContext]:
     async with server_lifespan(
@@ -253,10 +255,12 @@ mcp = RestartTolerantFastMCP(
 
 # ---- health endpoint (SSE/HTTP transports only) ----------------------------
 
+
 @mcp.custom_route("/health", methods=["GET"])
 async def _health_check(request):
     """Liveness probe. Returns 200 when the server is accepting connections."""
     from starlette.responses import JSONResponse
+
     return JSONResponse({"status": "ok", "version": __version__})
 
 
@@ -611,6 +615,7 @@ async def _frontend_query(request):
 
 # ---- helpers ---------------------------------------------------------------
 
+
 def _ctx(mcp_ctx: Context) -> AppContext:
     return ctx_from_mcp(mcp_ctx)
 
@@ -648,6 +653,7 @@ def _to_result(hit) -> SearchResult:  # type: ignore[no-untyped-def]
 
 
 # ---- tools ------------------------------------------------------------------
+
 
 def _apply_filters(
     hits: list,
@@ -759,6 +765,7 @@ def search_code(
             from earlier turns into the dense match.
     """
     from .tools.git_url import is_git_url, search_git_url_scoped
+
     return search_code_impl(
         query,
         top_k,
@@ -796,9 +803,9 @@ def search_code(
         "WIN-217 — clear the session's seen-chunk-ids set. Use this when "
         "the agent has finished one logical task and wants a fresh slate "
         "for the next retrieval round, OR when an iterative search keeps "
-        "returning empty because everything got dedup'd away. The set "
-        "lives in memory only for this MCP process; restarting the "
-        "server already clears it. Returns the count of ids dropped."
+        "returning empty because everything got dedup'd away. The cleared "
+        "state is persisted for durable sessions. Returns the count of ids "
+        "dropped."
     ),
 )
 @traced("reset_dedup")
@@ -1062,9 +1069,7 @@ def expand_chunk(
     repo_id = None if include_other_repos else _resolve_target_repo_id(app)
     if repo_id is None and not include_other_repos:
         return ExpandChunkResponse(chunk_id=chunk_id, found=False, result=None)
-    return expand_chunk_impl(
-        chunk_id, card_level, app, to_result=_to_result, repo_id=repo_id
-    )
+    return expand_chunk_impl(chunk_id, card_level, app, to_result=_to_result, repo_id=repo_id)
 
 
 @mcp.tool(
@@ -1098,9 +1103,7 @@ def expand_chunks(
             found_count=0,
             missing_count=len(chunk_ids),
         )
-    return expand_chunks_impl(
-        chunk_ids, card_level, app, to_result=_to_result, repo_id=repo_id
-    )
+    return expand_chunks_impl(chunk_ids, card_level, app, to_result=_to_result, repo_id=repo_id)
 
 
 # ---- graph tools (RFC §5 — Trilha A 1.5b) ----------------------------------
@@ -1231,7 +1234,11 @@ def recall(
 )
 @traced("forget")
 def forget(
-    kind: str, key: str, *, ctx: Context, repo: str | None = None,
+    kind: str,
+    key: str,
+    *,
+    ctx: Context,
+    repo: str | None = None,
 ) -> ForgetResponse:
     """Delete one project-memory entry (``repo`` = key/path; default target)."""
     return forget_impl(
@@ -1322,7 +1329,10 @@ def plan_investigation(
         task=plan.task,
         steps=[
             InvestigationStepEntry(
-                order=s.order, tool=s.tool, purpose=s.purpose, args=s.args,
+                order=s.order,
+                tool=s.tool,
+                purpose=s.purpose,
+                args=s.args,
             )
             for s in plan.steps
         ],
@@ -1839,10 +1849,10 @@ def trace_feature(
     description=(
         "Flag a previous retrieval as bad — Strong-negative T6 signal for "
         "the Meta-Harness outcome labeler (WIN-162). Use this when a result "
-        "from search_code / smart_search / get_symbol / find_* was clearly "
+        "from search_code / smart_search_tool / get_symbol / find_* was clearly "
         "wrong: irrelevant, the wrong symbol, stale, a duplicate, too verbose, "
         "or other. Pass the `trace_id` from the offending response — search_code "
-        "and smart_search return it as a top-level `trace_id` field (WIN-160); "
+        "and smart_search_tool return it as a top-level `trace_id` field (WIN-160); "
         "it matches the JSONL trace record so the labeler resolves the chunks."
     ),
 )
@@ -2172,7 +2182,7 @@ def _pipeline_snapshot(app: AppContext) -> dict:
 
     Returns a structure shaped for the calling LLM agent's convenience:
     each stage shows what adapter is active, its ``adapter_id`` (the
-    drift-detection key — see CLAUDE.md §3.1), and any sub-adapters
+    drift-detection key — see the CLAUDE.md **Drift detection** invariant), and any sub-adapters
     (retrieval streams, reranker). Caller can use this to answer
     questions like "is the cross-encoder reranker on?", "which embedder
     model is producing vectors right now?", "what graph confidence
@@ -2192,6 +2202,9 @@ def _pipeline_snapshot(app: AppContext) -> dict:
     # Retrieval has nested sub-adapters (streams + reranker) — expose them.
     retrieval_info = _stage(built.retrieval)
     if built.retrieval is not None:
+        retrieval_config = getattr(built.retrieval, "_config", None)
+        if retrieval_config is not None and hasattr(retrieval_config, "model_dump"):
+            retrieval_info["config"] = retrieval_config.model_dump(mode="json")  # type: ignore[index]
         streams_info: dict[str, dict] = {}
         for name, stream in getattr(built.retrieval, "_streams", {}).items():
             streams_info[name] = {
@@ -2238,8 +2251,7 @@ def _pipeline_snapshot(app: AppContext) -> dict:
             # SQLite file path otherwise. Falls back to the configured index
             # path for adapters that don't expose ``storage_target``.
             "path": (
-                getattr(built.storage, "storage_target", None)
-                or str(cfg.resolve_index_path())
+                getattr(built.storage, "storage_target", None) or str(cfg.resolve_index_path())
             ),
         },
         "retrieval": retrieval_info,
@@ -2352,46 +2364,54 @@ def _graph_snapshot(app: AppContext) -> dict:
     return summary
 
 
-def _features_snapshot(cfg: Config) -> dict:
+def _features_snapshot(app: AppContext) -> dict:
     """Every query-time toggle from retrieval_features, with on/off summary."""
+    cfg = app.config
     rf = cfg.retrieval_features
+    retrieval_config = getattr(app.built.retrieval, "_config", None)
+
+    def _retrieval_value(name: str, fallback: Any) -> Any:
+        return getattr(retrieval_config, name, fallback)
+
     return {
         "hyde": {
-            "enabled": rf.hyde_enabled,
+            "enabled": rf.hyde_enabled or _retrieval_value("hyde_enabled", False),
             "code_tuned": rf.hyde_code_tuned,
             "purpose": "Generate hypothetical code via LLM, embed THAT for dense search.",
         },
         "query_decomposition": {
-            "enabled": rf.query_decomposition_enabled,
+            "configured": rf.query_decomposition_enabled,
+            "integrated": False,
             "uses_llm": rf.query_decomposition_llm,
-            "purpose": "Split compound queries ('X and Y') into sub-queries; RRF-fuse results.",
+            "purpose": "Standalone/legacy implementation; production RetrievalStage does not call it.",
         },
         "query_router_llm": {
             "enabled": rf.query_router_llm,
             "purpose": "LLM classifies query intent and routes to find_callers / find_tests_for / etc.",
         },
         "query_rewrite": {
-            "enabled": rf.query_rewrite_enabled,
+            "enabled": rf.query_rewrite_enabled or _retrieval_value("query_rewrite_enabled", False),
             "purpose": "LLM expands natural language into code-style terms. Redundant with HyDE for most cases.",
         },
         "multi_query": {
-            "enabled": rf.multi_query_enabled,
-            "count": rf.multi_query_count,
-            "purpose": "Generate N paraphrases of the query, fuse results. Costs N LLM calls per query.",
+            "enabled": rf.multi_query_enabled or _retrieval_value("multi_query_enabled", False),
+            "configured_count": _retrieval_value("multi_query_count", rf.multi_query_count),
+            "purpose": "Generate paraphrases and fuse results; adapter-local multi_query_count is authoritative.",
         },
         "recursive_retrieval": {
-            "enabled": rf.recursive_enabled,
-            "adjacency": rf.recursive_adjacency,
+            "enabled": _retrieval_value("recursive_enabled", rf.recursive_enabled),
+            "adjacency": _retrieval_value("recursive_adjacency", rf.recursive_adjacency),
             "purpose": "Auto-merge adjacent chunks + promote parent when siblings hit.",
         },
         "query_cache": {
-            "enabled": rf.cache_enabled,
+            "configured": rf.cache_enabled,
+            "integrated": False,
             "size": rf.cache_size,
             "ttl_s": rf.cache_ttl,
-            "purpose": "LRU cache of recent query results.",
+            "purpose": "Standalone cache implementation; production retrieval does not call it.",
         },
         "adaptive_weighting": {
-            "enabled": rf.adaptive_weighting,
+            "enabled": _retrieval_value("adaptive_weighting", rf.adaptive_weighting),
             "purpose": "Symbol-shaped queries → boost lexical streams; natural → boost dense.",
         },
     }
@@ -2416,34 +2436,31 @@ def _features_summary(app: AppContext) -> dict:
     cfg = app.config
     rf = cfg.retrieval_features
     built = app.built
+    features = _features_snapshot(app)
 
     # Reranker is "active" if a non-noop adapter was built.
-    reranker = (
-        getattr(built.retrieval, "_reranker", None) if built.retrieval else None
-    )
-    reranker_active = reranker is not None and getattr(
-        reranker, "adapter_name", "noop"
-    ) != "noop"
+    reranker = getattr(built.retrieval, "_reranker", None) if built.retrieval else None
+    reranker_active = reranker is not None and getattr(reranker, "adapter_name", "noop") != "noop"
 
     # Enricher uses an LLM iff it's contextual / ollama / mlx.
     enricher_uses_llm = getattr(built.enricher, "adapter_name", "noop") in {
-        "contextual", "ollama", "mlx",
+        "contextual",
+        "ollama",
+        "mlx",
     }
 
     # Build a "active LLM features" list for quick scan.
     llm_active: list[str] = []
     if enricher_uses_llm:
         llm_active.append(f"enricher({built.enricher.adapter_name})")
-    if rf.hyde_enabled:
+    if features["hyde"]["enabled"]:
         llm_active.append("hyde")
-    if rf.query_rewrite_enabled:
+    if features["query_rewrite"]["enabled"]:
         llm_active.append("query_rewrite")
     if rf.query_router_llm:
         llm_active.append("query_router")
-    if rf.query_decomposition_llm:
-        llm_active.append("query_decomposition")
-    if rf.multi_query_enabled:
-        llm_active.append(f"multi_query×{rf.multi_query_count}")
+    if features["multi_query"]["enabled"]:
+        llm_active.append(f"multi_query×{features['multi_query']['configured_count']}")
     if reranker_active and getattr(reranker, "adapter_name", "") == "llm":
         llm_active.append("reranker(llm)")
 
@@ -2453,9 +2470,7 @@ def _features_summary(app: AppContext) -> dict:
         "enricher_uses_llm": enricher_uses_llm,
         "inference_backend": (cfg.inference.backend or "auto"),
         "rerank_active": reranker_active,
-        "rerank_model": (
-            getattr(reranker, "adapter_id", None) if reranker_active else None
-        ),
+        "rerank_model": (getattr(reranker, "adapter_id", None) if reranker_active else None),
         "llm_features_active_at_query_time": llm_active,
         "mcp_auto_watch": cfg.mcp_watch,
         "graph_traversal_available": _graph_snapshot(app).get("loaded", False),
@@ -2518,7 +2533,7 @@ def get_config_tool(*, ctx: Context) -> dict:
     info["features_summary"] = _features_summary(app)
     info["pipeline"] = _pipeline_snapshot(app)
     info["inference"] = _inference_snapshot(app.config)
-    info["retrieval_features"] = _features_snapshot(app.config)
+    info["retrieval_features"] = _features_snapshot(app)
     info["graph"] = _graph_snapshot(app)
     info["available_adapters"] = _available_adapters()
 
@@ -2655,12 +2670,11 @@ def suggest_next_tool_mcp(
             hits.append(hit)
 
     has_graph = graph_loaded(app.storage, repo_id=repo_id)
-    has_rationale = (
-        has_rationale_edges(app.storage, repo_id=repo_id) if has_graph else False
-    )
+    has_rationale = has_rationale_edges(app.storage, repo_id=repo_id) if has_graph else False
 
     raw = _suggest(
-        query, hits,
+        query,
+        hits,
         has_graph=has_graph,
         has_rationale=has_rationale,
         max_suggestions=max_suggestions,
@@ -2814,11 +2828,13 @@ def apply_task_recipe(
     missing = sorted(required_placeholders(recipe) - set(context.keys()))
 
     invocations = apply_recipe(
-        recipe, context, budget_tokens=budget_tokens, strict=False,
+        recipe,
+        context,
+        budget_tokens=budget_tokens,
+        strict=False,
     )
     effective_budget = (
-        recipe.default_budget if budget_tokens is None
-        else max(0, int(budget_tokens))
+        recipe.default_budget if budget_tokens is None else max(0, int(budget_tokens))
     )
 
     return ApplyRecipeResponse(
@@ -2868,9 +2884,7 @@ def verify_claim_tool(
             verified=None,
             reason="Current repository could not be resolved; claim was not verified.",
         )
-    return verify_claim_impl(
-        claim, app, graph_loaded_fn=graph_loaded, repo_id=repo_id
-    )
+    return verify_claim_impl(claim, app, graph_loaded_fn=graph_loaded, repo_id=repo_id)
 
 
 @mcp.tool(
@@ -2903,9 +2917,7 @@ def check_symbols_tool(
             missing_count=0,
             notes=["Current repository could not be resolved; symbols were not checked."],
         )
-    return check_symbols_impl(
-        symbols, app, max_suggestions=max_suggestions, repo_id=repo_id
-    )
+    return check_symbols_impl(symbols, app, max_suggestions=max_suggestions, repo_id=repo_id)
 
 
 @mcp.tool(
@@ -3140,9 +3152,7 @@ def contract_tests_tool(
             graph_loaded=False,
             notes=["graph_loaded=False", "Current repository could not be resolved."],
         )
-    return contract_tests_impl(
-        symbol, app, graph_loaded_fn=graph_loaded, repo_id=repo_id
-    )
+    return contract_tests_impl(symbol, app, graph_loaded_fn=graph_loaded, repo_id=repo_id)
 
 
 # ---- working_set (WIN-253) -------------------------------------------------
@@ -3237,7 +3247,8 @@ def working_set_tool(
             return None
 
     ws = build_working_set(
-        pinned, seen,
+        pinned,
+        seen,
         lookup_fn=_lookup,
         session_id=sid,
         budget_tokens=max(0, int(budget_tokens)),
@@ -3248,9 +3259,15 @@ def working_set_tool(
         session_id=ws.session_id,
         entries=[
             WorkingSetEntryModel(
-                chunk_id=e.chunk_id, path=e.path, symbol=e.symbol,
-                kind=e.kind, start_line=e.start_line, end_line=e.end_line,
-                snippet=e.snippet, role=e.role, tokens=e.tokens,
+                chunk_id=e.chunk_id,
+                path=e.path,
+                symbol=e.symbol,
+                kind=e.kind,
+                start_line=e.start_line,
+                end_line=e.end_line,
+                snippet=e.snippet,
+                role=e.role,
+                tokens=e.tokens,
             )
             for e in ws.entries
         ],
@@ -3332,10 +3349,7 @@ def _render_recipe_prompt(recipe_name: str, context: dict) -> str:
 
     recipe = get_recipe(recipe_name)
     if recipe is None:
-        return (
-            f"Unknown recipe {recipe_name!r}. "
-            "List recipes via list_task_recipes."
-        )
+        return f"Unknown recipe {recipe_name!r}. List recipes via list_task_recipes."
 
     invocations = apply_recipe(recipe, context, strict=False)
     lines = [

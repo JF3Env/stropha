@@ -30,6 +30,7 @@ class _StubNodeVoyageClient:
         dim = kwargs.get("output_dimension", 512)
         return type("_Resp", (), {"embeddings": [[0.0] * dim for _ in texts]})()
 
+
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
@@ -120,6 +121,7 @@ def test_config_defaults_pick_local_when_no_voyage_key(tmp_path) -> None:
 
 def test_config_picks_voyage_when_api_key_set(tmp_path, monkeypatch) -> None:
     from pathlib import Path
+
     cfg_dir = tmp_path / ".stropha"
     cfg_dir.mkdir()
     (cfg_dir / "config.yaml").write_text("secrets:\n  voyage_api_key: sk-test\n")
@@ -130,6 +132,7 @@ def test_config_picks_voyage_when_api_key_set(tmp_path, monkeypatch) -> None:
 
 def test_config_legacy_alias_local_model(tmp_path, monkeypatch) -> None:
     from pathlib import Path
+
     cfg_dir = tmp_path / ".stropha"
     cfg_dir.mkdir()
     (cfg_dir / "config.yaml").write_text(
@@ -144,6 +147,7 @@ def test_config_legacy_alias_local_model(tmp_path, monkeypatch) -> None:
 def test_config_legacy_alias_voyage_does_not_leak_into_local(tmp_path, monkeypatch) -> None:
     """Regression: voyage adapter config must NOT contaminate a local adapter."""
     from pathlib import Path
+
     # No voyage key → auto-select local; only local model set.
     cfg_dir = tmp_path / ".stropha"
     cfg_dir.mkdir()
@@ -166,6 +170,7 @@ def test_config_cli_override_wins_over_env(tmp_path) -> None:
 
 def test_config_env_overlay_for_nested_path(tmp_path, monkeypatch) -> None:
     from pathlib import Path
+
     cfg_dir = tmp_path / ".stropha"
     cfg_dir.mkdir()
     (cfg_dir / "config.yaml").write_text(
@@ -179,6 +184,7 @@ def test_config_env_overlay_for_nested_path(tmp_path, monkeypatch) -> None:
 
 def test_config_yaml_file_loaded_when_present(tmp_path, monkeypatch) -> None:
     from pathlib import Path
+
     cfg_dir = tmp_path / ".stropha"
     cfg_dir.mkdir()
     (cfg_dir / "config.yaml").write_text(
@@ -189,8 +195,64 @@ def test_config_yaml_file_loaded_when_present(tmp_path, monkeypatch) -> None:
     assert cfg["enricher"]["adapter"] == "hierarchical"
 
 
+def test_unified_walker_size_is_applied_to_pipeline(tmp_path, monkeypatch) -> None:
+    from pathlib import Path
+
+    cfg_dir = tmp_path / ".stropha"
+    cfg_dir.mkdir()
+    (cfg_dir / "config.yaml").write_text(
+        "walker:\n  max_file_bytes: 12345\npipeline:\n  walker:\n    adapter: git-ls-files\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+
+    cfg = load_pipeline_config(project_root=tmp_path)
+
+    assert cfg["walker"]["config"]["max_file_bytes"] == 12345
+
+
+def test_unified_walker_size_works_without_pipeline_section(tmp_path, monkeypatch) -> None:
+    from pathlib import Path
+
+    cfg_dir = tmp_path / ".stropha"
+    cfg_dir.mkdir()
+    (cfg_dir / "config.yaml").write_text(
+        "walker:\n  max_file_bytes: 12345\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+
+    cfg = load_pipeline_config(project_root=tmp_path)
+
+    assert cfg["walker"]["config"]["max_file_bytes"] == 12345
+    assert "max_file_bytes" not in cfg["walker"]
+
+
+def test_pipeline_walker_size_overrides_unified_setting(tmp_path, monkeypatch) -> None:
+    from pathlib import Path
+
+    cfg_dir = tmp_path / ".stropha"
+    cfg_dir.mkdir()
+    (cfg_dir / "config.yaml").write_text(
+        "walker:\n"
+        "  max_file_bytes: 12345\n"
+        "pipeline:\n"
+        "  walker:\n"
+        "    adapter: git-ls-files\n"
+        "    config:\n"
+        "      max_file_bytes: 67890\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+
+    cfg = load_pipeline_config(project_root=tmp_path)
+
+    assert cfg["walker"]["config"]["max_file_bytes"] == 67890
+
+
 def test_config_yaml_invalid_raises_config_error(tmp_path, monkeypatch) -> None:
     from pathlib import Path
+
     cfg_dir = tmp_path / ".stropha"
     cfg_dir.mkdir()
     (cfg_dir / "config.yaml").write_text("not:\n  : -valid: [", encoding="utf-8")

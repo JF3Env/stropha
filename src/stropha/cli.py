@@ -11,7 +11,7 @@ Subcommands:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import typer
 from rich.console import Console
@@ -29,8 +29,7 @@ from .pipeline import (
     load_pipeline_config,
 )
 
-# Note: We don't call load_dotenv() here anymore. The get_config() singleton
-# handles .env loading with proper precedence (env vars > .env file).
+# Settings are loaded from ~/.stropha/config.yaml by the get_config() singleton.
 app = typer.Typer(
     name="stropha",
     help="stropha — index a codebase and serve it to LLM clients via MCP.",
@@ -161,7 +160,7 @@ def _print_index_summary(
     # ---- Run mode -------------------------------------------------------
     mode_flags = [f"[green]{mode}[/green]"]
     if rebuild:
-        mode_flags.append("[red]rebuild[/red] (selected repos only)")
+        mode_flags.append("[red]rebuild[/red] (selected repos; dimension reset is index-wide)")
     if vacuum:
         mode_flags.append("vacuum (reclaim disk)")
     table.add_row("Mode", " · ".join(mode_flags))
@@ -169,14 +168,20 @@ def _print_index_summary(
     # ---- Pipeline stages -----------------------------------------------
     section("Pipeline")
     table.add_row("Walker", f"{built.walker.adapter_name}  [dim]({built.walker.adapter_id})[/dim]")
-    table.add_row("Chunker", f"{built.chunker.adapter_name}  [dim]({built.chunker.adapter_id})[/dim]")
-    table.add_row("Enricher", f"{built.enricher.adapter_name}  [dim]({built.enricher.adapter_id})[/dim]")
+    table.add_row(
+        "Chunker", f"{built.chunker.adapter_name}  [dim]({built.chunker.adapter_id})[/dim]"
+    )
+    table.add_row(
+        "Enricher", f"{built.enricher.adapter_name}  [dim]({built.enricher.adapter_id})[/dim]"
+    )
     table.add_row(
         "Embedder",
         f"{built.embedder.adapter_name}:{built.embedder.model_name}  "
         f"[dim](dim={built.embedder.dim})[/dim]",
     )
-    table.add_row("Storage", f"{built.storage.adapter_name}  [dim]({built.storage.adapter_id})[/dim]")
+    table.add_row(
+        "Storage", f"{built.storage.adapter_name}  [dim]({built.storage.adapter_id})[/dim]"
+    )
     table.add_row(
         "Retrieval",
         f"{built.retrieval.adapter_name}  [dim]({built.retrieval.adapter_id})[/dim]",
@@ -190,8 +195,7 @@ def _print_index_summary(
         if backend == "lms":
             table.add_row(
                 "Backend",
-                f"[magenta]lms[/magenta] [dim](internal)[/dim]  →  "
-                f"{cfg.inference.lms_model}",
+                f"[magenta]lms[/magenta] [dim](internal)[/dim]  →  {cfg.inference.lms_model}",
             )
             table.add_row("  endpoint", cfg.inference.lms_base_url)
             table.add_row(
@@ -217,19 +221,17 @@ def _print_index_summary(
             api_key_set = bool(cfg.secrets.has_deepseek)
             table.add_row(
                 "  api key",
-                "[green]set[/green]" if api_key_set else "[red]MISSING[/red] — set DEEPSEEK_API_KEY",
+                "[green]set[/green]"
+                if api_key_set
+                else "[red]MISSING[/red] — set secrets.deepseek_api_key",
             )
             table.add_row(
                 "  resilience",
                 f"timeout={cfg.inference.deepseek_timeout:.0f}s · "
                 f"retries={cfg.inference.deepseek_max_retries} (exp backoff)",
             )
-            concurrency_color = (
-                "green" if enricher_concurrency > 1 else "yellow"
-            )
-            concurrency_hint = (
-                "parallel" if enricher_concurrency > 1 else "serial — slow for cloud"
-            )
+            concurrency_color = "green" if enricher_concurrency > 1 else "yellow"
+            concurrency_hint = "parallel" if enricher_concurrency > 1 else "serial — slow for cloud"
             table.add_row(
                 "  concurrency",
                 f"[{concurrency_color}]{enricher_concurrency}[/{concurrency_color}] "
@@ -246,19 +248,17 @@ def _print_index_summary(
             api_key_set = bool(cfg.secrets.has_anthropic)
             table.add_row(
                 "  api key",
-                "[green]set[/green]" if api_key_set else "[red]MISSING[/red] — set ANTHROPIC_API_KEY",
+                "[green]set[/green]"
+                if api_key_set
+                else "[red]MISSING[/red] — set secrets.anthropic_api_key",
             )
             table.add_row(
                 "  resilience",
                 f"timeout={cfg.inference.anthropic_timeout:.0f}s · "
                 f"retries={cfg.inference.anthropic_max_retries} (exp backoff)",
             )
-            concurrency_color = (
-                "green" if enricher_concurrency > 1 else "yellow"
-            )
-            concurrency_hint = (
-                "parallel" if enricher_concurrency > 1 else "serial — slow for cloud"
-            )
+            concurrency_color = "green" if enricher_concurrency > 1 else "yellow"
+            concurrency_hint = "parallel" if enricher_concurrency > 1 else "serial — slow for cloud"
             table.add_row(
                 "  concurrency",
                 f"[{concurrency_color}]{enricher_concurrency}[/{concurrency_color}] "
@@ -282,8 +282,7 @@ def _print_index_summary(
         elif backend == "ollama":
             table.add_row(
                 "Backend",
-                f"[green]ollama[/green] [dim](local)[/dim]  →  "
-                f"{cfg.inference.ollama_model}",
+                f"[green]ollama[/green] [dim](local)[/dim]  →  {cfg.inference.ollama_model}",
             )
             table.add_row("  endpoint", cfg.inference.ollama_host)
             if enricher_concurrency > 1:
@@ -300,8 +299,6 @@ def _print_index_summary(
     enabled_features = []
     if rf.hyde_enabled:
         enabled_features.append("hyde" + ("(code-tuned)" if rf.hyde_code_tuned else ""))
-    if rf.query_decomposition_enabled:
-        enabled_features.append("decomp" + ("(llm)" if rf.query_decomposition_llm else ""))
     if rf.query_router_llm:
         enabled_features.append("router(llm)")
     if rf.query_rewrite_enabled:
@@ -310,18 +307,27 @@ def _print_index_summary(
         enabled_features.append(f"multi-query×{rf.multi_query_count}")
     if rf.recursive_enabled:
         enabled_features.append(f"recursive(adj={rf.recursive_adjacency})")
-    if rf.cache_enabled:
-        enabled_features.append(f"cache(n={rf.cache_size},ttl={int(rf.cache_ttl)}s)")
     if rf.adaptive_weighting:
         enabled_features.append("adaptive-weights")
     if enabled_features:
         section("Features", "query-time toggles (no re-index needed)")
         table.add_row("Enabled", " · ".join(enabled_features))
+    configured_only = []
+    if rf.query_decomposition_enabled:
+        configured_only.append("query-decomposition")
+    if rf.cache_enabled:
+        configured_only.append("semantic-cache")
+    if configured_only:
+        table.add_row(
+            "Not integrated",
+            " · ".join(configured_only) + " [dim](no production retrieval effect)[/dim]",
+        )
 
     # ---- Graph integration ---------------------------------------------
     section("Graph", "graphify symbol mirror")
     if graphify:
         from stropha.pipeline.graphify_runner import find_graphify
+
         gbin = find_graphify()
         if gbin:
             table.add_row(
@@ -347,20 +353,22 @@ def _print_index_summary(
     )
 
     console.print()
-    console.print(Panel(
-        table,
-        title="[bold]stropha index — configuration[/bold]",
-        title_align="left",
-        border_style="cyan",
-        padding=(0, 1),
-    ))
+    console.print(
+        Panel(
+            table,
+            title="[bold]stropha index — configuration[/bold]",
+            title_align="left",
+            border_style="cyan",
+            padding=(0, 1),
+        )
+    )
     console.print()
 
 
 @app.callback()
 def _root(
     log_level: str = typer.Option(
-        None, "--log-level", help="Override STROPHA_LOG_LEVEL (DEBUG/INFO/WARNING)."
+        None, "--log-level", help="Override the configured log level (DEBUG/INFO/WARNING)."
     ),
 ) -> None:
     """Initialize logging before any subcommand runs."""
@@ -382,10 +390,10 @@ def index(
     ),
     manifest: Path | None = typer.Option(
         None,
-        "--manifest", "-m",
+        "--manifest",
+        "-m",
         help=(
-            "Path to a YAML manifest with `repos: [{path: ...}]`. "
-            "Mutually exclusive with --repo."
+            "Path to a YAML manifest with `repos: [{path: ...}]`. Mutually exclusive with --repo."
         ),
     ),
     rebuild: bool = typer.Option(
@@ -394,7 +402,8 @@ def index(
         help="Clear and reindex only the repositories selected by --repo/--manifest.",
     ),
     vacuum: bool = typer.Option(
-        False, "--vacuum",
+        False,
+        "--vacuum",
         help=(
             "Reclaim unused disk space after indexing. SQLite deletes "
             "performed by --rebuild mark pages as free but do not shrink the "
@@ -403,21 +412,24 @@ def index(
         ),
     ),
     full: bool = typer.Option(
-        False, "--full",
+        False,
+        "--full",
         help=(
             "Force a full walk (every file checked). "
             "Useful when --incremental defaults would otherwise apply."
         ),
     ),
     incremental: bool = typer.Option(
-        False, "--incremental",
+        False,
+        "--incremental",
         help=(
             "Force git-diff incremental mode. Errors if no last_indexed_sha "
             "checkpoint exists (run a full index first, or pass --since)."
         ),
     ),
     since: str | None = typer.Option(
-        None, "--since",
+        None,
+        "--since",
         help=(
             "Override last_indexed_sha for incremental mode. "
             "Useful to re-run against a specific checkpoint."
@@ -435,10 +447,11 @@ def index(
     ),
     concurrency: int | None = typer.Option(
         None,
-        "--concurrency", "-c",
+        "--concurrency",
+        "-c",
         help=(
             "Number of concurrent enricher (LLM) calls. Overrides "
-            "inference.enricher_concurrency from stropha.yaml. "
+            "inference.enricher_concurrency from ~/.stropha/config.yaml. "
             "1 = serial (default, safe for local backends). 8 is a "
             "good starting point for cloud backends (deepseek / openai); "
             "raise if you have higher rate limits."
@@ -446,10 +459,11 @@ def index(
     ),
     batch_size: int | None = typer.Option(
         None,
-        "--batch-size", "-b",
+        "--batch-size",
+        "-b",
         help=(
             "Chunks packed into a single LLM call. Overrides "
-            "inference.enricher_batch_size from stropha.yaml. 1 = "
+            "inference.enricher_batch_size from ~/.stropha/config.yaml. 1 = "
             "per-chunk (legacy). N>1 multiplies effective throughput by "
             "N under the same rate-limit budget. Only the `contextual` "
             "enricher implements batching today; other enrichers ignore "
@@ -478,6 +492,7 @@ def index(
     targets: list[Path] = []
     if manifest:
         from .ingest.manifest import ManifestError, load_manifest
+
         try:
             entries = load_manifest(manifest)
         except ManifestError as exc:
@@ -531,20 +546,22 @@ def index(
     #   per-backend override (e.g. ``deepseek_batch_size``) > global
     #   ``enricher_batch_size``. The CLI flag overrides both.
     effective_concurrency = (
-        concurrency if concurrency is not None
-        else cfg.inference.enricher_concurrency
+        concurrency if concurrency is not None else cfg.inference.enricher_concurrency
     )
     effective_batch_size = (
-        batch_size if batch_size is not None
-        else cfg.inference.effective_batch_size()
+        batch_size if batch_size is not None else cfg.inference.effective_batch_size()
     )
 
     # Everything resolved above (target repos, adapter ids from build_stages,
     # mode flags, inference backend, feature toggles) feeds into one panel so
     # the user sees the full state in a single glance.
     _print_index_summary(
-        cfg, built, targets, mode,
-        rebuild=rebuild, vacuum=vacuum,
+        cfg,
+        built,
+        targets,
+        mode,
+        rebuild=rebuild,
+        vacuum=vacuum,
         enricher_concurrency=effective_concurrency,
         enricher_batch_size=effective_batch_size,
         graphify=graphify,
@@ -578,15 +595,9 @@ def index(
         # Surface file-level cache hits prominently — they are the
         # biggest perf win of Phase A incremental.
         skipped_part = (
-            f"{stats.files_skipped_fresh} files fresh · "
-            if stats.files_skipped_fresh
-            else ""
+            f"{stats.files_skipped_fresh} files fresh · " if stats.files_skipped_fresh else ""
         )
-        evicted_part = (
-            f"{stats.files_evicted} evicted · "
-            if stats.files_evicted
-            else ""
-        )
+        evicted_part = f"{stats.files_evicted} evicted · " if stats.files_evicted else ""
         console.print(
             f"[green]Done.[/green] {stats.files_visited} files · "
             f"{skipped_part}{evicted_part}"
@@ -595,8 +606,7 @@ def index(
             f"{stats.chunks_skipped_fresh} reused · "
             f"{stats.chunks_enriched_from_cache} enrich-cache hits · "
             f"{stats.chunks_enriched_fresh} enrich-fresh "
-            f"across {len(stats.repos)} repo"
-            + ("s" if len(stats.repos) != 1 else "")
+            f"across {len(stats.repos)} repo" + ("s" if len(stats.repos) != 1 else "")
         )
         for r in stats.repos:
             extras = []
@@ -627,21 +637,18 @@ def _apply_cli_filters(
 ) -> list:
     """Apply post-retrieval filters to search hits for CLI."""
     result = hits
-    
+
     if language:
         lang_set = {lang.lower() for lang in language}
         result = [h for h in result if h.language.lower() in lang_set]
-    
+
     if path_prefix:
         result = [h for h in result if h.rel_path.startswith(path_prefix)]
-    
+
     if exclude_tests:
         test_patterns = ("test_", "_test.", ".test.", "/tests/", "/test/", "Test.")
-        result = [
-            h for h in result
-            if not any(p in h.rel_path for p in test_patterns)
-        ]
-    
+        result = [h for h in result if not any(p in h.rel_path for p in test_patterns)]
+
     return result
 
 
@@ -655,7 +662,8 @@ def search(
     top_k: int = typer.Option(10, "--top-k", "-k", min=1, max=50),
     recursive: bool = typer.Option(
         False,
-        "--recursive", "-r",
+        "--recursive",
+        "-r",
         help="Enable auto-merging of sibling and adjacent chunks.",
     ),
     refresh: bool = typer.Option(
@@ -670,12 +678,14 @@ def search(
     ),
     language: list[str] | None = typer.Option(
         None,
-        "--language", "-l",
+        "--language",
+        "-l",
         help="Filter by language(s), e.g., -l python -l java.",
     ),
     path_prefix: str | None = typer.Option(
         None,
-        "--path", "-p",
+        "--path",
+        "-p",
         help="Filter by path prefix, e.g., --path src/services/",
     ),
     exclude_tests: bool = typer.Option(
@@ -684,7 +694,8 @@ def search(
         help="Exclude test files from results.",
     ),
     context_budget: int | None = typer.Option(
-        None, "--context-budget",
+        None,
+        "--context-budget",
         help=(
             "Token budget for result packing (WIN-208). When set, "
             "results are greedy-packed in score order up to this "
@@ -693,7 +704,8 @@ def search(
         ),
     ),
     compress: bool = typer.Option(
-        False, "--compress",
+        False,
+        "--compress",
         help=(
             "Extractive compression (WIN-210): keep each hit's "
             "signature + matched lines + small context window, drop "
@@ -713,13 +725,7 @@ def search(
         stropha search "auth" https://github.com/org/repo
         stropha search "auth" https://github.com/org/repo --refresh
     """
-    import os
-
     from .tools.git_url import GitUrlError, is_git_url, search_git_url
-
-    # Set env var to enable recursive retrieval for this search
-    if recursive:
-        os.environ["STROPHA_RECURSIVE_RETRIEVAL"] = "1"
 
     # Fetch more candidates when filtering
     has_filters = any([language, path_prefix, exclude_tests])
@@ -735,10 +741,19 @@ def search(
             console.print(f"[dim]Searching remote repo: {repo_url}[/dim]")
             if refresh:
                 console.print("[dim]Refreshing cache...[/dim]")
-            hits = search_git_url(query, repo_url, top_k=fetch_k, refresh=refresh)
+            hits = search_git_url(
+                query,
+                repo_url,
+                top_k=fetch_k,
+                refresh=refresh,
+                recursive=recursive,
+            )
         else:
             # Local search
-            resolved = load_pipeline_config()
+            overrides = None
+            if recursive:
+                overrides = {"retrieval": {"config": {"recursive_enabled": True}}}
+            resolved = load_pipeline_config(overrides=overrides)
             built = build_stages(resolved)
             with built.storage:  # type: ignore[union-attr]
                 repo_id: int | None = None
@@ -750,9 +765,7 @@ def search(
                     identity = detect(target)
                     repo_id = built.storage.lookup_repo_id(identity.normalized_key)
                     if repo_id is None:
-                        console.print(
-                            f"[red]Current repository is not indexed:[/red] {target}"
-                        )
+                        console.print(f"[red]Current repository is not indexed:[/red] {target}")
                         raise typer.Exit(code=1)
                 if repo_id is None:
                     hits = built.retrieval.search(query, top_k=fetch_k)
@@ -794,11 +807,6 @@ def search(
     except StrophaError as exc:
         console.print(f"[red]Search failed:[/red] {exc}")
         raise typer.Exit(code=1) from exc
-    finally:
-        # Clean up env var
-        if recursive:
-            os.environ.pop("STROPHA_RECURSIVE_RETRIEVAL", None)
-
     if not hits:
         console.print("[yellow]No results.[/yellow]")
         return
@@ -855,7 +863,8 @@ def init(
     ),
     mcp_client: str | None = typer.Option(
         None,
-        "--mcp-client", "-m",
+        "--mcp-client",
+        "-m",
         help=(
             "MCP client to configure: 'claude-code', 'cursor', 'opencode', 'continue'. "
             "Auto-detects if not specified."
@@ -876,12 +885,13 @@ def init(
     ),
     force: bool = typer.Option(
         False,
-        "--force", "-f",
+        "--force",
+        "-f",
         help="Overwrite existing MCP configuration.",
     ),
 ) -> None:
     """Initialize a project for use with stropha.
-    
+
     This command:
     1. Creates .stropha/ directory with default .strophaignore
     2. Detects MCP clients and configures them (optional)
@@ -895,23 +905,23 @@ def init(
         detect_mcp_clients,
         print_next_steps,
     )
-    
+
     target = target.resolve()
     if not target.is_dir():
         console.print(f"[red]Error:[/red] {target} is not a directory")
         raise typer.Exit(code=1)
-    
+
     console.print(f"[bold]Initializing stropha in {target}[/bold]\n")
-    
+
     # Step 1: Create .stropha/ directory
     console.print("[dim]Step 1:[/dim] Creating .stropha/ directory...")
     _created, messages = create_stropha_dir(target)
     for msg in messages:
         console.print(f"  {msg}")
-    
+
     # Step 2: Configure MCP client
     console.print("\n[dim]Step 2:[/dim] Configuring MCP client...")
-    
+
     if mcp_client:
         # Find specified client
         client_map = {c.name.lower().replace(" ", "-"): c for c in MCP_CLIENTS}
@@ -944,10 +954,13 @@ def init(
                     if config_path and config_path.exists():
                         try:
                             import json
+
                             config = json.loads(config_path.read_text())
                             servers = config.get(client.key, {})
                             if "stropha_rag" in servers:
-                                console.print("    [dim]Already configured (use --force to overwrite)[/dim]")
+                                console.print(
+                                    "    [dim]Already configured (use --force to overwrite)[/dim]"
+                                )
                                 continue
                         except Exception:
                             pass
@@ -961,13 +974,14 @@ def init(
                     console.print(f"    [green]{msg}[/green]")
                 else:
                     console.print(f"    [yellow]{msg}[/yellow]")
-    
+
     # Step 3: Run initial index
     if run_index:
         console.print("\n[dim]Step 3:[/dim] Running initial index...")
         console.print("  [dim]This may take a moment for large repos...[/dim]")
-        
+
         import os
+
         os.environ["STROPHA_TARGET_REPO"] = str(target)
         # STROPHA_INDEX_PATH removed: dead env var (read by no code path).
         # The unified YAML `paths.index` controls the DB location.
@@ -998,13 +1012,13 @@ def init(
             console.print("  [dim]You can retry later with: stropha index[/dim]")
     else:
         console.print("\n[dim]Step 3:[/dim] Skipping initial index (--no-index)")
-    
+
     # Step 4: Print next steps
     console.print("\n[bold]Next steps:[/bold]")
     steps = print_next_steps(target, indexed=run_index)
     for i, step in enumerate(steps, 1):
         console.print(f"  {i}. {step}")
-    
+
     console.print("\n[green]Done![/green]")
 
 
@@ -1243,11 +1257,13 @@ def adapters_list(
 @app.command()
 def cost(
     log_path: Path = typer.Option(
-        None, "--log-path",
+        None,
+        "--log-path",
         help="Override the hook log path. Defaults to ~/.cache/stropha-hook*.log",
     ),
     json_out: bool = typer.Option(
-        False, "--json",
+        False,
+        "--json",
         help="Emit JSON instead of the rich table.",
     ),
 ) -> None:
@@ -1262,13 +1278,16 @@ def cost(
     report = aggregate(paths)
     if json_out:
         import sys
+
         sys.stdout.write(render_json(report))
         sys.stdout.write("\n")
         raise typer.Exit(code=0)
     rendered = render_table(report)
     if rendered is None:
-        console.print(f"[yellow]Log present but contained no recognisable events:[/yellow] "
-                      f"{', '.join(str(p) for p in paths)}")
+        console.print(
+            f"[yellow]Log present but contained no recognisable events:[/yellow] "
+            f"{', '.join(str(p) for p in paths)}"
+        )
         raise typer.Exit(code=1)
     console.print(f"[dim]Scanned: {', '.join(str(p) for p in paths)}[/dim]")
     console.print(rendered)
@@ -1282,19 +1301,28 @@ def cost(
 @app.command()
 def watch(
     repo: Path = typer.Option(
-        None, "--repo", "-r",
+        None,
+        "--repo",
+        "-r",
         help="Repo to watch. Defaults to STROPHA_TARGET_REPO or cwd.",
     ),
     interval: float = typer.Option(
-        1.0, "--interval", min=0.1, max=60.0,
+        1.0,
+        "--interval",
+        min=0.1,
+        max=60.0,
         help="Polling interval in seconds.",
     ),
     debounce: float = typer.Option(
-        2.0, "--debounce", min=0.0, max=60.0,
+        2.0,
+        "--debounce",
+        min=0.0,
+        max=60.0,
         help="Wait this many seconds of no further changes before re-indexing.",
     ),
     full_refresh: bool = typer.Option(
-        False, "--full-refresh",
+        False,
+        "--full-refresh",
         help="Run a full Pipeline pass on every cycle (slower but covers graphify reload).",
     ),
 ) -> None:
@@ -1312,7 +1340,9 @@ def watch(
     )
     try:
         watch_repo(
-            target, interval_s=interval, debounce_s=debounce,
+            target,
+            interval_s=interval,
+            debounce_s=debounce,
             full_refresh=full_refresh,
         )
     except StrophaError as exc:
@@ -1329,24 +1359,29 @@ def watch(
 def eval(
     golden: Path = typer.Option(
         Path("tests/eval/golden.jsonl"),
-        "--golden", "-g",
+        "--golden",
+        "-g",
         help="Path to JSONL golden file (one case per line).",
     ),
     top_k: int = typer.Option(10, "--top-k", "-k", min=1, max=100),
     tag: str | None = typer.Option(
-        None, "--tag",
+        None,
+        "--tag",
         help="Run only cases with this tag (e.g. `--tag retrieval`).",
     ),
     json_out: bool = typer.Option(
-        False, "--json",
+        False,
+        "--json",
         help="Emit machine-readable JSON instead of the rich table.",
     ),
     track: bool = typer.Option(
-        False, "--track",
+        False,
+        "--track",
         help="Append scores to JSONL log and check for regression (WIN-382).",
     ),
     track_log: Path | None = typer.Option(
-        None, "--track-log",
+        None,
+        "--track-log",
         help="Custom path for the eval score log (default: ~/.stropha/eval-scores.jsonl).",
     ),
 ) -> None:
@@ -1390,17 +1425,17 @@ def eval(
             "summary": report.summary(),
             "results": [
                 {
-                    "id": r.case.id, "query": r.case.query,
+                    "id": r.case.id,
+                    "query": r.case.query,
                     "tags": list(r.case.tags),
-                    "hit": r.hit, "rank": r.rank_of_first_hit,
+                    "hit": r.hit,
+                    "rank": r.rank_of_first_hit,
                     "matched_path": r.matched_path,
                     "matched_symbol": r.matched_symbol,
                 }
                 for r in report.results
             ],
-            "by_tag": {
-                t: sub.summary() for t, sub in report.by_tag().items()
-            },
+            "by_tag": {t: sub.summary() for t, sub in report.by_tag().items()},
         }
         console.print_json(_json.dumps(payload))
         raise typer.Exit(code=0 if report.recall_at_k >= 0.85 else 2)
@@ -1482,9 +1517,7 @@ def eval(
         from .eval.tracker import append_score, check_regression
 
         append_score(report, log_path=track_log)
-        is_regression, msg = check_regression(
-            report.recall_at_k, log_path=track_log
-        )
+        is_regression, msg = check_regression(report.recall_at_k, log_path=track_log)
         if is_regression:
             console.print(f"[bold red]⚠ {msg}[/bold red]")
         elif not json_out:
@@ -1521,15 +1554,19 @@ def _resolve_hook_target(target: Path | None) -> Path:
 @hook_app.command("install")
 def hook_install_cmd(
     target: Path = typer.Option(
-        None, "--target", "-t",
+        None,
+        "--target",
+        "-t",
         help="Repo to install into. Defaults to STROPHA_TARGET_REPO or cwd.",
     ),
     force: bool = typer.Option(
-        False, "--force",
+        False,
+        "--force",
         help="Silence the warning when a graphify-hook coexists.",
     ),
     project_dir: Path = typer.Option(
-        None, "--project-dir",
+        None,
+        "--project-dir",
         help=(
             "Where stropha is installed (the directory with the `uv` venv). "
             "Bake into the hook so cross-repo installs work without manual "
@@ -1540,14 +1577,16 @@ def hook_install_cmd(
     # honours the unified ~/.stropha/config.yaml `paths.index` — there
     # is no separate per-hook DB override.
     log_path: Path = typer.Option(
-        None, "--log-path",
+        None,
+        "--log-path",
         help=(
             "Bake the hook log file path. Useful for separating per-repo "
             "refresh trails. Defaults to ~/.cache/stropha-hook.log."
         ),
     ),
     meta_iterations: int = typer.Option(
-        0, "--meta-iterations",
+        0,
+        "--meta-iterations",
         help=(
             "Sleep-time bandit iterations per commit (WIN-203). When > 0, "
             "the hook runs `stropha meta run --iterations N` in the same "
@@ -1581,7 +1620,8 @@ def hook_install_cmd(
 
     try:
         result = install(
-            repo, force=force,
+            repo,
+            force=force,
             project_dir=project_dir,
             log_path=log_path,
             meta_iterations=meta_iterations,
@@ -1627,7 +1667,9 @@ def hook_install_cmd(
 @hook_app.command("uninstall")
 def hook_uninstall_cmd(
     target: Path = typer.Option(
-        None, "--target", "-t",
+        None,
+        "--target",
+        "-t",
         help="Repo to uninstall from. Defaults to STROPHA_TARGET_REPO or cwd.",
     ),
 ) -> None:
@@ -1651,7 +1693,9 @@ def hook_uninstall_cmd(
 @hook_app.command("status")
 def hook_status_cmd(
     target: Path = typer.Option(
-        None, "--target", "-t",
+        None,
+        "--target",
+        "-t",
         help="Repo to inspect. Defaults to STROPHA_TARGET_REPO or cwd.",
     ),
 ) -> None:
@@ -1716,13 +1760,15 @@ def glossary_add_cmd(
     term: str = typer.Argument(..., help="The term to add."),
     definition: str = typer.Argument(..., help="Definition of the term."),
     aliases: list[str] = typer.Option(
-        [], "--alias", "-a",
+        [],
+        "--alias",
+        "-a",
         help="Alternate names for the term (can be repeated).",
     ),
 ) -> None:
     """Add a single term to the glossary."""
     from .ingest.glossary import GlossaryLoader
-    
+
     resolved = load_pipeline_config()
     try:
         built = build_stages(resolved)
@@ -1748,7 +1794,7 @@ def glossary_remove_cmd(
 ) -> None:
     """Remove a term from the glossary."""
     from .ingest.glossary import GlossaryLoader
-    
+
     resolved = load_pipeline_config()
     try:
         built = build_stages(resolved)
@@ -1769,7 +1815,7 @@ def glossary_remove_cmd(
 def glossary_list_cmd() -> None:
     """List all glossary terms."""
     from .ingest.glossary import GlossaryLoader
-    
+
     resolved = load_pipeline_config()
     try:
         built = build_stages(resolved)
@@ -1779,20 +1825,20 @@ def glossary_list_cmd() -> None:
     except StrophaError as exc:
         console.print(f"[red]Failed:[/red] {exc}")
         raise typer.Exit(code=1) from exc
-    
+
     if not terms:
         console.print("[yellow]No glossary terms found.[/yellow]")
         return
-    
+
     table = Table(title=f"Glossary ({len(terms)} terms)", show_lines=False)
     table.add_column("Term", style="cyan")
     table.add_column("Definition", overflow="fold")
     table.add_column("Aliases", overflow="fold", style="dim")
-    
+
     for t in terms:
         aliases = ", ".join(t.get("aliases", [])) or "—"
         table.add_row(t["term"], t["definition"][:100], aliases)
-    
+
     console.print(table)
 
 
@@ -1806,7 +1852,7 @@ def glossary_import_cmd(
 ) -> None:
     """Import glossary terms from a YAML file."""
     from .ingest.glossary import GlossaryLoader
-    
+
     resolved = load_pipeline_config()
     try:
         built = build_stages(resolved)
@@ -1816,7 +1862,7 @@ def glossary_import_cmd(
             if not terms:
                 console.print("[yellow]No terms found in file.[/yellow]")
                 return
-            
+
             indexed = loader.index_terms(
                 terms,
                 embedder=built.embedder,
@@ -1838,7 +1884,7 @@ def glossary_export_cmd(
 ) -> None:
     """Export glossary terms to a YAML file."""
     from .ingest.glossary import GlossaryLoader
-    
+
     resolved = load_pipeline_config()
     try:
         built = build_stages(resolved)
@@ -1858,7 +1904,7 @@ def glossary_export_cmd(
 def glossary_stats_cmd() -> None:
     """Show glossary statistics."""
     from .ingest.glossary import GlossaryLoader
-    
+
     resolved = load_pipeline_config()
     try:
         built = build_stages(resolved)
@@ -1868,14 +1914,14 @@ def glossary_stats_cmd() -> None:
     except StrophaError as exc:
         console.print(f"[red]Failed:[/red] {exc}")
         raise typer.Exit(code=1) from exc
-    
+
     table = Table(title="Glossary Statistics", show_lines=False)
     table.add_column("Metric", style="cyan")
     table.add_column("Value")
-    
+
     table.add_row("Total terms", str(stats.total_terms))
     table.add_row("Last updated", stats.last_updated or "—")
-    
+
     console.print(table)
 
 
@@ -1900,26 +1946,35 @@ def _default_matrix_path() -> Path:
 @bench_app.command("run")
 def bench_run_cmd(
     matrix: Path = typer.Option(
-        None, "--matrix", "-m",
+        None,
+        "--matrix",
+        "-m",
         help="Matrix YAML (default: bundled default_matrix.yaml).",
     ),
     out: Path = typer.Option(
-        Path(".stropha/bench/results.jsonl"), "--out", "-o",
+        Path(".stropha/bench/results.jsonl"),
+        "--out",
+        "-o",
         help="Append-only results JSONL (resumable).",
     ),
     index_dir: Path = typer.Option(
-        None, "--index-dir",
+        None,
+        "--index-dir",
         help="Where per-index sqlite DBs live (default: <out dir>/indexes).",
     ),
     limit: int | None = typer.Option(
-        None, "--limit", help="Stop after evaluating N new cells (smoke runs).",
+        None,
+        "--limit",
+        help="Stop after evaluating N new cells (smoke runs).",
     ),
     resume: bool = typer.Option(
-        True, "--resume/--no-resume",
+        True,
+        "--resume/--no-resume",
         help="Skip cells already present in the results file.",
     ),
     dry_run: bool = typer.Option(
-        False, "--dry-run",
+        False,
+        "--dry-run",
         help="Print the plan (cells + unique indexes) without running.",
     ),
 ) -> None:
@@ -1963,7 +2018,12 @@ def bench_run_cmd(
 
     try:
         summary = run_matrix(
-            m, out, index_dir=index_dir, resume=resume, limit=limit, on_cell=_on_cell,
+            m,
+            out,
+            index_dir=index_dir,
+            resume=resume,
+            limit=limit,
+            on_cell=_on_cell,
         )
     except StrophaError as exc:
         console.print(f"[red]Bench failed:[/red] {exc}")
@@ -1979,7 +2039,9 @@ def bench_report_cmd(
     results: Path = typer.Argument(..., help="Results JSONL produced by `bench run`."),
     metric: str = typer.Option("recall@10", "--metric", help="Metric to rank / marginalise by."),
     baseline: str | None = typer.Option(
-        None, "--baseline", help="cell_id to diff against (paired bootstrap CI).",
+        None,
+        "--baseline",
+        help="cell_id to diff against (paired bootstrap CI).",
     ),
     top: int = typer.Option(20, "--top", help="How many ranked rows to show."),
     csv: Path | None = typer.Option(None, "--csv", help="Also write a flat CSV here."),
@@ -2012,8 +2074,7 @@ def bench_report_cmd(
     for r in rep.rank_table(metric)[:top]:
         met = r.get("metrics", {})
         cells = [
-            f"{met[mn]:.3f}" if isinstance(met.get(mn), (int, float)) else "-"
-            for mn in metrics
+            f"{met[mn]:.3f}" if isinstance(met.get(mn), (int, float)) else "-" for mn in metrics
         ]
         table.add_row(str(r.get("cell_id", ""))[:8], r.get("label", ""), *cells)
     console.print(table)
@@ -2045,12 +2106,20 @@ def bench_report_cmd(
             dt.add_column("95% CI")
             dt.add_column("P>0", justify="right")
             for d in sorted(deltas, key=lambda x: x["d_recall"][0], reverse=True):
-                pr, lor, hir, fpr = d["d_recall"]
-                pm, lom, him, fpm = d["d_mrr"]
+                pr, lor, hir, fpr = cast(
+                    tuple[float, float, float, float], d["d_recall"]
+                )
+                pm, lom, him, fpm = cast(
+                    tuple[float, float, float, float], d["d_mrr"]
+                )
                 dt.add_row(
-                    d["label"],
-                    f"{pr:+.3f}", f"[{lor:+.3f},{hir:+.3f}]", f"{fpr:.2f}",
-                    f"{pm:+.3f}", f"[{lom:+.3f},{him:+.3f}]", f"{fpm:.2f}",
+                    str(d["label"]),
+                    f"{pr:+.3f}",
+                    f"[{lor:+.3f},{hir:+.3f}]",
+                    f"{fpr:.2f}",
+                    f"{pm:+.3f}",
+                    f"[{lom:+.3f},{him:+.3f}]",
+                    f"{fpm:.2f}",
                 )
             console.print(dt)
 
@@ -2144,6 +2213,7 @@ def outcome_backfill_cmd(
 
     if json_out:
         import json as _json
+
         console.print_json(_json.dumps(summary.to_dict()))
         return
 
@@ -2169,9 +2239,9 @@ def outcome_backfill_cmd(
     table.add_row(
         "stream_weights",
         ", ".join(
-            f"{stream}={weight:.3f}"
-            for stream, weight in sorted(summary.stream_weights.items())
-        ) or "—",
+            f"{stream}={weight:.3f}" for stream, weight in sorted(summary.stream_weights.items())
+        )
+        or "—",
     )
     table.add_row("stream_weights_path", str(summary.stream_weights_path or "—"))
     table.add_row("output", str(summary.output_path or "—"))
@@ -2255,6 +2325,7 @@ def meta_prune_cmd(
 
     if json_out:
         import json as _json
+
         console.print_json(_json.dumps(plan.to_dict()))
         return
 
@@ -2292,23 +2363,29 @@ def _meta_dir_default() -> Path:
 @meta_app.command("run")
 def meta_run_cmd(
     iterations: int = typer.Option(
-        20, "--iterations", "-n",
+        20,
+        "--iterations",
+        "-n",
         help="Number of Algorithm 1 iterations (default 20).",
     ),
     wall_clock_s: float | None = typer.Option(
-        None, "--wall-clock",
+        None,
+        "--wall-clock",
         help="Wall-clock budget in seconds. Stops on whichever budget fires first.",
     ),
     proposer: str = typer.Option(
-        "bandit", "--proposer",
+        "bandit",
+        "--proposer",
         help="Proposer strategy: bandit | local-agentic | cloud-agentic.",
     ),
     seed: int | None = typer.Option(
-        None, "--seed",
+        None,
+        "--seed",
         help="RNG seed for the bandit + fallback paths (reproducibility).",
     ),
     meta_dir: Path = typer.Option(
-        None, "--meta-dir",
+        None,
+        "--meta-dir",
         help="Override meta dir. Defaults to <index_parent>/meta/.",
     ),
 ) -> None:
@@ -2359,6 +2436,7 @@ def meta_run_cmd(
     # loop's plumbing (proposer + persist + Pareto) is exercisable
     # without a live SearchEngine. The full evaluator wires in Phase 5.
     import random as _random
+
     rng = _random.Random(seed)
 
     def stub_eval(cfg: dict[str, Any]) -> ScoreCard:
@@ -2407,19 +2485,35 @@ def meta_status_cmd(
     store = ArtifactStore(meta_dir)
     candidates = store.list_candidates()
     cards = [
-        ScoreCard(**{k: v for k, v in c.scores.items() if k in {
-            "quality", "context_efficiency", "outcome_score", "latency_ms",
-        }})
-        for c in candidates if c.scores
+        ScoreCard(
+            **{
+                k: v
+                for k, v in c.scores.items()
+                if k
+                in {
+                    "quality",
+                    "context_efficiency",
+                    "outcome_score",
+                    "latency_ms",
+                }
+            }
+        )
+        for c in candidates
+        if c.scores
     ]
     frontier = scorecard_pareto_frontier(cards)
     if json_out:
         import json as _json
-        console.print_json(_json.dumps({
-            "archive_size": len(candidates),
-            "frontier_size": len(frontier),
-            "meta_dir": str(meta_dir),
-        }))
+
+        console.print_json(
+            _json.dumps(
+                {
+                    "archive_size": len(candidates),
+                    "frontier_size": len(frontier),
+                    "meta_dir": str(meta_dir),
+                }
+            )
+        )
         return
     console.print(
         f"[bold]archive:[/bold] {len(candidates)} candidates · "
@@ -2430,13 +2524,14 @@ def meta_status_cmd(
 @meta_app.command("report")
 def meta_report_cmd(
     meta_dir: Path = typer.Option(None, "--meta-dir"),
-    limit: int = typer.Option(10, "--limit", "-n",
-                              help="Top-N candidates by fitness."),
-    sort_by: str = typer.Option("fitness", "--sort-by",
-                                 help="created_at | id | fitness | <score_key>"),
+    limit: int = typer.Option(10, "--limit", "-n", help="Top-N candidates by fitness."),
+    sort_by: str = typer.Option(
+        "fitness", "--sort-by", help="created_at | id | fitness | <score_key>"
+    ),
     json_out: bool = typer.Option(False, "--json"),
     regression_threshold: float = typer.Option(
-        0.0, "--regression-threshold",
+        0.0,
+        "--regression-threshold",
         help=(
             "Minimum positive fitness delta vs the live baseline that "
             "qualifies as a 'beats baseline' alert (WIN-204). Default 0 "
@@ -2448,7 +2543,7 @@ def meta_report_cmd(
 
     When a baseline has been recorded (via ``meta promote --apply``),
     the report also flags every candidate that beats the live
-    ``stropha.yaml`` on fitness — the regression-alert section that
+    the promoted unified config on fitness — the regression-alert section that
     answers "is the bandit finding something better than what I just
     promoted?".
     """
@@ -2476,18 +2571,21 @@ def meta_report_cmd(
     except BaselineError as exc:
         console.print(f"[red]Baseline read failed:[/red] {exc}")
         baseline = None
-    comparisons = (
-        compare_candidates(candidates, baseline) if baseline else []
-    )
+    comparisons = compare_candidates(candidates, baseline) if baseline else []
     delta_by_id = {c.candidate.id: c for c in comparisons}
     alerts = regressions(comparisons, threshold=regression_threshold)
 
     if json_out:
         import json as _json
+
         payload: dict[str, Any] = {
             "candidates": [
-                c.to_dict() if hasattr(c, "to_dict") else {
-                    "id": c.id, "label": c.label, "scores": c.scores,
+                c.to_dict()
+                if hasattr(c, "to_dict")
+                else {
+                    "id": c.id,
+                    "label": c.label,
+                    "scores": c.scores,
                     "fitness": c.fitness(),
                 }
                 for c in candidates
@@ -2558,8 +2656,7 @@ def meta_report_cmd(
         )
         alert_table.add_column("ID", style="cyan")
         alert_table.add_column("Label")
-        alert_table.add_column("Δ vs baseline", justify="right",
-                               style="green")
+        alert_table.add_column("Δ vs baseline", justify="right", style="green")
         alert_table.add_column("Candidate fitness", justify="right")
         alert_table.add_column("Baseline fitness", justify="right")
         for a in alerts:
@@ -2587,8 +2684,8 @@ def meta_promote_cmd(
         False,
         "--apply",
         help=(
-            "Write the candidate config to stropha.yaml. Without this "
-            "flag, promote prints the unified diff and exits — human "
+            "Atomically merge the candidate into the target config. Without "
+            "this flag, promote prints the unified diff and exits — human "
             "gating is preserved (WIN-202)."
         ),
     ),
@@ -2605,20 +2702,20 @@ def meta_promote_cmd(
         "--target",
         help=(
             "Path to the YAML file to compare / write against. Defaults "
-            "to ./stropha.yaml in the current working directory."
+            "to the canonical ~/.stropha/config.yaml. Candidate changes "
+            "are merged into explicit targets using the same semantics."
         ),
     ),
 ) -> None:
-    """Plan promotion of a Meta-Harness candidate to ``stropha.yaml``.
+    """Plan promotion of a Meta-Harness candidate to the unified config.
 
     Default behaviour (no ``--apply``) is **diff-only**: the unified diff
-    between the current ``stropha.yaml`` (if any) and the candidate's
-    config is printed to stdout. The operator can pipe the diff into
-    ``git apply`` or copy-paste it for review — promotion stays
-    human-gated.
+    between the current target and the merged candidate changes is printed
+    to stdout. Promotion stays human-gated.
 
-    Pass ``--apply`` to overwrite ``stropha.yaml`` with the candidate
-    config. The write is atomic (temp file + replace).
+    Pipeline and search-space changes are deep-merged into the target so
+    secrets and unrelated top-level keys survive. Pass ``--apply`` to write
+    the merged result atomically (temp file + replace).
     """
     from .meta import ArtifactStore, PromotionError, apply_plan, build_plan
 
@@ -2633,7 +2730,9 @@ def meta_promote_cmd(
         raise typer.Exit(code=1) from exc
 
     if target is None:
-        target = Path.cwd() / "stropha.yaml"
+        from .server_frontend import config_path
+
+        target = config_path()
     target = target.expanduser().resolve()
 
     try:
@@ -2650,8 +2749,7 @@ def meta_promote_cmd(
 
     if plan.is_noop:
         console.print(
-            f"[yellow]No changes[/yellow] — candidate {candidate_id} "
-            f"matches current {target}."
+            f"[yellow]No changes[/yellow] — candidate {candidate_id} matches current {target}."
         )
         return
 
@@ -2663,15 +2761,11 @@ def meta_promote_cmd(
                 f"diff shows the full candidate config as additions."
             )
         else:
-            console.print(
-                f"[cyan]Diff[/cyan] — candidate {candidate_id} vs {target}"
-            )
+            console.print(f"[cyan]Diff[/cyan] — candidate {candidate_id} vs {target}")
         # Print the raw diff (no rich markup so it can be piped to git
         # apply / copy-pasted into a review comment).
         typer.echo(plan.diff_text, nl=False)
-        console.print(
-            f"\n[dim]Run with --apply to write to {target}.[/dim]"
-        )
+        console.print(f"\n[dim]Run with --apply to write to {target}.[/dim]")
         return
 
     # Apply path — opt-in only.
@@ -2683,18 +2777,14 @@ def meta_promote_cmd(
     from .meta import write_baseline
 
     baseline = write_baseline(meta_dir, candidate=rec)
-    console.print(
-        f"[green]Promoted[/green] {candidate_id} → {target}"
-    )
+    console.print(f"[green]Promoted[/green] {candidate_id} → {target}")
     if baseline.fitness is not None:
         console.print(
             f"[dim]Baseline recorded (fitness {baseline.fitness:+.4f}, "
             f"promoted_at {baseline.promoted_at}).[/dim]"
         )
     else:
-        console.print(
-            "[dim]Baseline recorded (no fitness — candidate had no scores).[/dim]"
-        )
+        console.print("[dim]Baseline recorded (no fitness — candidate had no scores).[/dim]")
 
 
 @meta_app.command("trace")
@@ -2733,11 +2823,9 @@ def meta_trace_cmd(
 
 @meta_app.command("snapshot")
 def meta_snapshot_cmd(
-    ref: str = typer.Option("HEAD", "--ref",
-                             help="Git ref to pin (HEAD, branch, SHA)."),
+    ref: str = typer.Option("HEAD", "--ref", help="Git ref to pin (HEAD, branch, SHA)."),
     repo: Path = typer.Option(None, "--repo"),
-    list_only: bool = typer.Option(False, "--list",
-                                    help="List existing snapshots and exit."),
+    list_only: bool = typer.Option(False, "--list", help="List existing snapshots and exit."),
 ) -> None:
     """Create or list git-worktree snapshots (WIN-175)."""
     from .meta import create_snapshot, list_snapshots
@@ -2772,27 +2860,33 @@ app.add_typer(memory_app, name="memory")
 @memory_app.command("consolidate")
 def memory_consolidate_cmd(
     repo: Path = typer.Option(
-        None, "--repo",
+        None,
+        "--repo",
         help="Target repo (defaults to STROPHA_TARGET_REPO).",
     ),
     min_episodes: int = typer.Option(
-        3, "--min-episodes",
+        3,
+        "--min-episodes",
         help="Skip the pass when fewer than N episodes exist.",
     ),
     min_count: int = typer.Option(
-        2, "--min-count",
+        2,
+        "--min-count",
         help="Minimum co-touch count for a neighbour to qualify.",
     ),
     top_n: int = typer.Option(
-        5, "--top-n",
+        5,
+        "--top-n",
         help="Cap on neighbours per candidate (per category).",
     ),
     prune_after_days: int = typer.Option(
-        90, "--prune-after-days",
+        90,
+        "--prune-after-days",
         help="Delete episodes older than N days. 0 to disable pruning.",
     ),
     dry_run: bool = typer.Option(
-        False, "--dry-run",
+        False,
+        "--dry-run",
         help="Show what would be written + pruned, don't mutate.",
     ),
 ) -> None:
@@ -2829,9 +2923,7 @@ def memory_consolidate_cmd(
             )
             raise typer.Exit(code=1)
 
-        prune_arg: int | None = (
-            prune_after_days if prune_after_days > 0 else None
-        )
+        prune_arg: int | None = prune_after_days if prune_after_days > 0 else None
         plan = plan_consolidation(
             built.storage,  # type: ignore[arg-type]
             repo_id=repo_id,
@@ -2842,19 +2934,12 @@ def memory_consolidate_cmd(
         )
 
         if not plan.candidates and plan.episodes_to_prune == 0:
-            console.print(
-                "[yellow]No consolidation candidates and nothing to "
-                "prune.[/yellow]"
-            )
+            console.print("[yellow]No consolidation candidates and nothing to prune.[/yellow]")
             return
 
         # Render the plan.
-        console.print(
-            f"[bold]Consolidation plan for {identity.normalized_key}:[/bold]"
-        )
-        console.print(
-            f"  • {len(plan.candidates)} co-touched fact(s) to write."
-        )
+        console.print(f"[bold]Consolidation plan for {identity.normalized_key}:[/bold]")
+        console.print(f"  • {len(plan.candidates)} co-touched fact(s) to write.")
         if plan.prune_cutoff_iso is not None:
             console.print(
                 f"  • {plan.episodes_to_prune} episode(s) older than "

@@ -7,13 +7,9 @@ features, inference, paths, secrets, embedder model selection, logging,
 MCP settings, graph, git.  No ``.env`` file, no project-level override
 file, no environment variables for settings.
 
-The only environment variables still honoured are:
-  - ``STROPHA_TARGET_REPO``  — runtime argument: *which* repo to operate on.
-  - ``STROPHA_HOOK_*``       — post-commit hook subprocess overrides (the
-                               hook is a detached shell script that cannot
-                               read YAML at runtime; values are also baked
-                               into the script at ``stropha hook install``
-                               time, so these are just escape hatches).
+Environment variables are reserved for process/runtime arguments: the target
+repository, MCP launcher controls, session identity and tracing, hook escape
+hatches, and opt-in local PostgreSQL container management.
 
 The resolved ``Config`` dataclass (see ``models.py``) exposes nested sections
 (``retrieval_features``, ``inference``, ``graph``, ``paths``, ``secrets``,
@@ -98,14 +94,44 @@ class _EnvVar:
 _ENV_REGISTRY: tuple[_EnvVar, ...] = (
     # --- runtime path argument (not configuration) --------------------------
     _EnvVar("STROPHA_TARGET_REPO", "core", "<cwd>", "Repo to index / serve; runtime argument"),
+    # --- shared MCP launcher -------------------------------------------------
+    _EnvVar("STROPHA_MCP_HOST", "mcp", "127.0.0.1", "Shared MCP daemon bind host"),
+    _EnvVar("STROPHA_MCP_PORT", "mcp", "9741", "Shared MCP daemon bind port"),
+    _EnvVar("STROPHA_MCP_PROJECT_DIR", "mcp", "<workspace root>", "Launcher working directory"),
+    _EnvVar("STROPHA_MCP_PROBE_TIMEOUT", "mcp", "8", "MCP protocol probe timeout (s)"),
+    # --- per-client session/runtime state -----------------------------------
+    _EnvVar("STROPHA_CLIENT_ID", "session", None, "Stable client identity for session resume"),
+    _EnvVar(
+        "STROPHA_TRACES_DIR",
+        "session",
+        "<index parent>/meta/traces",
+        "Runtime trace output directory",
+    ),
     # --- post-commit hook subprocess overrides ------------------------------
     _EnvVar("STROPHA_HOOK_SKIP", "hook", None, "Bypass post-commit hook (rebases)"),
     _EnvVar("STROPHA_HOOK_TIMEOUT", "hook", "600", "Hook bg-process wall-clock (s)"),
     _EnvVar("STROPHA_HOOK_LOG", "hook", "~/.cache/stropha-hook.log", "Hook log path"),
     _EnvVar("STROPHA_HOOK_UV", "hook", None, "Override `uv` binary path"),
     _EnvVar("STROPHA_HOOK_GRAPHIFY", "hook", None, "Override `graphify` binary path"),
-    _EnvVar("STROPHA_HOOK_NO_GRAPHIFY", "hook", None, "Skip graphify step in hook"),
     _EnvVar("STROPHA_HOOK_PROJECT_DIR", "hook", None, "`uv run --directory` target"),
+    _EnvVar("STROPHA_HOOK_META_ITERATIONS", "hook", None, "Override installed meta iterations"),
+    _EnvVar("STROPHA_HOOK_NO_META", "hook", None, "Skip hook meta-harness step"),
+    _EnvVar("STROPHA_HOOK_NO_EVAL", "hook", None, "Skip hook evaluation step"),
+    # --- opt-in launcher-managed PostgreSQL container -----------------------
+    _EnvVar("STROPHA_USE_POSTGRES", "postgres-launcher", "0", "Manage local PostgreSQL container"),
+    _EnvVar("STROPHA_PG_CONTAINER", "postgres-launcher", "stropha-pg", "Container name"),
+    _EnvVar("STROPHA_PG_IMAGE", "postgres-launcher", "pgvector/pgvector:pg17", "Container image"),
+    _EnvVar("STROPHA_PG_PORT", "postgres-launcher", "<YAML DSN or 54329>", "Published port"),
+    _EnvVar("STROPHA_PG_USER", "postgres-launcher", "<YAML DSN or stropha>", "Database user"),
+    _EnvVar(
+        "STROPHA_PG_PASSWORD",
+        "postgres-launcher",
+        "<YAML DSN or stropha>",
+        "Database password",
+        secret=True,
+    ),
+    _EnvVar("STROPHA_PG_DB", "postgres-launcher", "<YAML DSN or stropha>", "Database name"),
+    _EnvVar("STROPHA_PG_VOLUME", "postgres-launcher", "stropha-pgdata", "Data volume name"),
     # STROPHA_HOOK_INDEX_PATH removed in v=9 (see HookConfig docstring) —
     # was wired to cfg.hook.index_path but never propagated to the
     # storage adapter. Edit ~/.stropha/config.yaml `paths.index` instead.
@@ -320,6 +346,8 @@ def _parse_git(raw: dict[str, Any]) -> GitConfig:
     return GitConfig(
         url_cache=cache_path,
         url_ttl=_int(raw.get("url_ttl"), 86_400),
+        clone_depth=_int(raw.get("clone_depth"), 1),
+        clone_timeout=_int(raw.get("clone_timeout"), 300),
         rename_threshold=_int(raw.get("rename_threshold"), 80),
     )
 
@@ -337,7 +365,6 @@ def _parse_hook() -> HookConfig:
         uv_path=os.environ.get("STROPHA_HOOK_UV"),
         graphify_path=os.environ.get("STROPHA_HOOK_GRAPHIFY"),
         skip=os.environ.get("STROPHA_HOOK_SKIP") is not None,
-        no_graphify=os.environ.get("STROPHA_HOOK_NO_GRAPHIFY") is not None,
         project_dir=Path(proj_env).expanduser() if proj_env else None,
     )
 
@@ -417,7 +444,7 @@ def get_config_info() -> dict[str, Any]:
     """
     cfg = get_config()
 
-    # Env vars are now only the hook + target_repo subset.
+    # Only registered process/runtime arguments are represented here.
     sources: dict[str, str] = {
         var.name: ("env" if os.environ.get(var.name) is not None else "default")
         for var in _ENV_REGISTRY

@@ -476,7 +476,8 @@ class TestAnthropicBackend:
         backend = AnthropicBackend()
         ok, message = backend.health_check()
         assert ok is False
-        assert "ANTHROPIC_API_KEY" in message
+        assert "secrets.anthropic_api_key" in message
+        assert "~/.stropha/config.yaml" in message
 
     def test_health_check_ok_with_key(self):
         """Anthropic health_check is offline — just verifies the key exists."""

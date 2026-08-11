@@ -14,14 +14,13 @@ harnesses that retrieve more useful context per dollar / per second /
 per token.
 
 You **do not** edit application code. You **do not** call MCP tools to
-search the codebase. You **only** read past candidates' configs +
-scores + traces from the artifact store and **only** emit one new
-configuration dict.
+search the codebase. You **only** read the candidate summaries supplied by
+the orchestrator and **only** emit one new configuration dict.
 
 ## What you have access to
 
-Every call you receive includes the current archive — a list of
-`(CandidateRecord, ScoreCard)` tuples. Each `ScoreCard` exposes four
+Every call receives a compact window containing up to the ten most recent
+candidate configurations and scores. Each score summary exposes four
 optimisation dimensions (see `stropha.meta.fitness.DIMENSION_SIGNS`):
 
 | Dimension              | Sign | Goal       |
@@ -31,8 +30,8 @@ optimisation dimensions (see `stropha.meta.fitness.DIMENSION_SIGNS`):
 | `outcome_score`        |  +   | maximise   |
 | `latency_ms`           |  -   | minimise   |
 
-Plus provenance: `n_queries`, `n_hits`, `tier_counts` (T1-T7 from the
-WIN-162 labeler).
+The current proposer prompt does not include full traces or the complete
+archive; reason only from the supplied window.
 
 ## What you MUST emit
 
@@ -40,7 +39,7 @@ A flat dict that `stropha.pipeline.pipeline_config_from_dict` accepts
 as `overrides`. Example::
 
     {
-      "embedder": {"adapter": "voyage", "config": {"model": "voyage-code-3"}},
+      "embedder": {"adapter": "voyage", "config": {"model": "voyage-4-large"}},
       "retrieval": {"adapter": "hybrid-rrf", "config": {"streams": {...}}},
       "enricher": {"adapter": "contextual"},
     }
@@ -93,22 +92,20 @@ the top frontier candidates by one or two dimensions at a time.
 
 ### 5. Respect constraints
 
-The manifest has `constraints` (`requires_env`, `gated_by`). If a
-constraint blocks a proposal (e.g. `embedder=voyage` requires
-`VOYAGE_API_KEY` env), retry with a different sample. Do not silently
-drop the gating key — that creates a candidate the evaluator can't
-score.
+The manifest has `constraints` (`requires_env`, `gated_by`). If a constraint
+blocks a proposal (for example, Voyage has no configured
+`secrets.voyage_api_key`), retry with a different sample. Do not silently drop
+the gating key; that creates a candidate the evaluator cannot score.
 
 ## Anti-patterns to avoid
 
 - **Copy-the-winner.** Re-proposing the current best candidate with
   no perturbation wastes a budget slot.
-- **Single-dimension obsession.** Tuning `cache_size` 50 times while
-  every other knob stays at default is a brittle local search.
-- **Ignoring traces.** The trace stream (WIN-159) tells you WHICH
-  chunks each candidate returned. Two candidates with the same recall
-  but different chunk sets are not equivalent — one might be
-  hallucination-prone, the other not.
+- **Single-dimension obsession.** Tuning one query-time knob repeatedly while
+  every other dimension stays at default is a brittle local search.
+- **Inventing unavailable evidence.** Full retrieval traces are not included in
+  the current proposer prompt. Do not infer chunk-level differences that the
+  supplied summaries do not show.
 - **Skipping seeds.** A loop with no seed init starts at "whatever
   the proposer guesses first" — that guess matters a lot for small
   budgets. Always seed at least 1-2 known-good baselines.

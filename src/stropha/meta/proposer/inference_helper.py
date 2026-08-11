@@ -3,7 +3,7 @@
 The RECOMMENDED default for the Meta-Harness loop on a developer
 laptop. Uses whatever local LLM ``stropha.inference.get_backend``
 resolves (mlx on Apple Silicon, ollama elsewhere). No outbound
-network call — preserves the CLAUDE.md §3.6 local-only invariant.
+network call — preserves the CLAUDE.md **Local-only by default** invariant.
 
 If the local backend is unavailable (no mlx, no ollama daemon), the
 proposer transparently falls back to the bandit. The loop never sees

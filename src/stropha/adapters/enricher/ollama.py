@@ -40,7 +40,7 @@ _DEFAULT_PROMPT = (
 class OllamaEnricherConfig(BaseModel):
     base_url: str = Field(
         default="http://localhost:11434",
-        description="Ollama HTTP endpoint. ``OLLAMA_HOST`` env var is the usual override.",
+        description="Ollama HTTP endpoint configured for this adapter.",
     )
     model: str = Field(
         default="qwen2.5-coder:1.5b",
@@ -52,7 +52,9 @@ class OllamaEnricherConfig(BaseModel):
     )
     temperature: float = Field(default=0.0, ge=0.0, le=2.0)
     timeout_s: float = Field(
-        default=15.0, ge=1.0, le=120.0,
+        default=15.0,
+        ge=1.0,
+        le=120.0,
         description="Per-call timeout. Hits during indexing fall back to raw content.",
     )
     include_summary: bool = Field(
@@ -86,11 +88,7 @@ class OllamaEnricher(EnricherStage):
     def adapter_id(self) -> str:
         # Hash the prompt so prompt edits invalidate the enrichment cache.
         prompt_hash = hashlib.sha256(self._config.prompt_template.encode()).hexdigest()[:8]
-        return (
-            f"ollama:{self._config.model}"
-            f":t={self._config.temperature}"
-            f":p={prompt_hash}"
-        )
+        return f"ollama:{self._config.model}:t={self._config.temperature}:p={prompt_hash}"
 
     @property
     def config_schema(self) -> type[BaseModel]:

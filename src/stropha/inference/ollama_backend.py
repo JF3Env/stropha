@@ -3,7 +3,7 @@
 Uses Ollama's REST API for inference. Requires the Ollama daemon
 to be running (`ollama serve`).
 
-Configuration (stropha.yaml):
+Configuration (``~/.stropha/config.yaml``):
     inference:
       ollama_model: qwen2.5-coder:1.5b
       ollama_host: http://localhost:11434

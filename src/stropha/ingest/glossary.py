@@ -181,7 +181,7 @@ class GlossaryLoader:
             embedding = embedder.embed_query(embedding_text)
 
             # Store the chunk — embedding_model + embedding_dim are required
-            # so drift detection (CLAUDE.md §3.1) can tell when the active
+            # so the CLAUDE.md **Drift detection** invariant can tell when the active
             # embedder changes underneath the glossary.
             self._storage.upsert_chunk(
                 chunk=chunk,

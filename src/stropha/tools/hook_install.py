@@ -51,7 +51,8 @@ log = get_logger(__name__)
 #      `stropha meta outcome backfill --since <prev_sha>` so the Meta-Harness
 #      labeler turns the new trace stream into a T1-T7 outcome JSON. Runs
 #      inside the same detached `nohup` block as the index refresh — git
-#      commit stays <100ms in the foreground per CLAUDE.md §3.5.
+#      commit stays <100ms in the foreground per the CLAUDE.md
+#      **Hook <= 100 ms before fork** invariant.
 # v=6: sleep-time meta iterations (WIN-203). `--meta-iterations N` bakes a
 #      Meta-Harness bandit loop into the post-commit refresh. When N > 0,
 #      the hook runs `stropha meta run --iterations N --proposer bandit`
@@ -59,7 +60,7 @@ log = get_logger(__name__)
 #      handful of candidate configs in the background. Disabled by default
 #      (N=0); STROPHA_HOOK_META_ITERATIONS / STROPHA_HOOK_NO_META override
 #      at commit time. Still inside the same detached `nohup` block — the
-#      foreground stays <100ms per CLAUDE.md §3.5.
+#      foreground stays <100ms per the same hook invariant.
 # v=7: remove redundant graphify step. `stropha index` already runs
 #      `graphify update` internally via Pipeline._run_graphify() (CLAUDE.md
 #      §3 invariant #3). The hook no longer resolves or calls graphify
@@ -238,7 +239,7 @@ def _render_hook_block(
     no-op and adds nothing to the foreground.
 
     v=7: removed the explicit graphify step — ``stropha index`` already
-    runs graphify internally (CLAUDE.md §3 invariant #3).
+    runs graphify internally (CLAUDE.md **Pipeline.run() owns graphify lifecycle**).
 
     v=9 (this version):
       * Replace ``flock -n 9`` with a portable mkdir-based atomic lock
@@ -506,7 +507,8 @@ def install(
     bandit`` step into the post-commit refresh. The Meta-Harness loop
     runs in the same detached background as the index refresh, so the
     foreground (the actual ``git commit`` return) stays <100 ms per
-    CLAUDE.md §3.5. Pass ``None`` / ``0`` to leave the meta step out.
+    CLAUDE.md **Hook <= 100 ms before fork** invariant. Pass ``None`` / ``0``
+    to leave the meta step out.
     Negative values are clamped to 0.
 
     Returns a structured outcome dict suitable for CLI rendering or logging.

@@ -10,7 +10,7 @@ code (``ls``, ``cat``, ``grep``).
 
     .stropha/meta/
       candidates/<id>/
-        config.yaml      # the candidate's full stropha.yaml
+        config.yaml      # the candidate's sampled configuration
         meta.json        # provenance: parent_id, created_at, label, …
         scores.json      # evaluator output; empty {} until evaluation
         traces/*.jsonl   # WIN-159 trace files for this candidate's runs

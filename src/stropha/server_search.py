@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from collections.abc import Callable
 from typing import Any
 
@@ -84,10 +83,6 @@ def search_code_impl(
 ) -> SearchResponse:
     top_k = max(1, min(top_k, 30))
 
-    prev_recursive = os.environ.get("STROPHA_RECURSIVE_RETRIEVAL")
-    if recursive:
-        os.environ["STROPHA_RECURSIVE_RETRIEVAL"] = "1"
-
     has_filters = any([language, path_prefix, kind, exclude_tests])
     fetch_k = top_k * 3 if has_filters else top_k
 
@@ -122,12 +117,16 @@ def search_code_impl(
     except stropha_error_cls as exc:
         log.warning("mcp.search_code.error", error=str(exc))
         return SearchResponse(results=[], total_candidates=0, query=query, facets=None)
-    finally:
-        if recursive:
-            if prev_recursive is None:
-                os.environ.pop("STROPHA_RECURSIVE_RETRIEVAL", None)
-            else:
-                os.environ["STROPHA_RECURSIVE_RETRIEVAL"] = prev_recursive
+    if recursive and hits:
+        from .config import get_config
+        from .retrieval.recursive import merge_hits
+
+        hits = merge_hits(
+            hits,
+            app.storage,
+            adjacency_lines=get_config().retrieval_features.recursive_adjacency,
+            enabled=True,
+        )
 
     if has_filters:
         hits = apply_filters_fn(

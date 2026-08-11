@@ -1,6 +1,9 @@
 # RAG ↔ Graphify Integration & Post-Commit Automation
 
-> **Status:** Implemented (Fase 1.5a/b/c/e/f shipped; cross-repo hook v=3 shipped; multi-repo graphify v7 shipped)
+> **Status:** Historical RFC with delivery record. Sections 0-20 preserve the
+> 2026-05 design and MUST NOT be used as runnable setup/configuration guidance.
+> **Authority:** Section 21 is the delivery addendum; its Current operational
+> state subsection and `CLAUDE.md` win over earlier examples and milestones.
 > **Versão:** 1.1
 > **Data:** 2026-05-14 (RFC) — 2026-05-15 (Implementação) — 2026-05-16 (Multi-repo v7)
 > **Audiência:** maintainers do projeto `stropha` e agentes LLM operando-o.
@@ -35,7 +38,7 @@ Custo estimado de implementação: **4 a 6 dias de trabalho**, distribuído em q
 | Custom chunkers (Vue/Markdown/Gherkin) | ✓ |
 | Hybrid retrieval (dense + BM25 + symbol-token) com RRF | ✓ |
 | Class skeleton chunks com nome qualificado + lista de membros | ✓ |
-| MCP server stdio (`search_code`, `get_symbol`, `get_file_outline`) | ✓ |
+| MCP server stdio (`search_code`, `get_symbol`, `get_file_outline`) | ✓ at the RFC snapshot; later superseded by the shared HTTP daemon |
 | Chunk-level freshness skip (no-op re-run) | ✓ |
 
 ### 1.2 Lacuna que justifica este trabalho
@@ -93,7 +96,10 @@ O graphify é exatamente esse caso: AST-deterministic, sem LLM no caminho críti
 - **NÃO**: Suporte a `pre-commit` síncrono. Justificativa em §17 (ADR-003).
 - **NÃO**: Auto-bootstrap (rodar `graphify .` automaticamente quando `graphify-out/` não existe). Usuário precisa fazer o bootstrap explicitamente — graphify sem flag custa tokens LLM.
 - **NÃO**: Re-indexação automática de mudanças em `graphify-out/` (file watcher). Hook post-commit cobre o cenário pretendido.
-- ~~**NÃO**: Suporte multi-repo no `hook install` v1. Um `--target` por instalação. Multi-repo via instalações repetidas.~~ **Substituído na v=3**: `stropha hook install --target <repo> --project-dir <where-stropha-lives> --index-path <per-repo-db> --log-path <per-repo-log>` cobre cross-repo limpamente. Múltiplas instalações continuam suportadas (cada hook é independente), mas agora cada uma pode apontar para um project_dir distinto onde o `uv` está hospedado.
+- ~~**NÃO**: Suporte multi-repo no hook v1.~~ **Historical v3 update**:
+  multi-repo hook installation shipped with baked target/project/storage/log
+  defaults. Exact flags are intentionally omitted because current storage
+  settings come from `~/.stropha/config.yaml`.
 - **NÃO**: Empacotar graphify como dependência transitiva. Usuário instala via `pipx install graphifyy` separadamente; nosso CLI apenas detecta e usa.
 
 ### 2.4 Critérios de sucesso
@@ -134,7 +140,7 @@ O graphify é exatamente esse caso: AST-deterministic, sem LLM no caminho críti
 │                      │ │ extract <path>   │ │ hook install/status  │
 │ graphify-out/        │ │                  │ │ search / stats       │
 │   graph.json    ◄────┘ └─────┬────────────┘ │                      │
-│   manifest.json              │              │ MCP stdio server     │
+│   manifest.json              │              │ MCP server           │
 │   GRAPH_REPORT.md            │              │   search_code        │
 │                              │              │   get_symbol         │
 └──────────────────────────────┼──────────────│   get_file_outline   │
@@ -355,9 +361,10 @@ def load(self, confidence_filter=...):
 Configurável via env var:
 
 ```
-STROPHA_GRAPH_CONFIDENCE=EXTRACTED         # default
-STROPHA_GRAPH_CONFIDENCE=EXTRACTED,INFERRED  # opt-in noise
-STROPHA_GRAPH_CONFIDENCE=*                 # tudo, inclusive AMBIGUOUS
+graph:
+  confidence: EXTRACTED                  # default
+# confidence: EXTRACTED,INFERRED         # opt-in noise
+# confidence: "*"                        # tudo, inclusive AMBIGUOUS
 ```
 
 ### 4.4 Detecção de staleness
@@ -395,37 +402,31 @@ Após o `load()` mirrorar nodes + edges em SQLite, um passo subsequente reescrev
   - Adiciona o **community label** (top-K terms da comunidade Leiden) se computável
 - Edges não entram no FTS5 (cardinalidade alta, baixo signal lexical individual)
 
-**Implementação** (`storage/sqlite.py:Storage.augment_fts_with_graph`):
+**Current SQLite implementation**
+(`storage/sqlite.py:Storage.augment_fts_with_graph`):
 
 ```python
-def augment_fts_with_graph(self) -> int:
-    """For every chunk overlapping a graph node, append node + community
-    labels to the FTS5 document. Returns count of chunks augmented."""
-    sql = """
-        WITH chunk_nodes AS (
-          SELECT c.id AS chunk_rowid,
-                 GROUP_CONCAT(n.label || ' ' || COALESCE(n.norm_label,''), ' ') AS extras
-          FROM chunks c
-          JOIN graph_nodes n
-            ON c.rel_path = n.source_file
-           AND CAST(SUBSTR(n.source_location, 2) AS INTEGER)
-               BETWEEN c.start_line AND c.end_line
-          GROUP BY c.id
-        )
-        UPDATE OR IGNORE fts_chunks
-        SET content = (SELECT content FROM chunks WHERE id = fts_chunks.rowid)
-                      || char(10) || (SELECT extras FROM chunk_nodes WHERE chunk_rowid = fts_chunks.rowid)
-        WHERE rowid IN (SELECT chunk_rowid FROM chunk_nodes);
-    """
-    cur = self._conn.execute(sql)
-    return cur.rowcount
+for rowid, rel_path, base_document, graph_terms in matched_chunks:
+    new_document = base_document + "\n" + graph_terms
+    cursor.execute("DELETE FROM fts_chunks WHERE rowid = ?", (rowid,))
+    cursor.execute(
+        "INSERT INTO fts_chunks(rowid, content, rel_path) VALUES (?, ?, ?)",
+        (rowid, new_document, rel_path),
+    )
 ```
 
-**Custo**: O(chunks_with_node_match) UPDATE no FTS5; tipicamente ~3-5 minutos no Mimoria (dominado pela rewrite do FTS5 inverted index, não pela query). Roda apenas quando o grafo é (re)carregado, não a cada index.
+`fts_chunks` is contentless-with-external-content, so SQLite rows are always
+replaced with `DELETE` + explicit `INSERT`; `UPDATE` is invalid for this table.
+PostgreSQL does not use `fts_chunks`: its storage adapter updates the
+`chunks.fts` tsvector directly.
+
+**Custo**: O(chunks_with_node_match) row replacements in SQLite FTS5. The step
+runs only when the graph mirror is refreshed, not on every query.
 
 **Por que vale**: queries que mencionam "FsrsCalculator" ou termos da comunidade (ex.: "review", "stability", "rating" de Community 18) ganham match em chunks que conteriam só a definição mas não esses tokens explicitamente.
 
-**Toggle**: `STROPHA_GRAPH_FTS_AUGMENT=1` (default `1`). Setando `0`, pula esta etapa — útil quando o grafo está corrompido ou o usuário quer comparar A/B.
+**Current toggle**: `graph.fts_augment` in `~/.stropha/config.yaml` (default
+`true`). Set it to `false` to skip this stage for diagnosis or A/B comparison.
 
 ### 4.6 Indexação semântica (L3 — opt-in)
 
@@ -473,7 +474,7 @@ Para evitar ambiguidade, esta spec adota a seguinte nomenclatura interna:
 |---|---|---|---|
 | **L0** | Consumo puro (parse JSON on-demand) | ✗ rejeitado | n/a — inviável performance |
 | **L1** | Mirror relacional + B-tree indexes | ✓ implícito | sempre quando grafo presente |
-| **L2** | L1 + augmentation FTS5 com node/community labels | ✓ default | `STROPHA_GRAPH_FTS_AUGMENT=0` desliga |
+| **L2** | L1 + augmentation lexical com node/community labels | ✓ default | `graph.fts_augment: false` desliga |
 | **L3** | L2 + embeddings dos nodes (4ª stream RRF) | ✗ opt-in | `STROPHA_GRAPH_VEC_AUGMENT=1` ativa |
 | **L4** | L3 + ranking signals adicionais (centralidade, community boost) | ✗ futuro | n/a — Phase 3+ |
 
@@ -661,64 +662,18 @@ A checagem acontece no lifespan do FastMCP, antes de `tools/list` responder. Se 
 
 ## 6. Design — Parte C: Hook post-commit
 
+> **Historical design only.** The generated v1 template and flags in this
+> section have been removed because they are obsolete and unsafe to copy. The
+> hook implementation in `src/stropha/tools/hook_install.py` and the current
+> operational state in the delivery addendum are authoritative.
+
 ### 6.1 Comportamento operacional
 
-```bash
-#!/bin/sh
-# stropha-hook-start v=1
-# Generated by `stropha hook install`. Do not edit between markers.
-
-# --- 1. Skip conditions -------------------------------------------------------
-[ "${STROPHA_HOOK_SKIP:-0}" = "1" ] && exit 0
-
-GIT_DIR=$(git rev-parse --git-dir 2>/dev/null) || exit 0
-[ -d "$GIT_DIR/rebase-merge" ]      && exit 0
-[ -d "$GIT_DIR/rebase-apply" ]      && exit 0
-[ -f "$GIT_DIR/MERGE_HEAD" ]        && exit 0
-[ -f "$GIT_DIR/CHERRY_PICK_HEAD" ]  && exit 0
-
-TOPLEVEL=$(git rev-parse --show-toplevel)
-EXPECTED="__INSTALL_TARGET__"   # injected at install time
-[ "$TOPLEVEL" = "$EXPECTED" ]   || exit 0
-
-CHANGED=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || git diff --name-only HEAD)
-[ -z "$CHANGED" ] && exit 0
-
-# --- 2. Detached background run ----------------------------------------------
-LOG="${HOME}/.cache/stropha-hook.log"
-LOCK="/tmp/stropha-hook-$(echo "$TOPLEVEL" | md5).lock"
-mkdir -p "$(dirname "$LOG")"
-
-echo "[$(date -u +%FT%TZ)] commit $(git rev-parse --short HEAD) — launching refresh" >> "$LOG"
-
-nohup sh -c "
-    # Prevent overlapping runs (commit storm during rebase squash, etc.)
-    exec 9>'$LOCK'
-    if ! flock -n 9; then
-        echo '[stropha-hook] another refresh running, skipping' >> '$LOG'
-        exit 0
-    fi
-
-    timeout '${STROPHA_HOOK_TIMEOUT:-600}' sh -c '
-        # graphify update (AST-only, no API key needed)
-        if command -v graphify >/dev/null; then
-            if [ -f \"$TOPLEVEL/graphify-out/graph.json\" ]; then
-                graphify update \"$TOPLEVEL\" --no-cluster
-            else
-                echo \"[stropha-hook] graphify-out missing; skipping graphify update\" >&2
-                echo \"[stropha-hook] run \\\"graphify .\\\" inside $TOPLEVEL once to bootstrap\" >&2
-            fi
-        fi
-
-        # stropha index (incremental via chunk_is_fresh skip)
-        __STROPHA_CMD__
-    ' || echo '[stropha-hook] failed (exit $?)' >> '$LOG'
-" > "$LOG" 2>&1 < /dev/null &
-disown 2>/dev/null || true
-# stropha-hook-end
-```
-
-`__INSTALL_TARGET__` e `__STROPHA_CMD__` são substituídos pelo `hook install` no momento da escrita (atomic write via tmp file + rename).
+The original RFC embedded a complete v1 shell template here. It is intentionally
+not reproduced: later hook versions changed locking, project/target resolution,
+configuration, incremental indexing, and graph lifecycle ownership. The stable
+contract retained from the proposal is only that foreground work ends within
+100 ms and all indexing runs in the detached background.
 
 ### 6.2 Composição com hooks existentes
 
@@ -784,75 +739,33 @@ Visível no terminal apenas na primeira vez (post-commit imprime no log, mas o s
 | `STROPHA_HOOK_SKIP=1` | Hook não roda. Útil para `git rebase -i` longos. |
 | `STROPHA_HOOK_TIMEOUT=600` | Timeout total em segundos (default 600 = 10 min). |
 | `STROPHA_HOOK_LOG=/tmp/foo.log` | Override do log path. Default: `~/.cache/stropha-hook.log`. |
-| `STROPHA_GRAPH_CONFIDENCE=...` | Override de filtro de confiança no loader. |
+| `graph.confidence` em `~/.stropha/config.yaml` | Filtro de confiança no loader. |
 
 ---
 
 ## 7. CLI surface
 
+> **Historical command design, non-runnable.** Consult current CLI help and
+> `CLAUDE.md` rather than reconstructing commands from this section.
+
 ### 7.1 Novo subcomando: `stropha hook`
 
-```
-stropha hook install   [--target <repo>] [--force]
-                       [--project-dir <where-stropha-lives>]
-                       [--index-path <per-repo-db>]
-                       [--log-path <per-repo-log>]
-stropha hook uninstall [--target <repo>]
-stropha hook status    [--target <repo>]
-```
-
-**`install`**:
-- Default `target` = `$STROPHA_TARGET_REPO` ou cwd
-- Resolve `hooks_dir` respeitando `core.hooksPath`
-- Escreve / atualiza bloco entre markers (atomic via tmp file + rename)
-- Garante `chmod +x` no script final
-- Imprime instruções de teste: `git commit --allow-empty -m "test hook" && tail -f ~/.cache/stropha-hook.log`
-- `--force`: silencia o prompt de confirmação quando graphify-hook existir
-- `--project-dir`: caminho onde o `uv` venv com `stropha` instalado vive. Bakado no script — sem isso, o `uv run --directory $TOPLEVEL stropha index` quebra com `Failed to spawn: stropha` quando `target ≠ project_dir`. Default = `target` (dogfooding).
-- `--index-path`: bake `STROPHA_INDEX_PATH=...` no `env` que precede o `stropha index`. Recomendado quando `--project-dir != --target` para evitar herança acidental do `.env` do project_dir.
-- `--log-path`: bake o caminho do log. Útil para trilhas separadas por repo (`~/.cache/stropha-hook-foo.log`, `~/.cache/stropha-hook-bar.log`).
-- Light validation: emite warning amarelo (não bloqueia) se `--project-dir` aponta para diretório sem `pyproject.toml` — costuma ser typo.
-
-**`uninstall`**:
-- Remove APENAS o bloco entre nossos markers; deixa o resto intacto
-- Se o arquivo ficar vazio (só shebang), remove o arquivo inteiro
-
-**`status`**:
-- Inspeção idempotente, exit 0 se instalado, 1 se não:
-  ```
-  Hook target:       /Users/jonatas/sources/mimoria
-  Hook file:         /Users/jonatas/sources/mimoria/.git/hooks/post-commit
-  Installed:         yes (v=1, installed at 2026-05-14T13:00:00Z)
-  Graphify cohabit:  no
-  Log file:          ~/.cache/stropha-hook.log (3 entries, last 2026-05-14T13:42:11Z)
-  Last refresh:      success (took 7.2s)
-  ```
+The RFC proposed install, uninstall, and status operations plus baked
+index/log/project paths. Those exact flags and outputs are historical. In the
+current architecture storage location comes from `~/.stropha/config.yaml`, not
+an index-path env block embedded in generated setup guidance.
 
 ### 7.2 Novo flag em `stropha index`
 
-```
-stropha index [--rebuild] [--refresh-graph]
-```
+The proposed force-refresh flag is retained only as design history. Current
+graphify lifecycle is owned by `Pipeline.run()` and must not be reconstructed
+from this RFC.
 
-`--refresh-graph`: força reload de `graphify-out/graph.json` mesmo se o loader não detectar staleness. Útil para corrigir estado inconsistente sem precisar rebuild completo.
+### 7.3 Historical env proposal
 
-### 7.3 Env vars adicionadas ao `.env.example`
-
-```bash
-# --- Graphify integration (optional) ---
-# Path to graphify-out/. Defaults to <STROPHA_TARGET_REPO>/graphify-out.
-# STROPHA_GRAPHIFY_OUT=
-
-# Confidence filter for graph edges loaded into SQLite.
-# Default: EXTRACTED only (highest precision). Comma-separated.
-# STROPHA_GRAPH_CONFIDENCE=EXTRACTED
-
-# --- Hook automation ---
-# Skip the post-commit hook for this run.
-# export STROPHA_HOOK_SKIP=1
-# Timeout (seconds) for the background refresh.
-# export STROPHA_HOOK_TIMEOUT=600
-```
+The `.env` proposal was not retained. Settings now live in
+`~/.stropha/config.yaml`; only `STROPHA_TARGET_REPO` and the registered
+`STROPHA_HOOK_*` runtime escape hatches remain.
 
 ---
 
@@ -867,7 +780,8 @@ Conforme a [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119), as palavras MUST,
 - O hook **SHOULD** detectar `core.hooksPath` e respeitar.
 - Os tools `find_*` **MUST NOT** aparecer em `tools/list` quando o grafo não está carregado.
 - Toda response dos tools **SHOULD** carregar `provenance` indicando a fonte do dado.
-- O loader **MAY** filtrar edges INFERRED por default (decisão de runtime via `STROPHA_GRAPH_CONFIDENCE`).
+- O loader **MAY** filtrar edges INFERRED por default (decisão de runtime via
+  `graph.confidence` em `~/.stropha/config.yaml`).
 
 ---
 
@@ -919,7 +833,7 @@ Conforme a [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119), as palavras MUST,
 |---|---|
 | Atualizar `CLAUDE.md` com estado do graph integration + hook |
 | Atualizar `README.md` com seção "Connecting graphify" |
-| Atualizar `.env.example` com novas env vars (`STROPHA_GRAPHIFY_OUT`, `STROPHA_GRAPH_CONFIDENCE`, `STROPHA_GRAPH_FTS_AUGMENT`, `STROPHA_GRAPH_VEC_AUGMENT`) |
+| Historical proposal: document graph settings in `.env.example` (superseded by `~/.stropha/config.yaml`) |
 | Atualizar `.mcp.example.json` se mudar args (não deve) |
 | Atualizar `docs/architecture/stropha-system.md` §3.5, §8 com referências a este doc |
 
@@ -929,10 +843,10 @@ Adiciona §4.5 — labels de nó/community entram no documento FTS5 dos chunks c
 
 | Task | Arquivo | Status |
 |---|---|---|
-| `Storage.augment_fts_with_graph()` — UPDATE em FTS5 com JOIN graph_nodes ↔ chunks | `storage/sqlite.py` | done |
+| `Storage.augment_fts_with_graph()` — rebuild via DELETE + explicit INSERT with graph_nodes ↔ chunks join | `storage/sqlite.py` | done |
 | Hook em `IndexPipeline.run()`: chamar augment_fts após loader.load() | `ingest/pipeline.py` | done |
-| Toggle via `STROPHA_GRAPH_FTS_AUGMENT` (default `1`) | `config.py` | done |
-| Idempotência: re-augment não duplica tokens (UPDATE em vez de APPEND com guard) | `storage/sqlite.py` | done |
+| Toggle via `graph.fts_augment` in `~/.stropha/config.yaml` (default `true`) | `config/__init__.py` | done |
+| Idempotência: re-augment reconstrói o documento base e substitui a linha FTS5 via DELETE + INSERT | `storage/sqlite.py` | done |
 | Test: chunk com node match recebe extras; sem match não muda | `tests/unit/test_fts_augment.py` | done |
 | Quality test: BM25 query por community-term match chunk-related | `tests/eval/golden/lexical.jsonl` | done |
 
@@ -971,7 +885,8 @@ Adiciona §4.6 — vetores semânticos dos nodes do grafo entram numa 4ª stream
 ### 10.2 Integração
 
 - `test_storage_graph_schema.py`: migrate aplicado em DB vazio cria tabelas + índices; reaplicar migrate é no-op.
-- `test_mcp_graph_tools.py`: spawna MCP server com fixture pré-carregada, chama `find_callers`, `find_related`, `get_community` via JSON-RPC stdio, valida responses.
+- `test_mcp_graph_tools.py`: historical plan used JSON-RPC stdio. Current
+  transport tests exercise the shared streamable-HTTP daemon instead.
 
 ### 10.3 E2E (com Mimoria real, marker `@pytest.mark.e2e`)
 
@@ -1141,57 +1056,27 @@ O background pode levar 5–600s; usuário não nota.
 
 ## 15. Rollout & migração
 
-### 15.1 Migração de schema
+### 15.1 Migração de schema (historical v1 proposal)
 
 O `Storage.migrate()` já é idempotente. As novas tabelas (`graph_nodes`, `graph_edges`) são adicionadas com `CREATE TABLE IF NOT EXISTS`. Bumping `SCHEMA_VERSION` de 1 para 2 deixa o caminho aberto para migrações futuras.
 
 Usuários com índice da Phase 1 (sem essas tabelas) apenas ganham tabelas vazias. Nada quebra. Próximo `index` (com graphify disponível) popula.
 
-### 15.2 Bootstrap recomendado para um novo target repo
+### 15.2 Bootstrap proposal (historical, non-runnable)
 
-```bash
-# Dentro do repo target (ex.: ~/sources/mimoria):
+The original RFC listed direct `graphify`, index rebuild, and hook-install
+commands. They are removed because they bypass current lifecycle/configuration
+guidance. `Pipeline.run()` owns graph refresh ordering, the installed hook owns
+automatic indexing, and `~/.stropha/config.yaml` owns settings. Use current CLI
+help and `CLAUDE.md`, not this rollout record, for operations.
 
-# 1. Bootstrap graphify (uma vez, custa LLM tokens se quiser semantic edges)
-graphify .                                           # full pipeline (com LLM)
-# ou:
-graphify extract . --backend gemini                  # mesmo, controlado
-# ou (sem LLM, sem rationale_for / conceptually_related_to):
-graphify update . --no-cluster                       # AST-only, gratuito
-
-# 2. Build do índice RAG (já carrega o grafo recém-criado, L1 + L2 default)
-uv run --directory ~/sources/rag stropha index --rebuild
-
-# 3. Instalar o hook para manter ambos frescos
-uv run --directory ~/sources/rag stropha hook install --target $(pwd)
-
-# 4. Sanity check
-uv run --directory ~/sources/rag stropha hook status
-uv run --directory ~/sources/rag stropha stats   # mostra contagem do grafo
-```
-
-### 15.3 Upgrade de embedder local (lever de qualidade — recomendado para usuários local-only)
+### 15.3 Historical embedder-quality note
 
 Per ADR-008, o gargalo de qualidade hoje é o embedder, não falta de mais vetores. Para usuários local-only sem restrição de RAM:
 
-```bash
-# Em .env, trocar o modelo local. Modelos sugeridos por escala:
-
-# Médio (440 MB, bom equilíbrio)
-STROPHA_LOCAL_EMBED_MODEL=BAAI/bge-base-en-v1.5
-
-# Grande (1.3 GB, top open-source MTEB)
-STROPHA_LOCAL_EMBED_MODEL=mixedbread-ai/mxbai-embed-large-v1
-
-# Code-specialized (550 MB, otimizado para código fonte)
-STROPHA_LOCAL_EMBED_MODEL=nomic-ai/nomic-embed-code
-
-# Multi-lingual + multi-functional (2.3 GB, overkill mas SOTA)
-STROPHA_LOCAL_EMBED_MODEL=BAAI/bge-m3
-
-# Após mudar:
-uv run stropha index --rebuild   # reindex completo (dim mudou; storage detecta)
-```
+The model comparison remains historical design context. Model selection now
+lives under the active embedder in `~/.stropha/config.yaml`; there is no `.env`
+model override. Drift detection decides which vectors require regeneration.
 
 **Trade-offs práticos**:
 - Modelo maior = mais RAM no MCP server lifespan (pode dobrar/triplicar o footprint)
@@ -1201,21 +1086,12 @@ uv run stropha index --rebuild   # reindex completo (dim mudou; storage detecta)
 
 **Quando vale L3 vs upgrade de embedder**: o upgrade é o single-hop com maior ROI. L3 é incremental sobre isso. Se você tem orçamento computacional para os dois, faça os dois (upgrade primeiro, L3 depois com A/B). Se só pode escolher um, escolha o upgrade.
 
-### 15.4 Rollback
+### 15.4 Rollback concept (historical, non-runnable)
 
-Se a integração causar problemas, três níveis de desligamento:
-
-```bash
-# 1. Desligar o hook (preserva schema, preserva tools)
-stropha hook uninstall --target ~/sources/mimoria
-
-# 2. Desligar os tools (preserva schema, preserva grafo carregado)
-#    via env var no .mcp.json:
-#    "STROPHA_GRAPH_TOOLS_DISABLED": "1"
-
-# 3. Limpar tabelas do grafo (mantém chunks/vectors)
-sqlite3 ~/.stropha/index.db "DELETE FROM graph_edges; DELETE FROM graph_nodes;"
-```
+The RFC proposed independent hook/tool/table rollback levels. Do not execute
+those old steps: client `env` blocks are unsupported, direct storage mutation
+bypasses the active adapter, and graph-gated tools must remain explicit when the
+graph is absent. Use supported current commands and forward-only migrations.
 
 ---
 
@@ -1259,7 +1135,7 @@ sqlite3 ~/.stropha/index.db "DELETE FROM graph_edges; DELETE FROM graph_nodes;"
 
 **Contexto**: graphify produz EXTRACTED (68%) e INFERRED (32%).
 **Decisão**: default carrega apenas EXTRACTED.
-**Justificativa**: 32% de INFERRED gera ruído visível (visto em "Surprising Connections" do GRAPH_REPORT.md do Mimoria — ex. "StudyService references Vue Unit Test Plan"). Usuário avançado pode opt-in via `STROPHA_GRAPH_CONFIDENCE`.
+**Justificativa**: 32% de INFERRED gera ruído visível (visto em "Surprising Connections" do GRAPH_REPORT.md do Mimoria — ex. "StudyService references Vue Unit Test Plan"). Usuário avançado pode opt-in via `graph.confidence`.
 **Trade-off**: perdemos 45 edges `rationale_for` por default — mas tratamos esta relação como caso especial via tool dedicado `find_rationale` (que retorna sem filtro de confidence).
 
 ### ADR-003 — Hook type: post-commit (não pre-commit)
@@ -1292,19 +1168,14 @@ sqlite3 ~/.stropha/index.db "DELETE FROM graph_edges; DELETE FROM graph_nodes;"
 **Decisão**: `hook install --target <repo>` aceita um repo só. Multi-repo via instalações repetidas.
 **Razão**: KISS para v1; multi-target adiciona complexidade de validação e composição com hooks pré-existentes em cada repo. Pode entrar na v2 sem breaking change.
 
-**Atualização v=3 (ADR-007a)**: cross-repo agora funciona limpo via
-`--project-dir <stropha-install> --index-path <target-db> --log-path <per-repo-log>`.
-Cada flag bakeia um default no script gerado. Decisão: **bakar no script
-> depender de env vars commit-time**. Razão: hooks rodam num contexto
-shell minimalista (PATH stripado, sem dotfiles do usuário) — depender de
-`STROPHA_HOOK_*` env vars exigiria que o usuário exportasse-as no shell
-de cada commit ou em `~/.zshenv`, ambos frágeis. Bakar no script no
-momento do install:
+**Atualização v3 (historical ADR-007a)**: cross-repo support baked target,
+project, storage, and log defaults into the generated script. Exact flags and
+index-path env names are intentionally omitted because this is no longer
+operational guidance. The historical rationale for baking was:
 1. **Determinístico** — o que você instalou é o que vai rodar
 2. **Auditável** — `stropha hook status` mostra exatamente os defaults
-3. **Override ainda existe** — env vars (`STROPHA_HOOK_PROJECT_DIR`,
-   `STROPHA_HOOK_INDEX_PATH`, `STROPHA_HOOK_LOG`) ainda batem o bake,
-   para experimentos pontuais
+3. **Override controlado** — only registered runtime hook escape hatches could
+   override a baked value
 
 Múltiplas instalações continuam suportadas (cada hook é independente),
 mas agora cada uma pode apontar para um `project_dir` distinto onde o
@@ -1366,7 +1237,7 @@ mas agora cada uma pode apontar para um `project_dir` distinto onde o
 |---|---|---|---|
 | Graphify muda schema do `graph.json` em release futura | Média | Médio | Pin de versão min/max em README; loader tolera campos desconhecidos com warning |
 | Graphify deprecado pelo autor | Baixa | Alto | A camada do stropha fica intacta (tools só ficam off); spec mestre §3.5 ainda pode ser implementada nativamente |
-| INFERRED edges enganam usuário que ativa `STROPHA_GRAPH_CONFIDENCE=*` | Média | Médio | Default seguro; documentar trade-off no help |
+| INFERRED edges enganam usuário que ativa `graph.confidence: "*"` | Média | Médio | Default seguro; documentar trade-off no help |
 | Hook causa loop infinito (commit dentro do refresh trigger novo commit) | Baixa | Alto | Hook NÃO faz commit; só grava em DB externa fora do repo target |
 | `flock` indisponível no sistema (Windows nativo) | Média (não-macOS/Linux) | Médio | Hook template usa `flock` quando presente; fallback para PID file em outras plataformas |
 | Latência do `find_callers` cresce com depth=3 em grafos densos | Média | Baixo | Limite duro de `depth=3` no schema; documentar |
@@ -1418,7 +1289,10 @@ mas agora cada uma pode apontar para um `project_dir` distinto onde o
 
 ## 21. Delivery addendum (post-RFC, status `Implemented`)
 
-> Este apêndice é a "lista de chaves entregues" — o que chegou em produção depois que o RFC foi assinado. Atualize aqui quando algo novo ligado à graphify integration aterrissar; o §9 acima é histórico (planejamento), este §21 é vivo (entrega).
+> This addendum is authoritative for delivery history. **Current operational
+> state** below is authoritative for today's transport, schema, configuration,
+> storage behavior, and hook lifecycle. Earlier v3-v7 subsections preserve what
+> shipped at those milestones; they are not runnable setup instructions.
 
 ### 21.1 MCP tools shipped
 
@@ -1433,46 +1307,51 @@ mas agora cada uma pode apontar para um `project_dir` distinto onde o
 
 Todos retornam `{"graph_loaded": false, "message": …}` quando a tabela `graph_nodes` está vazia (per §8 MUST do RFC, mas via gating no servidor MCP em vez de exclusão de `tools/list` — pragmatismo: FastMCP não tem lazy tool registration limpa, e o erro estruturado dá feedback acionável ao agente).
 
-### 21.2 SQLite schema migration delivered
+### 21.2 Historical schema migrations delivered (v4-v7)
 
 - **v4** (`storage/sqlite.py`): tabelas `graph_nodes`, `graph_edges`, `graph_meta` + 4 índices (`label`, `source_file`, `community_id`, `target+relation+confidence`, `source+relation+confidence`).
 - **v5**: colunas `graph_nodes.embedding` (BLOB float32) + `embedding_model` + `embedding_dim` para o stream `graph-vec` (Trilha A L3).
 - **v6** (Phase A incremental): tabela `files` keyed by `(repo_id, rel_path)` com `mtime`, `size_bytes`, `content_hash`, `last_chunk_count`, `last_enricher_id`, `last_embedder_model`. Métodos: `file_is_fresh()`, `upsert_file_meta()`, `delete_file_meta()`, `list_stale_files()`, `delete_chunks_by_repo_paths()`.
 - **v7** (multi-repo graphify): colunas `graph_nodes.repo_id` + `graph_edges.repo_id` (FK to `repos` table) + indices `idx_graph_nodes_repo_id`, `idx_graph_edges_repo_id`. Enables distributed monorepo architecture where multiple Java repositories share a single stropha index database. Node IDs prefixed with `{repo_id}:` for collision avoidance (e.g., repo_id=3, node "FooClass" becomes "3:FooClass"). Per-repo staleness tracking via `graph_meta` keys like `last_loaded_mtime:3`.
-- `Storage.augment_fts_with_graph()` (`storage/sqlite.py`) — método retroativo L2: DELETE + INSERT na `fts_chunks` com community + node labels appendados ao `_fts_text()` legacy. Toggle: `STROPHA_GRAPH_FTS_AUGMENT=1` (default on). Idempotente.
+- `Storage.augment_fts_with_graph()` (`storage/sqlite.py`) — método retroativo
+  L2: `DELETE` + explicit `INSERT(rowid, content, rel_path)` na `fts_chunks`,
+  com community + node labels anexados ao `_fts_text()` legacy. Idempotente.
 
 ### 21.3 Loader / pipeline integration
 
-- `src/stropha/ingest/graphify_loader.py` — idempotente, transacional, staleness por `mtime` vs `graph_meta.last_loaded_mtime`. Filtro por `STROPHA_GRAPH_CONFIDENCE` (default `EXTRACTED`).
+- `src/stropha/ingest/graphify_loader.py` — idempotente, transacional, staleness por `mtime` vs `graph_meta.last_loaded_mtime`. Filtro por `graph.confidence` (default `EXTRACTED`).
   - **Multi-repo (v7)**: Accepts `repo_id` parameter. Node IDs prefixed with `{repo_id}:` for collision avoidance. Per-repo meta keys (e.g., `last_loaded_mtime:3`). Diff-load scoped by `WHERE repo_id = ?` so loading one repo's graph doesn't affect others.
   - **`is_stale()`**: Checks per-repo mtime key when `repo_id` is set.
   - **`stats()`**: Returns per-repo counts when `repo_id` is set, or aggregate across all repos otherwise.
 - `src/stropha/ingest/graph_vec_loader.py` — embed incremental de `graph_nodes.label` via o embedder ativo. Skip-fresh por `embedding_model`. ~30 s para 2K nós com fastembed/mxbai. Works cross-repo without changes (queries all nodes regardless of repo_id).
-- `Pipeline.run()` (`pipeline/pipeline.py::_refresh_graphify_mirror`) — ordem canônica post-index: GraphifyLoader → GraphVecLoader → `augment_fts_with_graph`. Invariante #3 do `CLAUDE.md §3`.
+- `Pipeline.run()` (`pipeline/pipeline.py::_refresh_graphify_mirror`) — ordem canônica post-index: GraphifyLoader → GraphVecLoader → `augment_fts_with_graph`. Ver `CLAUDE.md` **Invariants (do NOT break)**, item **Pipeline.run() owns graphify lifecycle**.
   - **Multi-repo**: Calls `detect_repo()` + `register_repo()` to obtain `repo_id` before instantiating `GraphifyLoader(storage, repo_root, repo_id=repo_id)`.
   - **No-op indexing**: skips `graphify update` per repository when the source scan found no code changes and `graph_meta.last_loaded_mtime:<repo_id>` proves the existing `graph.json` was already imported. Missing, stale, and changed graphs still run through the canonical lifecycle.
 - `src/stropha/retrieval/graph.py` — `GraphNode` dataclass includes `repo_id` field. `_hydrate_node()` scopes chunk lookups by repo. Graph tools (`find_callers`, `find_related`, etc.) work cross-repo by default.
 
-### 21.4 Hook installer (CLI + cross-repo v=3)
+### 21.4 Historical hook installer milestone (cross-repo v3)
 
 - `src/stropha/tools/hook_install.py` — atomic write entre markers `# stropha-hook-start v=N`, honra `core.hooksPath` com safety check (path deve estar sob `repo` ou `$HOME`), detecta coexistência com `# graphify-hook-start` e emite warning.
-- **v=3** (ADR-007a deste doc): cross-repo via 3 flags bakadas no script: `--project-dir <where-stropha-lives>` / `--index-path <per-repo-db>` / `--log-path <per-repo-log>`. Resolve o bug onde `uv run --directory $TOPLEVEL stropha index` quebra com `Failed to spawn: stropha` quando target ≠ project_dir. Env vars (`STROPHA_HOOK_PROJECT_DIR`, `STROPHA_HOOK_INDEX_PATH`) ainda batem o bake.
+- **v=3** (ADR-007a deste doc): recorded the then-current baked
+  project/index/log path design. It is retained only as delivery archaeology;
+  current storage configuration comes from `~/.stropha/config.yaml`.
 
 ### 21.5 L2 + L3 delivery (vs RFC §4.5 / §4.6 / §1.5e / §1.5f)
 
 | RFC item | Status | Delivery shape |
 |---|---|---|
 | L2 — FTS5 augmentation (§4.5) | ✅ duplo | (a) **Enricher `graph-aware`** prepend community + node em `embedding_text` durante index (pré-FTS). (b) **`Storage.augment_fts_with_graph()`** roda pós-index, retroativo, sem re-embed. Os dois coexistem — escolha por preferência: enricher (drift detection auto) vs storage method (mais barato em re-runs). |
-| L3 — Embeddings de node labels (§4.6 / §1.5f) | ✅ | `retrieval-stream/graph-vec` faz brute-force cosine sobre `graph_nodes.embedding`. Default-on quando o grafo existe (não precisa do `STROPHA_GRAPH_VEC_AUGMENT=1` que o ADR-008 propôs — a 4ª stream simplesmente retorna `[]` quando vazia, então é seguro deixar sempre ligada). |
+| L3 — Embeddings de node labels (§4.6 / §1.5f) | ✅ | `retrieval-stream/graph-vec` consulta `graph_nodes.embedding` quando configurado. It is an optional lane; the built-in default composition remains dense + sparse + symbol. |
 | L4 — Graph RAG/community summaries (§4.7) | ⏳ não shippado | Continua fora de escopo; depende de golden dataset maduro pra validar custo/benefício. |
 
-### 21.6 ADR-007a — Hook v=3 cross-repo (decisão de bake vs env)
+### 21.6 ADR-007a — Hook v3 cross-repo (historical, superseded detail)
 
 **Contexto**: o RFC original (ADR-007) assumiu "um repo por install"; cross-repo só via instalações repetidas. Empiricamente, quando `--target ≠ project_dir`, o hook v=2 quebrava silenciosamente em background com `Failed to spawn: stropha` (verificado em `uv run --directory /tmp stropha --help` → exit code não-zero com erro em stderr).
 
 **Decisão**: bake 3 defaults no script gerado:
 - `PROJECT_DIR_DEFAULT` — onde o `uv` venv com stropha vive
-- `INDEX_PATH_DEFAULT` — força um `STROPHA_INDEX_PATH=` no `env` que precede o `stropha index`
+- `INDEX_PATH_DEFAULT` — at that milestone, baked an index path before
+  `stropha index`; current settings no longer use this env path
 - `LOG_DEFAULT` — log per-repo (`~/.cache/stropha-hook-mimoria.log`)
 
 Bake > env vars de commit-time. Razão: hooks rodam num contexto shell minimalista (PATH stripado, sem dotfiles). Bakar é determinístico, auditável (via `stropha hook status`) e ainda permite override pontual via env (`STROPHA_HOOK_PROJECT_DIR`, etc.).
@@ -1497,7 +1376,8 @@ Delivered in commits `d2c5fb9`, `007d892`, `2ff2298`. Schema v6 (file-level dirt
 | **C** | `2ff2298` | `Storage.rename_chunks()` recomputes `chunk_id` and FTS5 rows → zero re-embed cost for renames. `GraphifyLoader` diff-loads graph.json (deltas only, ~50ms → <5ms for no-op reload). |
 
 CLI flags added: `--full`, `--incremental`, `--since <sha>`.
-Env: `STROPHA_RENAME_THRESHOLD` (default 80) controls `git diff --find-renames=<N>`.
+`git.rename_threshold` in `~/.stropha/config.yaml` (default 80) controls
+`git diff --find-renames=<N>`.
 
 ### 21.9 Multi-repo graphify support (schema v7) — 2026-05-16
 
@@ -1516,3 +1396,24 @@ Delivered for distributed monorepo architecture where multiple repositories with
 - Per-repo staleness via `graph_meta` keys like `last_loaded_mtime:3`
 - Graph tools query ALL repos by default (cross-repo `find_callers`, `find_related`)
 - GraphVecLoader unchanged (already works cross-repo)
+
+### 21.10 Current operational state — audited 2026-08-11
+
+- **Transport:** MCP is HTTP-only at `http://<host>:<port>/mcp`; all clients use
+  one shared daemon. stdio, SSE, subprocess-spawning client configs, and
+  per-client env blocks are unsupported.
+- **Configuration:** settings and secrets live in `~/.stropha/config.yaml`.
+  Environment variables are limited to `_ENV_REGISTRY` process/runtime
+  arguments (target, MCP launcher, session/tracing, hook escape hatches, and
+  opt-in local PostgreSQL management); there is no project `stropha.yaml` or
+  `.env` overlay.
+- **Schema/storage:** schema v14 is implemented by both SQLite and PostgreSQL
+  storage adapters through independent forward-only migrations. SQLite graph
+  lexical augmentation replaces contentless FTS5 rows with `DELETE` + explicit
+  `INSERT`; PostgreSQL updates `chunks.fts` instead.
+- **Lifecycle:** only `Pipeline.run()` may order graphify update, graph mirror,
+  graph-vector load, and lexical augmentation. The post-commit hook returns from
+  foreground within 100 ms and delegates all work to its detached process.
+- **Graph tools:** tools remain registered and return a structured
+  `graph_loaded=false` response when no graph is available; they never fail with
+  a silent empty result.

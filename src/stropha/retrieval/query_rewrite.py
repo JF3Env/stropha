@@ -16,9 +16,9 @@ Falls back to original query when:
 - No inference backend available
 - The generation times out
 - The generated text is empty
-- query_rewrite_enabled: false in stropha.yaml
+- ``retrieval_features.query_rewrite_enabled`` is false in the unified config
 
-Configuration (stropha.yaml):
+Configuration (``~/.stropha/config.yaml``):
     retrieval_features:
       query_rewrite_enabled: true
 
@@ -45,7 +45,7 @@ _DEFAULT_PROMPT = (
 
 
 def _enabled() -> bool:
-    """Check if query rewriting is enabled via stropha.yaml."""
+    """Check whether unified configuration enables query rewriting."""
     return get_config().retrieval_features.query_rewrite_enabled
 
 

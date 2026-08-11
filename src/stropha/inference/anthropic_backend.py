@@ -1,23 +1,23 @@
 """Anthropic inference backend — cloud LLM via the Messages API.
 
 Calls Anthropic's hosted Messages endpoint (``/v1/messages``). Requires
-the ``ANTHROPIC_API_KEY`` environment variable.
+``secrets.anthropic_api_key`` in ``~/.stropha/config.yaml``.
 
 This backend is **opt-in** because it makes outbound network calls. The
-``CLAUDE.md`` §3.6 "local-only by default" invariant is preserved by
+The ``CLAUDE.md`` **Local-only by default** invariant is preserved by
 :func:`stropha.inference.backend.get_backend` — Anthropic is never
 auto-selected, only when ``inference.backend: anthropic`` is set in
-``stropha.yaml`` (or ``prefer='anthropic'`` is passed explicitly).
+``~/.stropha/config.yaml`` (or ``prefer='anthropic'`` is passed explicitly).
 
-Configuration (stropha.yaml):
+Configuration (``~/.stropha/config.yaml``):
     inference:
       backend: anthropic
       anthropic_model: claude-haiku-4-5
       anthropic_base_url: https://api.anthropic.com/v1
       anthropic_version: 2023-06-01
 
-Authentication (env only — never YAML):
-    ANTHROPIC_API_KEY=sk-ant-...
+    secrets:
+      anthropic_api_key: sk-ant-...
 
 API contract (mirrors :class:`DeepSeekBackend`):
     - ``generate`` MUST swallow every exception and return ``None`` on
@@ -98,8 +98,8 @@ class AnthropicBackend(InferenceBackend):
                 to ``inference.anthropic_model`` in config.
             base_url: API base URL. Falls back to
                 ``inference.anthropic_base_url`` in config.
-            api_key: API key. Falls back to ``ANTHROPIC_API_KEY``
-                env var (via ``secrets.anthropic_api_key``).
+            api_key: API key. Falls back to ``secrets.anthropic_api_key``
+                in ``~/.stropha/config.yaml``.
             timeout: Per-request timeout in seconds. Falls back to
                 ``inference.anthropic_timeout`` (default 60s).
             max_retries: Extra attempts on transient network errors.
@@ -167,7 +167,10 @@ class AnthropicBackend(InferenceBackend):
             (missing key, network error, bad response, empty content).
         """
         if not self._api_key:
-            log.warning("anthropic.generate_skipped", reason="ANTHROPIC_API_KEY not set")
+            log.warning(
+                "anthropic.generate_skipped",
+                reason="secrets.anthropic_api_key not set in ~/.stropha/config.yaml",
+            )
             return None
 
         target_model = model or self._default_model
@@ -310,5 +313,8 @@ class AnthropicBackend(InferenceBackend):
         will surface naturally on the first ``generate`` call.
         """
         if not self.is_available:
-            return False, "Anthropic API key not set (ANTHROPIC_API_KEY)"
+            return False, (
+                "Anthropic API key not set "
+                "(secrets.anthropic_api_key in ~/.stropha/config.yaml)"
+            )
         return True, f"Anthropic ready with {self._default_model}"

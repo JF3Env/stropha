@@ -3,7 +3,6 @@
 This module sets up common test fixtures including:
 - Config cache reset (ensures tests don't share config state)
 - Inference backend reset
-- Isolated working directory (so tests don't pick up stropha.yaml from project root)
 - Isolated HOME (so tests don't pick up ~/.stropha/config.yaml from the
   developer's machine — see docstring on isolated_test_env for the rationale)
 """
@@ -18,19 +17,10 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def isolated_test_env(tmp_path, monkeypatch):
-    """Isolate tests from BOTH the project's stropha.yaml AND the user-level
-    ``~/.stropha/config.yaml``.
+    """Isolate tests from the user's ``~/.stropha/config.yaml``.
 
-    Why both: the config loader merges in this order (see
-    ``src/stropha/pipeline/config.py``):
-
-        1. User YAML (~/.stropha/config.yaml)
-        2. Project YAML (./stropha.yaml)
-        3. Env vars
-        4. CLI overrides
-
-    Pre-2026-05 the fixture only chdir'd to tmp_path, which masked layer (2)
-    but left layer (1) leaking from the developer's home dir. Tests like
+    Pre-2026-05 the fixture only changed to ``tmp_path`` but left the
+    developer's user configuration visible. Tests like
     ``test_auto_detect_never_picks_deepseek`` that asserted "no YAML present"
     were silently broken whenever the developer had `inference.backend: …`
     set in their personal config. Patching ``Path.home()`` closes that hole.
@@ -43,6 +33,7 @@ def isolated_test_env(tmp_path, monkeypatch):
     """
     # Reset config cache before changing directory
     from stropha.config import reset_config
+
     reset_config()
 
     # Change to temp directory + isolate HOME from real ~/.stropha/
@@ -64,8 +55,9 @@ def isolated_test_env(tmp_path, monkeypatch):
 def reset_inference_backend():
     """Reset cached inference backend before each test."""
     from stropha.inference.backend import reset_backend
+
     reset_backend()
-    
+
     yield
-    
+
     reset_backend()
