@@ -98,9 +98,13 @@ def test_explicit_moa_does_not_fallback_when_unavailable() -> None:
     assert isinstance(backend, MoaBackend)
 
 
-def test_identity_changes_with_model_or_endpoint() -> None:
-    base = MoaBackend(model="one", base_url="http://127.0.0.1:14598/v1")
+def test_identity_changes_with_model_endpoint_or_reliability_controls() -> None:
+    base = MoaBackend(
+        model="one", base_url="http://127.0.0.1:14598/v1", timeout=30.0, max_retries=1
+    )
     other_model = MoaBackend(model="two", base_url="http://127.0.0.1:14598/v1")
     other_endpoint = MoaBackend(model="one", base_url="http://127.0.0.1:9999/v1")
     assert base.identity != other_model.identity
     assert base.identity != other_endpoint.identity
+    assert base.identity != MoaBackend(timeout=31.0, max_retries=1).identity
+    assert base.identity != MoaBackend(timeout=30.0, max_retries=2).identity

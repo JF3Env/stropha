@@ -43,6 +43,16 @@ def _http_response(payload: dict) -> MagicMock:
 # --------------------------------------------------------------------------- #
 
 
+def test_deepseek_identity_changes_with_reliability_controls() -> None:
+    base = DeepSeekBackend(api_key="secret", timeout=30.0, max_retries=1)
+    assert base.identity != DeepSeekBackend(
+        api_key="secret", timeout=31.0, max_retries=1
+    ).identity
+    assert base.identity != DeepSeekBackend(
+        api_key="secret", timeout=30.0, max_retries=2
+    ).identity
+
+
 class TestDeepSeekBackend:
     """Tests for the DeepSeek backend."""
 

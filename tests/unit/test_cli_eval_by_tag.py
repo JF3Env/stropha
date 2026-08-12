@@ -8,6 +8,7 @@ invisible. This test guards the new full-metric rendering.
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 from typer.testing import CliRunner
@@ -93,6 +94,52 @@ def _install_cli_stubs(monkeypatch: pytest.MonkeyPatch, report: EvalReport) -> N
 
 
 class TestCliEvalByTagRendering:
+    def test_reranker_override_is_query_time_pipeline_config(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        golden = _golden_with_two_tags(tmp_path)
+        _install_cli_stubs(monkeypatch, _stubbed_report())
+        load_config = MagicMock(return_value={})
+        monkeypatch.setattr("stropha.cli.load_pipeline_config", load_config)
+
+        result = CliRunner().invoke(
+            app,
+            [
+                "eval",
+                "--golden",
+                str(golden),
+                "--reranker",
+                "code-aware",
+            ],
+        )
+
+        assert result.exit_code == 0
+        load_config.assert_called_once_with(
+            overrides={
+                "retrieval": {
+                    "config": {"reranker": {"adapter": "code-aware"}}
+                }
+            }
+        )
+
+    def test_none_reranker_override_removes_active_reranker(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        golden = _golden_with_two_tags(tmp_path)
+        _install_cli_stubs(monkeypatch, _stubbed_report())
+        load_config = MagicMock(return_value={})
+        monkeypatch.setattr("stropha.cli.load_pipeline_config", load_config)
+
+        result = CliRunner().invoke(
+            app,
+            ["eval", "--golden", str(golden), "--reranker", "none"],
+        )
+
+        assert result.exit_code == 0
+        load_config.assert_called_once_with(
+            overrides={"retrieval": {"config": {"reranker": None}}}
+        )
+
     def test_by_tag_table_renders_full_metric_set(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

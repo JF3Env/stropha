@@ -10,6 +10,7 @@ from urllib import error as urllib_error
 from urllib import request as urllib_request
 
 from ..config import get_config
+from ..errors import InferenceError, InferenceTimeoutError
 from ..logging import get_logger
 from .backend import InferenceBackend
 
@@ -53,7 +54,7 @@ class LmsBackend(InferenceBackend):
         endpoint_hash = hashlib.sha256(self._base_url.encode()).hexdigest()[:8]
         return (
             f"lms:model={self._default_model}:endpoint={endpoint_hash}"
-            f":think={int(self._think)}"
+            f":think={int(self._think)}:timeout={self._timeout}:retries={self._max_retries}"
         )
 
     @property
@@ -67,21 +68,36 @@ class LmsBackend(InferenceBackend):
         max_tokens: int = 256,
         temperature: float = 0.0,
         model: str | None = None,
+        json_schema: dict[str, object] | None = None,
+        think: bool | None = None,
+        timeout: float | None = None,
+        raise_errors: bool = False,
     ) -> str | None:
         if not self._api_key:
             log.warning("lms.generate_skipped", reason="LMS API key not set")
+            if raise_errors:
+                raise InferenceError("LMS API key not set")
             return None
 
-        body = json.dumps(
-            {
-                "model": model or self._default_model,
-                "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": max_tokens,
-                "temperature": temperature,
-                "stream": False,
-                "think": self._think,
+        request_body: dict[str, object] = {
+            "model": model or self._default_model,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "stream": False,
+            "think": self._think if think is None else think,
+        }
+        if json_schema is not None:
+            request_body["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "stropha_response",
+                    "strict": True,
+                    "schema": json_schema,
+                },
             }
-        ).encode("utf-8")
+        body = json.dumps(request_body).encode("utf-8")
+        request_timeout = self._timeout if timeout is None else timeout
 
         attempts = self._max_retries + 1
         for attempt in range(1, attempts + 1):
@@ -95,18 +111,24 @@ class LmsBackend(InferenceBackend):
                     },
                     method="POST",
                 )
-                with urllib_request.urlopen(req, timeout=self._timeout) as resp:
+                with urllib_request.urlopen(req, timeout=request_timeout) as resp:
                     payload = json.loads(resp.read().decode("utf-8"))
                 choices = payload.get("choices") or []
                 if not choices:
                     log.warning("lms.generate_failed", reason="no choices", attempt=attempt)
+                    if raise_errors:
+                        raise InferenceError("LMS returned no choices")
                     return None
                 text = ((choices[0].get("message") or {}).get("content") or "").strip()
+                if not text and raise_errors:
+                    raise InferenceError("LMS returned empty content")
                 return text or None
             except urllib_error.HTTPError as exc:
                 retryable = exc.code == 429 or 500 <= exc.code < 600
                 if not retryable or attempt >= attempts:
                     log.warning("lms.generate_failed", status=exc.code, attempt=attempt)
+                    if raise_errors:
+                        raise InferenceError(f"LMS request failed with HTTP {exc.code}") from exc
                     return None
                 delay = 2 ** (attempt - 1)
                 retry_after = exc.headers.get("retry-after") if exc.headers else None
@@ -121,13 +143,29 @@ class LmsBackend(InferenceBackend):
                         error=type(exc).__name__,
                         attempt=attempt,
                     )
+                    if raise_errors:
+                        if isinstance(exc, TimeoutError):
+                            raise InferenceTimeoutError("LMS request timed out") from exc
+                        raise InferenceError(
+                            f"LMS request failed with {type(exc).__name__}"
+                        ) from exc
                     return None
                 time.sleep(2 ** (attempt - 1))
             except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
                 log.warning("lms.generate_failed", error=type(exc).__name__)
+                if raise_errors:
+                    raise InferenceError(
+                        f"LMS returned an invalid {type(exc).__name__} response"
+                    ) from exc
                 return None
+            except InferenceError:
+                raise
             except Exception as exc:
                 log.warning("lms.generate_failed", error=type(exc).__name__)
+                if raise_errors:
+                    raise InferenceError(
+                        f"LMS request failed with {type(exc).__name__}"
+                    ) from exc
                 return None
         return None
 

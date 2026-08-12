@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import re
+import stat
 import time
 import uuid
 from collections.abc import Callable
@@ -310,10 +311,12 @@ def write_config_document(document: dict[str, Any], path: Path | None = None) ->
     """Atomically replace the YAML configuration document."""
     target = path or config_path()
     target.parent.mkdir(parents=True, exist_ok=True)
+    mode = stat.S_IMODE(target.stat().st_mode) if target.is_file() else 0o600
     payload = yaml.safe_dump(document, sort_keys=False, allow_unicode=False)
     temporary = target.with_name(f".{target.name}.tmp")
     try:
         temporary.write_text(payload, encoding="utf-8")
+        temporary.chmod(mode)
         temporary.replace(target)
     except OSError as exc:
         raise ConfigError(f"Could not write {target}: {exc}") from exc

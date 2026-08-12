@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, PropertyMock, patch
 
 import pytest
 
+from stropha.errors import InferenceError
 from stropha.inference import (
     capture_inference_calls,
     generate,
@@ -265,6 +266,48 @@ class TestGenerate:
         assert calls[0]["status"] == "completed"
         assert calls[0]["output_chars"] == len("generated text")
         assert "prompt" not in calls[0]
+
+    def test_non_timeout_generation_controls_do_not_change_non_lms_backend_calls(self):
+        with patch("stropha.inference.backend.get_backend") as mock_get:
+            mock_backend = MagicMock()
+            mock_backend.name = "test"
+            mock_backend.generate.return_value = "generated text"
+            mock_get.return_value = mock_backend
+
+            generate(
+                "prompt",
+                json_schema={"type": "object"},
+                think=False,
+                raise_errors=True,
+            )
+
+        mock_backend.generate.assert_called_once_with(
+            "prompt",
+            max_tokens=256,
+            temperature=0.0,
+            model=None,
+        )
+
+    def test_raise_errors_rejects_empty_non_lms_output(self):
+        with patch("stropha.inference.backend.get_backend") as mock_get:
+            mock_backend = MagicMock()
+            mock_backend.name = "test"
+            mock_backend.generate.return_value = None
+            mock_get.return_value = mock_backend
+
+            with pytest.raises(InferenceError, match="returned no output"):
+                generate("prompt", raise_errors=True)
+
+    def test_non_lms_timeout_fails_fast(self):
+        with patch("stropha.inference.backend.get_backend") as mock_get:
+            mock_backend = MagicMock()
+            mock_backend.name = "test"
+            mock_get.return_value = mock_backend
+
+            with pytest.raises(InferenceError, match="does not support"):
+                generate("prompt", timeout=1.0)
+
+            mock_backend.generate.assert_not_called()
 
 
 # --------------------------------------------------------------------------- #

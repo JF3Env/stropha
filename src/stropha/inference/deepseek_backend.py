@@ -118,7 +118,10 @@ class DeepSeekBackend(InferenceBackend):
     @property
     def identity(self) -> str:
         endpoint_hash = hashlib.sha256(self._base_url.encode()).hexdigest()[:8]
-        return f"deepseek:model={self._default_model}:endpoint={endpoint_hash}"
+        return (
+            f"deepseek:model={self._default_model}:endpoint={endpoint_hash}"
+            f":timeout={self._timeout}:retries={self._max_retries}"
+        )
 
     @property
     def is_available(self) -> bool:

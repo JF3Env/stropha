@@ -1,0 +1,46 @@
+version: 1
+name: phase3-unseen-holdout-v1
+invalidated: Holdout answers were indexable during the run; results are not promotion evidence.
+repo: .
+catalog: src/stropha/bench/phase3_holdout_cases.yaml
+exposed_golden: tests/eval/golden.jsonl
+matrix: src/stropha/bench/phase2_shortlist_matrix.yaml
+
+cohort:
+  min_cases: 30
+  min_per_category: 2
+  min_multi_or_graded_ratio: 0.8
+
+baseline:
+  adaptive_weighting: true
+  learned_weights: true
+  recursive: true
+  recursive_adjacency: 5
+  reranker: llm
+  candidate_k: 20
+  rrf_k: 60
+
+candidate:
+  adaptive_weighting: true
+  learned_weights: true
+  recursive: true
+  recursive_adjacency: 5
+  reranker: llm
+  candidate_k: 20
+  rrf_k: 40
+
+gates:
+  success_delta_min: -0.01
+  recall_delta_min: -0.01
+  ndcg_delta_min: 0.02
+  mrr_delta_min: -0.01
+  fallback_rate_max: 0.05
+  latency_ratio_max: 1.25
+  token_ratio_max: 1.0
+  per_tag_regression_max: 0.01
+  no_case_rank_regression: true
+
+verification: [ruff, mypy, pytest, diff-check]
+
+promotion:
+  axis: rrf_k

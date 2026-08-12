@@ -38,6 +38,10 @@ The baseline recorded on 2026-08-12 is:
 | Reranker reliability | 30 fallbacks from 52 attempts, 57.69% fallback rate |
 | Index state | Two commits behind at observation time and non-comparable enricher identity |
 
+The clean-index baseline archived after Phase 0 at commit `e47f79d9` contains 54
+cases: Success@10 0.8519, entity Recall@10 0.8426, MRR 0.6997, NDCG@10 0.7331,
+and 26 reranker fallbacks from 54 attempts (48.15%).
+
 ### 2.1 Confirmed identity defect
 
 `ContextualEnricher.adapter_id` includes `:batch=<n>` in
@@ -290,6 +294,27 @@ Run the strict eval twice because the reranker uses an external LMS service.
 - Reranker p95 latency is recorded and within the accepted budget.
 - A backend outage returns deterministic RRF or configured fallback results.
 
+Phase 1 reliability validation on 2026-08-12 produced zero fallbacks in both
+54-case clean-index runs. Both runs reported Success@10 0.8889, entity Recall@10
+0.8796, MRR 0.7577, and NDCG@10 0.7837. Reranker p95 latency was 1052.325 ms and
+1042.691 ms. Reports are archived as
+`.stropha/bench/output-quality-phase1-run1.json` and
+`.stropha/bench/output-quality-phase1-run2.json` locally.
+
+The fallback benchmark reused the same PostgreSQL index, golden hash, repository
+scope, and query-time settings via `stropha eval --reranker`. Results were:
+
+| Policy | Success@10 | MRR | NDCG@10 | p95 latency |
+|---|---:|---:|---:|---:|
+| Original RRF | 0.7963 | 0.6188 | 0.6592 | 352.428 ms |
+| Code-aware | 0.8148 | 0.6330 | 0.6698 | 371.399 ms |
+| Cross-encoder | 0.8333 | 0.4137 | 0.5124 | 932.303 ms |
+
+The cross-encoder also incurred a 28.4-second cold first query. Code-aware is the
+selected default fallback because it improves every quality metric over original
+RRF for a 19 ms p95 increase and has no model dependency. The final active LLM
+run with code-aware armed as fallback retained zero fallbacks and NDCG@10 0.7837.
+
 ## 8. Phase 2: Comparable Benchmark and Promotion Workflow
 
 ### Goal
@@ -364,6 +389,94 @@ uv run stropha bench report .stropha/bench/output-quality.jsonl \
 - Resume is deterministic and does not mix incompatible runs.
 - The baseline cell can be identified without copying a generated cell ID by hand.
 - At least one candidate improves NDCG without violating the promotion gates.
+
+The first Phase 2 slice completed on 2026-08-12. The active matrix still resolves
+192 query-time cells over one indexing signature. Benchmark records now include
+the complete eval summary, reranker diagnostics, pipeline and index identities,
+golden hash, repository key, source commit plus dirty-diff hash, matrix identity,
+and a shared run identity. Resume and reporting reject missing or mixed run
+identities, and `bench report --matrix` resolves the declared baseline without a
+copied cell ID. A four-cell smoke run completed with zero failures and deterministic
+resume. Staged axis experiments and holdout validation remain open.
+
+The first production-identity staged experiment compared reranker on/off with
+`candidate_k` 20/50 while pinning all other axes to baseline. LLM reranking
+improved NDCG@10 from 0.6685 to 0.7783 and MRR from 0.6082 to 0.7537 with zero
+fallbacks. Increasing `candidate_k` from 20 to 50 changed no quality or token
+metric in either reranker state and slightly increased LLM p95 latency from
+886.702 ms to 897.111 ms. Keep `candidate_k=20`; do not promote 50.
+
+The recursive stage compared off with adjacency 3/5/10. Enabling recursion
+improved NDCG@10 from 0.7767 to 0.7783 and reduced returned tokens from 49,845
+to about 38,645 (22.5%). Adjacency 3/5/10 produced identical quality; adjacency
+3 had the lowest p95 latency (879.629 ms) and enters the shortlist. Keep
+recursion enabled; retain production adjacency 5 until repeated/holdout validation.
+
+The weighting stage compared adaptive and learned weighting on/off. Disabling
+both produced the strongest quality-first search result: Success@10 0.9259,
+Recall@10 0.9167, NDCG@10 0.7886, MRR 0.7515, and 35,947 returned tokens. Versus
+the production baseline this is +0.037 Recall, +0.0103 NDCG, -0.0022 MRR, and
+7.0% fewer tokens. Bootstrap intervals remain wide on 54 cases, so this enters
+the holdout shortlist but does not change production defaults yet.
+
+The RRF stage compared `k` 40/60/80 with other baseline axes pinned. `k=40`
+was strongest on search: Success@10 0.9074, Recall@10 0.8889, MRR 0.7749,
+NDCG@10 0.7982, and 39,103 returned tokens. `k=60` scored NDCG 0.7783 and
+`k=80` scored 0.7851. Add `k=40` to the holdout shortlist; keep production at
+60 until the shortlist is repeated and holdout-validated.
+
+Post-stage review found that `bench run` loaded all 54 golden cases despite the
+37 search / 17 holdout labels. The results above are exploratory and cannot be
+used for promotion because they exposed holdout during tuning. Benchmark runs
+now require an isolated `search` or `holdout` split (default `search`) and bake
+the split into provenance and `run_id`. Repeat the shortlist on search, freeze
+the candidates, and evaluate only those candidates on holdout.
+
+Benchmark index files are also keyed by the source commit plus tracked changes
+and non-ignored untracked content, matching the walker's source scope. Reuse
+requires a benchmark-owned completion marker written only after
+`Pipeline.run()` returns. An interrupted source-matched build resumes through
+hash reconciliation but cannot be evaluated or silently reused while partial.
+
+The isolated search rerun retained `rrf_k=40` (NDCG 0.8100, Recall 0.9054,
+MRR 0.7876) and replaced the earlier weights-off candidate with adaptive
+weighting off while learned weights remain enabled (NDCG 0.8050, Recall 0.9324,
+MRR 0.7712). Adjacency 3/5/10 remained quality-identical and adjacency 3 was no
+longer faster, so adjacency stays at 5. The interaction check added adaptive
+off with `rrf_k=80` as the strongest search finalist (NDCG 0.8150, Recall
+0.9324, MRR 0.7847). `phase2_shortlist_matrix.yaml` freezes these three
+candidates plus the production baseline before the one-time holdout run.
+
+Final source-matched repetition used source fingerprint `997ca02809a0` and the
+frozen four-cell shortlist. Two executions reproduced every aggregate quality
+and token metric exactly. `rrf_k=40` was numerically strongest on both splits,
+with zero fallbacks, lower holdout token use, and no per-case holdout rank
+regression. These numbers are not promotion evidence, however: the earlier
+exploratory all-case run exposed the same 17 holdout cases before the shortlist
+was frozen. Repeating an exposed holdout does not restore its independence.
+
+Production therefore remained at `rrf_k=60` pending a new, never-inspected
+holdout. Exact exploratory metrics remain in source- and split-identified local
+JSONL artifacts under `.stropha/bench/`; they may guide new test authoring but
+must not select or promote a candidate.
+
+The first Phase 3 promotion cohort was defined as a checked-in 30-case catalog with
+three source-reviewed, graded cases in each category. `stropha bench batch`
+validates it against the exposed golden, freezes canonical JSONL before retrieval,
+executes only the declared `rrf_k=60` baseline and `rrf_k=40` candidate, applies
+aggregate/per-tag/per-case gates, runs an allowlisted verification profile, and
+optionally updates only `rrf_k` through explicit `--promote`. The first cohort is
+frozen as `phase3-unseen-holdout-v1` with SHA-256
+`d8f9b7622e27799ffc2338020d4032157fad9a11c7268535af55569252a446d1`.
+This pilot does not satisfy the 120-case Phase 3 completion target.
+
+Post-run review invalidated the cohort's result because the checked-in answer
+catalog was itself indexable during benchmark index construction. The observed
+metrics are not promotion evidence and must not be interpreted as accepting or
+rejecting `rrf_k=40`. The batch specification is marked invalidated, production
+remains at `rrf_k=60`, and this exposed cohort must not be rerun. Future batches
+validate that their catalog is excluded through `.strophaignore` before freezing
+or retrieval.
 
 ## 9. Phase 3: Representative Graded Golden Dataset
 
@@ -783,29 +896,31 @@ compatible reindex and must never be hidden by editing metadata.
 
 - [x] Remove duplicate batch ownership from effective enricher identity.
 - [x] Add identity regression tests.
-- [ ] Let the post-commit hook refresh the index.
-- [ ] Verify index health and current `HEAD`.
-- [ ] Archive strict baseline JSON.
+- [x] Let the post-commit hook refresh the index.
+- [x] Verify index health and current `HEAD`.
+- [x] Archive strict baseline JSON.
 
 ### Phase 1
 
-- [ ] Add reranker failure-class diagnostics.
-- [ ] Add task-specific structured generation controls.
-- [ ] Add one bounded repair attempt.
-- [ ] Benchmark deterministic fallback policies.
-- [ ] Reach less than 5% fallback rate in two runs.
+- [x] Add reranker failure-class diagnostics.
+- [x] Add task-specific structured generation controls.
+- [x] Add one bounded repair attempt.
+- [x] Benchmark deterministic fallback policies.
+- [x] Reach less than 5% fallback rate in two runs.
 
 ### Phase 2
 
-- [ ] Add complete metrics and provenance to benchmark records.
-- [ ] Add comparability checks.
-- [ ] Run matrix smoke test.
-- [ ] Run staged axis experiments.
-- [ ] Produce a holdout-validated shortlist.
+- [x] Add complete metrics and provenance to benchmark records.
+- [x] Add comparability checks.
+- [x] Run matrix smoke test.
+- [x] Run staged axis experiments.
+- [x] Produce a repeated shortlist; defer promotion because the holdout was exposed.
 
 ### Phase 3
 
-- [ ] Define category quotas and authoring guide.
+- [x] Define category quotas and authoring guide.
+- [ ] Freeze a replacement unseen promotion cohort with answer catalogs excluded.
+- [x] Add reproducible batch gates, verification, and explicit promotion tooling.
 - [ ] Expand to at least 120 reviewed cases.
 - [ ] Make at least half multi-entity or graded.
 - [ ] Validate search/holdout category coverage.

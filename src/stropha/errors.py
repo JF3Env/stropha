@@ -23,6 +23,14 @@ class EmbeddingError(StrophaError):
     """Failure while computing embeddings (network, auth, model)."""
 
 
+class InferenceError(StrophaError):
+    """Failure while generating text with an inference backend."""
+
+
+class InferenceTimeoutError(InferenceError, TimeoutError):
+    """Inference generation exceeded its configured timeout."""
+
+
 class StorageError(StrophaError):
     """Failure in the SQLite/vec layer (schema, IO, corruption)."""
 

@@ -11,7 +11,7 @@ Subcommands:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import typer
 from rich.console import Console
@@ -1400,6 +1400,11 @@ def eval(
         "--require-clean-index",
         help="Abort when active embedder/enricher IDs differ from the indexed IDs.",
     ),
+    reranker: str | None = typer.Option(
+        None,
+        "--reranker",
+        help="Query-time reranker override (adapter name or `none`).",
+    ),
 ) -> None:
     """Run the offline eval harness against the golden dataset."""
     from .eval import load_golden, run_eval
@@ -1424,7 +1429,24 @@ def eval(
         console.print("[red]--repo and --include-other-repos are mutually exclusive.[/red]")
         raise typer.Exit(code=1)
 
-    resolved = load_pipeline_config()
+    overrides: dict[str, Any] | None = None
+    if reranker is not None:
+        normalized_reranker = reranker.strip().lower()
+        reranker_spec: dict[str, str] | None
+        if normalized_reranker in {"none", "null"}:
+            reranker_spec = None
+        else:
+            from .pipeline.registry import lookup_adapter
+
+            try:
+                lookup_adapter("reranker", normalized_reranker)
+            except StrophaError as exc:
+                console.print(f"[red]Unknown reranker adapter:[/red] {reranker}")
+                raise typer.Exit(code=1) from exc
+            reranker_spec = {"adapter": normalized_reranker}
+        overrides = {"retrieval": {"config": {"reranker": reranker_spec}}}
+
+    resolved = load_pipeline_config(overrides=overrides)
     try:
         built = build_stages(resolved)
     except StrophaError as exc:
@@ -2067,12 +2089,22 @@ def bench_run_cmd(
     resume: bool = typer.Option(
         True,
         "--resume/--no-resume",
-        help="Skip cells already present in the results file.",
+        help="Skip completed cells; --no-resume requires a new output path.",
     ),
     dry_run: bool = typer.Option(
         False,
         "--dry-run",
         help="Print the plan (cells + unique indexes) without running.",
+    ),
+    axis: list[str] | None = typer.Option(
+        None,
+        "--axis",
+        help="Vary only this axis; repeat for multiple axes. Others use baseline values.",
+    ),
+    split: Literal["search", "holdout"] = typer.Option(
+        "search",
+        "--split",
+        help="Golden split to evaluate; holdout is reserved for frozen candidates.",
     ),
 ) -> None:
     """Run a configuration matrix; append one result line per cell."""
@@ -2083,12 +2115,14 @@ def bench_run_cmd(
     mpath = matrix or _default_matrix_path()
     try:
         m = load_matrix(mpath)
+        if axis:
+            m = m.select_axes(axis)
     except MatrixError as exc:
         console.print(f"[red]Matrix error:[/red] {exc}")
         raise typer.Exit(code=1) from exc
 
     if dry_run:
-        plan = run_matrix(m, out, index_dir=index_dir, dry_run=True)
+        plan = run_matrix(m, out, index_dir=index_dir, dry_run=True, split=split)
         console.print(
             f"[bold]Plan:[/bold] {plan['total_cells']} cells · "
             f"{plan['unique_indexes']} unique indexes · "
@@ -2120,6 +2154,7 @@ def bench_run_cmd(
             index_dir=index_dir,
             resume=resume,
             limit=limit,
+            split=split,
             on_cell=_on_cell,
         )
     except StrophaError as exc:
@@ -2131,10 +2166,69 @@ def bench_run_cmd(
     )
 
 
+@bench_app.command("batch")
+def bench_batch_cmd(
+    spec: Path = typer.Argument(..., help="Checked-in benchmark batch YAML."),
+    artifact_root: Path | None = typer.Option(
+        None,
+        "--artifact-root",
+        help="Override the batch artifact root (default: .stropha/bench/batches).",
+    ),
+    prepare_only: bool = typer.Option(
+        False,
+        "--prepare-only",
+        help="Validate and freeze the cohort without running retrieval.",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Prepare the cohort and print the benchmark execution plan.",
+    ),
+    verify: bool = typer.Option(
+        True,
+        "--verify/--no-verify",
+        help="Run named verification; mandatory with --promote.",
+    ),
+    promote: bool = typer.Option(
+        False,
+        "--promote",
+        help="Atomically update production config only when every gate passes.",
+    ),
+    config: Path | None = typer.Option(
+        None,
+        "--config",
+        help="Promotion target (default: ~/.stropha/config.yaml).",
+    ),
+) -> None:
+    """Run a reproducible prepare → benchmark → gate → verify batch."""
+    from .bench.batch import BatchError, run_batch
+
+    try:
+        result = run_batch(
+            spec,
+            artifact_root=artifact_root,
+            prepare_only=prepare_only,
+            dry_run=dry_run,
+            verify=verify,
+            promote=promote,
+            config_path=config,
+        )
+    except BatchError as exc:
+        console.print(f"[red]Batch failed:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+    console.print_json(data=result)
+
+
 @bench_app.command("report")
 def bench_report_cmd(
     results: Path = typer.Argument(..., help="Results JSONL produced by `bench run`."),
-    metric: str = typer.Option("recall@10", "--metric", help="Metric to rank / marginalise by."),
+    metric: str = typer.Option("ndcg@10", "--metric", help="Metric to rank / marginalise by."),
+    matrix: Path | None = typer.Option(
+        None,
+        "--matrix",
+        "-m",
+        help="Matrix YAML used for the run; resolves its declared baseline.",
+    ),
     baseline: str | None = typer.Option(
         None,
         "--baseline",
@@ -2145,8 +2239,9 @@ def bench_report_cmd(
     marginals: bool = typer.Option(True, "--marginals/--no-marginals"),
 ) -> None:
     """Rank cells, show per-axis marginals, and optionally diff vs a baseline."""
-    from .bench import BenchReport, load_results
-    from .bench.report import ReportError, to_csv
+    from .bench import BenchReport, load_matrix, load_results
+    from .bench.matrix import MatrixError
+    from .bench.report import ReportError, to_csv, validate_matrix_id
 
     try:
         recs = load_results(results)
@@ -2163,17 +2258,32 @@ def bench_report_cmd(
         console.print(f"[yellow]metric {metric!r} not found; have: {metrics}[/yellow]")
         raise typer.Exit(code=1)
 
+    if baseline is None and matrix is not None:
+        try:
+            loaded_matrix = load_matrix(matrix)
+            validate_matrix_id(recs, loaded_matrix.matrix_id)
+            baseline_cell = loaded_matrix.baseline_cell()
+        except (MatrixError, ReportError) as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(code=1) from exc
+        if baseline_cell is None:
+            console.print("[yellow]Matrix has no matching declared baseline.[/yellow]")
+            raise typer.Exit(code=1)
+        baseline = baseline_cell.cell_id
+
+    display_metrics = rep.quality_columns(metric)
     table = Table(title=f"Top {top} of {len(recs)} cells by {metric}")
     table.add_column("id", style="dim")
     table.add_column("config", overflow="fold")
-    for mn in metrics:
+    for mn in display_metrics:
         table.add_column(mn, justify="right")
     for r in rep.rank_table(metric)[:top]:
         met = r.get("metrics", {})
         cells = [
-            f"{met[mn]:.3f}" if isinstance(met.get(mn), (int, float)) else "-" for mn in metrics
+            f"{met[mn]:.3f}" if isinstance(met.get(mn), (int, float)) else "-"
+            for mn in display_metrics
         ]
-        table.add_row(str(r.get("cell_id", ""))[:8], r.get("label", ""), *cells)
+        table.add_row(str(r.get("cell_id", ""))[:8], rep.display_label(r), *cells)
     console.print(table)
 
     if marginals:

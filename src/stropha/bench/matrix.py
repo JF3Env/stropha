@@ -129,6 +129,21 @@ class Matrix:
     baseline: dict[str, Any] | None = None
     constraints: list[dict[str, Any]] = field(default_factory=list)
 
+    @property
+    def matrix_id(self) -> str:
+        """Stable identity for the semantic matrix definition."""
+        payload = _canonical(
+            {
+                "axes": self.axes,
+                "baseline": self.baseline,
+                "constraints": self.constraints,
+                "golden": self.golden,
+                "repo": self.repo,
+                "top_k": self.top_k,
+            }
+        )
+        return _short_hash(payload)
+
     def expand(self) -> list[Cell]:
         """Cartesian product of axes, minus constraint-excluded cells."""
         if not self.axes:
@@ -156,6 +171,37 @@ class Matrix:
         for cell in self.expand():
             out.setdefault(cell.indexing_sig, []).append(cell)
         return out
+
+    def select_axes(self, names: list[str]) -> Matrix:
+        """Vary ``names`` and pin every other axis to the declared baseline."""
+        selected = set(names)
+        unknown = selected - set(self.axes)
+        if unknown:
+            raise MatrixError(f"selected axes not in matrix: {sorted(unknown)}")
+        if not selected:
+            return self
+
+        baseline = self.baseline or {}
+        axes: dict[str, list[Any]] = {}
+        for name, values in self.axes.items():
+            if name in selected:
+                axes[name] = values
+            elif name in baseline:
+                axes[name] = [baseline[name]]
+            elif len(values) == 1:
+                axes[name] = values
+            else:
+                raise MatrixError(
+                    f"axis {name!r} must be selected or declared in baseline"
+                )
+        return Matrix(
+            axes=axes,
+            golden=self.golden,
+            top_k=self.top_k,
+            repo=self.repo,
+            baseline=self.baseline,
+            constraints=self.constraints,
+        )
 
     def baseline_cell(self) -> Cell | None:
         """Resolve the declared baseline to the matching expanded cell.

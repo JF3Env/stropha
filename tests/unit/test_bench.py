@@ -2,14 +2,31 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
 from stropha.bench.matrix import Cell, MatrixError, load_matrix
-from stropha.bench.report import BenchReport, load_results, to_csv
-from stropha.bench.runner import _retrieval_overrides
+from stropha.bench.report import (
+    BenchReport,
+    ReportError,
+    load_results,
+    to_csv,
+    validate_matrix_id,
+)
+from stropha.bench.runner import (
+    BenchError,
+    _retrieval_overrides,
+    _run_provenance,
+    _source_worktree_state,
+    _validate_output_identity,
+    eval_cell,
+    run_matrix,
+)
 
 # --------------------------------------------------------------------------- matrix
 
@@ -45,6 +62,27 @@ def test_load_parses_fields(matrix) -> None:
     assert matrix.top_k == 5
     assert matrix.golden == "g.jsonl"
     assert set(matrix.axes) == {"embedder", "enricher", "reranker", "hyde"}
+
+
+def test_matrix_id_is_stable_and_changes_with_semantics(matrix) -> None:
+    same = type(matrix)(
+        axes=dict(reversed(list(matrix.axes.items()))),
+        golden=matrix.golden,
+        top_k=matrix.top_k,
+        repo=matrix.repo,
+        baseline=matrix.baseline,
+        constraints=matrix.constraints,
+    )
+    changed = type(matrix)(
+        axes=matrix.axes,
+        golden=matrix.golden,
+        top_k=10,
+        repo=matrix.repo,
+        baseline=matrix.baseline,
+        constraints=matrix.constraints,
+    )
+    assert same.matrix_id == matrix.matrix_id
+    assert changed.matrix_id != matrix.matrix_id
 
 
 def test_expand_product_minus_constraints(matrix) -> None:
@@ -98,6 +136,27 @@ def test_baseline_cell_resolves(matrix) -> None:
     assert base.values["reranker"] is None
 
 
+def test_select_axes_pins_other_values_to_baseline(matrix) -> None:
+    staged = matrix.select_axes(["reranker"])
+    cells = staged.expand()
+    assert len(cells) == 2
+    assert {cell.values["reranker"] for cell in cells} == {None, "code-aware"}
+    assert {cell.values["hyde"] for cell in cells} == {False}
+    assert {str(cell.values["embedder"]) for cell in cells} == {
+        str({"adapter": "voyage", "dim": 512})
+    }
+    assert {cell.values["enricher"] for cell in cells} == {"noop"}
+
+
+def test_select_axes_rejects_unknown_or_unpinned_axes(matrix) -> None:
+    with pytest.raises(MatrixError, match="selected axes not in matrix"):
+        matrix.select_axes(["missing"])
+
+    matrix.baseline = {"reranker": None}
+    with pytest.raises(MatrixError, match="must be selected or declared in baseline"):
+        matrix.select_axes(["reranker"])
+
+
 def test_retrieval_axes_map_to_runtime_config_fields() -> None:
     overrides = _retrieval_overrides(Cell(values={
         "rrf_k": 80,
@@ -125,6 +184,38 @@ def test_active_matrix_parses_and_has_declared_baseline() -> None:
     assert active.baseline_cell().values["reranker"] == "llm"
 
 
+def test_active_matrix_pins_deployed_contextual_identity() -> None:
+    from stropha.adapters.enricher.contextual import ContextualEnricherConfig
+
+    path = Path(__file__).resolve().parents[2] / "src/stropha/bench/active_matrix.yaml"
+    spec = load_matrix(path).axes["enricher"]
+    assert len(spec) == 1
+    config_values = dict(spec[0])
+    assert config_values.pop("adapter") == "contextual"
+    config = ContextualEnricherConfig(**config_values)
+    prompt_hash = hashlib.sha256(config.prompt_template.encode()).hexdigest()[:8]
+    config_hash = hashlib.sha256(config.model_dump_json().encode()).hexdigest()[:8]
+    assert (prompt_hash, config_hash) == ("93f8f282", "c5ab6279")
+
+
+def test_phase2_shortlist_is_frozen_to_four_cells() -> None:
+    path = (
+        Path(__file__).resolve().parents[2]
+        / "src/stropha/bench/phase2_shortlist_matrix.yaml"
+    )
+    shortlist = load_matrix(path)
+    cells = shortlist.expand()
+
+    assert len(cells) == 4
+    assert {
+        (cell.values["adaptive_weighting"], cell.values["rrf_k"])
+        for cell in cells
+    } == {(True, 60), (True, 40), (False, 60), (False, 80)}
+    assert shortlist.baseline_cell() is not None
+    active_path = Path(__file__).resolve().parents[2] / "src/stropha/bench/active_matrix.yaml"
+    assert set(shortlist.groups()) == set(load_matrix(active_path).groups())
+
+
 def test_empty_axes_raises(tmp_path: Path) -> None:
     p = tmp_path / "bad.yaml"
     p.write_text("axes: {}\n", encoding="utf-8")
@@ -145,17 +236,20 @@ def test_all_excluded_raises(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------- report
 
 def _results() -> list[dict]:
+    provenance = {"run_id": "run-one", "golden_sha256": "golden-one"}
     return [
         {
             "ok": True, "cell_id": "a", "indexing_sig": "i1",
             "label": "reranker=None", "values": {"reranker": None, "hyde": False},
             "metrics": {"recall@10": 0.8, "mrr": 0.5},
+            "provenance": provenance,
             "per_query": {"q1": 1, "q2": None, "q3": 2},
         },
         {
             "ok": True, "cell_id": "b", "indexing_sig": "i1",
             "label": "reranker=code-aware", "values": {"reranker": "code-aware", "hyde": False},
             "metrics": {"recall@10": 0.7, "mrr": 0.55},
+            "provenance": provenance,
             "per_query": {"q1": 1, "q2": 3, "q3": None},
         },
     ]
@@ -164,11 +258,181 @@ def _results() -> list[dict]:
 def test_load_results_filters_failures(tmp_path: Path) -> None:
     p = tmp_path / "r.jsonl"
     lines = [json.dumps(r) for r in _results()]
-    lines.append(json.dumps({"ok": False, "cell_id": "c", "error": "boom"}))
+    lines.append(json.dumps({
+        "ok": False,
+        "cell_id": "c",
+        "provenance": {"run_id": "run-one"},
+        "error": "boom",
+    }))
     lines.append("")  # blank line tolerated
     p.write_text("\n".join(lines), encoding="utf-8")
     out = load_results(p)
     assert [r["cell_id"] for r in out] == ["a", "b"]
+
+
+def test_load_results_rejects_mixed_or_missing_run_identity(tmp_path: Path) -> None:
+    p = tmp_path / "mixed.jsonl"
+    records = _results()
+    records[1]["provenance"] = {"run_id": "run-two"}
+    p.write_text("\n".join(json.dumps(r) for r in records), encoding="utf-8")
+    with pytest.raises(ReportError, match="incomparable results"):
+        load_results(p)
+
+    records[1].pop("provenance")
+    p.write_text("\n".join(json.dumps(r) for r in records), encoding="utf-8")
+    with pytest.raises(ReportError, match=r"lacks provenance\.run_id"):
+        load_results(p)
+
+
+def test_resume_rejects_incomparable_output(tmp_path: Path) -> None:
+    p = tmp_path / "results.jsonl"
+    p.write_text(json.dumps({
+        "ok": True,
+        "cell_id": "a",
+        "provenance": {"run_id": "old"},
+    }), encoding="utf-8")
+    with pytest.raises(BenchError, match="use a new --out path"):
+        _validate_output_identity(p, "new")
+
+
+def test_no_resume_rejects_existing_output(matrix, tmp_path: Path) -> None:
+    output = tmp_path / "results.jsonl"
+    output.write_text("existing\n", encoding="utf-8")
+    with pytest.raises(BenchError, match="requires a new --out path"):
+        run_matrix(matrix, output, resume=False)
+
+
+def test_report_rejects_matrix_identity_mismatch() -> None:
+    records = [{"provenance": {"matrix_id": "recorded"}}]
+    validate_matrix_id(records, "recorded")
+    with pytest.raises(ReportError, match="matrix does not match"):
+        validate_matrix_id(records, "different")
+
+
+def test_benchmark_split_is_part_of_run_identity(
+    matrix, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    golden = tmp_path / "g.jsonl"
+    golden.write_text("{}\n", encoding="utf-8")
+    matrix.golden = str(golden)
+    matrix.repo = str(tmp_path)
+    monkeypatch.setattr(
+        "stropha.ingest.git_meta.detect",
+        lambda _repo: SimpleNamespace(head_commit="abc", normalized_key="repo"),
+    )
+    monkeypatch.setattr("stropha.bench.runner._source_worktree_state", lambda _repo: b"")
+
+    search = _run_provenance(matrix, "search")
+    holdout = _run_provenance(matrix, "holdout")
+
+    assert search["split"] == "search"
+    assert holdout["split"] == "holdout"
+    assert search["source_state_id"] == holdout["source_state_id"]
+    assert search["run_id"] != holdout["run_id"]
+
+
+def test_source_state_includes_untracked_content(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    untracked = tmp_path / "new.py"
+    untracked.write_text("first\n", encoding="utf-8")
+    runs = [
+        SimpleNamespace(returncode=0, stdout=b"tracked diff"),
+        SimpleNamespace(returncode=0, stdout=b"new.py\0"),
+    ]
+    monkeypatch.setattr("stropha.bench.runner.subprocess.run", lambda *_a, **_kw: runs.pop(0))
+
+    first = _source_worktree_state(tmp_path)
+    untracked.write_text("second\n", encoding="utf-8")
+    runs.extend([
+        SimpleNamespace(returncode=0, stdout=b"tracked diff"),
+        SimpleNamespace(returncode=0, stdout=b"new.py\0"),
+    ])
+
+    assert first != _source_worktree_state(tmp_path)
+
+
+def test_source_state_fails_closed_on_git_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        "stropha.bench.runner.subprocess.run",
+        lambda *_a, **_kw: SimpleNamespace(returncode=1, stdout=b""),
+    )
+    with pytest.raises(BenchError, match="cannot fingerprint benchmark source"):
+        _source_worktree_state(tmp_path)
+
+
+def test_runtime_identity_changes_with_backend(
+    matrix, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    golden = tmp_path / "g.jsonl"
+    golden.write_text("{}\n", encoding="utf-8")
+    matrix.golden = str(golden)
+    matrix.repo = str(tmp_path)
+    monkeypatch.setattr(
+        "stropha.ingest.git_meta.detect",
+        lambda _repo: SimpleNamespace(head_commit="abc", normalized_key="repo"),
+    )
+    monkeypatch.setattr("stropha.bench.runner._source_worktree_state", lambda _repo: b"")
+
+    first = _run_provenance(matrix, "search", runtime_id="runtime-one")
+    second = _run_provenance(matrix, "search", runtime_id="runtime-two")
+
+    assert first["run_id"] != second["run_id"]
+
+
+def test_run_matrix_filters_cases_to_selected_split(
+    matrix, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    cases = [
+        SimpleNamespace(id="search-case", split="search"),
+        SimpleNamespace(id="holdout-case", split="holdout"),
+    ]
+    seen: list[str] = []
+    monkeypatch.setattr("stropha.eval.load_golden", lambda _path: cases)
+    monkeypatch.setattr(
+        "stropha.bench.runner._run_provenance",
+        lambda _matrix, split: {
+            "run_id": split,
+            "split": split,
+            "source_state_id": "source-one",
+            "source_diff_sha256": None,
+            "source_commit": "abc",
+            "runtime_id": "runtime-one",
+            "index_runtime_id": "index-runtime-one",
+        },
+    )
+    monkeypatch.setattr("stropha.bench.runner._source_worktree_state", lambda _repo: b"")
+    monkeypatch.setattr(
+        "stropha.bench.runner._assert_run_environment", lambda *_args: None
+    )
+    index_paths: list[Path] = []
+    monkeypatch.setattr(
+        "stropha.bench.runner.build_index",
+        lambda _matrix, _cell, path: index_paths.append(path),
+    )
+
+    def fake_eval_cell(_matrix, _cell, _db_path, selected, **_kwargs):
+        seen.extend(case.id for case in selected)
+        return {"ok": True, "cell_id": _cell.cell_id}
+
+    monkeypatch.setattr("stropha.bench.runner.eval_cell", fake_eval_cell)
+
+    summary = run_matrix(
+        matrix,
+        tmp_path / "results.jsonl",
+        index_dir=tmp_path / "indexes",
+        limit=1,
+        split="search",
+    )
+
+    assert summary["evaluated"] == 1
+    assert seen == ["search-case"]
+    first_sig = next(iter(matrix.groups()))
+    assert index_paths == [
+        tmp_path / f"indexes/index_{first_sig}_source-one_index-runtime-one.db"
+    ]
 
 
 def test_rank_table_sorts_desc() -> None:
@@ -176,6 +440,57 @@ def test_rank_table_sorts_desc() -> None:
     ranked = rep.rank_table("recall@10")
     assert [r["cell_id"] for r in ranked] == ["a", "b"]
     assert rep.rank_table("mrr")[0]["cell_id"] == "b"  # b has higher mrr
+
+
+def test_metric_names_prioritize_quality_and_guardrails() -> None:
+    results = _results()
+    results[0]["metrics"].update({
+        "success@10": 0.8,
+        "ndcg@10": 0.7,
+        "returned_tokens": 100,
+        "latency_p99_ms": 12.0,
+        "reranker_fallback_rate": 0.1,
+    })
+    names = BenchReport(results).metric_names()
+    assert names.index("ndcg@10") < names.index("returned_tokens")
+    assert names.index("returned_tokens") < names.index("latency_p99_ms")
+    assert "reranker_fallback_rate" in names
+
+
+def test_quality_columns_are_concise_and_keep_selected_metric() -> None:
+    results = _results()
+    results[0]["metrics"].update({
+        "success@10": 0.8,
+        "ndcg@10": 0.7,
+        "returned_tokens": 100,
+        "latency_p95_ms": 12.0,
+        "latency_p99_ms": 15.0,
+        "reranker_fallback_rate": 0.1,
+    })
+    columns = BenchReport(results).quality_columns("ndcg@10")
+    assert columns == [
+        "ndcg@10",
+        "success@10",
+        "recall@10",
+        "mrr",
+        "returned_tokens",
+        "latency_p95_ms",
+        "reranker_fallback_rate",
+    ]
+    assert "latency_p99_ms" not in columns
+
+
+def test_display_label_omits_fixed_indexing_values() -> None:
+    record = {
+        "label": "full label",
+        "values": {
+            "embedder": {"adapter": "mlx"},
+            "enricher": "contextual",
+            "reranker": "llm",
+            "rrf_k": 40,
+        },
+    }
+    assert BenchReport.display_label(record) == "reranker=llm rrf_k=40"
 
 
 def test_marginals_mean_per_axis_value() -> None:
@@ -199,6 +514,7 @@ def test_baseline_deltas_shape_and_sign() -> None:
     # recall identical (2/3 each) → point 0; mrr lower for b → negative point.
     assert d["d_recall"][0] == pytest.approx(0.0)
     assert d["d_mrr"][0] < 0
+    assert d["label"] == "hyde=False reranker=code-aware"
 
 
 def test_to_csv_has_header_and_rows() -> None:
@@ -207,3 +523,105 @@ def test_to_csv_has_header_and_rows() -> None:
     assert lines[0].startswith("cell_id,indexing_sig,")
     assert "recall@10" in lines[0] and "reranker" in lines[0]
     assert len(lines) == 3  # header + 2 rows
+
+
+def test_eval_cell_records_full_metrics_provenance_and_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class Storage:
+        adapter_id = "storage:test"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            pass
+
+        @staticmethod
+        def get_meta(key: str) -> str:
+            return "enricher:test" if "enricher" in key else "embedder:test"
+
+    built = SimpleNamespace(
+        storage=Storage(),
+        retrieval=SimpleNamespace(adapter_id="retrieval:test"),
+        embedder=SimpleNamespace(adapter_id="embedder:test"),
+        walker=SimpleNamespace(adapter_id="walker:test"),
+        chunker=SimpleNamespace(adapter_id="chunker:test"),
+        effective_enricher_id=lambda: "enricher:test",
+    )
+    summary = {
+        "success@10": 0.9,
+        "recall@10": 0.8,
+        "mrr": 0.7,
+        "ndcg@10": 0.75,
+        "map@10": 0.65,
+        "precision@10": 0.1,
+        "returned_tokens": 123,
+        "latency_p50_ms": 1.0,
+        "latency_p95_ms": 2.0,
+        "latency_p99_ms": 3.0,
+        "reranker_attempts": 2,
+        "reranker_fallbacks": 1,
+        "reranker_fallback_rate": 0.5,
+    }
+    report = SimpleNamespace(
+        summary=lambda: summary,
+        results=[SimpleNamespace(case=SimpleNamespace(id="q1"), rank_of_first_hit=1)],
+        diagnostics={"reranker": {"primary_latency_p95_ms": 4.0}},
+        by_tag=lambda: {},
+        n=1,
+    )
+    run_eval = MagicMock(return_value=report)
+    monkeypatch.setattr("stropha.pipeline.builder.build_stages", lambda _cfg: built)
+    monkeypatch.setattr("stropha.eval.run_eval", run_eval)
+    monkeypatch.setattr(
+        "stropha.pipeline.config.pipeline_config_from_dict", lambda _overrides: {}
+    )
+
+    record = eval_cell(
+        SimpleNamespace(top_k=10),
+        Cell(values={"reranker": None}),
+        tmp_path / "index.db",
+        [object()],
+        run_provenance={"run_id": "run-one"},
+    )
+
+    assert record["metrics"] == {
+        **summary,
+        "reranker_primary_latency_p95_ms": 4.0,
+    }
+    assert record["diagnostics"] == report.diagnostics
+    assert record["provenance"]["run_id"] == "run-one"
+    assert record["provenance"]["index"]["comparable"] is True
+    assert record["provenance"]["pipeline"]["retrieval"] == "retrieval:test"
+    assert run_eval.call_args.kwargs["provenance"] == record["provenance"]
+
+
+def test_eval_cell_rejects_index_identity_drift(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    storage = MagicMock()
+    storage.__enter__.return_value = storage
+    storage.get_meta.side_effect = lambda key: f"indexed-{key}"
+    built = SimpleNamespace(
+        storage=storage,
+        retrieval=SimpleNamespace(adapter_id="retrieval:test"),
+        embedder=SimpleNamespace(adapter_id="embedder:test"),
+        walker=SimpleNamespace(adapter_id="walker:test"),
+        chunker=SimpleNamespace(adapter_id="chunker:test"),
+        effective_enricher_id=lambda: "enricher:test",
+    )
+    monkeypatch.setattr("stropha.pipeline.builder.build_stages", lambda _cfg: built)
+    monkeypatch.setattr(
+        "stropha.pipeline.config.pipeline_config_from_dict", lambda _overrides: {}
+    )
+
+    with pytest.raises(BenchError, match="index identity drift"):
+        eval_cell(
+            SimpleNamespace(top_k=10),
+            Cell(values={"reranker": None}),
+            tmp_path / "index.db",
+            [object()],
+        )

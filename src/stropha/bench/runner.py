@@ -19,13 +19,15 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import hashlib
 import json
 import sqlite3
+import subprocess
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from ..config import get_config
 from ..errors import StrophaError
@@ -61,6 +63,9 @@ _RETRIEVAL_FIELD: dict[str, str] = {
 
 class BenchError(StrophaError):
     """Raised when a benchmark cell cannot be built or evaluated."""
+
+
+BenchSplit = Literal["search", "holdout"]
 
 
 # --------------------------------------------------------------- cell → config
@@ -167,7 +172,7 @@ def _patch_graphify_off() -> None:
 
 
 # ------------------------------------------------------------------- indexing
-def _verify_index(db_path: Path) -> dict[str, int]:
+def _verify_index(db_path: Path) -> dict[str, int | bool]:
     import sqlite_vec  # type: ignore[import-untyped]  # local — optional dep boundary
 
     c = sqlite3.connect(db_path)
@@ -181,6 +186,9 @@ def _verify_index(db_path: Path) -> dict[str, int]:
             "enriched": q(
                 "select count(*) from chunks "
                 "where embedding_text is not null and embedding_text != content"
+            ),
+            "complete": bool(
+                q("select count(*) from meta where key='bench_index_complete' and value='1'")
             ),
         }
     finally:
@@ -202,21 +210,19 @@ def build_index(matrix: Matrix, cell: Cell, db_path: Path) -> dict[str, Any]:
     if db_path.is_file():
         with contextlib.suppress(Exception):
             v = _verify_index(db_path)
-            if v["chunks"] > 0 and v["vecs"] == v["chunks"]:
+            if v["complete"] and v["chunks"] > 0 and v["vecs"] == v["chunks"]:
                 log.info("bench.index_reuse", db=str(db_path), **v)
                 return v
-    for suffix in ("", "-wal", "-shm"):
-        p = Path(str(db_path) + suffix)
-        if p.exists():
-            p.unlink()
+    resume_partial = db_path.is_file()
 
     overrides = _indexing_overrides(cell)
     overrides["storage"] = {"adapter": "sqlite-vec", "config": {"path": str(db_path)}}
     cfg = pipeline_config_from_dict(overrides)
-    built = build_stages(cfg, force_rebuild=True)
+    built = build_stages(cfg, force_rebuild=not resume_partial)
     inference = get_config().inference
     repo = Path(matrix.repo).resolve()
     t0 = time.perf_counter()
+    enrichment_failures = 0
     with built.storage as storage:
         pipe = Pipeline(
             storage=storage,
@@ -230,11 +236,22 @@ def build_index(matrix: Matrix, cell: Cell, db_path: Path) -> dict[str, Any]:
             enricher_concurrency=inference.enricher_concurrency,
             enricher_batch_size=inference.effective_batch_size(),
         )
-        pipe.run(rebuild=True, mode="full")
+        stats = pipe.run(
+            rebuild=not resume_partial,
+            mode="reconcile" if resume_partial else "full",
+        )
+        enrichment_failures = stats.chunks_enriched_failed
+        if not enrichment_failures:
+            storage.set_meta("bench_index_complete", "1")
+            storage.commit()
+    if enrichment_failures:
+        for suffix in ("", "-wal", "-shm"):
+            Path(f"{db_path}{suffix}").unlink(missing_ok=True)
+        raise BenchError(f"index enrichment failed for {enrichment_failures} chunks")
     dt = time.perf_counter() - t0
 
     v = _verify_index(db_path)
-    if v["chunks"] == 0 or v["vecs"] != v["chunks"]:
+    if not v["complete"] or v["chunks"] == 0 or v["vecs"] != v["chunks"]:
         raise BenchError(
             f"index incomplete for {cell.indexing_sig}: {v} (db={db_path})"
         )
@@ -249,7 +266,12 @@ def build_index(matrix: Matrix, cell: Cell, db_path: Path) -> dict[str, Any]:
 
 # ---------------------------------------------------------------- evaluation
 def eval_cell(
-    matrix: Matrix, cell: Cell, db_path: Path, cases: Any
+    matrix: Matrix,
+    cell: Cell,
+    db_path: Path,
+    cases: Any,
+    *,
+    run_provenance: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Score one cell against ``cases`` using the index at ``db_path``."""
     from ..eval import run_eval
@@ -264,29 +286,258 @@ def eval_cell(
     with _override_features(_feature_overrides(cell)):
         built = build_stages(cfg)
         with built.storage:
-            report = run_eval(cases, built.retrieval, top_k=matrix.top_k)
+            get_meta = getattr(built.storage, "get_meta", None)
+            indexed_enricher = (
+                get_meta("active_enricher_id") if callable(get_meta) else None
+            )
+            indexed_embedder = (
+                get_meta("active_embedder_id") if callable(get_meta) else None
+            )
+            active_enricher = built.effective_enricher_id()
+            active_embedder = built.embedder.adapter_id
+            drifted = bool(
+                indexed_enricher != active_enricher
+                or indexed_embedder != active_embedder
+            )
+            if drifted:
+                raise BenchError(
+                    "benchmark index identity drift: "
+                    f"enricher indexed={indexed_enricher!r} active={active_enricher!r}; "
+                    f"embedder indexed={indexed_embedder!r} active={active_embedder!r}"
+                )
+            provenance = {
+                **(run_provenance or {}),
+                "pipeline": {
+                    "walker": built.walker.adapter_id,
+                    "chunker": built.chunker.adapter_id,
+                    "enricher": active_enricher,
+                    "embedder": active_embedder,
+                    "storage": built.storage.adapter_id,
+                    "retrieval": built.retrieval.adapter_id,
+                },
+                "index": {
+                    "indexing_sig": cell.indexing_sig,
+                    "indexed_enricher": indexed_enricher,
+                    "indexed_embedder": indexed_embedder,
+                    "config_drift": False,
+                    "comparable": True,
+                },
+            }
+            report = run_eval(
+                cases,
+                built.retrieval,
+                top_k=matrix.top_k,
+                provenance=provenance,
+            )
 
     s = report.summary()
+    reranker = report.diagnostics.get("reranker")
+    if isinstance(reranker, dict):
+        for key in (
+            "primary_latency_p95_ms",
+            "repair_latency_p95_ms",
+            "latency_ms",
+        ):
+            value = reranker.get(key)
+            if isinstance(value, (int, float)):
+                s[f"reranker_{key}"] = value
     per_query = {r.case.id: r.rank_of_first_hit for r in report.results}
+    by_tag = {tag: tagged.summary() for tag, tagged in report.by_tag().items()}
     return {
         "ok": True,
         "cell_id": cell.cell_id,
         "indexing_sig": cell.indexing_sig,
         "label": cell.label(),
         "values": cell.values,
-        "metrics": {
-            k: s[k]
-            for k in (
-                f"recall@{matrix.top_k}", "mrr", f"ndcg@{matrix.top_k}",
-                f"precision@{matrix.top_k}", f"map@{matrix.top_k}",
-                "latency_p50_ms", "latency_p95_ms",
-            )
-            if k in s
-        },
+        "metrics": dict(s),
+        "provenance": provenance,
+        "diagnostics": report.diagnostics,
         "per_query": per_query,
+        "by_tag": by_tag,
         "n_queries": report.n,
         "ts": datetime.now(tz=UTC).isoformat(),
     }
+
+
+def _run_provenance(
+    matrix: Matrix,
+    split: BenchSplit,
+    runtime_id: str | None = None,
+) -> dict[str, Any]:
+    """Build the immutable identity shared by every result in one matrix run."""
+    from ..ingest.git_meta import detect
+
+    repo = Path(matrix.repo).expanduser().resolve()
+    golden = Path(matrix.golden).expanduser().resolve()
+    if not golden.is_file():
+        raise BenchError(f"golden file not found: {golden}")
+    identity = detect(repo)
+    golden_sha = hashlib.sha256(golden.read_bytes()).hexdigest()
+    worktree_state = _source_worktree_state(repo)
+    source_diff_sha = hashlib.sha256(worktree_state).hexdigest() if worktree_state else None
+    source_state_id = hashlib.sha256(
+        f"{identity.head_commit}:{source_diff_sha or ''}".encode()
+    ).hexdigest()[:12]
+    resolved_runtime_id = runtime_id or _runtime_id(matrix)
+    fields = {
+        "matrix_id": matrix.matrix_id,
+        "golden_path": str(golden),
+        "golden_sha256": golden_sha,
+        "source_commit": identity.head_commit,
+        "source_dirty": bool(worktree_state),
+        "source_diff_sha256": source_diff_sha,
+        "source_state_id": source_state_id,
+        "repo_key": identity.normalized_key,
+        "repo_path": str(repo),
+        "top_k": matrix.top_k,
+        "split": split,
+        "runtime_id": resolved_runtime_id,
+        "index_runtime_id": runtime_id or _index_runtime_id(),
+    }
+    fields["run_id"] = hashlib.sha256(
+        json.dumps(fields, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()[:16]
+    return fields
+
+
+def _source_worktree_state(repo: Path) -> bytes:
+    """Return tracked changes plus non-ignored untracked content indexed by the walker."""
+    try:
+        diff = subprocess.run(
+            ["git", "diff", "--binary", "HEAD", "--"],
+            cwd=repo,
+            capture_output=True,
+            check=False,
+            timeout=10,
+        )
+        untracked = subprocess.run(
+            ["git", "ls-files", "-z", "--others", "--exclude-standard"],
+            cwd=repo,
+            capture_output=True,
+            check=False,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise BenchError(f"cannot fingerprint benchmark source: {exc}") from exc
+    if diff.returncode != 0 or untracked.returncode != 0:
+        raise BenchError(
+            "cannot fingerprint benchmark source: "
+            f"git diff exited {diff.returncode}, git ls-files exited {untracked.returncode}"
+        )
+    state = bytearray(diff.stdout)
+    for raw_path in sorted(path for path in untracked.stdout.split(b"\0") if path):
+        path = repo / raw_path.decode("utf-8", errors="surrogateescape")
+        try:
+            content = path.read_bytes()
+        except OSError as exc:
+            raise BenchError(f"cannot fingerprint untracked file {path}: {exc}") from exc
+        state.extend(b"\0UNTRACKED\0" + raw_path + b"\0" + content)
+    return bytes(state)
+
+
+def _runtime_id(matrix: Matrix) -> str:
+    """Fingerprint query-time dependencies not fully declared by the matrix."""
+    from ..inference import get_backend
+    from ..meta.stream_weights import StreamWeightProfiles
+    from ..pipeline.config import load_pipeline_config
+
+    config = get_config()
+    pipeline_defaults = load_pipeline_config()
+    learned_dirs: set[Path] = set()
+    for cell in matrix.expand():
+        if not cell.values.get("learned_weights"):
+            continue
+        configured = cell.values.get("learned_weights_dir")
+        if configured:
+            learned_dirs.add(Path(str(configured)).expanduser().resolve())
+        else:
+            learned_dirs.add(
+                config.resolve_index_path().expanduser().resolve().parent
+                / "meta"
+                / "stream-weights"
+            )
+    fields = {
+        "inference": get_backend().identity,
+        "inference_config": {
+            "backend": config.inference.backend,
+            "lms_timeout": config.inference.lms_timeout,
+            "lms_max_retries": config.inference.lms_max_retries,
+            "lms_think": config.inference.lms_think,
+        },
+        "retrieval_features": dataclasses.asdict(config.retrieval_features),
+        "pipeline_defaults": {
+            key: pipeline_defaults.get(key)
+            for key in ("retrieval", "router")
+        },
+        "learned_weights": {
+            str(path): StreamWeightProfiles(path).fingerprint()
+            for path in sorted(learned_dirs)
+        },
+    }
+    return hashlib.sha256(
+        json.dumps(fields, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()[:12]
+
+
+def _index_runtime_id() -> str:
+    """Fingerprint inference settings that can change contextual index output."""
+    from ..inference import get_backend
+
+    config = get_config()
+    fields = {
+        "inference": get_backend().identity,
+        "enricher_batch_size": config.inference.effective_batch_size(),
+        "enricher_concurrency": config.inference.enricher_concurrency,
+        "backend_controls": {
+            name: value
+            for name, value in vars(config.inference).items()
+            if name.endswith(("_timeout", "_max_retries"))
+        },
+    }
+    return hashlib.sha256(
+        json.dumps(fields, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()[:12]
+
+
+def _assert_run_environment(
+    matrix: Matrix,
+    provenance: dict[str, Any],
+    source_state: bytes,
+) -> None:
+    """Fail if source or mutable query-time dependencies changed mid-run."""
+    from ..ingest.git_meta import detect
+
+    repo = Path(matrix.repo).expanduser().resolve()
+    identity = detect(repo)
+    if identity.head_commit != provenance["source_commit"]:
+        raise BenchError("benchmark source commit changed during the run")
+    if _source_worktree_state(repo) != source_state:
+        raise BenchError("benchmark source worktree changed during the run")
+    if _runtime_id(matrix) != provenance["runtime_id"]:
+        raise BenchError("benchmark runtime dependencies changed during the run")
+
+
+def _validate_output_identity(path: Path, run_id: str) -> set[str]:
+    """Return completed cells after proving every existing record is comparable."""
+    done: set[str] = set()
+    if not path.is_file():
+        return done
+    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise BenchError(f"invalid result JSON at {path}:{line_number}") from exc
+        existing_run_id = (rec.get("provenance") or {}).get("run_id")
+        if existing_run_id != run_id:
+            raise BenchError(
+                f"incomparable result at {path}:{line_number}: "
+                f"run_id={existing_run_id!r}, expected {run_id!r}; use a new --out path"
+            )
+        if rec.get("ok"):
+            done.add(rec.get("cell_id", ""))
+    return done
 
 
 def _merge(dst: dict[str, Any], src: dict[str, Any]) -> None:
@@ -306,6 +557,7 @@ def run_matrix(
     resume: bool = True,
     limit: int | None = None,
     dry_run: bool = False,
+    split: BenchSplit = "search",
     on_cell: Callable[[int, int, dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Run the full matrix, appending one JSONL line per evaluated cell.
@@ -318,14 +570,20 @@ def run_matrix(
     index_dir = index_dir or (out_path.parent / "indexes")
     index_dir.mkdir(parents=True, exist_ok=True)
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    if not resume and out_path.is_file():
+        raise BenchError("--no-resume requires a new --out path")
+    run_provenance = _run_provenance(matrix, split)
+    repo = Path(matrix.repo).expanduser().resolve()
+    initial_source_state = _source_worktree_state(repo)
+    initial_source_sha = (
+        hashlib.sha256(initial_source_state).hexdigest() if initial_source_state else None
+    )
+    if initial_source_sha != run_provenance["source_diff_sha256"]:
+        raise BenchError("benchmark source changed while preparing the run")
+    _assert_run_environment(matrix, run_provenance, initial_source_state)
 
-    done: set[str] = set()
-    if resume and out_path.is_file():
-        for line in out_path.read_text(encoding="utf-8").splitlines():
-            with contextlib.suppress(json.JSONDecodeError):
-                rec = json.loads(line)
-                if rec.get("ok"):
-                    done.add(rec.get("cell_id", ""))
+    completed = _validate_output_identity(out_path, run_provenance["run_id"])
+    done = completed if resume else set()
 
     total = len(cells)
     if dry_run:
@@ -333,13 +591,17 @@ def run_matrix(
             "total_cells": total,
             "unique_indexes": len(groups),
             "already_done": len(done & {c.cell_id for c in cells}),
+            "run_id": run_provenance["run_id"],
+            "matrix_id": matrix.matrix_id,
             "groups": {sig: [c.label() for c in cs] for sig, cs in groups.items()},
         }
         return plan
 
-    from ..eval import load_golden
+    from ..eval import filter_by_split, load_golden
 
-    cases = load_golden(Path(matrix.golden))
+    cases = filter_by_split(load_golden(Path(matrix.golden)), split)
+    if not cases:
+        raise BenchError(f"golden file contains no {split!r} cases: {matrix.golden}")
 
     evaluated = failed = skipped = 0
     seen = 0
@@ -348,14 +610,19 @@ def run_matrix(
         if not pending:
             skipped += len(group)
             continue
-        db_path = index_dir / f"index_{sig}.db"
+        db_path = index_dir / (
+            f"index_{sig}_{run_provenance['source_state_id']}_"
+            f"{run_provenance['index_runtime_id']}.db"
+        )
         try:
             build_index(matrix, pending[0], db_path)
+            _assert_run_environment(matrix, run_provenance, initial_source_state)
         except Exception as exc:
             log.warning("bench.index_failed", indexing_sig=sig, error=str(exc))
             for cell in pending:
                 rec = {"ok": False, "cell_id": cell.cell_id, "indexing_sig": sig,
                        "label": cell.label(), "values": cell.values,
+                       "provenance": run_provenance,
                        "error": f"index: {exc}", "ts": datetime.now(tz=UTC).isoformat()}
                 _append(out_path, rec)
                 failed += 1
@@ -368,11 +635,20 @@ def run_matrix(
                 break
             seen += 1
             try:
-                rec = eval_cell(matrix, cell, db_path, cases)
+                _assert_run_environment(matrix, run_provenance, initial_source_state)
+                rec = eval_cell(
+                    matrix,
+                    cell,
+                    db_path,
+                    cases,
+                    run_provenance=run_provenance,
+                )
+                _assert_run_environment(matrix, run_provenance, initial_source_state)
                 evaluated += 1
             except Exception as exc:  # record + continue
                 rec = {"ok": False, "cell_id": cell.cell_id, "indexing_sig": sig,
                        "label": cell.label(), "values": cell.values,
+                       "provenance": run_provenance,
                        "error": str(exc), "ts": datetime.now(tz=UTC).isoformat()}
                 failed += 1
             _append(out_path, rec)

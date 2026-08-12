@@ -1,0 +1,43 @@
+# Frozen Phase 2 finalists selected on the search split. Do not add or remove
+# cells after inspecting holdout results; start a new benchmark phase instead.
+repo: .
+golden: tests/eval/golden.jsonl
+top_k: 10
+
+axes:
+  embedder:
+    - adapter: mlx
+      model: mlx-community/Qwen3-Embedding-4B-4bit-DWQ
+      batch_size: 4
+  enricher:
+    - adapter: contextual
+      max_content_chars: 4000
+      temperature: 0
+      max_tokens: 64
+      max_description_chars: 200
+      prompt_template: 'Write a dense 2-3 sentence semantic description of this code
+        chunk for retrieval.Cover:- What this code does (functionality)- Where it
+        fits (layer, module, responsibility)- Related concepts or components it interacts
+        withKeep it concrete. Avoid filler words and meta-commentary.Code:```{language}{content}```File:
+        {rel_path}Symbol: {symbol}Output: ONLY the description, starting with "This...".
+        No code, no preamble, no markdown.'
+  reranker: [llm]
+  candidate_k: [20]
+  adaptive_weighting: [false, true]
+  learned_weights: [true]
+  recursive: [true]
+  recursive_adjacency: [5]
+  rrf_k: [40, 60, 80]
+
+baseline:
+  reranker: llm
+  candidate_k: 20
+  adaptive_weighting: true
+  learned_weights: true
+  recursive: true
+  recursive_adjacency: 5
+  rrf_k: 60
+
+constraints:
+  - skip_when: {adaptive_weighting: false, rrf_k: 40}
+  - skip_when: {adaptive_weighting: true, rrf_k: 80}

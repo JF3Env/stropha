@@ -51,6 +51,16 @@ def _ok_payload(text: str = "hello world") -> dict:
     }
 
 
+def test_anthropic_identity_changes_with_reliability_controls() -> None:
+    base = AnthropicBackend(api_key="secret", timeout=30.0, max_retries=1)
+    assert base.identity != AnthropicBackend(
+        api_key="secret", timeout=31.0, max_retries=1
+    ).identity
+    assert base.identity != AnthropicBackend(
+        api_key="secret", timeout=30.0, max_retries=2
+    ).identity
+
+
 # --------------------------------------------------------------------------- #
 #                       AnthropicBackend Unit Tests                           #
 # --------------------------------------------------------------------------- #

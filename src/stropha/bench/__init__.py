@@ -19,14 +19,18 @@ Two properties make a days-long sweep tractable and trustworthy:
 
 from __future__ import annotations
 
+from .batch import BatchError, prepare_batch, run_batch
 from .matrix import Cell, Matrix, MatrixError, load_matrix
 from .report import BenchReport, load_results
 
 __all__ = [
+    "BatchError",
     "BenchReport",
     "Cell",
     "Matrix",
     "MatrixError",
     "load_matrix",
     "load_results",
+    "prepare_batch",
+    "run_batch",
 ]

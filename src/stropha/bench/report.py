@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from ..errors import StrophaError
+from .matrix import INDEXING_AXES
 
 _BOOTSTRAP = 5000
 _SEED = 1234
@@ -30,22 +31,44 @@ class ReportError(StrophaError):
 
 
 def load_results(path: Path | str) -> list[dict[str, Any]]:
-    """Load the results JSONL. Skips blank lines; keeps only ``ok`` cells."""
+    """Load one comparable results JSONL, keeping only successful cells."""
     p = Path(path)
     if not p.is_file():
         raise ReportError(f"results file not found: {p}")
     out: list[dict[str, Any]] = []
-    for line in p.read_text(encoding="utf-8").splitlines():
+    run_id: str | None = None
+    for line_number, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1):
         line = line.strip()
         if not line:
             continue
         try:
             rec = json.loads(line)
-        except json.JSONDecodeError:
-            continue
+        except json.JSONDecodeError as exc:
+            raise ReportError(f"invalid result JSON at {p}:{line_number}") from exc
+        record_run_id = (rec.get("provenance") or {}).get("run_id")
+        if not record_run_id:
+            raise ReportError(
+                f"result at {p}:{line_number} lacks provenance.run_id; rerun the benchmark"
+            )
+        if run_id is None:
+            run_id = record_run_id
+        elif record_run_id != run_id:
+            raise ReportError(
+                f"incomparable results at {p}:{line_number}: "
+                f"run_id={record_run_id!r}, expected {run_id!r}"
+            )
         if rec.get("ok", True):
             out.append(rec)
     return out
+
+
+def validate_matrix_id(results: list[dict[str, Any]], matrix_id: str) -> None:
+    """Reject a report matrix that differs from the one recorded by the run."""
+    result_matrix_ids = {
+        (record.get("provenance") or {}).get("matrix_id") for record in results
+    }
+    if result_matrix_ids != {matrix_id}:
+        raise ReportError("matrix does not match result provenance; use the matrix from the run")
 
 
 # ----------------------------------------------------------------- metric math
@@ -98,8 +121,13 @@ class BenchReport:
         for r in self.results:
             keys.update((r.get("metrics") or {}).keys())
         # Stable, useful order.
-        order = ["recall@10", "mrr", "ndcg@10", "map@10", "precision@10",
-                 "latency_p50_ms", "latency_p95_ms"]
+        order = [
+            "success@10", "recall@10", "mrr", "ndcg@10", "map@10", "precision@10",
+            "returned_tokens", "latency_p50_ms", "latency_p95_ms", "latency_p99_ms",
+            "reranker_attempts", "reranker_fallbacks", "reranker_fallback_rate",
+            "reranker_primary_latency_p95_ms", "reranker_repair_latency_p95_ms",
+            "reranker_latency_ms",
+        ]
         ranked = [k for k in order if k in keys]
         ranked += sorted(k for k in keys if k not in order)
         return ranked
@@ -108,6 +136,35 @@ class BenchReport:
         rows = [r for r in self.results if metric in (r.get("metrics") or {})]
         rows.sort(key=lambda r: r["metrics"][metric], reverse=descending)
         return rows
+
+    def quality_columns(self, metric: str) -> list[str]:
+        """Selected quality metric plus concise promotion guardrails."""
+        available = set(self.metric_names())
+        preferred = [
+            metric,
+            "success@10",
+            "recall@10",
+            "mrr",
+            "ndcg@10",
+            "returned_tokens",
+            "latency_p95_ms",
+            "reranker_fallback_rate",
+            "reranker_primary_latency_p95_ms",
+        ]
+        return list(dict.fromkeys(name for name in preferred if name in available))
+
+    @staticmethod
+    def display_label(record: dict[str, Any]) -> str:
+        """Show only query-time values; indexing identity is already a column."""
+        values = record.get("values") or {}
+        query_values = {
+            key: value for key, value in values.items() if key not in INDEXING_AXES
+        }
+        if not query_values:
+            return str(record.get("label", ""))
+        return " ".join(
+            f"{key}={_vlabel(query_values[key])}" for key in sorted(query_values)
+        )
 
     def marginals(self, metric: str) -> dict[str, dict[str, dict[str, float]]]:
         """``{axis: {value_label: {mean, n}}}`` — mean metric per axis value."""
@@ -151,7 +208,7 @@ class BenchReport:
             dM = _bootstrap_delta(base_ranks, arm_ranks, _mrr)
             out.append({
                 "cell_id": r.get("cell_id"),
-                "label": r.get("label", ""),
+                "label": self.display_label(r),
                 "d_recall": dR,
                 "d_mrr": dM,
             })
@@ -180,4 +237,4 @@ def to_csv(results: list[dict[str, Any]]) -> str:
     return "\n".join(lines) + "\n"
 
 
-__all__ = ["BenchReport", "ReportError", "load_results", "to_csv"]
+__all__ = ["BenchReport", "ReportError", "load_results", "to_csv", "validate_matrix_id"]

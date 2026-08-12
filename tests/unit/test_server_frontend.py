@@ -52,6 +52,24 @@ def test_config_document_roundtrip_merge_and_redaction(tmp_path) -> None:
     )
 
 
+def test_config_document_write_preserves_existing_mode(tmp_path) -> None:
+    path = tmp_path / "config.yaml"
+    path.write_text("pipeline: {}\n", encoding="utf-8")
+    path.chmod(0o600)
+
+    write_config_document({"pipeline": {"retrieval": {}}}, path)
+
+    assert path.stat().st_mode & 0o777 == 0o600
+
+
+def test_new_config_document_is_private(tmp_path) -> None:
+    path = tmp_path / "config.yaml"
+
+    write_config_document({"secrets": {"api_key": "secret"}}, path)
+
+    assert path.stat().st_mode & 0o777 == 0o600
+
+
 def test_config_document_rejects_unknown_inference_backend() -> None:
     with pytest.raises(ConfigError, match=r"inference\.backend"):
         merge_config_document({}, {"inference": {"backend": "made-up"}})

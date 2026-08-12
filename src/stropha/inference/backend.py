@@ -293,6 +293,10 @@ def generate(
     temperature: float = 0.0,
     model: str | None = None,
     backend: str | None = None,
+    json_schema: dict[str, object] | None = None,
+    think: bool | None = None,
+    timeout: float | None = None,
+    raise_errors: bool = False,
 ) -> str | None:
     """Generate text using the best available backend.
 
@@ -304,6 +308,10 @@ def generate(
         temperature: Sampling temperature.
         model: Optional model override.
         backend: Optional backend preference ('mlx' or 'ollama').
+        json_schema: Optional JSON schema for backends that support structured output.
+        think: Optional per-call reasoning override for supporting backends.
+        timeout: Optional per-call timeout in seconds for supporting backends.
+        raise_errors: Raise typed LMS errors instead of returning None.
 
     Returns:
         Generated text, or None on failure.
@@ -313,12 +321,33 @@ def generate(
     result: str | None = None
     status = "failed"
     try:
-        result = be.generate(
-            prompt,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            model=model,
-        )
+        from ..errors import InferenceError
+        from .lms_backend import LmsBackend
+
+        if isinstance(be, LmsBackend):
+            result = be.generate(
+                prompt,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                model=model,
+                json_schema=json_schema,
+                think=think,
+                timeout=timeout,
+                raise_errors=raise_errors,
+            )
+        else:
+            if timeout is not None:
+                raise InferenceError(
+                    f"{be.name} inference does not support a per-call timeout"
+                )
+            result = be.generate(
+                prompt,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                model=model,
+            )
+        if raise_errors and result is None:
+            raise InferenceError(f"{be.name} inference returned no output")
         status = "completed" if result else "failed"
         return result
     except Exception:

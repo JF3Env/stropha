@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import json
 from unittest.mock import MagicMock, patch
+from urllib.error import URLError
+
+import pytest
 
 from stropha.config import get_config, reset_config
+from stropha.errors import InferenceError, InferenceTimeoutError
 from stropha.inference import LmsBackend, get_backend
 from stropha.inference.backend import reset_backend
 
@@ -71,6 +75,104 @@ def test_generate_uses_bearer_chat_completions() -> None:
         "stream": False,
         "think": False,
     }
+
+
+def test_identity_changes_with_reliability_controls() -> None:
+    base = LmsBackend(api_key="secret", timeout=30.0, max_retries=1)
+    assert base.identity != LmsBackend(
+        api_key="secret", timeout=31.0, max_retries=1
+    ).identity
+    assert base.identity != LmsBackend(
+        api_key="secret", timeout=30.0, max_retries=2
+    ).identity
+
+
+def test_generate_supports_structured_ranking_controls() -> None:
+    backend = LmsBackend(
+        model="test-model",
+        base_url="https://lms.example/openai/",
+        api_key="secret",
+        timeout=30.0,
+        max_retries=0,
+        think=True,
+    )
+    schema = {
+        "type": "object",
+        "properties": {"order": {"type": "array"}},
+        "required": ["order"],
+    }
+    with patch(
+        "stropha.inference.lms_backend.urllib_request.urlopen",
+        return_value=_response({"choices": [{"message": {"content": "{}"}}]}),
+    ) as urlopen:
+        assert (
+            backend.generate(
+                "rank",
+                json_schema=schema,
+                think=False,
+                timeout=4.5,
+            )
+            == "{}"
+        )
+
+    body = json.loads(urlopen.call_args.args[0].data)
+    assert body["think"] is False
+    assert body["response_format"] == {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "stropha_response",
+            "strict": True,
+            "schema": schema,
+        },
+    }
+    assert urlopen.call_args.kwargs["timeout"] == 4.5
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (TimeoutError(), InferenceTimeoutError),
+        (URLError("offline"), InferenceError),
+    ],
+)
+def test_generate_can_raise_typed_errors_for_diagnostics(
+    error: Exception,
+    expected: type[Exception],
+) -> None:
+    backend = LmsBackend(api_key="secret", max_retries=0)
+    with (
+        patch(
+            "stropha.inference.lms_backend.urllib_request.urlopen",
+            side_effect=error,
+        ),
+        pytest.raises(expected),
+    ):
+        backend.generate("rank", raise_errors=True)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"choices": []},
+        {"choices": [{"message": {"content": ""}}]},
+    ],
+)
+def test_generate_raises_for_empty_success_response(payload: dict) -> None:
+    backend = LmsBackend(api_key="secret", max_retries=0)
+    with (
+        patch(
+            "stropha.inference.lms_backend.urllib_request.urlopen",
+            return_value=_response(payload),
+        ),
+        pytest.raises(InferenceError),
+    ):
+        backend.generate("rank", raise_errors=True)
+
+
+def test_generate_raises_without_api_key_when_requested(isolated_test_env) -> None:
+    reset_config()
+    with pytest.raises(InferenceError, match="API key"):
+        LmsBackend(api_key="").generate("rank", raise_errors=True)
 
 
 def test_health_checks_exact_model() -> None:

@@ -32,9 +32,12 @@ def isolated_test_env(tmp_path, monkeypatch):
         (tmp_path / ".stropha" / "config.yaml").write_text("...")
     """
     # Reset config cache before changing directory
+    import tree_sitter_language_pack as tslp
+
     from stropha.config import reset_config
 
     reset_config()
+    parser_cache = tslp.cache_dir()
 
     # Change to temp directory + isolate HOME from real ~/.stropha/
     original_cwd = os.getcwd()
@@ -43,6 +46,7 @@ def isolated_test_env(tmp_path, monkeypatch):
     # Pathlib's Path.home() consults HOME on POSIX but caches via os.path.expanduser.
     # On macOS / Linux this monkeypatch is enough; pathlib re-reads HOME per call.
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    tslp.configure(tslp.PackConfig(cache_dir=parser_cache))
 
     yield tmp_path
 

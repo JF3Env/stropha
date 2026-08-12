@@ -132,7 +132,7 @@ class AnthropicBackend(InferenceBackend):
         endpoint_hash = hashlib.sha256(self._base_url.encode()).hexdigest()[:8]
         return (
             f"anthropic:model={self._default_model}:endpoint={endpoint_hash}"
-            f":version={self._version}"
+            f":version={self._version}:timeout={self._timeout}:retries={self._max_retries}"
         )
 
     @property

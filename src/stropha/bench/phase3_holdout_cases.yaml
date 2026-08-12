@@ -1,0 +1,422 @@
+version: 1
+cases:
+  - id: p3-exact-composed-embedder
+    query: Where are the composed embedder cache identity, health details, and document and query delegation implemented?
+    expected_paths: [src/stropha/adapters/embedder/composed.py]
+    expected_symbols: [ComposedEmbedder.adapter_id, ComposedEmbedder.health, ComposedEmbedder.embed_documents, ComposedEmbedder.embed_query]
+    relevance:
+      src/stropha/adapters/embedder/composed.py: 3
+      ComposedEmbedder.adapter_id: 3
+      ComposedEmbedder.health: 2
+      ComposedEmbedder.embed_documents: 3
+      ComposedEmbedder.embed_query: 3
+    tags: [phase3, exact-lookup, embedder]
+    split: holdout
+
+  - id: p3-exact-pinning
+    query: Where are pinned chunk IDs resolved and prepended, and which session code persists pins across requests?
+    expected_paths: [src/stropha/retrieval/pinning.py, src/stropha/server_search.py, src/stropha/server_session_tools.py]
+    expected_symbols: [resolve_pins, search_code_impl, pin_chunks_impl]
+    relevance:
+      src/stropha/retrieval/pinning.py: 3
+      src/stropha/server_search.py: 3
+      src/stropha/server_session_tools.py: 2
+      resolve_pins: 3
+      search_code_impl: 3
+      pin_chunks_impl: 2
+    tags: [phase3, exact-lookup, mcp]
+    split: holdout
+
+  - id: p3-exact-lms-errors
+    query: Where does LMS structured generation raise typed request and timeout failures for reranker diagnostics?
+    expected_paths: [src/stropha/inference/lms_backend.py, src/stropha/errors.py, src/stropha/inference/backend.py]
+    expected_symbols: [LmsBackend.generate, InferenceTimeoutError, generate]
+    relevance:
+      src/stropha/inference/lms_backend.py: 3
+      src/stropha/errors.py: 2
+      src/stropha/inference/backend.py: 2
+      LmsBackend.generate: 3
+      InferenceTimeoutError: 2
+      generate: 2
+    tags: [phase3, exact-lookup, inference]
+    split: holdout
+
+  - id: p3-concept-reconciliation
+    query: How does default indexing detect uncommitted edits and recover files missed by an interrupted run without a Git checkpoint?
+    expected_paths: [src/stropha/pipeline/pipeline.py, src/stropha/storage/sqlite.py, tests/unit/test_pipeline_incremental.py]
+    expected_symbols: [Pipeline._index_one_repo_reconcile, Storage.load_file_meta_map, test_reconcile_recovers_from_interrupted_index]
+    relevance:
+      src/stropha/pipeline/pipeline.py: 3
+      src/stropha/storage/sqlite.py: 3
+      tests/unit/test_pipeline_incremental.py: 2
+      Pipeline._index_one_repo_reconcile: 3
+      Storage.load_file_meta_map: 3
+      test_reconcile_recovers_from_interrupted_index: 2
+    tags: [phase3, conceptual, indexing]
+    split: holdout
+
+  - id: p3-concept-citation-audit
+    query: How does citation auditing split output into claims, recognize citation forms, and resolve them within the current repository?
+    expected_paths: [src/stropha/retrieval/citation.py, src/stropha/server_graph_tools.py, src/stropha/server.py]
+    expected_symbols: [audit_citations, audit_citations_impl, audit_citations_tool]
+    relevance:
+      src/stropha/retrieval/citation.py: 3
+      src/stropha/server_graph_tools.py: 2
+      src/stropha/server.py: 1
+      audit_citations: 3
+      audit_citations_impl: 2
+      audit_citations_tool: 1
+    tags: [phase3, conceptual, citations]
+    split: holdout
+
+  - id: p3-concept-secondary-vectors
+    query: How is the optional Model2Vec secondary embedding space incrementally backfilled without rebuilding primary vectors?
+    expected_paths: [src/stropha/pipeline/builder.py, src/stropha/ingest/secondary_embedding_loader.py, src/stropha/storage/sqlite.py, src/stropha/adapters/storage/postgres.py]
+    expected_symbols: [_build_secondary_embedder, SecondaryEmbeddingLoader.load, Storage.upsert_secondary_embeddings, PostgresStorage.upsert_secondary_embeddings]
+    relevance:
+      src/stropha/pipeline/builder.py: 3
+      src/stropha/ingest/secondary_embedding_loader.py: 3
+      src/stropha/storage/sqlite.py: 2
+      src/stropha/adapters/storage/postgres.py: 2
+      _build_secondary_embedder: 3
+      SecondaryEmbeddingLoader.load: 3
+      Storage.upsert_secondary_embeddings: 2
+      PostgresStorage.upsert_secondary_embeddings: 2
+    tags: [phase3, conceptual, storage]
+    split: holdout
+
+  - id: p3-callers-packing
+    query: What production context-building paths call pack_to_budget for search, assembled context, and DAG execution?
+    expected_paths: [src/stropha/retrieval/packing.py, src/stropha/retrieval/search.py, src/stropha/retrieval/assemble.py, src/stropha/retrieval/dag.py]
+    expected_symbols: [pack_to_budget, SearchEngine._maybe_pack, assemble_context, execute_plan]
+    relevance:
+      src/stropha/retrieval/packing.py: 3
+      src/stropha/retrieval/search.py: 3
+      src/stropha/retrieval/assemble.py: 3
+      src/stropha/retrieval/dag.py: 3
+      pack_to_budget: 3
+      SearchEngine._maybe_pack: 3
+      assemble_context: 3
+      execute_plan: 3
+    tags: [phase3, callers-usage, packing]
+    split: holdout
+
+  - id: p3-callers-blast-radius
+    query: After symbols are edited, which code unions and deduplicates callers, tests, related nodes, and rationale?
+    expected_paths: [src/stropha/retrieval/blast_radius.py, src/stropha/server_graph_tools.py, src/stropha/server.py]
+    expected_symbols: [compute_blast_radius, blast_radius_impl, blast_radius_tool]
+    relevance:
+      src/stropha/retrieval/blast_radius.py: 3
+      src/stropha/server_graph_tools.py: 2
+      src/stropha/server.py: 1
+      compute_blast_radius: 3
+      blast_radius_impl: 2
+      blast_radius_tool: 1
+    tags: [phase3, callers-usage, graphify]
+    split: holdout
+
+  - id: p3-callers-postgres-healing
+    query: What invokes PostgreSQL self-healing at each MCP tool boundary and how does reconnection avoid an active indexing transaction?
+    expected_paths: [src/stropha/server_runtime.py, src/stropha/adapters/storage/postgres.py, tests/unit/test_postgres_reconnect.py]
+    expected_symbols: [ctx_from_mcp, PostgresStorage.ensure_connected, test_ensure_connected_skips_while_index_lock_held]
+    relevance:
+      src/stropha/server_runtime.py: 3
+      src/stropha/adapters/storage/postgres.py: 3
+      tests/unit/test_postgres_reconnect.py: 2
+      ctx_from_mcp: 3
+      PostgresStorage.ensure_connected: 3
+      test_ensure_connected_skips_while_index_lock_held: 2
+    tags: [phase3, callers-usage, postgres]
+    split: holdout
+
+  - id: p3-tests-postgres-locks
+    query: Which tests guarantee migration memoization with bounded lock retries and serialization of concurrent PostgreSQL index writers?
+    expected_paths: [tests/unit/test_postgres_migrate_once.py, tests/unit/test_postgres_storage.py, src/stropha/adapters/storage/postgres.py]
+    expected_symbols: [test_migrate_runs_once_then_memoizes, test_index_advisory_lock_serializes_writers, PostgresStorage.try_acquire_index_lock]
+    relevance:
+      tests/unit/test_postgres_migrate_once.py: 3
+      tests/unit/test_postgres_storage.py: 3
+      src/stropha/adapters/storage/postgres.py: 2
+      test_migrate_runs_once_then_memoizes: 3
+      test_index_advisory_lock_serializes_writers: 3
+      PostgresStorage.try_acquire_index_lock: 2
+    tags: [phase3, tests-contracts, postgres]
+    split: holdout
+
+  - id: p3-tests-impact
+    query: How is the minimal test command built from direct tests and tests covering immediate callers of changed symbols?
+    expected_paths: [src/stropha/retrieval/test_impact.py, src/stropha/server_graph_tools.py, src/stropha/server.py]
+    expected_symbols: [analyse_test_impact, test_impact_impl, test_impact_tool]
+    relevance:
+      src/stropha/retrieval/test_impact.py: 3
+      src/stropha/server_graph_tools.py: 2
+      src/stropha/server.py: 1
+      analyse_test_impact: 3
+      test_impact_impl: 2
+      test_impact_tool: 1
+    tags: [phase3, tests-contracts, graphify]
+    split: holdout
+
+  - id: p3-tests-contract-partition
+    query: Where are graph-discovered tests partitioned into contract and implementation tests using path, name, and annotation signals?
+    expected_paths: [src/stropha/retrieval/contract_tests.py, src/stropha/server_graph_tools.py, src/stropha/server.py]
+    expected_symbols: [classify_test, surface_contract_tests, contract_tests_impl]
+    relevance:
+      src/stropha/retrieval/contract_tests.py: 3
+      src/stropha/server_graph_tools.py: 2
+      src/stropha/server.py: 1
+      classify_test: 3
+      surface_contract_tests: 3
+      contract_tests_impl: 2
+    tags: [phase3, tests-contracts, contracts]
+    split: holdout
+
+  - id: p3-trace-rename
+    query: Trace a committed file rename through Git delta detection, chunk relocation, ID recomputation, and lexical path-token regeneration.
+    expected_paths: [src/stropha/adapters/walker/git_diff.py, src/stropha/pipeline/pipeline.py, src/stropha/storage/sqlite.py, src/stropha/ingest/chunkers/base.py]
+    expected_symbols: [GitDiffWalker.discover_deltas, Pipeline._index_one_repo_incremental, Storage.rename_chunks, make_chunk_id]
+    relevance:
+      src/stropha/adapters/walker/git_diff.py: 3
+      src/stropha/pipeline/pipeline.py: 3
+      src/stropha/storage/sqlite.py: 3
+      src/stropha/ingest/chunkers/base.py: 2
+      GitDiffWalker.discover_deltas: 3
+      Pipeline._index_one_repo_incremental: 3
+      Storage.rename_chunks: 3
+      make_chunk_id: 2
+    tags: [phase3, feature-trace, indexing]
+    split: holdout
+
+  - id: p3-trace-reranker-repair
+    query: Trace an invalid LLM reranker response through structured repair, inference dispatch, and deterministic code-aware fallback.
+    expected_paths: [src/stropha/adapters/retrieval/reranker/llm.py, src/stropha/inference/backend.py, src/stropha/adapters/retrieval/reranker/code_aware.py]
+    expected_symbols: [LlmReranker._repair, generate, CodeAwareReranker.rerank]
+    relevance:
+      src/stropha/adapters/retrieval/reranker/llm.py: 3
+      src/stropha/inference/backend.py: 2
+      src/stropha/adapters/retrieval/reranker/code_aware.py: 2
+      LlmReranker._repair: 3
+      generate: 2
+      CodeAwareReranker.rerank: 2
+    tags: [phase3, feature-trace, reranker]
+    split: holdout
+
+  - id: p3-trace-watcher
+    query: Trace a burst of uncommitted saves through watcher polling and debounce into adapter-aware reindexing and graph refresh selection.
+    expected_paths: [src/stropha/watch.py, tests/unit/test_watch_and_bge_m3.py]
+    expected_symbols: [_Snapshot.diff, watch_repo, test_reindex_only_runs_graph_lifecycle_for_full_refresh]
+    relevance:
+      src/stropha/watch.py: 3
+      tests/unit/test_watch_and_bge_m3.py: 2
+      _Snapshot.diff: 3
+      watch_repo: 3
+      test_reindex_only_runs_graph_lifecycle_for_full_refresh: 2
+    tags: [phase3, feature-trace, operations]
+    split: holdout
+
+  - id: p3-config-unified-yaml
+    query: How does the single user YAML feed pipeline adapters, reject conflicting index paths, and retain a cwd-independent default index path?
+    expected_paths: [src/stropha/config/__init__.py, src/stropha/pipeline/config.py, src/stropha/config/models.py]
+    expected_symbols: [load_config, load_pipeline_config, _default_index_path]
+    relevance:
+      src/stropha/config/__init__.py: 3
+      src/stropha/pipeline/config.py: 3
+      src/stropha/config/models.py: 2
+      load_config: 3
+      load_pipeline_config: 3
+      _default_index_path: 2
+    tags: [phase3, config-ops, configuration]
+    split: holdout
+
+  - id: p3-config-detached-hook
+    query: How does the generated post-commit hook keep indexing and evaluation outside the foreground while leaving graphify to Pipeline?
+    expected_paths: [src/stropha/tools/hook_install.py, src/stropha/pipeline/pipeline.py, tests/unit/test_hook_foreground.py]
+    expected_symbols: [_render_hook_block, Pipeline._run_graphify, test_template_heavy_commands_are_inside_nohup]
+    relevance:
+      src/stropha/tools/hook_install.py: 3
+      src/stropha/pipeline/pipeline.py: 2
+      tests/unit/test_hook_foreground.py: 2
+      _render_hook_block: 3
+      Pipeline._run_graphify: 2
+      test_template_heavy_commands_are_inside_nohup: 2
+    tags: [phase3, config-ops, hook]
+    split: holdout
+
+  - id: p3-config-hot-reload
+    query: How does the dashboard preserve redacted credentials during atomic config writes and hot-reload adapters without closing storage used by old sessions?
+    expected_paths: [src/stropha/server_frontend.py, src/stropha/server_runtime.py]
+    expected_symbols: [merge_config_document, write_config_document, reload_shared_runtime]
+    relevance:
+      src/stropha/server_frontend.py: 3
+      src/stropha/server_runtime.py: 3
+      merge_config_document: 3
+      write_config_document: 2
+      reload_shared_runtime: 3
+    tags: [phase3, config-ops, mcp]
+    split: holdout
+
+  - id: p3-docs-reconciliation
+    query: Why is working-tree hash reconciliation the correctness boundary while Git diff remains an opt-in indexing optimization?
+    expected_paths: [docs/architecture/stropha-system.md, src/stropha/pipeline/pipeline.py, src/stropha/adapters/walker/git_diff.py]
+    expected_symbols: [Pipeline._index_one_repo_reconcile, GitDiffWalker.discover_deltas]
+    relevance:
+      docs/architecture/stropha-system.md: 3
+      src/stropha/pipeline/pipeline.py: 2
+      src/stropha/adapters/walker/git_diff.py: 2
+      Pipeline._index_one_repo_reconcile: 2
+      GitDiffWalker.discover_deltas: 2
+    tags: [phase3, docs-rationale, indexing]
+    split: holdout
+
+  - id: p3-docs-adapter-identity
+    query: Why must adapter IDs include output-changing model settings and which stages does the current indexing hash include?
+    expected_paths: [docs/architecture/stropha-pipeline-adapters.md, docs/architecture/stropha-meta-harness.md, src/stropha/pipeline/builder.py]
+    expected_symbols: [BuiltStages.indexing_hash]
+    relevance:
+      docs/architecture/stropha-pipeline-adapters.md: 3
+      docs/architecture/stropha-meta-harness.md: 2
+      src/stropha/pipeline/builder.py: 3
+      BuiltStages.indexing_hash: 3
+    tags: [phase3, docs-rationale, adapters]
+    split: holdout
+
+  - id: p3-docs-spec-invariants
+    query: Where does the consistency tool load project specifications, extract MUST or NEVER invariants, and match them to changed symbols and files?
+    expected_paths: [src/stropha/retrieval/spec_consistency.py, src/stropha/server_graph_tools.py, src/stropha/server.py]
+    expected_symbols: [extract_invariants, check_spec_consistency, spec_consistency_impl]
+    relevance:
+      src/stropha/retrieval/spec_consistency.py: 3
+      src/stropha/server_graph_tools.py: 2
+      src/stropha/server.py: 1
+      extract_invariants: 3
+      check_spec_consistency: 3
+      spec_consistency_impl: 2
+    tags: [phase3, docs-rationale, invariants]
+    split: holdout
+
+  - id: p3-ambiguous-graph-fts
+    query: Which augment_fts_with_graph implementation should I inspect for SQLite row replacement versus PostgreSQL tsvector updates?
+    expected_paths: [src/stropha/storage/sqlite.py, src/stropha/adapters/storage/postgres.py, src/stropha/pipeline/pipeline.py]
+    expected_symbols: [Storage.augment_fts_with_graph, PostgresStorage.augment_fts_with_graph, Pipeline._refresh_graphify_mirror]
+    relevance:
+      src/stropha/storage/sqlite.py: 3
+      src/stropha/adapters/storage/postgres.py: 3
+      src/stropha/pipeline/pipeline.py: 2
+      Storage.augment_fts_with_graph: 3
+      PostgresStorage.augment_fts_with_graph: 3
+      Pipeline._refresh_graphify_mirror: 2
+    tags: [phase3, ambiguous-symbols, storage]
+    split: holdout
+
+  - id: p3-ambiguous-cache-entry
+    query: Which CacheEntry stores in-memory chunk IDs, persistent cross-session results, and on-disk index snapshots?
+    expected_paths: [src/stropha/retrieval/cache.py, src/stropha/retrieval/cross_session_cache.py, src/stropha/meta/index_cache.py]
+    expected_symbols: [SemanticCache, find_similar, IndexCache]
+    relevance:
+      src/stropha/retrieval/cache.py: 3
+      src/stropha/retrieval/cross_session_cache.py: 3
+      src/stropha/meta/index_cache.py: 3
+      SemanticCache: 2
+      find_similar: 2
+      IndexCache: 2
+    tags: [phase3, ambiguous-symbols, cache]
+    split: holdout
+
+  - id: p3-ambiguous-symbol-resolution
+    query: Given an ambiguous short symbol, where does graph resolution prefer exact and dotted-suffix matches while batch validation ranks near misses?
+    expected_paths: [src/stropha/retrieval/graph.py, src/stropha/retrieval/hallucination_guard.py, src/stropha/server_graph_tools.py]
+    expected_symbols: [resolve_symbol_to_node, check_symbols, check_symbols_impl]
+    relevance:
+      src/stropha/retrieval/graph.py: 3
+      src/stropha/retrieval/hallucination_guard.py: 3
+      src/stropha/server_graph_tools.py: 2
+      resolve_symbol_to_node: 3
+      check_symbols: 3
+      check_symbols_impl: 2
+    tags: [phase3, ambiguous-symbols, graphify]
+    split: holdout
+
+  - id: p3-noise-negative-feedback
+    query: How does a bad-result trace become explicit negative evidence that outranks diff, graph, and engagement signals?
+    expected_paths: [src/stropha/server.py, src/stropha/meta/feedback.py, src/stropha/meta/outcome.py]
+    expected_symbols: [report_bad_result, BadResultStore.report, label_hit]
+    relevance:
+      src/stropha/server.py: 2
+      src/stropha/meta/feedback.py: 3
+      src/stropha/meta/outcome.py: 3
+      report_bad_result: 2
+      BadResultStore.report: 3
+      label_hit: 3
+    tags: [phase3, noisy-negative, feedback]
+    split: holdout
+
+  - id: p3-noise-code-aware
+    query: Why should login demote test and legacy files while a query explicitly asking for tests avoids the noise penalty?
+    expected_paths: [src/stropha/adapters/retrieval/reranker/code_aware.py, tests/unit/test_code_aware_reranker.py]
+    expected_symbols: [_query_contains_test_keywords, CodeAwareReranker.rerank, test_no_penalty_when_query_asks_for_tests]
+    relevance:
+      src/stropha/adapters/retrieval/reranker/code_aware.py: 3
+      tests/unit/test_code_aware_reranker.py: 2
+      _query_contains_test_keywords: 3
+      CodeAwareReranker.rerank: 3
+      test_no_penalty_when_query_asks_for_tests: 2
+    tags: [phase3, noisy-negative, reranker]
+    split: holdout
+
+  - id: p3-noise-claim-verification
+    query: How does claim verification return false with actual graph edges instead of silently accepting a plausible but wrong relationship?
+    expected_paths: [src/stropha/retrieval/verify.py, src/stropha/server_graph_tools.py, src/stropha/server.py]
+    expected_symbols: [verify_claim, verify_claim_impl, verify_claim_tool]
+    relevance:
+      src/stropha/retrieval/verify.py: 3
+      src/stropha/server_graph_tools.py: 2
+      src/stropha/server.py: 1
+      verify_claim: 3
+      verify_claim_impl: 2
+      verify_claim_tool: 1
+    tags: [phase3, noisy-negative, graphify]
+    split: holdout
+
+  - id: p3-multirepo-manifest
+    query: How does index build targets from manifest entries or repeated repo options and prevent identical files in different repositories sharing chunk IDs?
+    expected_paths: [src/stropha/cli.py, src/stropha/ingest/manifest.py, src/stropha/pipeline/pipeline.py, src/stropha/ingest/chunkers/base.py]
+    expected_symbols: [index, load_manifest, Pipeline.run, make_chunk_id]
+    relevance:
+      src/stropha/cli.py: 3
+      src/stropha/ingest/manifest.py: 3
+      src/stropha/pipeline/pipeline.py: 3
+      src/stropha/ingest/chunkers/base.py: 3
+      index: 3
+      load_manifest: 3
+      Pipeline.run: 3
+      make_chunk_id: 3
+    tags: [phase3, multi-repo, indexing]
+    split: holdout
+
+  - id: p3-multirepo-memory
+    query: In a multi-repository index, how does an explicit repository scope episodic co-occurrence and memory staleness checks?
+    expected_paths: [src/stropha/server_memory_tools.py, src/stropha/storage/sqlite.py, src/stropha/meta/provenance.py]
+    expected_symbols: [_resolve_repo, Storage.episode_co_occurrence, staleness_signal]
+    relevance:
+      src/stropha/server_memory_tools.py: 3
+      src/stropha/storage/sqlite.py: 3
+      src/stropha/meta/provenance.py: 2
+      _resolve_repo: 3
+      Storage.episode_co_occurrence: 3
+      staleness_signal: 2
+    tags: [phase3, multi-repo, memory]
+    split: holdout
+
+  - id: p3-multirepo-nested-git
+    query: How are nested Git repositories discovered and rebased under an umbrella root while chunk and parent IDs remain repository-namespaced?
+    expected_paths: [src/stropha/adapters/walker/nested_git.py, src/stropha/adapters/chunker/tree_sitter_dispatch.py, tests/unit/test_walker_variants.py]
+    expected_symbols: [NestedGitWalker.discover, TreeSitterDispatchChunker._apply_repo_key, test_nested_git_walker_finds_nested_repos]
+    relevance:
+      src/stropha/adapters/walker/nested_git.py: 3
+      src/stropha/adapters/chunker/tree_sitter_dispatch.py: 3
+      tests/unit/test_walker_variants.py: 2
+      NestedGitWalker.discover: 3
+      TreeSitterDispatchChunker._apply_repo_key: 3
+      test_nested_git_walker_finds_nested_repos: 2
+    tags: [phase3, multi-repo, walker]
+    split: holdout
