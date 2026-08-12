@@ -68,6 +68,13 @@ class EnricherStage(Protocol):
         """
 
 
+def effective_enricher_id(enricher: EnricherStage, batch_size: int) -> str:
+    """Return the indexing identity for an enricher and its active batch mode."""
+    if callable(getattr(enricher, "enrich_batch", None)):
+        return f"{enricher.adapter_id}:batch={batch_size}"
+    return enricher.adapter_id
+
+
 def enrich_with_status(
     enricher: EnricherStage, chunk: Chunk, ctx: StageContext
 ) -> tuple[str, bool]:

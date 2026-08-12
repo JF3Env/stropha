@@ -148,6 +148,10 @@ class TestMetaRun:
             embedder = _Embedder()
             retrieval = _Retrieval()
 
+            @staticmethod
+            def effective_enricher_id() -> str:
+                return "enricher"
+
         base = get_config()
         config = dataclasses.replace(
             base,

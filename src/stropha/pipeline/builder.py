@@ -20,7 +20,7 @@ from ..errors import ConfigError
 from ..logging import get_logger
 from ..stages.chunker import ChunkerStage
 from ..stages.embedder import EmbedderStage
-from ..stages.enricher import EnricherStage
+from ..stages.enricher import EnricherStage, effective_enricher_id
 from ..stages.retrieval import RetrievalStage
 from ..stages.router import RouterStage
 from ..stages.storage import SECONDARY_EMBEDDING_DIM, StorageStage
@@ -51,6 +51,14 @@ class BuiltStages:
     router: RouterStage | None = None
     secondary_embedder: EmbedderStage | None = None
 
+    def effective_enricher_id(self) -> str:
+        """Indexing identity using the configured runtime batch size."""
+        from ..config import get_config
+
+        return effective_enricher_id(
+            self.enricher, get_config().inference.effective_batch_size()
+        )
+
     def indexing_hash(self) -> str:
         """Stable hash of the adapters that determine index contents.
 
@@ -71,7 +79,7 @@ class BuiltStages:
         parts = [
             f"walker={getattr(self.walker, 'adapter_id', '?')}",
             f"chunker={getattr(self.chunker, 'adapter_id', '?')}",
-            f"enricher={getattr(self.enricher, 'adapter_id', '?')}",
+            f"enricher={self.effective_enricher_id()}",
             f"embedder={getattr(self.embedder, 'adapter_id', '?')}",
             "secondary_embedder="
             + (

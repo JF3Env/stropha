@@ -9,6 +9,7 @@ changes MUST NOT affect the hash.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import SimpleNamespace
 
 from stropha.pipeline.builder import BuiltStages
 
@@ -16,6 +17,12 @@ from stropha.pipeline.builder import BuiltStages
 @dataclass
 class _StubStage:
     adapter_id: str
+
+
+@dataclass
+class _BatchingStage(_StubStage):
+    def enrich_batch(self, chunks, contexts):
+        return []
 
 
 def _built(
@@ -65,6 +72,24 @@ class TestIndexingHash:
 
     def test_changes_when_enricher_changes(self) -> None:
         assert _built(enricher_id="v1").indexing_hash() != _built(enricher_id="v2").indexing_hash()
+
+    def test_changes_with_effective_enricher_batch_size(self, monkeypatch) -> None:
+        built = _built()
+        built.enricher = _BatchingStage("enricher:v1")  # type: ignore[assignment]
+        monkeypatch.setattr(
+            "stropha.config.get_config",
+            lambda: SimpleNamespace(
+                inference=SimpleNamespace(effective_batch_size=lambda: 4)
+            ),
+        )
+        first = built.indexing_hash()
+        monkeypatch.setattr(
+            "stropha.config.get_config",
+            lambda: SimpleNamespace(
+                inference=SimpleNamespace(effective_batch_size=lambda: 8)
+            ),
+        )
+        assert first != built.indexing_hash()
 
     def test_changes_when_embedder_changes(self) -> None:
         assert _built(embedder_id="v1").indexing_hash() != _built(embedder_id="v2").indexing_hash()

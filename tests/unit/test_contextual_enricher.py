@@ -15,6 +15,7 @@ from stropha.adapters.enricher.contextual import (
 )
 from stropha.models import Chunk
 from stropha.pipeline.base import StageContext
+from stropha.stages.enricher import effective_enricher_id
 
 
 def _make_chunk(
@@ -72,6 +73,12 @@ def test_adapter_id_changes_with_inference_identity() -> None:
     with patch("stropha.inference.get_backend", return_value=backend):
         second = ContextualEnricher().adapter_id
     assert first != second
+
+
+def test_adapter_id_does_not_duplicate_pipeline_batch_identity() -> None:
+    enricher = ContextualEnricher()
+    assert ":batch=" not in enricher.adapter_id
+    assert effective_enricher_id(enricher, 8).count(":batch=8") == 1
 
 
 def test_adapter_name_is_contextual() -> None:

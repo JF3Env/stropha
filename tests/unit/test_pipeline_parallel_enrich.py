@@ -14,6 +14,7 @@ import pytest
 from stropha.models import Chunk
 from stropha.pipeline.base import StageContext, StageHealth
 from stropha.pipeline.pipeline import Pipeline
+from stropha.stages.enricher import effective_enricher_id
 
 # ---------------------------------------------------------------------------
 # Test doubles
@@ -345,6 +346,16 @@ class _BatchingEnricher:
         self.batch_sizes.append(len(chunks))
         self.total_calls += 1
         return [(f"batched({c.chunk_id})", True) for c in chunks]
+
+
+def test_effective_enricher_id_adds_batch_once_for_batching_adapter():
+    enricher = _BatchingEnricher()
+    assert effective_enricher_id(enricher, 8) == "batching:v1:batch=8"
+
+
+def test_effective_enricher_id_ignores_batch_for_non_batching_adapter():
+    enricher = _SleepyEnricher(latency_s=0)
+    assert effective_enricher_id(enricher, 8) == "sleepy:v1"
 
 
 def test_pipeline_uses_enrich_batch_when_batch_size_gt_one():

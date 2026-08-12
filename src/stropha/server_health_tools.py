@@ -90,7 +90,7 @@ def index_health_impl(
     storage = app.storage
     built = app.built
 
-    active_enricher = getattr(built.enricher, "adapter_id", None)
+    active_enricher = built.effective_enricher_id()
     active_embedder = getattr(built.embedder, "adapter_id", None)
     stored_enricher = storage.get_meta("active_enricher_id")
     stored_embedder = storage.get_meta("active_embedder_id")

@@ -82,6 +82,10 @@ def _install_cli_stubs(monkeypatch: pytest.MonkeyPatch, report: EvalReport) -> N
         retrieval = object()
         embedder = object()
 
+        @staticmethod
+        def effective_enricher_id() -> str:
+            return "noop"
+
     # run_eval is imported inside the function via `from .eval import run_eval`
     # — monkeypatch at the source module so the lazy import picks up the stub.
     monkeypatch.setattr("stropha.eval.run_eval", lambda *_a, **_kw: report)

@@ -48,6 +48,7 @@ def _app(storage, *, enricher="contextual:1", embedder="voyage:512", storage_nam
         enricher=SimpleNamespace(adapter_id=enricher),
         embedder=SimpleNamespace(adapter_id=embedder),
         storage=SimpleNamespace(adapter_name=storage_name),
+        effective_enricher_id=lambda: enricher,
     )
     return SimpleNamespace(storage=storage, built=built)
 

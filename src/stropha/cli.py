@@ -1454,7 +1454,7 @@ def eval(
     get_meta = getattr(built.storage, "get_meta", None)
     indexed_enricher = get_meta("active_enricher_id") if callable(get_meta) else None
     indexed_embedder = get_meta("active_embedder_id") if callable(get_meta) else None
-    active_enricher = getattr(getattr(built, "enricher", None), "adapter_id", None)
+    active_enricher = built.effective_enricher_id()
     active_embedder = getattr(getattr(built, "embedder", None), "adapter_id", None)
     drifted = bool(
         (indexed_enricher and indexed_enricher != active_enricher)
@@ -2579,7 +2579,7 @@ def meta_run_cmd(
     indexed_enricher = baseline.storage.get_meta("active_enricher_id")
     indexed_embedder = baseline.storage.get_meta("active_embedder_id")
     if (
-        indexed_enricher != baseline.enricher.adapter_id
+        indexed_enricher != baseline.effective_enricher_id()
         or indexed_embedder != baseline.embedder.adapter_id
     ):
         console.print(

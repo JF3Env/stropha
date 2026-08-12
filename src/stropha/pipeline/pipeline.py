@@ -24,7 +24,7 @@ from ..logging import get_logger
 from ..models import Chunk
 from ..stages.chunker import ChunkerStage
 from ..stages.embedder import EmbedderStage
-from ..stages.enricher import EnricherStage
+from ..stages.enricher import EnricherStage, effective_enricher_id
 from ..stages.storage import StorageStage
 from ..stages.walker import WalkerStage
 from .base import StageContext
@@ -169,10 +169,8 @@ class Pipeline:
         self._repos = [p.resolve() for p in repos]
         self._enricher_concurrency = enricher_concurrency
         self._enricher_batch_size = enricher_batch_size
-        supports_batch = callable(getattr(self._enricher, "enrich_batch", None))
-        effective_batch_size = enricher_batch_size if supports_batch else 1
-        self._effective_enricher_id = (
-            f"{self._enricher.adapter_id}:batch={effective_batch_size}"
+        self._effective_enricher_id = effective_enricher_id(
+            self._enricher, enricher_batch_size
         )
         self._graphify = graphify
 
