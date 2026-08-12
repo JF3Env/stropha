@@ -9,6 +9,7 @@ import pytest
 
 from stropha.bench.matrix import Cell, MatrixError, load_matrix
 from stropha.bench.report import BenchReport, load_results, to_csv
+from stropha.bench.runner import _retrieval_overrides
 
 # --------------------------------------------------------------------------- matrix
 
@@ -95,6 +96,33 @@ def test_baseline_cell_resolves(matrix) -> None:
     assert base is not None
     assert base.values["enricher"] == "noop"
     assert base.values["reranker"] is None
+
+
+def test_retrieval_axes_map_to_runtime_config_fields() -> None:
+    overrides = _retrieval_overrides(Cell(values={
+        "rrf_k": 80,
+        "candidate_k": 40,
+        "recursive": True,
+        "recursive_adjacency": 9,
+        "adaptive_weighting": False,
+        "learned_weights": True,
+    }))
+    config = overrides["retrieval"]["config"]
+    assert config == {
+        "rrf_k": 80,
+        "candidate_k": 40,
+        "recursive_enabled": True,
+        "recursive_adjacency": 9,
+        "adaptive_weighting": False,
+        "learned_weights_enabled": True,
+    }
+
+
+def test_active_matrix_parses_and_has_declared_baseline() -> None:
+    path = Path(__file__).resolve().parents[2] / "src/stropha/bench/active_matrix.yaml"
+    active = load_matrix(path)
+    assert active.baseline_cell() is not None
+    assert active.baseline_cell().values["reranker"] == "llm"
 
 
 def test_empty_axes_raises(tmp_path: Path) -> None:

@@ -27,6 +27,7 @@ from .evaluator import (
     EvaluatorError,
     evaluate_candidate,
     evaluate_from_golden,
+    query_candidate_config,
 )
 from .feedback import (
     BadResult,
@@ -178,6 +179,7 @@ __all__ = [
     "outcome_score_decomposition",
     "prune",
     "prune_snapshots",
+    "query_candidate_config",
     "read_baseline",
     "regressions",
     "render_summary",

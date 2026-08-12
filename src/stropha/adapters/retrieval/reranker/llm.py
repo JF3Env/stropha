@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 
 from pydantic import BaseModel, Field
 
@@ -43,6 +44,10 @@ class LlmReranker:
 
     def __init__(self, config: LlmRerankerConfig | None = None) -> None:
         self._config = config or LlmRerankerConfig()
+        self._attempts = 0
+        self._successes = 0
+        self._fallbacks = 0
+        self._latency_ms = 0.0
 
     @property
     def stage_name(self) -> str:
@@ -101,15 +106,22 @@ class LlmReranker:
 
         from ....inference import generate
 
-        raw = generate(
-            prompt,
-            max_tokens=self._config.max_tokens,
-            temperature=self._config.temperature,
-        )
+        self._attempts += 1
+        started = time.perf_counter()
+        try:
+            raw = generate(
+                prompt,
+                max_tokens=self._config.max_tokens,
+                temperature=self._config.temperature,
+            )
+        finally:
+            self._latency_ms += (time.perf_counter() - started) * 1000.0
         order = self._parse_order(raw, len(candidates))
         if not order:
+            self._fallbacks += 1
             log.warning("llm_reranker.failed", reason="invalid or empty response")
             return hits[:top_k]
+        self._successes += 1
 
         seen = set(order)
         complete_order = order + [
@@ -123,6 +135,20 @@ class LlmReranker:
             hit.model_copy(update={"rank": rank})
             for rank, hit in enumerate(ranked[:top_k], start=1)
         ]
+
+    def reset_diagnostics(self) -> None:
+        self._attempts = 0
+        self._successes = 0
+        self._fallbacks = 0
+        self._latency_ms = 0.0
+
+    def diagnostics(self) -> dict[str, int | float]:
+        return {
+            "attempts": self._attempts,
+            "successes": self._successes,
+            "fallbacks": self._fallbacks,
+            "latency_ms": round(self._latency_ms, 3),
+        }
 
     @staticmethod
     def _parse_order(raw: str | None, candidate_count: int) -> list[int]:

@@ -5,9 +5,8 @@
 > delivery matrix below is authoritative for implementation status.
 > **Version:** 1.0 (RFC)
 > **Date:** 2026-05-21
-> **Delivery audit:** 2026-08-11. Baseline commit
-> `b0d391d7d67606a04666d8e9a48cfbef24c1726d`; current operational rows were
-> reconciled with the live source tree on that date.
+> **Delivery audit:** 2026-08-12. Current operational rows were reconciled with
+> the live source tree on that date.
 > **Audience:** maintainers of `stropha` and LLM agents operating it.
 > **Companion documents:**
 > - `docs/comparisons/stropha-vs-meta-harness.md` — the concept analysis + 118 improvement options this plan operationalizes.
@@ -30,18 +29,18 @@ actually wired at the audited commit.
 | Phase | Audited status | Delivered evidence | Current gap |
 |---|---|---|---|
 | 0 — traces/store/outcomes | **Delivered** | `meta/{trace,store,outcome,backfill,feedback}.py`; traced MCP calls and explicit bad-result feedback | Label quality still depends on post-hoc signals and calibration. |
-| 1 — evaluator/fitness | **Delivered as library** | `meta/{fitness,evaluator,gate,frontier}.py` | The public `meta run` path does not invoke the production evaluator. |
+| 1 — evaluator/fitness | **Delivered and wired** | `meta/{fitness,evaluator,gate,frontier}.py`; live `stropha meta run` evaluation | End-to-end task success remains a future fitness dimension. |
 | 2 — reproducibility | **Delivered as library/CLI** | `meta/{snapshot,index_cache}.py`; `stropha meta snapshot` | Reproducibility helpers are not composed into `meta run`. |
 | 3 — search space | **Delivered** | bundled manifest + `meta/search_space.py` validation/sampling | The manifest remains curated; registry metadata cannot infer every constraint. |
-| 4 — outer loop | **Infrastructure only** | loop, Pareto frontier, bandit, local-agentic and cloud-agentic proposers | `stropha meta run` scores candidates with a deterministic random stub, not real retrieval fitness. |
+| 4 — outer loop | **Delivered for query-time config search** | loop, Pareto frontier, bandit, local-agentic and cloud-agentic proposers; live retrieval evaluator | Indexing-stage proposals require snapshot/index-cache composition. |
 | 5 — code search | **Infrastructure only** | code proposers, pytest gate and subprocess adapter sandbox | Not selected or evaluated by the public run command; the subprocess is isolation, not a security boundary. |
-| 6 — promotion/operation | **Delivered with a bounded scope** | status/report/promote/prune commands; promotion deep-merges into canonical `~/.stropha/config.yaml`, preserves unrelated keys/secrets, defaults to diff-only, and writes only with explicit `--apply`; hook can trigger bounded bandit iterations | Sleep-time operation still inherits the Phase 4 stub-evaluator limitation. |
+| 6 — promotion/operation | **Delivered with a bounded scope** | status/report/promote/prune commands; promotion deep-merges into canonical `~/.stropha/config.yaml`, preserves unrelated keys/secrets, defaults to diff-only, and writes only with explicit `--apply`; hook can trigger bounded live bandit iterations | Hook-triggered optimization requires a clean compatible index. |
 
-**Current limitations:** there is no end-to-end production optimization loop
-until `meta run` composes snapshot/cache, the real evaluator, and candidate
-isolation. Hook-triggered runs therefore exercise loop infrastructure rather
-than production retrieval fitness. The historical plan body below intentionally
-keeps the original names and estimates for traceability.
+**Current limitations:** `meta run` evaluates production retrieval but is
+restricted to query-time dimensions against the active index. Snapshot/index
+cache composition is still required before indexing adapters can be searched
+safely. The historical plan body below keeps the original estimates for
+traceability.
 
 ---
 

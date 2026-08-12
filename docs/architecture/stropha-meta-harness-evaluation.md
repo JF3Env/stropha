@@ -3,15 +3,15 @@
 > **Status:** Historical evaluation snapshot · 2026-05-22 (rev 3)
 > **Subject:** `docs/architecture/stropha-meta-harness.md` (RFC, Status `Proposed`, dated 2026-05-21)
 > **Snapshot note:** the original audit recorded `HEAD` without its SHA. This
-> document was reclassified/audited for historical accuracy on 2026-08-11 at
-> commit `b0d391d7d67606a04666d8e9a48cfbef24c1726d`; body claims and file:line
+> document was reclassified/audited for historical accuracy on 2026-08-12; body claims and file:line
 > references describe the 2026-05-22 snapshot, not current HEAD.
 > **Companion docs reviewed:** `docs/comparisons/stropha-vs-meta-harness.md`;
 > `CLAUDE.md` **Key architecture** and **Invariants (do NOT break)**.
 > **Method:** the RFC's expected features were checked against the actual code, one phase at a time. Every claim is anchored to `file:line`. This document does not propose a new design — it stress-tests the proposed one.
-> **Current delta:** all seven phase packages now have implementation artifacts,
-> but `stropha meta run` still uses a random stub evaluator and does not compose
-> snapshots/index cache/code sandbox. See the authoritative delivery matrix in
+> **Current delta:** all seven phase packages now have implementation artifacts.
+> `stropha meta run` uses live repository-scoped retrieval for query-time
+> candidates, but does not yet compose snapshots/index cache/code sandbox for
+> indexing or code candidates. See the authoritative delivery matrix in
 > `stropha-meta-harness.md`.
 
 ---

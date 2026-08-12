@@ -1384,6 +1384,22 @@ def eval(
         "--track-log",
         help="Custom path for the eval score log (default: ~/.stropha/eval-scores.jsonl).",
     ),
+    repo: Path | None = typer.Option(
+        None,
+        "--repo",
+        "-r",
+        help="Repository to evaluate. Defaults to the configured target repository.",
+    ),
+    include_other_repos: bool = typer.Option(
+        False,
+        "--include-other-repos",
+        help="Search every indexed repository instead of production's current-repo scope.",
+    ),
+    require_clean_index: bool = typer.Option(
+        False,
+        "--require-clean-index",
+        help="Abort when active embedder/enricher IDs differ from the indexed IDs.",
+    ),
 ) -> None:
     """Run the offline eval harness against the golden dataset."""
     from .eval import load_golden, run_eval
@@ -1404,6 +1420,10 @@ def eval(
             console.print(f"[yellow]No cases with tag {tag!r}.[/yellow]")
             raise typer.Exit(code=1)
 
+    if repo is not None and include_other_repos:
+        console.print("[red]--repo and --include-other-repos are mutually exclusive.[/red]")
+        raise typer.Exit(code=1)
+
     resolved = load_pipeline_config()
     try:
         built = build_stages(resolved)
@@ -1411,9 +1431,72 @@ def eval(
         console.print(f"[red]Pipeline build error:[/red] {exc}")
         raise typer.Exit(code=1) from exc
 
+    import hashlib as _hashlib
+
+    cfg = _load_config()
+    target_repo = (repo or cfg.target_repo or Path.cwd()).expanduser().resolve()
+    repo_id: int | None = None
+    repo_key: str | None = None
+    lookup_repo_id = getattr(built.storage, "lookup_repo_id", None)
+    if not include_other_repos and callable(lookup_repo_id):
+        from .ingest.git_meta import detect as _detect_repo
+
+        try:
+            repo_key = _detect_repo(target_repo).normalized_key
+            repo_id = lookup_repo_id(repo_key)
+        except (OSError, StrophaError) as exc:
+            console.print(f"[red]Could not resolve eval repository:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+        if repo_id is None:
+            console.print(f"[red]Repository is not indexed:[/red] {repo_key}")
+            raise typer.Exit(code=1)
+
+    get_meta = getattr(built.storage, "get_meta", None)
+    indexed_enricher = get_meta("active_enricher_id") if callable(get_meta) else None
+    indexed_embedder = get_meta("active_embedder_id") if callable(get_meta) else None
+    active_enricher = getattr(getattr(built, "enricher", None), "adapter_id", None)
+    active_embedder = getattr(getattr(built, "embedder", None), "adapter_id", None)
+    drifted = bool(
+        (indexed_enricher and indexed_enricher != active_enricher)
+        or (indexed_embedder and indexed_embedder != active_embedder)
+    )
+    provenance = {
+        "golden_path": str(golden.resolve()),
+        "golden_sha256": _hashlib.sha256(golden.read_bytes()).hexdigest(),
+        "repo_scope": "all" if include_other_repos else "current",
+        "repo_key": repo_key,
+        "repo_id": repo_id,
+        "pipeline": {
+            "walker": getattr(getattr(built, "walker", None), "adapter_id", None),
+            "chunker": getattr(getattr(built, "chunker", None), "adapter_id", None),
+            "enricher": active_enricher,
+            "embedder": active_embedder,
+            "storage": getattr(built.storage, "adapter_id", None),
+            "retrieval": getattr(built.retrieval, "adapter_id", None),
+        },
+        "index": {
+            "indexed_enricher": indexed_enricher,
+            "indexed_embedder": indexed_embedder,
+            "config_drift": drifted,
+            "comparable": not drifted,
+        },
+    }
+    if drifted:
+        message = "active embedder/enricher differs from the indexed identity"
+        if require_clean_index:
+            console.print(f"[red]Eval preflight failed:[/red] {message}")
+            raise typer.Exit(code=1)
+        console.print(f"[yellow]Non-comparable eval:[/yellow] {message}")
+
     try:
         with built.storage:  # type: ignore[union-attr]
-            report = run_eval(cases, built.retrieval, top_k=top_k)
+            report = run_eval(
+                cases,
+                built.retrieval,
+                top_k=top_k,
+                repo_id=repo_id,
+                provenance=provenance,
+            )
     except StrophaError as exc:
         console.print(f"[red]Eval failed:[/red] {exc}")
         raise typer.Exit(code=1) from exc
@@ -1423,6 +1506,8 @@ def eval(
 
         payload = {
             "summary": report.summary(),
+            "provenance": report.provenance,
+            "diagnostics": report.diagnostics,
             "results": [
                 {
                     "id": r.case.id,
@@ -1438,7 +1523,7 @@ def eval(
             "by_tag": {t: sub.summary() for t, sub in report.by_tag().items()},
         }
         console.print_json(_json.dumps(payload))
-        raise typer.Exit(code=0 if report.recall_at_k >= 0.85 else 2)
+        raise typer.Exit(code=0 if report.success_at_k >= 0.85 else 2)
 
     table = Table(
         title=f"Evaluation — {report.n} cases (top_k={report.top_k})",
@@ -1458,6 +1543,7 @@ def eval(
     summary = report.summary()
     console.print(
         f"[bold]Summary:[/bold] {summary['hits']}/{summary['cases']} hits · "
+        f"success@{report.top_k}={summary[f'success@{report.top_k}']} · "
         f"recall@{report.top_k}={summary[f'recall@{report.top_k}']} · "
         f"mrr={summary['mrr']} · "
         f"ndcg@{report.top_k}={summary[f'ndcg@{report.top_k}']} · "
@@ -1465,6 +1551,13 @@ def eval(
         f"map@{report.top_k}={summary[f'map@{report.top_k}']} · "
         f"latency_p95={summary['latency_p95_ms']}ms"
     )
+    reranker_attempts = summary.get("reranker_attempts", 0)
+    if reranker_attempts:
+        console.print(
+            f"[bold]Reranker:[/bold] attempts={reranker_attempts} · "
+            f"fallbacks={summary['reranker_fallbacks']} · "
+            f"fallback_rate={summary['reranker_fallback_rate']}"
+        )
 
     # WIN-172: every quality metric in the by-tag table so a regression
     # in one tag (e.g. retrieval ranking gets worse on graph queries
@@ -1517,14 +1610,18 @@ def eval(
         from .eval.tracker import append_score, check_regression
 
         append_score(report, log_path=track_log)
-        is_regression, msg = check_regression(report.recall_at_k, log_path=track_log)
+        is_regression, msg = check_regression(
+            report.success_at_k,
+            log_path=track_log,
+            fingerprint=report.provenance,
+        )
         if is_regression:
             console.print(f"[bold red]⚠ {msg}[/bold red]")
         elif not json_out:
             console.print(f"[green]{msg}[/green]")
 
     # Non-zero exit when below the spec threshold so CI catches regressions.
-    raise typer.Exit(code=0 if report.recall_at_k >= 0.85 else 2)
+    raise typer.Exit(code=0 if report.success_at_k >= 0.85 else 2)
 
 
 # ---------------------------------------------------------------------------
@@ -2388,6 +2485,13 @@ def meta_run_cmd(
         "--meta-dir",
         help="Override meta dir. Defaults to <index_parent>/meta/.",
     ),
+    golden: Path = typer.Option(
+        Path("tests/eval/golden.jsonl"),
+        "--golden",
+        "-g",
+        help="Golden JSONL used for live candidate evaluation.",
+    ),
+    top_k: int = typer.Option(10, "--top-k", min=1, max=100),
 ) -> None:
     """Run the Meta-Harness outer loop (Algorithm 1, WIN-187).
 
@@ -2396,14 +2500,17 @@ def meta_run_cmd(
     ``--wall-clock`` expires). Persists every candidate via the
     ArtifactStore (WIN-161). Reports the final frontier.
 
-    The evaluator is a stub identity function for now — the WIN-186 epic
-    ships the loop infrastructure; the production evaluator wiring
-    against a live SearchEngine lands in Phase 5 (WIN-195+).
+    Only query-time dimensions are varied. Indexing stages remain pinned to
+    the active index identity so candidates are compared against compatible
+    vectors and enrichment.
     """
     from .meta import (
         ArtifactStore,
-        ScoreCard,
+        EvaluatorError,
+        SearchSpace,
+        evaluate_candidate,
         load_search_space,
+        query_candidate_config,
         run_loop,
     )
     from .meta.proposer import (
@@ -2416,43 +2523,103 @@ def meta_run_cmd(
         meta_dir = _meta_dir_default()
     meta_dir = meta_dir.expanduser().resolve()
 
-    space = load_search_space()
-    # ``prop`` holds whichever concrete proposer the user picked; all three
-    # implement the ``ProposerFn`` shape (``proposer(archive) -> dict``) but
-    # they don't share a nominal supertype, so widen via ``Any`` instead of
-    # union-typing every concrete class at this seam.
+    declared_space = load_search_space()
+    if proposer not in {"bandit", "local-agentic", "cloud-agentic"}:
+        console.print(f"[red]Unknown proposer:[/red] {proposer}")
+        raise typer.Exit(code=1)
+
+    if not golden.is_file():
+        source_golden = Path(__file__).resolve().parents[2] / golden
+        if source_golden.is_file():
+            golden = source_golden
+        else:
+            console.print(f"[red]Golden file not found:[/red] {golden}")
+            raise typer.Exit(code=1)
+    from .eval import load_golden
+
+    cases = load_golden(golden)
+    allowed_dimensions = {
+        "reranker",
+        "hyde",
+        "query_rewrite",
+        "multi_query",
+        "multi_query_count",
+        "recursive",
+        "recursive_adjacency",
+        "adaptive_weighting",
+        "candidate_k",
+        "rrf_k",
+    }
+    space = SearchSpace(
+        dimensions=[d for d in declared_space.dimensions if d.name in allowed_dimensions],
+        constraints=declared_space.constraints,
+    )
+
+    # All concrete proposers implement ``ProposerFn`` but do not share a
+    # nominal base class, so keep this boundary structurally typed.
     prop: Any
     if proposer == "bandit":
         prop = make_bandit_proposer(space, seed=seed)
     elif proposer == "local-agentic":
         prop = make_local_agentic_proposer(space, fallback_seed=seed)
-    elif proposer == "cloud-agentic":
-        prop = make_cloud_agentic_proposer(space, fallback_seed=seed)
     else:
-        console.print(f"[red]Unknown proposer:[/red] {proposer}")
+        prop = make_cloud_agentic_proposer(space, fallback_seed=seed)
+
+    from .ingest.git_meta import detect as _detect_repo
+
+    runtime_cfg = _load_config()
+    target_repo = (runtime_cfg.target_repo or Path.cwd()).expanduser().resolve()
+    base_config = load_pipeline_config()
+    baseline = build_stages(base_config)
+    repo_key = _detect_repo(target_repo).normalized_key
+    repo_id = baseline.storage.lookup_repo_id(repo_key)
+    if repo_id is None:
+        console.print(f"[red]Repository is not indexed:[/red] {repo_key}")
         raise typer.Exit(code=1)
-
-    # Stub evaluator — returns a deterministic ScoreCard for now so the
-    # loop's plumbing (proposer + persist + Pareto) is exercisable
-    # without a live SearchEngine. The full evaluator wires in Phase 5.
-    import random as _random
-
-    rng = _random.Random(seed)
-
-    def stub_eval(cfg: dict[str, Any]) -> ScoreCard:
-        return ScoreCard(
-            quality=rng.uniform(0.4, 0.95),
-            context_efficiency=rng.uniform(0.3, 0.9),
-            outcome_score=rng.uniform(0.0, 0.7),
-            latency_ms=rng.uniform(10, 200),
-            n_queries=20,
-            n_hits=int(rng.uniform(10, 20)),
+    indexed_enricher = baseline.storage.get_meta("active_enricher_id")
+    indexed_embedder = baseline.storage.get_meta("active_embedder_id")
+    if (
+        indexed_enricher != baseline.enricher.adapter_id
+        or indexed_embedder != baseline.embedder.adapter_id
+    ):
+        console.print(
+            "[red]Meta evaluation requires a clean index identity; "
+            "active embedder/enricher differs from indexed metadata.[/red]"
         )
+        raise typer.Exit(code=1)
+    baseline.storage.close()
+
+    repo_size_bytes = sum(
+        path.stat().st_size
+        for path in target_repo.rglob("*")
+        if path.is_file() and ".git" not in path.relative_to(target_repo).parts
+    )
+
+    def live_eval(candidate: dict[str, Any]):
+        resolved = query_candidate_config(base_config, candidate)
+        built = build_stages(resolved)
+        health = built.retrieval.health()
+        if health.status == "error":
+            built.storage.close()
+            raise EvaluatorError(health.message)
+        try:
+            with built.storage:
+                return evaluate_candidate(
+                    engine=built.retrieval,
+                    cases=cases,
+                    top_k=top_k,
+                    split="search",
+                    outcomes_dir=meta_dir / "outcomes",
+                    repo_size_bytes=repo_size_bytes,
+                    repo_id=repo_id,
+                )
+        finally:
+            built.storage.close()
 
     store = ArtifactStore(meta_dir)
     result = run_loop(
         proposer=prop,
-        evaluator=stub_eval,
+        evaluator=live_eval,
         store=store,
         max_iterations=iterations,
         wall_clock_s=wall_clock_s,

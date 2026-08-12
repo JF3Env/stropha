@@ -16,7 +16,8 @@ A hit counts as relevant when any of:
   - ``hit.symbol`` matches one of ``expected_symbols`` (case-insensitive)
 
 Metrics computed:
-  - Recall@K = (cases with ≥1 relevant hit in top-K) / total
+  - Success@K = (cases with ≥1 relevant hit in top-K) / total
+  - Recall@K = mean fraction of judged relevant entities found in top-K
   - MRR = mean(1 / rank of first relevant hit, 0 when none in top-K)
   - NDCG@K = Normalized Discounted Cumulative Gain (for graded relevance)
   - Precision@K = (relevant hits in top-K) / K
@@ -178,6 +179,37 @@ class EvalCase:
         
         return 1.0  # Default to binary relevance
 
+    @property
+    def relevant_entities(self) -> tuple[tuple[str | None, str | None], ...]:
+        """Distinct judged targets with path/symbol alternatives paired by position.
+
+        Golden cases commonly name both the file and symbol for the same target.
+        Pairing entries by position avoids counting that target twice while
+        preserving extra path-only or symbol-only targets.
+        """
+        count = max(len(self.expected_paths), len(self.expected_symbols), 1)
+        return tuple(
+            (
+                self.expected_paths[index] if index < len(self.expected_paths) else None,
+                self.expected_symbols[index] if index < len(self.expected_symbols) else None,
+            )
+            for index in range(count)
+        )
+
+    @property
+    def relevant_entity_count(self) -> int:
+        return len(self.relevant_entities)
+
+    @property
+    def ideal_relevances(self) -> tuple[float, ...]:
+        """Judged relevance values used to compute IDCG independently of retrieval."""
+        if not self.relevance_map:
+            return (1.0,) * self.relevant_entity_count
+        values = sorted(self.relevance_map.values(), reverse=True)
+        if len(values) < self.relevant_entity_count:
+            values.extend([1.0] * (self.relevant_entity_count - len(values)))
+        return tuple(values[: self.relevant_entity_count])
+
 
 @dataclass(frozen=True)
 class EvalResult:
@@ -192,11 +224,15 @@ class EvalResult:
     relevances: tuple[float, ...] = ()
     # Number of relevant hits in top-K (for Precision@K)
     relevant_count: int = 0
+    total_relevant: int = 0
+    ideal_relevances: tuple[float, ...] = ()
     # WIN-170: per-query latency capture. ``latency_ms`` is the wall-clock
     # cost of the single retrieval call this result describes. Captured by
     # ``run_eval`` so latency is first-class fitness, not an invisible-in-CI
     # afterthought.
     latency_ms: float = 0.0
+    returned_tokens: int = 0
+    returned_hits: int = 0
 
     @property
     def hit(self) -> bool:
@@ -211,7 +247,15 @@ class EvalResult:
         """NDCG for this single case."""
         if not self.relevances:
             return 0.0
-        return _ndcg(list(self.relevances), self.top_k)
+        dcg = _dcg(list(self.relevances), self.top_k)
+        if self.ideal_relevances:
+            ideal = list(self.ideal_relevances)
+        elif self.case.expected_paths or self.case.expected_symbols:
+            ideal = list(self.case.ideal_relevances)
+        else:
+            ideal = [rel for rel in self.relevances if rel > 0]
+        idcg = _dcg(sorted(ideal, reverse=True), self.top_k)
+        return dcg / idcg if idcg else 0.0
 
     @property
     def precision(self) -> float:
@@ -228,8 +272,9 @@ class EvalResult:
         """
         if not self.relevances:
             return 0.0
-        n_relevant = sum(1 for r in self.relevances if r > 0)
-        if n_relevant == 0:
+        retrieved_relevant = self.relevant_count or sum(1 for r in self.relevances if r > 0)
+        total_relevant = self.total_relevant or retrieved_relevant
+        if retrieved_relevant == 0 or total_relevant <= 0:
             return 0.0
         ap_sum = 0.0
         running_relevant = 0
@@ -237,7 +282,7 @@ class EvalResult:
             if rel > 0:
                 running_relevant += 1
                 ap_sum += running_relevant / i
-        return ap_sum / n_relevant
+        return ap_sum / total_relevant
 
 
 @dataclass
@@ -246,6 +291,8 @@ class EvalReport:
 
     results: list[EvalResult] = field(default_factory=list)
     top_k: int = 10
+    provenance: dict[str, Any] = field(default_factory=dict)
+    diagnostics: dict[str, Any] = field(default_factory=dict)
 
     @property
     def n(self) -> int:
@@ -256,8 +303,19 @@ class EvalReport:
         return sum(1 for r in self.results if r.hit)
 
     @property
-    def recall_at_k(self) -> float:
+    def success_at_k(self) -> float:
         return self.n_hits / self.n if self.n else 0.0
+
+    @property
+    def recall_at_k(self) -> float:
+        if not self.results:
+            return 0.0
+        return sum(
+            r.relevant_count / r.total_relevant
+            if r.total_relevant
+            else float(r.hit)
+            for r in self.results
+        ) / self.n
 
     @property
     def mrr(self) -> float:
@@ -333,9 +391,10 @@ class EvalReport:
         return buckets
 
     def summary(self) -> dict[str, Any]:
-        return {
+        summary = {
             "cases": self.n,
             "hits": self.n_hits,
+            f"success@{self.top_k}": round(self.success_at_k, 4),
             f"recall@{self.top_k}": round(self.recall_at_k, 4),
             "mrr": round(self.mrr, 4),
             f"ndcg@{self.top_k}": round(self.ndcg_at_k, 4),
@@ -344,7 +403,18 @@ class EvalReport:
             "latency_p50_ms": round(self.latency_p50_ms, 3),
             "latency_p95_ms": round(self.latency_p95_ms, 3),
             "latency_p99_ms": round(self.latency_p99_ms, 3),
+            "returned_tokens": sum(r.returned_tokens for r in self.results),
         }
+        reranker = self.diagnostics.get("reranker")
+        if isinstance(reranker, dict):
+            summary["reranker_attempts"] = int(reranker.get("attempts", 0))
+            summary["reranker_fallbacks"] = int(reranker.get("fallbacks", 0))
+            attempts = int(reranker.get("attempts", 0))
+            summary["reranker_fallback_rate"] = round(
+                int(reranker.get("fallbacks", 0)) / attempts if attempts else 0.0,
+                4,
+            )
+        return summary
 
 
 # --------------------------------------------------------------------- io
@@ -375,6 +445,13 @@ def load_golden(path: Path) -> list[EvalCase]:
             # (or any future field validation) surface where the user can
             # find them.
             raise ValueError(f"{path}:{lineno}: {exc}") from exc
+    ids: set[str] = set()
+    for case in cases:
+        if case.id in ids:
+            raise ValueError(f"{path}: duplicate case id {case.id!r}")
+        ids.add(case.id)
+        if not case.expected_paths and not case.expected_symbols:
+            raise ValueError(f"{path}: case {case.id!r} has no expected path or symbol")
     return cases
 
 
@@ -432,6 +509,8 @@ def run_eval(
     engine: SearchEngine | RetrievalStage,
     *,
     top_k: int = 10,
+    repo_id: int | None = None,
+    provenance: dict[str, Any] | None = None,
 ) -> EvalReport:
     """Execute every case against ``engine`` and aggregate metrics.
 
@@ -441,13 +520,19 @@ def run_eval(
     """
     import time as _time
 
-    report = EvalReport(top_k=top_k)
+    report = EvalReport(top_k=top_k, provenance=dict(provenance or {}))
+    reset_diagnostics = getattr(engine, "reset_diagnostics", None)
+    if callable(reset_diagnostics):
+        reset_diagnostics()
     for case in cases:
         # WIN-170: capture per-query latency. perf_counter() is monotonic
         # and high-resolution; the cost (~50 ns per call) is irrelevant
         # next to a multi-millisecond search.
         start = _time.perf_counter()
-        hits = engine.search(case.query, top_k=top_k)
+        if repo_id is None:
+            hits = engine.search(case.query, top_k=top_k)
+        else:
+            hits = engine.search(case.query, top_k=top_k, repo_id=repo_id)
         latency_ms = (_time.perf_counter() - start) * 1000.0
 
         # Track relevance at each rank for NDCG
@@ -456,6 +541,7 @@ def run_eval(
         first_hit_rank: int | None = None
         first_matched_path: str | None = None
         first_matched_symbol: str | None = None
+        matched_entities: set[int] = set()
 
         for rank, h in enumerate(hits, 1):
             # Tolerate both real SearchHit (.rel_path) and tests' fake hits (.path).
@@ -466,14 +552,32 @@ def run_eval(
             )
             actual_symbol = getattr(h, "symbol", None)
 
-            mp = _path_matches(actual_path, case.expected_paths)
-            ms = _symbol_matches(actual_symbol, case.expected_symbols)
+            matched_entity: int | None = None
+            mp: str | None = None
+            ms: str | None = None
+            for entity_index, (expected_path, expected_symbol) in enumerate(
+                case.relevant_entities
+            ):
+                if entity_index in matched_entities:
+                    continue
+                candidate_path = _path_matches(
+                    actual_path, (expected_path,) if expected_path else ()
+                )
+                candidate_symbol = _symbol_matches(
+                    actual_symbol, (expected_symbol,) if expected_symbol else ()
+                )
+                if candidate_path or candidate_symbol:
+                    matched_entity = entity_index
+                    mp = candidate_path
+                    ms = candidate_symbol
+                    break
 
-            if mp or ms:
+            if matched_entity is not None:
                 # This hit is relevant
                 rel = case.get_relevance(actual_path, actual_symbol)
                 relevances.append(rel)
                 relevant_count += 1
+                matched_entities.add(matched_entity)
 
                 if first_hit_rank is None:
                     first_hit_rank = rank
@@ -495,7 +599,13 @@ def run_eval(
             matched_symbol=first_matched_symbol,
             relevances=tuple(relevances),
             relevant_count=relevant_count,
+            total_relevant=case.relevant_entity_count,
+            ideal_relevances=case.ideal_relevances,
             latency_ms=latency_ms,
+            returned_tokens=sum(
+                max(1, len(str(getattr(hit, "snippet", ""))) // 4) for hit in hits
+            ),
+            returned_hits=len(hits),
         )
         report.results.append(result)
         log.info(
@@ -508,5 +618,10 @@ def run_eval(
             latency_ms=round(latency_ms, 3),
             tags=list(case.tags),
         )
+    get_diagnostics = getattr(engine, "diagnostics", None)
+    if callable(get_diagnostics):
+        diagnostics = get_diagnostics()
+        if isinstance(diagnostics, dict):
+            report.diagnostics = diagnostics
     log.info("eval.run.summary", **report.summary())
     return report

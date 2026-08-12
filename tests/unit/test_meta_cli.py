@@ -52,7 +52,10 @@ def _runner_invoke(tmp_path: Path, args: list[str]) -> Any:
 
 
 class TestMetaRun:
-    def test_runs_bandit_loop(self, tmp_path: Path) -> None:
+    def test_runs_bandit_loop(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._install_live_eval_stubs(monkeypatch)
         result = CliRunner().invoke(
             app,
             ["meta", "run",
@@ -86,6 +89,7 @@ class TestMetaRun:
             "stropha.meta.proposer.inference_helper.get_backend",
             lambda **_: (_ for _ in ()).throw(RuntimeError("no backend")),
         )
+        self._install_live_eval_stubs(monkeypatch)
         result = CliRunner().invoke(
             app,
             ["meta", "run",
@@ -103,6 +107,7 @@ class TestMetaRun:
             "stropha.meta.proposer.agentic.get_backend",
             lambda **_: (_ for _ in ()).throw(RuntimeError("no key")),
         )
+        self._install_live_eval_stubs(monkeypatch)
         result = CliRunner().invoke(
             app,
             ["meta", "run",
@@ -112,6 +117,57 @@ class TestMetaRun:
              "--meta-dir", str(tmp_path / "meta")],
         )
         assert result.exit_code == 0, result.output
+
+    @staticmethod
+    def _install_live_eval_stubs(monkeypatch: pytest.MonkeyPatch) -> None:
+        import dataclasses
+
+        from stropha.config import get_config
+
+        class _Storage:
+            def lookup_repo_id(self, _key: str) -> int: return 1
+            def get_meta(self, key: str) -> str:
+                return "enricher" if "enricher" in key else "embedder"
+            def close(self) -> None: pass
+            def __enter__(self): return self
+            def __exit__(self, *_args): pass
+
+        class _Stage:
+            adapter_id = "enricher"
+
+        class _Embedder:
+            adapter_id = "embedder"
+
+        class _Retrieval:
+            def health(self):
+                return type("Health", (), {"status": "ready", "message": "ok"})()
+
+        class _Built:
+            storage = _Storage()
+            enricher = _Stage()
+            embedder = _Embedder()
+            retrieval = _Retrieval()
+
+        base = get_config()
+        config = dataclasses.replace(
+            base,
+            paths=dataclasses.replace(
+                base.paths, target_repo=Path(__file__).resolve().parents[2]
+            ),
+        )
+        monkeypatch.setattr("stropha.cli._load_config", lambda: config)
+        monkeypatch.setattr("stropha.cli.load_pipeline_config", lambda: {})
+        monkeypatch.setattr("stropha.cli.build_stages", lambda *_a, **_k: _Built())
+        monkeypatch.setattr(
+            "stropha.meta.evaluate_candidate",
+            lambda **_kwargs: ScoreCard(
+                quality=0.7,
+                context_efficiency=0.8,
+                latency_ms=10.0,
+                n_queries=10,
+                n_hits=8,
+            ),
+        )
 
 
 # ---------------------------------------------------------------------------

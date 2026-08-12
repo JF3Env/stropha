@@ -2,7 +2,7 @@
 
 WIN-382: Runs the golden set after every commit (from the hook's detached
 background), appends a timestamped score entry to a JSONL log, and detects
-regression by comparing the current Recall@K against the rolling mean of
+regression by comparing the current Success@K against the rolling mean of
 the last N entries.
 
 The log file defaults to ``~/.stropha/eval-scores.jsonl``. Each line is:
@@ -27,7 +27,7 @@ log = get_logger(__name__)
 
 DEFAULT_EVAL_LOG = Path("~/.stropha/eval-scores.jsonl").expanduser()
 REGRESSION_WINDOW = 10  # Rolling window for regression detection
-REGRESSION_THRESHOLD = 0.05  # Alert if Recall@K drops by more than 5pp
+REGRESSION_THRESHOLD = 0.05  # Alert if Success@K drops by more than 5pp
 
 
 def _get_head_sha() -> str:
@@ -68,6 +68,7 @@ def append_score(
     entry: dict[str, Any] = {
         "ts": datetime.now(UTC).isoformat(timespec="seconds"),
         "commit": sha,
+        "success_at_k": round(getattr(report, "success_at_k", report.recall_at_k), 4),
         "recall_at_k": round(report.recall_at_k, 4),
         "mrr": round(report.mrr, 4),
         "ndcg_at_k": round(report.ndcg_at_k, 4),
@@ -78,6 +79,8 @@ def append_score(
         "n_cases": report.n,
         "n_hits": report.n_hits,
         "top_k": report.top_k,
+        "provenance": dict(getattr(report, "provenance", {}) or {}),
+        "diagnostics": dict(getattr(report, "diagnostics", {}) or {}),
     }
 
     with open(path, "a", encoding="utf-8") as f:
@@ -114,11 +117,12 @@ def check_regression(
     log_path: Path | None = None,
     window: int = REGRESSION_WINDOW,
     threshold: float = REGRESSION_THRESHOLD,
+    fingerprint: dict[str, Any] | None = None,
 ) -> tuple[bool, str]:
-    """Check if current Recall@K is a regression vs the rolling mean.
+    """Check if current Success@K is a regression vs the rolling mean.
 
     Args:
-        current_recall: The Recall@K from the current eval run.
+        current_recall: The Success@K from the current eval run.
         log_path: Path to the JSONL log.
         window: Number of recent entries to average.
         threshold: How much of a drop (in absolute points) triggers a warning.
@@ -127,6 +131,8 @@ def check_regression(
         (is_regression, message) — True if Recall@K dropped significantly.
     """
     scores = load_scores(log_path)
+    if fingerprint:
+        scores = [entry for entry in scores if entry.get("provenance") == fingerprint]
 
     if len(scores) < 2:
         return False, "not enough history for regression detection"
@@ -136,12 +142,14 @@ def check_regression(
     if not recent:
         return False, "not enough history for regression detection"
 
-    rolling_mean = sum(e.get("recall_at_k", 0.0) for e in recent) / len(recent)
+    rolling_mean = sum(
+        e.get("success_at_k", e.get("recall_at_k", 0.0)) for e in recent
+    ) / len(recent)
     delta = current_recall - rolling_mean
 
     if delta < -threshold:
         msg = (
-            f"REGRESSION: Recall@K dropped from rolling mean "
+            f"REGRESSION: Success@K dropped from rolling mean "
             f"{rolling_mean:.4f} to {current_recall:.4f} "
             f"(delta={delta:+.4f}, threshold={threshold})"
         )
@@ -149,7 +157,7 @@ def check_regression(
         return True, msg
 
     msg = (
-        f"OK: Recall@K={current_recall:.4f} "
+        f"OK: Success@K={current_recall:.4f} "
         f"(rolling mean={rolling_mean:.4f}, delta={delta:+.4f})"
     )
     log.info("eval.tracker.ok", recall=current_recall, mean=rolling_mean)

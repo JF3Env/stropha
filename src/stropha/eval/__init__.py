@@ -1,9 +1,8 @@
-"""Evaluation harness — golden dataset + Recall@K + MRR (Phase 2 §16).
+"""Evaluation harness — golden dataset + ranked retrieval metrics.
 
 The harness runs deterministic offline metrics against a JSONL golden
-dataset. No LLM in the hot path — Recall@K is computed by checking
-whether any expected ``rel_path`` (or ``symbol``) appears in the top-K
-hits.
+dataset. Success@K records whether any expected entity appears, while
+Recall@K records the fraction of distinct judged entities retrieved.
 
 Why: lets us guard regressions when swapping adapters (drift detection,
 new enricher, new retrieval stream) without paying for LLM-judge runs.

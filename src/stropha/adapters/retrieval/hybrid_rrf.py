@@ -227,6 +227,18 @@ class HybridRrfRetrieval(RetrievalStage):
             detail=detail,
         )
 
+    def reset_diagnostics(self) -> None:
+        reset = getattr(self._reranker, "reset_diagnostics", None)
+        if callable(reset):
+            reset()
+
+    def diagnostics(self) -> dict[str, Any]:
+        out: dict[str, Any] = {}
+        get_reranker = getattr(self._reranker, "diagnostics", None)
+        if callable(get_reranker):
+            out["reranker"] = get_reranker()
+        return out
+
     # ----- search ---------------------------------------------------------
 
     def search(

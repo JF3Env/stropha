@@ -45,9 +45,26 @@ def test_partial_order_appends_missing_candidates() -> None:
 
 def test_invalid_response_preserves_original_order() -> None:
     hits = [_hit(1), _hit(2), _hit(3)]
+    reranker = LlmReranker()
     with patch("stropha.inference.generate", return_value="not json"):
-        result = LlmReranker().rerank("query", hits, top_k=2)
+        result = reranker.rerank("query", hits, top_k=2)
     assert result == hits[:2]
+    assert reranker.diagnostics()["attempts"] == 1
+    assert reranker.diagnostics()["fallbacks"] == 1
+
+
+def test_diagnostics_reset() -> None:
+    reranker = LlmReranker()
+    with patch("stropha.inference.generate", return_value="[2, 1]"):
+        reranker.rerank("query", [_hit(1), _hit(2)])
+    assert reranker.diagnostics()["successes"] == 1
+    reranker.reset_diagnostics()
+    assert reranker.diagnostics() == {
+        "attempts": 0,
+        "successes": 0,
+        "fallbacks": 0,
+        "latency_ms": 0.0,
+    }
 
 
 def test_parser_drops_invalid_duplicate_and_boolean_ids() -> None:

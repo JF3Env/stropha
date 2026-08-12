@@ -19,6 +19,7 @@ any layer without touching this one.
 
 from __future__ import annotations
 
+import copy
 import json
 from collections.abc import Iterable
 from pathlib import Path
@@ -40,7 +41,13 @@ class EvaluatorError(StrophaError):
 class _SearchEngineLike(Protocol):
     """Minimal slice of the SearchEngine surface the evaluator depends on."""
 
-    def search(self, query: str, top_k: int = 10) -> list[Any]:
+    def search(
+        self,
+        query: str,
+        *,
+        top_k: int = 10,
+        repo_id: int | None = None,
+    ) -> list[Any]:
         ...
 
 
@@ -102,15 +109,56 @@ def _baseline_tokens_from_repo(repo_size_bytes: int | None) -> int:
 
 
 def _returned_tokens_from_report(report: EvalReport) -> int:
-    """Sum the snippet-length-estimate across every hit in the report."""
-    total = 0
-    for r in report.results:
-        for rel in r.relevances:
-            # Each non-zero relevance corresponds to a hit; we do not have
-            # the snippet text here so approximate at 50 tokens/chunk.
-            if rel > 0:
-                total += 50
-    return total
+    """Sum actual snippet token estimates captured by the eval runner."""
+    captured = sum(r.returned_tokens for r in report.results)
+    if captured:
+        return captured
+    # Compatibility for synthetic EvalResults built without actual hits.
+    return sum(50 for r in report.results for rel in r.relevances if rel > 0)
+
+
+_QUERY_CONFIG_FIELDS = {
+    "hyde": "hyde_enabled",
+    "query_rewrite": "query_rewrite_enabled",
+    "multi_query": "multi_query_enabled",
+    "multi_query_count": "multi_query_count",
+    "recursive": "recursive_enabled",
+    "recursive_adjacency": "recursive_adjacency",
+    "adaptive_weighting": "adaptive_weighting",
+    "candidate_k": "candidate_k",
+    "rrf_k": "rrf_k",
+}
+
+
+def query_candidate_config(
+    base_config: dict[str, Any], candidate: dict[str, Any]
+) -> dict[str, Any]:
+    """Apply a flat Meta-Harness query candidate to a resolved pipeline config.
+
+    Indexing stages deliberately stay inherited from ``base_config``. This
+    prevents scoring an embedder/enricher proposal against vectors produced by
+    a different indexing identity.
+    """
+    resolved = copy.deepcopy(base_config)
+    retrieval = resolved.setdefault("retrieval", {}).setdefault("config", {})
+    remaining = dict(candidate)
+    if "reranker" in remaining:
+        reranker = remaining.pop("reranker")
+        if reranker in (None, "none", "null"):
+            retrieval["reranker"] = None
+        elif isinstance(reranker, dict):
+            retrieval["reranker"] = copy.deepcopy(reranker)
+        else:
+            retrieval["reranker"] = {"adapter": str(reranker)}
+    for candidate_key, config_key in _QUERY_CONFIG_FIELDS.items():
+        if candidate_key in remaining:
+            retrieval[config_key] = remaining.pop(candidate_key)
+    if remaining:
+        raise EvaluatorError(
+            "candidate contains indexing or unsupported dimensions: "
+            + ", ".join(sorted(remaining))
+        )
+    return resolved
 
 
 def evaluate_candidate(
@@ -123,6 +171,7 @@ def evaluate_candidate(
     head_sha: str | None = None,
     repo_size_bytes: int | None = None,
     labels: Iterable[TierLabel] | None = None,
+    repo_id: int | None = None,
 ) -> ScoreCard:
     """Run the golden against ``engine`` and build a fitness ScoreCard.
 
@@ -155,7 +204,12 @@ def evaluate_candidate(
             f"no cases to evaluate after filtering split={split!r}"
         )
 
-    report = run_eval(cases_list, engine, top_k=top_k)  # type: ignore[arg-type]
+    report = run_eval(
+        cases_list,
+        engine,  # type: ignore[arg-type]
+        top_k=top_k,
+        repo_id=repo_id,
+    )
 
     tier_labels: list[TierLabel] = []
     if labels is not None:
@@ -201,4 +255,5 @@ __all__ = [
     "EvaluatorError",
     "evaluate_candidate",
     "evaluate_from_golden",
+    "query_candidate_config",
 ]

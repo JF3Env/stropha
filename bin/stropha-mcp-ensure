@@ -96,7 +96,7 @@ _track_listener_pid() {
     # `uv run` can spawn the Python entry point and exit, making `$!` stale.
     # Once the server is ready, hand the pidfile to the sole process that
     # actually owns the listening socket.
-    set -- $(_port_listeners)
+    set -- "$(_port_listeners)"
     [ "$#" -eq 1 ] || return 1
     echo "$1" > "$PIDFILE"
 }

@@ -48,7 +48,7 @@ stages:
 
   reranker:
     indexing: false
-    choices: [noop, cross-encoder, code-aware]
+    choices: [noop, cross-encoder, code-aware, llm]
 
 
 features:
@@ -94,6 +94,20 @@ features:
     indexing: false
     type: bool
     default: true
+
+  candidate_k:
+    indexing: false
+    type: int
+    range: [10, 50]
+    step: 10
+    default: 20
+
+  rrf_k:
+    indexing: false
+    type: int
+    range: [20, 100]
+    step: 20
+    default: 60
 
   graph_fts_augment:
     indexing: true  # re-builds the FTS5 contentless table

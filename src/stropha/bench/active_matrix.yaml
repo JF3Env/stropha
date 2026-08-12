@@ -1,0 +1,33 @@
+# Query-focused matrix anchored to the currently deployed Stropha indexing stack.
+# This builds one isolated Qwen/contextual index, then reuses it for every
+# retrieval variant. It does not modify the operator's PostgreSQL index.
+repo: .
+golden: tests/eval/golden.jsonl
+top_k: 10
+
+axes:
+  embedder:
+    - adapter: mlx
+      model: mlx-community/Qwen3-Embedding-4B-4bit-DWQ
+      batch_size: 4
+  enricher: [contextual]
+  reranker: [null, llm]
+  candidate_k: [20, 50]
+  adaptive_weighting: [false, true]
+  learned_weights: [false, true]
+  recursive: [false, true]
+  recursive_adjacency: [3, 5, 10]
+  rrf_k: [40, 60, 80]
+
+baseline:
+  reranker: llm
+  candidate_k: 20
+  adaptive_weighting: true
+  learned_weights: true
+  recursive: true
+  recursive_adjacency: 5
+  rrf_k: 60
+
+constraints:
+  - skip_when: {recursive: false, recursive_adjacency: 3}
+  - skip_when: {recursive: false, recursive_adjacency: 10}

@@ -35,6 +35,18 @@ class _FakeEngine:
         return self._by_query.get(query, [])[:top_k]
 
 
+class _RepoScopedEngine(_FakeEngine):
+    def __init__(self, by_query: dict[str, list[_FakeHit]]) -> None:
+        super().__init__(by_query)
+        self.repo_ids: list[int | None] = []
+
+    def search(
+        self, query: str, *, top_k: int = 10, repo_id: int | None = None
+    ) -> list[_FakeHit]:
+        self.repo_ids.append(repo_id)
+        return super().search(query, top_k=top_k)
+
+
 # --------------------------------------------------------------------------- load_golden
 
 
@@ -70,6 +82,17 @@ def test_load_golden_missing_query_raises(tmp_path: Path) -> None:
     f = tmp_path / "g.jsonl"
     f.write_text('{"id":"x","expected_paths":["a"]}\n', encoding="utf-8")
     with pytest.raises(ValueError, match="missing required `query`"):
+        load_golden(f)
+
+
+def test_load_golden_rejects_duplicate_ids(tmp_path: Path) -> None:
+    f = tmp_path / "g.jsonl"
+    f.write_text(
+        '{"id":"same","query":"a","expected_paths":["a.py"]}\n'
+        '{"id":"same","query":"b","expected_paths":["b.py"]}\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="duplicate case id"):
         load_golden(f)
 
 
@@ -146,6 +169,59 @@ def test_aggregate_recall_across_cases() -> None:
     })
     report = run_eval(cases, engine, top_k=10)  # type: ignore[arg-type]
     assert report.recall_at_k == pytest.approx(2 / 3)
+
+
+def test_run_eval_passes_repository_scope() -> None:
+    engine = _RepoScopedEngine({"q": [_FakeHit("a.py", None)]})
+    report = run_eval(
+        [EvalCase(id="c", query="q", expected_paths=("a.py",))],
+        engine,  # type: ignore[arg-type]
+        repo_id=7,
+    )
+    assert report.success_at_k == 1.0
+    assert engine.repo_ids == [7]
+
+
+def test_duplicate_chunks_count_as_one_relevant_entity() -> None:
+    case = EvalCase(id="c", query="q", expected_paths=("a.py", "b.py"))
+    engine = _FakeEngine({
+        "q": [
+            _FakeHit("a.py", "one"),
+            _FakeHit("a.py", "two"),
+            _FakeHit("b.py", "three"),
+        ]
+    })
+    report = run_eval([case], engine, top_k=3)  # type: ignore[arg-type]
+    result = report.results[0]
+    assert result.relevant_count == 2
+    assert report.recall_at_k == 1.0
+    assert result.precision == pytest.approx(2 / 3)
+
+
+def test_success_and_entity_recall_are_distinct() -> None:
+    case = EvalCase(id="c", query="q", expected_paths=("a.py", "b.py"))
+    engine = _FakeEngine({"q": [_FakeHit("a.py", None)]})
+    report = run_eval([case], engine, top_k=2)  # type: ignore[arg-type]
+    assert report.success_at_k == 1.0
+    assert report.recall_at_k == 0.5
+
+
+def test_extra_symbol_entity_can_share_first_entities_path() -> None:
+    case = EvalCase(
+        id="c",
+        query="q",
+        expected_paths=("a.py",),
+        expected_symbols=("first", "second"),
+    )
+    engine = _FakeEngine({
+        "q": [
+            _FakeHit("a.py", "first"),
+            _FakeHit("a.py", "second"),
+        ]
+    })
+    report = run_eval([case], engine, top_k=2)  # type: ignore[arg-type]
+    assert report.results[0].relevant_count == 2
+    assert report.recall_at_k == 1.0
 
 
 def test_by_tag_buckets() -> None:

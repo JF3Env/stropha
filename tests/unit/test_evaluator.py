@@ -26,6 +26,7 @@ from stropha.meta import (
     TierLabel,
     evaluate_candidate,
     evaluate_from_golden,
+    query_candidate_config,
 )
 from stropha.meta.evaluator import (
     _baseline_tokens_from_repo,
@@ -50,7 +51,9 @@ class _FakeEngine:
     def __init__(self, mapping: dict[str, list[_FakeHit]] | None = None) -> None:
         self.mapping = mapping or {}
 
-    def search(self, query: str, top_k: int = 10) -> list[_FakeHit]:
+    def search(
+        self, query: str, *, top_k: int = 10, repo_id: int | None = None
+    ) -> list[_FakeHit]:
         return list(self.mapping.get(query, []))[:top_k]
 
 
@@ -171,6 +174,50 @@ class TestEvaluateCandidate:
     def test_no_repo_size_zero_efficiency(self) -> None:
         card = evaluate_candidate(engine=_engine(), cases=_cases(), split="search")
         assert card.context_efficiency == 0.0
+
+    def test_repository_scope_is_forwarded(self) -> None:
+        class _RecordingEngine(_FakeEngine):
+            def __init__(self, mapping: dict[str, list[_FakeHit]]) -> None:
+                super().__init__(mapping)
+                self.repo_ids: list[int | None] = []
+
+            def search(
+                self, query: str, *, top_k: int = 10, repo_id: int | None = None
+            ) -> list[_FakeHit]:
+                self.repo_ids.append(repo_id)
+                return super().search(query, top_k=top_k, repo_id=repo_id)
+
+        engine = _RecordingEngine({"q-search-1": [_FakeHit("src/a.py")]})
+        evaluate_candidate(engine=engine, cases=_cases(), split="search", repo_id=9)
+        assert engine.repo_ids == [9, 9]
+
+
+class TestQueryCandidateConfig:
+    def test_applies_query_fields_without_changing_indexing_stages(self) -> None:
+        base = {
+            "embedder": {"adapter": "mlx"},
+            "enricher": {"adapter": "contextual"},
+            "retrieval": {"adapter": "hybrid-rrf", "config": {}},
+        }
+        resolved = query_candidate_config(base, {
+            "reranker": "llm",
+            "candidate_k": 40,
+            "rrf_k": 80,
+            "recursive": True,
+        })
+        assert resolved["embedder"] == base["embedder"]
+        assert resolved["enricher"] == base["enricher"]
+        assert resolved["retrieval"]["config"]["reranker"] == {"adapter": "llm"}
+        assert resolved["retrieval"]["config"]["candidate_k"] == 40
+        assert resolved["retrieval"]["config"]["rrf_k"] == 80
+        assert resolved["retrieval"]["config"]["recursive_enabled"] is True
+
+    def test_rejects_indexing_dimension(self) -> None:
+        with pytest.raises(EvaluatorError, match="indexing or unsupported"):
+            query_candidate_config(
+                {"retrieval": {"config": {}}},
+                {"embedder": "voyage"},
+            )
 
 
 # ---------------------------------------------------------------------------

@@ -50,8 +50,12 @@ _FEATURE_FIELD: dict[str, str] = {
 # axis name -> retrieval.config key (pipeline, query-time)
 _RETRIEVAL_FIELD: dict[str, str] = {
     "candidate_k": "candidate_k",
-    "rrf_k": "k",
-    "k": "k",
+    "rrf_k": "rrf_k",
+    "k": "rrf_k",
+    "recursive": "recursive_enabled",
+    "recursive_adjacency": "recursive_adjacency",
+    "adaptive_weighting": "adaptive_weighting",
+    "learned_weights": "learned_weights_enabled",
 }
 
 

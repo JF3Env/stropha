@@ -53,13 +53,10 @@ FEATURE_AXES: frozenset[str] = frozenset(
     {
         "hyde",
         "hyde_code_tuned",
-        "recursive",
-        "recursive_adjacency",
         "query_rewrite",
         "query_decomposition",
         "multi_query",
         "multi_query_count",
-        "adaptive_weighting",
         "cache_enabled",
     }
 )

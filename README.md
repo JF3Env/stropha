@@ -377,6 +377,22 @@ The evaluation harness uses the repository's JSONL golden set:
 uv run stropha eval --top-k 10
 ```
 
+Evaluation defaults to the configured target repository, matching MCP search
+scope. It reports query success, entity recall, MRR, NDCG, MAP, latency,
+pipeline/index provenance, and reranker fallback diagnostics. Use
+`--include-other-repos` only for an explicit cross-repository benchmark and
+`--require-clean-index` when non-comparable index drift must fail CI.
+
+The Meta-Harness evaluates query-time candidates against the active compatible
+index rather than synthetic scores:
+
+```bash
+uv run stropha meta run --iterations 5 --proposer bandit
+```
+
+The active-stack benchmark matrix is available at
+`src/stropha/bench/active_matrix.yaml`.
+
 Public documentation intentionally does not publish fixed latency, memory,
 quality, test-count, or dataset-size claims. Measure the active configuration on
 the target repository instead.
