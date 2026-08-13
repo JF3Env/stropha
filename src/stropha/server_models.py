@@ -220,6 +220,7 @@ class SmartSearchResponse(BaseModel):
     symbol: str | None = Field(default=None, description="Extracted symbol name, if any")
     tool_used: str = Field(description="The actual tool invoked (find_callers, search_code, etc.)")
     confidence: float = Field(description="Routing confidence (0.0-1.0)")
+    route_reason: str = Field(description="Why this route or fallback was selected")
     graph_available: bool = Field(default=True, description="Whether the graph is loaded")
     trace_id: str | None = Field(
         default=None,

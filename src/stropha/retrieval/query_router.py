@@ -77,11 +77,12 @@ _INTENT_PATTERNS: list[tuple[re.Pattern, QueryIntent, int | None]] = [
     # trace_feature patterns - these capture more text, not just symbols
     (re.compile(r"trace\s+(?:the\s+)?(?:feature\s+)?[`'\"]?(.+?)[`'\"]?(?:\s+flow)?$", re.I), QueryIntent.TRACE_FEATURE, 1),
     (re.compile(r"follow\s+(?:the\s+)?[`'\"]?(.+?)[`'\"]?\s+(?:flow|path)", re.I), QueryIntent.TRACE_FEATURE, 1),
-    (re.compile(r"how\s+does\s+(?:the\s+)?[`'\"]?(.+?)[`'\"]?\s+(?:flow|work|execute)", re.I), QueryIntent.TRACE_FEATURE, 1),
+    (re.compile(r"how\s+does\s+(?:the\s+)?[`'\"]?(.+?)[`'\"]?\s+(?:flow|execute)$", re.I), QueryIntent.TRACE_FEATURE, 1),
     (re.compile(r"execution\s+(?:path|flow)\s+(?:for|of)\s+[`'\"]?(.+?)[`'\"]?$", re.I), QueryIntent.TRACE_FEATURE, 1),
     
     # get_symbol patterns (exact symbol lookup) - stricter, at end of query
     (re.compile(rf"show\s+(?:me\s+)?(?:the\s+)?{_SYMBOL}$", re.I), QueryIntent.GET_SYMBOL, 1),
+    (re.compile(rf"(?:find\s+|show\s+me\s+)?(?:the\s+)?definition\s+(?:of|for)\s+{_SYMBOL}$", re.I), QueryIntent.GET_SYMBOL, 1),
     (re.compile(rf"get\s+(?:the\s+)?(?:definition\s+(?:of|for)\s+)?{_SYMBOL}$", re.I), QueryIntent.GET_SYMBOL, 1),
     (re.compile(rf"where\s+is\s+{_SYMBOL}\s+defined", re.I), QueryIntent.GET_SYMBOL, 1),
     (re.compile(rf"^{_SYMBOL}$", re.I), QueryIntent.GET_SYMBOL, 1),  # bare symbol name

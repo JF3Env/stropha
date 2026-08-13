@@ -54,6 +54,19 @@ class TestPatternRouter:
         router = PatternRouter(PatternRouterConfig(use_llm_fallback=True))
         assert router.adapter_id == "pattern:llm=1"
 
+    def test_default_explicitly_disables_llm_classification(self) -> None:
+        router = PatternRouter()
+        with patch("stropha.adapters.router.pattern.route_query") as route:
+            route.return_value = RoutedQuery(
+                intent=QueryIntent.SEARCH_CODE,
+                symbol=None,
+                original_query="q",
+                confidence=0.5,
+                reason="fallback",
+            )
+            router.route("q")
+        route.assert_called_once_with("q", use_llm=False)
+
     def test_classifies_callers_query(self) -> None:
         router = PatternRouter()
         result = router.route("what calls FsrsCalculator")
@@ -71,10 +84,73 @@ class TestPatternRouter:
     ) -> None:
         router = PatternRouter()
         result = router.route("how does the auth flow work")
-        assert result.intent in (
-            QueryIntent.SEARCH_CODE,
-            QueryIntent.TRACE_FEATURE,  # "how does ... work" pattern
+        assert result.intent == QueryIntent.SEARCH_CODE
+
+    @pytest.mark.parametrize(
+        ("query", "intent", "symbol"),
+        [
+            ("what calls FsrsCalculator", QueryIntent.FIND_CALLERS, "FsrsCalculator"),
+            ("who uses UserService.authenticate", QueryIntent.FIND_CALLERS, "UserService.authenticate"),
+            ("callers of build_stages", QueryIntent.FIND_CALLERS, "build_stages"),
+            ("where is Pipeline.run called", QueryIntent.FIND_CALLERS, "Pipeline.run"),
+            ("tests for StreamWeightProfiles", QueryIntent.FIND_TESTS, "StreamWeightProfiles"),
+            ("how is smart_search tested", QueryIntent.FIND_TESTS, "smart_search"),
+            ("test coverage for PatternRouter", QueryIntent.FIND_TESTS, "PatternRouter"),
+            ("what relates to SearchEngine", QueryIntent.FIND_RELATED, "SearchEngine"),
+            ("related symbols for QueryIntent", QueryIntent.FIND_RELATED, "QueryIntent"),
+            ("Pipeline dependencies", QueryIntent.FIND_RELATED, "Pipeline"),
+            ("trace feature user submits answer", QueryIntent.TRACE_FEATURE, "user submits answer"),
+            ("follow the checkout flow", QueryIntent.TRACE_FEATURE, "checkout"),
+            ("how does request handling flow", QueryIntent.TRACE_FEATURE, "request handling"),
+            ("execution path for indexing", QueryIntent.TRACE_FEATURE, "indexing"),
+            ("where is HybridRrfRetrieval defined", QueryIntent.GET_SYMBOL, "HybridRrfRetrieval"),
+            ("definition of StreamWeightProfile", QueryIntent.GET_SYMBOL, "StreamWeightProfile"),
+            ("show me PatternRouter", QueryIntent.GET_SYMBOL, "PatternRouter"),
+            ("FsrsCalculator", QueryIntent.GET_SYMBOL, "FsrsCalculator"),
+            ("how does authentication work", QueryIntent.SEARCH_CODE, None),
+            ("explain retrieval quality", QueryIntent.SEARCH_CODE, None),
+        ],
+    )
+    def test_deterministic_routing_benchmark(
+        self,
+        query: str,
+        intent: QueryIntent,
+        symbol: str | None,
+    ) -> None:
+        result = PatternRouter().route(query)
+        assert result.intent == intent
+        assert result.symbol == symbol
+
+    def test_deterministic_routing_accuracy_gate(self) -> None:
+        cases = [
+            ("what calls FsrsCalculator", QueryIntent.FIND_CALLERS, "FsrsCalculator"),
+            ("who uses UserService", QueryIntent.FIND_CALLERS, "UserService"),
+            ("tests for SearchEngine", QueryIntent.FIND_TESTS, "SearchEngine"),
+            ("how is smart_search tested", QueryIntent.FIND_TESTS, "smart_search"),
+            ("what relates to Pipeline", QueryIntent.FIND_RELATED, "Pipeline"),
+            ("Pipeline dependencies", QueryIntent.FIND_RELATED, "Pipeline"),
+            ("trace feature user login", QueryIntent.TRACE_FEATURE, "user login"),
+            ("how does request handling flow", QueryIntent.TRACE_FEATURE, "request handling"),
+            ("definition of PatternRouter", QueryIntent.GET_SYMBOL, "PatternRouter"),
+            ("where is SearchEngine defined", QueryIntent.GET_SYMBOL, "SearchEngine"),
+            ("how does authentication work", QueryIntent.SEARCH_CODE, None),
+            ("explain retrieval quality", QueryIntent.SEARCH_CODE, None),
+            ("find code handling malformed profiles", QueryIntent.SEARCH_CODE, None),
+            ("why is RRF used here", QueryIntent.SEARCH_CODE, None),
+            ("show examples of storage migration", QueryIntent.SEARCH_CODE, None),
+            ("what validates user input", QueryIntent.SEARCH_CODE, None),
+            ("how are adapters registered", QueryIntent.SEARCH_CODE, None),
+            ("describe the indexing pipeline", QueryIntent.SEARCH_CODE, None),
+            ("where is query routing configured", QueryIntent.SEARCH_CODE, None),
+            ("what happens after a commit", QueryIntent.SEARCH_CODE, None),
+        ]
+        correct = sum(
+            (result := PatternRouter().route(query)).intent == intent
+            and result.symbol == symbol
+            for query, intent, symbol in cases
         )
+
+        assert correct / len(cases) >= 0.95
 
     def test_route_query_exception_returns_searchcode_fallback(
         self,
@@ -298,3 +374,128 @@ class TestSmartSearchUsesRouter:
         ) as mock_legacy:
             smart_search("q", storage, embedder, top_k=5)
         mock_legacy.assert_called_once()
+
+    @pytest.mark.parametrize(
+        ("intent", "symbol", "tool", "patched"),
+        [
+            (QueryIntent.FIND_CALLERS, "Foo", "find_callers", "find_callers"),
+            (QueryIntent.FIND_TESTS, "Foo", "find_tests_for", "find_tests_for"),
+            (QueryIntent.FIND_RELATED, "Foo", "find_related", "find_related"),
+            (QueryIntent.TRACE_FEATURE, "feature flow", "trace_feature", "trace_feature"),
+        ],
+    )
+    def test_graph_routes_preserve_repository_scope(
+        self,
+        intent: QueryIntent,
+        symbol: str,
+        tool: str,
+        patched: str,
+    ) -> None:
+        from stropha.retrieval.smart_search import smart_search
+
+        router = MagicMock()
+        router.route.return_value = RoutedQuery(
+            intent=intent,
+            symbol=symbol,
+            original_query="q",
+            confidence=0.9,
+            reason="benchmark route",
+        )
+        graph_result = {"paths": []} if intent == QueryIntent.TRACE_FEATURE else {}
+        with (
+            patch("stropha.retrieval.graph.graph_loaded", return_value=True),
+            patch(f"stropha.retrieval.graph.{patched}", return_value=graph_result) as dispatch,
+        ):
+            result = smart_search(
+                "q",
+                MagicMock(),
+                MagicMock(),
+                router=router,
+                repo_id=42,
+            )
+
+        assert result.tool_used == tool
+        assert dispatch.call_args.kwargs["repo_id"] == 42
+
+    def test_symbol_route_preserves_repository_scope(self) -> None:
+        from stropha.retrieval.smart_search import smart_search
+
+        router = MagicMock()
+        router.route.return_value = RoutedQuery(
+            intent=QueryIntent.GET_SYMBOL,
+            symbol="Foo",
+            original_query="q",
+            confidence=0.9,
+            reason="benchmark route",
+        )
+        storage = MagicMock()
+        storage.lookup_by_symbol.return_value = []
+
+        result = smart_search("q", storage, MagicMock(), router=router, repo_id=42)
+
+        assert result.tool_used == "get_symbol"
+        storage.lookup_by_symbol.assert_called_once_with("Foo", limit=10, repo_id=42)
+
+    def test_graph_unavailable_fallback_is_explicit_and_scoped(self) -> None:
+        from stropha.retrieval.smart_search import smart_search
+
+        router = MagicMock()
+        router.route.return_value = RoutedQuery(
+            intent=QueryIntent.FIND_CALLERS,
+            symbol="Foo",
+            original_query="what calls Foo",
+            confidence=0.9,
+            reason="callers pattern",
+        )
+        engine = MagicMock()
+        engine.search.return_value = []
+        storage = MagicMock()
+        with patch("stropha.retrieval.graph.graph_loaded", return_value=False) as loaded:
+            result = smart_search(
+                "what calls Foo",
+                storage,
+                MagicMock(),
+                router=router,
+                search_engine=engine,
+                repo_id=42,
+            )
+
+        assert result.tool_used == "search_code"
+        assert result.routed.intent == QueryIntent.SEARCH_CODE
+        assert "graph not loaded" in result.routed.reason
+        loaded.assert_called_once_with(storage, repo_id=42)
+        engine.search.assert_called_once_with("what calls Foo", top_k=10, repo_id=42)
+
+
+class TestSmartSearchMcpMetadata:
+    def test_response_surfaces_route_reason_and_repository_scope(self) -> None:
+        from stropha.retrieval.smart_search import SmartSearchResult
+        from stropha.server_discovery_tools import smart_search_tool_impl
+
+        routed = RoutedQuery(
+            intent=QueryIntent.SEARCH_CODE,
+            symbol="Foo",
+            original_query="what calls Foo",
+            confidence=0.45,
+            reason="graph not loaded, fallback from find_callers",
+        )
+        result = SmartSearchResult(hits=[], routed=routed, tool_used="search_code")
+        app = MagicMock()
+        search = MagicMock(return_value=result)
+
+        response = smart_search_tool_impl(
+            "what calls Foo",
+            10,
+            False,
+            app,
+            to_result=MagicMock(),
+            smart_search_fn=search,
+            graph_loaded_fn=MagicMock(return_value=False),
+            repo_id=42,
+            log=MagicMock(),
+        )
+
+        assert response.route_reason == routed.reason
+        assert response.confidence == 0.45
+        assert response.graph_available is False
+        assert search.call_args.kwargs["repo_id"] == 42

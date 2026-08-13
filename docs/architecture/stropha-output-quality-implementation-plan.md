@@ -708,6 +708,16 @@ to infer exact relationships.
 - No silent empty graph-gated response.
 - Added routing latency is negligible for pattern-routed queries.
 
+The deterministic Phase 5 routing slice completed on 2026-08-13. A 20-case
+benchmark covering callers, tests, related symbols, feature traces, exact symbol
+definitions, and ambiguous conceptual searches reached 20/20 correct intent and
+symbol classifications (100%, above the 95% gate) without LLM fallback.
+`PatternRouter` now explicitly disables LLM classification unless its adapter
+configuration opts in. Routed graph and symbol tools preserve repository scope;
+when the graph is unavailable, smart search performs an explicit semantic fallback
+whose route, confidence, and reason are exposed in MCP response metadata. The
+structural holdout retrieval-quality comparison remains a separate promotion gate.
+
 ## 12. Phase 6: Selective Query Expansion
 
 ### Goal
@@ -983,11 +993,11 @@ compatible reindex and must never be hidden by editing metadata.
 
 ### Phase 5
 
-- [ ] Build routing benchmark.
-- [ ] Enable deterministic structural routing in experiments.
-- [ ] Preserve explicit graph-unavailable responses.
-- [ ] Surface route diagnostics.
-- [ ] Reach at least 95% deterministic routing accuracy.
+- [x] Build routing benchmark.
+- [x] Enable deterministic structural routing in experiments.
+- [x] Preserve explicit graph-unavailable responses.
+- [x] Surface route diagnostics.
+- [x] Reach at least 95% deterministic routing accuracy.
 
 ### Phase 6
 

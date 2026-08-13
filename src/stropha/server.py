@@ -943,6 +943,7 @@ def smart_search_tool(
             symbol=None,
             tool_used="search_code",
             confidence=0.0,
+            route_reason="current repository is not indexed",
             graph_available=False,
         )
     return smart_search_tool_impl(

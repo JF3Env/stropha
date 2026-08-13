@@ -22,10 +22,9 @@ from ...stages.router import RouterStage
 class PatternRouterConfig(BaseModel):
     """Config for the pattern-based router.
 
-    ``use_llm_fallback=True`` forces the underlying ``route_query`` to
-    consult an LLM for ambiguous cases. ``False`` does not force it off;
-    it delegates to ``retrieval_features.query_router_llm``. The effective
-    behavior is therefore enabled when either setting is true.
+    ``use_llm_fallback=True`` allows the underlying ``route_query`` to
+    consult an LLM for ambiguous cases. ``False`` keeps this adapter fully
+    deterministic regardless of the global router setting.
     """
 
     use_llm_fallback: bool = Field(
@@ -84,9 +83,7 @@ class PatternRouter(RouterStage):
         try:
             return route_query(
                 query,
-                use_llm=(
-                    self._config.use_llm_fallback or None
-                ),
+                use_llm=self._config.use_llm_fallback,
             )
         except Exception as exc:
             # Emergency fallback to SEARCH_CODE with low confidence.

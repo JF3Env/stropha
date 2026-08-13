@@ -46,6 +46,7 @@ def smart_search_tool_impl(
             symbol=result.routed.symbol,
             tool_used=result.tool_used,
             confidence=result.routed.confidence,
+            route_reason=result.routed.reason,
             graph_available=graph_loaded_fn(app.storage, repo_id=repo_id),
         )
     except StrophaError as exc:
@@ -58,6 +59,7 @@ def smart_search_tool_impl(
             symbol=None,
             tool_used="search_code",
             confidence=0.0,
+            route_reason=f"smart search failed: {exc}",
             graph_available=graph_loaded_fn(app.storage, repo_id=repo_id),
         )
 

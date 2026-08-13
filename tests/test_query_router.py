@@ -61,7 +61,6 @@ class TestPatternMatching:
     @pytest.mark.parametrize("query,expected_symbol", [
         ("trace feature card review", "card review"),
         ("trace the login flow", "login"),  # "the" is captured but trimmed
-        ("how does mastery calculation work", "mastery calculation"),
         ("how does scheduler flow", "scheduler"),
         ("execution path for submitAnswer", "submitAnswer"),
     ])
@@ -92,6 +91,7 @@ class TestPatternMatching:
         "find all database queries",
         "show me authentication logic",
         "list all API endpoints",
+        "how does mastery calculation work",
     ])
     def test_search_code_fallback(self, query: str):
         result = route_query(query, use_llm=False)
