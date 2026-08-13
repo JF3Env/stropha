@@ -16,24 +16,29 @@ that graded IDCG counted paired path and symbol aliases twice.
 
 `phase3-unseen-holdout-v4` is the corrected replacement. Its 30 cases were
 authored from source review, have no ID or normalized-query overlap with the
-54-case golden or invalidated v1 catalog, and are excluded from indexing. Do not
-inspect retrieval results until the repository changes and verification for this
-cohort are complete.
+54-case golden or invalidated v1 catalog, and are excluded from indexing. It was
+executed once after commit `7b71c6a` and is now exposed; do not rerun or tune
+against it. Every future unseen cohort must include the v4 catalog in
+`exposed_catalogs`.
 
 Frozen v4 cohort SHA-256:
 `2100642667cce8be364c33c8e1d360ad16a4dbe115d043530a20482ca507ee58`.
 
+V4 did not promote `rrf_k=40`. NDCG@10 improved from `0.8419` to `0.8451`
+(`+0.0032`) against the required `+0.02`; all other gates and verification
+steps passed. Production remains at `rrf_k=60`.
+
 ```bash
 uv run stropha bench batch \
-  src/stropha/bench/phase3_v4_holdout_batch.yaml \
+  path/to/new-unseen-batch.yaml \
   --prepare-only
 
 uv run stropha bench batch \
-  src/stropha/bench/phase3_v4_holdout_batch.yaml
+  path/to/new-unseen-batch.yaml
 ```
 
 The first command validates and freezes the catalog without executing retrieval.
-The second command runs the frozen baseline/candidate matrix, applies promotion
+The execution command runs a frozen baseline/candidate matrix, applies promotion
 gates, runs the named verification profile, and writes `decision.json`.
 
 Reusing a batch name with changed cohort data is rejected. Create a new batch name

@@ -484,9 +484,14 @@ not positionally paired. It was never executed. The corrected catalog uses the
 new `phase3-unseen-holdout-v3` name, then pre-commit review found that graded
 IDCG counted paired path and symbol aliases twice. V3 was never executed. The
 evaluator now derives ideal relevance once per positional entity, and the cohort
-uses the new `phase3-unseen-holdout-v4` protocol name. V4 is frozen but
-unexecuted with SHA-256
+uses the new `phase3-unseen-holdout-v4` protocol name. V4 was frozen without
+execution at SHA-256
 `2100642667cce8be364c33c8e1d360ad16a4dbe115d043530a20482ca507ee58`.
+After commit `7b71c6a`, V4 was executed once. The `rrf_k=40` candidate improved
+NDCG@10 from `0.8419` to `0.8451` (`+0.0032`), below the required `+0.02`, so it
+was not eligible for promotion. Every other aggregate, safety, per-tag,
+per-case, and verification gate passed. Production remains at `rrf_k=60`; V4
+is now exposed and must not be rerun or used for tuning.
 
 ## 9. Phase 3: Representative Graded Golden Dataset
 
