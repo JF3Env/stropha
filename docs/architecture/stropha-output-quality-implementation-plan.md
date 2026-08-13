@@ -631,6 +631,19 @@ per-repository retrieval-weight updates.
   holdout.
 - Active weight provenance is visible through config diagnostics.
 
+The first Phase 4 evidence-contract slice completed on 2026-08-13. Feedback
+reasons now map to isolated relevance, freshness, diversity, packing, or review
+channels; only relevance reports may train stream weights. Training examples are
+deduplicated by task and chunk with explicit relevance feedback taking precedence
+over post-commit outcome labels. Backfill writes schema-v2 candidates with unique
+example counts, source counts, generation time, and commit range to
+`stream-weight-candidates/`. Hybrid retrieval loads only separately activated
+profiles with at least 50 attributable examples and benchmark evidence showing a
+search NDCG gain with no holdout NDCG regression. Invalid, legacy, low-sample, or
+unvalidated profiles fail closed. `stropha meta stream-weights report` exposes
+active and blocked evidence; `validate` records externally produced benchmark
+deltas. Automated benchmark execution before activation remains pending.
+
 ## 11. Phase 5: Structural Query Routing
 
 ### Goal
@@ -953,10 +966,10 @@ compatible reindex and must never be hidden by editing metadata.
 
 ### Phase 4
 
-- [ ] Map feedback reasons to learning channels.
-- [ ] Deduplicate explicit and post-commit labels.
-- [ ] Add profile evidence and reporting.
-- [ ] Enforce minimum observations and regularization.
+- [x] Map feedback reasons to learning channels.
+- [x] Deduplicate explicit and post-commit labels.
+- [x] Add profile evidence and reporting.
+- [x] Enforce minimum observations and regularization.
 - [ ] Validate learned weights on holdout.
 
 ### Phase 5

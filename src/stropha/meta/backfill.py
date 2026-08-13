@@ -35,7 +35,7 @@ from typing import Any
 from ..errors import StrophaError
 from ..ingest.git_meta import detect as detect_repo
 from ..logging import get_logger
-from .feedback import BadResultStore, resolve_bad_chunks
+from .feedback import BadResultStore, learning_channel, resolve_bad_chunks
 from .outcome import (
     LabelingContext,
     Tier,
@@ -90,6 +90,9 @@ class BackfillSummary:
     stream_weights_repo: str | None = None
     stream_weights: dict[str, float] = field(default_factory=dict)
     stream_weight_observations: dict[str, int] = field(default_factory=dict)
+    stream_weight_examples: int = 0
+    stream_weight_source_counts: dict[str, int] = field(default_factory=dict)
+    feedback_channel_counts: dict[str, int] = field(default_factory=dict)
     stream_weights_path: str | None = None
     output_path: str | None = None
 
@@ -111,6 +114,9 @@ class BackfillSummary:
             "stream_weights_repo": self.stream_weights_repo,
             "stream_weights": self.stream_weights,
             "stream_weight_observations": self.stream_weight_observations,
+            "stream_weight_examples": self.stream_weight_examples,
+            "stream_weight_source_counts": self.stream_weight_source_counts,
+            "feedback_channel_counts": self.feedback_channel_counts,
             "stream_weights_path": self.stream_weights_path,
             "output_path": self.output_path,
             "generated_at": datetime.now(tz=UTC).isoformat(),
@@ -268,12 +274,18 @@ def run_backfill(
 
     # Resolve bad results once.
     bad_chunks: set[str] = set()
+    relevance_trace_ids: set[str] = set()
+    feedback_channel_counts: dict[str, int] = {}
     try:
         store = BadResultStore(meta_dir)
-        bad_trace_ids = store.trace_ids()
-        if bad_trace_ids:
+        for report in store.list_all():
+            channel = learning_channel(report.reason)
+            feedback_channel_counts[channel] = feedback_channel_counts.get(channel, 0) + 1
+            if channel == "relevance":
+                relevance_trace_ids.add(report.trace_id)
+        if relevance_trace_ids:
             bad_chunks = resolve_bad_chunks(
-                bad_trace_ids,
+                relevance_trace_ids,
                 sorted(traces_dir.glob("*.jsonl")),
             )
     except OSError as exc:
@@ -288,7 +300,9 @@ def run_backfill(
     )
 
     all_labels: list[TierLabel] = []
-    labeled_hits: list[dict[str, Any]] = []
+    learning_examples: dict[
+        tuple[str, str], tuple[dict[str, Any], TierLabel, str]
+    ] = {}
     per_trace: dict[str, float] = {}
     task_keys: set[str] = set()
     solved_task_keys: set[str] = set()
@@ -304,24 +318,52 @@ def run_backfill(
         if not hits:
             continue
         labels = label_hits(hits, ctx)
-        labeled_hits.extend(hits)
         all_labels.extend(labels)
+        trace_id = str(trace.get("trace_id") or "")
+        explicit_relevance = trace_id in relevance_trace_ids
+        for hit_index, (hit, label) in enumerate(zip(hits, labels, strict=True)):
+            entity = str(
+                hit.get("chunk_id")
+                or hit.get("rel_path")
+                or hit.get("symbol")
+                or f"result:{hit_index}"
+            )
+            key = (task_key, entity)
+            source = "explicit" if explicit_relevance else "outcome"
+            existing = learning_examples.get(key)
+            if existing is None or (source == "explicit" and existing[2] != "explicit"):
+                learning_examples[key] = (hit, label, source)
         if any(label.score > 0 for label in labels):
             solved_task_keys.add(task_key)
-        trace_id = str(trace.get("trace_id") or "")
         if trace_id:
             per_trace[trace_id] = aggregate_score(labels)
 
     repo_key = detect_repo(repo_dir).normalized_key
+    attributable_examples = []
+    for example in learning_examples.values():
+        hit = example[0]
+        repo = hit.get("repo")
+        hit_repo = repo.get("normalized_key") if isinstance(repo, dict) else None
+        streams = hit.get("streams")
+        if hit_repo == repo_key and isinstance(streams, dict) and streams:
+            attributable_examples.append(example)
+    labeled_hits = [example[0] for example in attributable_examples]
+    learning_labels = [example[1] for example in attributable_examples]
+    source_counts: dict[str, int] = {}
+    for _hit, _label, source in attributable_examples:
+        source_counts[source] = source_counts.get(source, 0) + 1
     profile = fit_stream_weights(
         labeled_hits,
-        all_labels,
+        learning_labels,
         repo_key=repo_key,
+        source_counts=source_counts,
+        since_sha=since_sha,
+        head_sha=head_resolved,
     )
     stream_weights_path: str | None = None
     if profile is not None:
         try:
-            path = write_stream_weight_profile(meta_dir / "stream-weights", profile)
+            path = write_stream_weight_profile(meta_dir / "stream-weight-candidates", profile)
             stream_weights_path = str(path)
         except OSError as exc:
             log.warning(
@@ -354,6 +396,11 @@ def run_backfill(
         stream_weight_observations=(
             dict(profile.observations) if profile is not None else {}
         ),
+        stream_weight_examples=profile.examples if profile is not None else 0,
+        stream_weight_source_counts=(
+            dict(profile.source_counts) if profile is not None else {}
+        ),
+        feedback_channel_counts=feedback_channel_counts,
         stream_weights_path=stream_weights_path,
     )
 

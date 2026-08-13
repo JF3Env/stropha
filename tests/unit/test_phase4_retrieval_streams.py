@@ -406,9 +406,15 @@ def test_hybrid_rrf_applies_learned_weights_for_hit_repo(tmp_path: Path) -> None
         StreamWeightProfile(
             repo="repo-a",
             weights={"dense": 0.5, "sparse": 1.5},
-            observations={"dense": 10, "sparse": 10},
+            observations={"dense": 50, "sparse": 50},
             mean_scores={"dense": -0.2, "sparse": 0.2},
             generated_at="2026-07-24T00:00:00+00:00",
+            examples=50,
+            source_counts={"outcome": 50},
+            since_sha="a",
+            head_sha="b",
+            validated=True,
+            validation={"search_ndcg_delta": 0.02, "holdout_ndcg_delta": 0.0},
         ),
     )
     retrieval = HybridRrfRetrieval(

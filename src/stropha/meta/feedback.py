@@ -53,6 +53,26 @@ BadResultReason = Literal[
     "too_verbose",
     "other",
 ]
+LearningChannel = Literal["relevance", "freshness", "diversity", "packing", "review"]
+
+_REASON_CHANNELS: dict[str, LearningChannel] = {
+    "irrelevant": "relevance",
+    "wrong_symbol": "relevance",
+    "stale": "freshness",
+    "duplicate": "diversity",
+    "too_verbose": "packing",
+    "other": "review",
+}
+
+
+def learning_channel(reason: BadResultReason) -> LearningChannel:
+    """Return the only optimization channel a feedback reason may affect."""
+    try:
+        return _REASON_CHANNELS[reason]
+    except KeyError as exc:
+        raise FeedbackError(
+            f"unknown reason {reason!r}; expected one of {sorted(_VALID_REASONS)}"
+        ) from exc
 
 
 class FeedbackError(StrophaError):
@@ -172,10 +192,14 @@ class BadResultStore:
                             line=raw[:120],
                         )
                         continue
+                    reason = obj.get("reason", "other")
+                    if reason not in _VALID_REASONS:
+                        log.warning("feedback.unknown_reason", reason=reason)
+                        continue
                     records.append(
                         BadResult(
                             trace_id=str(obj.get("trace_id", "")),
-                            reason=obj.get("reason", "other"),
+                            reason=reason,
                             detail=obj.get("detail"),
                             session_id=obj.get("session_id"),
                             ts=str(obj.get("ts", "")),

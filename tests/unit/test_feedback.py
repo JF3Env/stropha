@@ -18,6 +18,7 @@ import pytest
 from stropha.meta import (
     BadResultStore,
     FeedbackError,
+    learning_channel,
     resolve_bad_chunks,
 )
 
@@ -80,6 +81,20 @@ class TestBadResultStore:
         store = BadResultStore(str(tmp_path / "m"))
         assert store.base_dir == tmp_path / "m"
 
+    @pytest.mark.parametrize(
+        ("reason", "channel"),
+        [
+            ("irrelevant", "relevance"),
+            ("wrong_symbol", "relevance"),
+            ("stale", "freshness"),
+            ("duplicate", "diversity"),
+            ("too_verbose", "packing"),
+            ("other", "review"),
+        ],
+    )
+    def test_reason_maps_to_one_learning_channel(self, reason: str, channel: str) -> None:
+        assert learning_channel(reason) == channel  # type: ignore[arg-type]
+
 
 # ---------------------------------------------------------------------------
 # list_all + trace_ids
@@ -91,6 +106,15 @@ class TestListAndTraceIds:
         store = BadResultStore(tmp_path)
         assert store.list_all() == []
         assert store.trace_ids() == set()
+
+    def test_skips_unknown_historical_reason(self, tmp_path: Path) -> None:
+        store = BadResultStore(tmp_path)
+        store.path.write_text(
+            json.dumps({"trace_id": "bad", "reason": "invented"}) + "\n",
+            encoding="utf-8",
+        )
+
+        assert store.list_all() == []
 
     def test_lists_each_record(self, tmp_path: Path) -> None:
         store = BadResultStore(tmp_path)

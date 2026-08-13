@@ -237,6 +237,8 @@ class HybridRrfRetrieval(RetrievalStage):
         get_reranker = getattr(self._reranker, "diagnostics", None)
         if callable(get_reranker):
             out["reranker"] = get_reranker()
+        if self._learned_weights is not None:
+            out["learned_weights"] = self._learned_weights.report(active=True)
         return out
 
     # ----- search ---------------------------------------------------------

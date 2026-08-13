@@ -33,6 +33,7 @@ from .feedback import (
     BadResult,
     BadResultStore,
     FeedbackError,
+    learning_channel,
     resolve_bad_chunks,
 )
 from .fitness import (
@@ -174,6 +175,7 @@ __all__ = [
     "evaluate_frontier_on_holdout",
     "label_hit",
     "label_hits",
+    "learning_channel",
     "list_snapshots",
     "load_search_space",
     "outcome_score_decomposition",

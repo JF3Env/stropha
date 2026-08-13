@@ -17,6 +17,12 @@ from stropha.meta import (
     run_loop,
 )
 from stropha.meta.proposer import make_bandit_proposer
+from stropha.meta.stream_weights import (
+    MIN_ACTIVATION_EXAMPLES,
+    StreamWeightProfile,
+    StreamWeightProfiles,
+    write_stream_weight_profile,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -44,6 +50,20 @@ def _make_meta(tmp_path: Path) -> Path:
 def _runner_invoke(tmp_path: Path, args: list[str]) -> Any:
     """Run the CLI with a fake config so _meta_dir_default works."""
     return CliRunner().invoke(app, args)
+
+
+def _stream_weight_profile(*, examples: int) -> StreamWeightProfile:
+    return StreamWeightProfile(
+        repo="github.com/acme/app",
+        weights={"dense": 1.1, "sparse": 0.9},
+        observations={"dense": examples, "sparse": examples},
+        mean_scores={"dense": 0.1, "sparse": -0.1},
+        generated_at="2026-08-13T00:00:00+00:00",
+        examples=examples,
+        source_counts={"outcome": examples},
+        since_sha="a",
+        head_sha="b",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -762,6 +782,56 @@ class TestLoopWithBanditEnd2End:
 
 
 # ---------------------------------------------------------------------------
+# stropha meta stream-weights
+# ---------------------------------------------------------------------------
+
+
+class TestStreamWeightsCli:
+    def test_report_json_explains_blocked_candidate(self, tmp_path: Path) -> None:
+        meta = tmp_path / "meta"
+        write_stream_weight_profile(
+            meta / "stream-weight-candidates",
+            _stream_weight_profile(examples=1),
+        )
+
+        result = CliRunner().invoke(
+            app,
+            ["meta", "stream-weights", "report", "--meta-dir", str(meta), "--json"],
+        )
+
+        assert result.exit_code == 0, result.output
+        rows = json.loads(result.output)
+        assert rows[0]["status"] == "blocked"
+        assert rows[0]["examples"] == 1
+        assert "requires 50 examples" in rows[0]["blocked_reasons"][0]
+
+    def test_validate_activates_eligible_candidate(self, tmp_path: Path) -> None:
+        meta = tmp_path / "meta"
+        profile = _stream_weight_profile(examples=MIN_ACTIVATION_EXAMPLES)
+        write_stream_weight_profile(meta / "stream-weight-candidates", profile)
+
+        result = CliRunner().invoke(
+            app,
+            [
+                "meta",
+                "stream-weights",
+                "validate",
+                profile.repo,
+                "--search-ndcg-delta",
+                "0.02",
+                "--holdout-ndcg-delta",
+                "0.0",
+                "--meta-dir",
+                str(meta),
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "active" in result.output
+        assert StreamWeightProfiles(meta / "stream-weights").weights()[profile.repo]
+
+
+# ---------------------------------------------------------------------------
 # CLI wiring smoke
 # ---------------------------------------------------------------------------
 
@@ -790,3 +860,11 @@ class TestCliWiring:
         assert outcome_app is not None
         outcome_cmds = {cmd.name for cmd in outcome_app.registered_commands}
         assert "backfill" in outcome_cmds
+        stream_weights_app = None
+        for group in meta_app.registered_groups:
+            if group.name == "stream-weights":
+                stream_weights_app = group.typer_instance
+                break
+        assert stream_weights_app is not None
+        stream_weight_cmds = {cmd.name for cmd in stream_weights_app.registered_commands}
+        assert stream_weight_cmds == {"report", "validate"}

@@ -237,6 +237,8 @@ class TestRunBackfill:
             "tasks_observed", "solved_tasks", "total_returned_tokens",
             "returned_tokens_per_solved_task", "stream_weights_repo",
             "stream_weights", "stream_weight_observations",
+            "stream_weight_examples", "stream_weight_source_counts",
+            "feedback_channel_counts",
             "stream_weights_path", "generated_at",
         ):
             assert key in payload, f"missing key {key!r}"
@@ -266,8 +268,11 @@ class TestRunBackfill:
         assert summary.stream_weights_repo == detect_repo(repo).normalized_key
         assert summary.stream_weight_observations == {"dense": 1, "sparse": 2}
         assert summary.stream_weights["dense"] > summary.stream_weights["sparse"]
+        assert summary.stream_weight_examples == 2
+        assert summary.stream_weight_source_counts == {"outcome": 2}
         assert summary.stream_weights_path is not None
         assert Path(summary.stream_weights_path).is_file()
+        assert Path(summary.stream_weights_path).parent.name == "stream-weight-candidates"
 
     def test_returned_tokens_per_solved_task_penalizes_unsolved_work(
         self, tmp_path: Path,
@@ -361,6 +366,37 @@ class TestRunBackfill:
         # Overall score should be dragged down by the strong-negative signal.
         assert summary.overall_score < 1.0
 
+    def test_non_relevance_feedback_does_not_train_stream_weights(self, tmp_path: Path) -> None:
+        from stropha.meta import BadResultStore
+
+        repo, meta, prev, _head = self._build_scenario(tmp_path)
+        BadResultStore(meta).report(trace_id="tr-1", reason="stale")
+
+        summary = run_backfill(since_sha=prev, meta_dir=meta, repo_dir=repo)
+
+        assert summary.feedback_channel_counts == {"freshness": 1}
+        assert summary.stream_weight_source_counts == {"outcome": 2}
+
+    def test_duplicate_task_chunk_is_counted_once_with_explicit_precedence(
+        self, tmp_path: Path
+    ) -> None:
+        from stropha.meta import BadResultStore
+
+        repo, meta, prev, _head = self._build_scenario(tmp_path)
+        trace_path = meta / "traces/t.jsonl"
+        original = json.loads(trace_path.read_text())
+        duplicate = {**original, "trace_id": "tr-explicit"}
+        trace_path.write_text(
+            json.dumps(original) + "\n" + json.dumps(duplicate) + "\n",
+            encoding="utf-8",
+        )
+        BadResultStore(meta).report(trace_id="tr-explicit", reason="wrong_symbol")
+
+        summary = run_backfill(since_sha=prev, meta_dir=meta, repo_dir=repo)
+
+        assert summary.stream_weight_examples == 2
+        assert summary.stream_weight_source_counts == {"explicit": 2}
+
     def test_summary_to_dict_round_trip(self) -> None:
         s = BackfillSummary(
             since_sha="a",
@@ -379,6 +415,9 @@ class TestRunBackfill:
             stream_weights_repo="repo-a",
             stream_weights={"dense": 1.1, "sparse": 0.9},
             stream_weight_observations={"dense": 8, "sparse": 7},
+            stream_weight_examples=8,
+            stream_weight_source_counts={"outcome": 8},
+            feedback_channel_counts={"relevance": 1},
             stream_weights_path="/tmp/weights.json",
             output_path="/tmp/x.json",
         )

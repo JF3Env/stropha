@@ -2350,8 +2350,14 @@ outcome_app = typer.Typer(
     help="Outcome labeling against the trace stream.",
     no_args_is_help=True,
 )
+stream_weights_app = typer.Typer(
+    name="stream-weights",
+    help="Inspect and validate learned per-repository retrieval weights.",
+    no_args_is_help=True,
+)
 app.add_typer(meta_app, name="meta")
 meta_app.add_typer(outcome_app, name="outcome")
+meta_app.add_typer(stream_weights_app, name="stream-weights")
 
 
 @outcome_app.command("backfill")
@@ -2390,8 +2396,8 @@ def outcome_backfill_cmd(
     Writes:
     - ``<meta_dir>/outcomes/<head_sha>.json`` — the outcome summary the
       Phase 1 evaluator consumes (WIN-167).
-    - ``<meta_dir>/stream-weights/<repo_hash>.json`` — regularized stream
-      multipliers consumed by hybrid RRF (WIN-380).
+    - ``<meta_dir>/stream-weight-candidates/<repo_hash>.json`` — regularized
+      candidates that require explicit benchmark validation before activation.
 
     The post-commit hook v=5 runs this in its detached background process
     so ``git commit`` is never blocked.
@@ -2453,6 +2459,80 @@ def outcome_backfill_cmd(
     table.add_row("stream_weights_path", str(summary.stream_weights_path or "—"))
     table.add_row("output", str(summary.output_path or "—"))
     console.print(table)
+
+
+def _stream_weights_root(meta_dir: Path | None) -> Path:
+    if meta_dir is not None:
+        return meta_dir.expanduser().resolve()
+    cfg = _load_config()
+    index_path = Path(cfg.resolve_index_path()).expanduser().resolve()
+    return index_path.parent / "meta"
+
+
+@stream_weights_app.command("report")
+def stream_weights_report_cmd(
+    meta_dir: Path | None = typer.Option(None, "--meta-dir"),
+    json_out: bool = typer.Option(False, "--json"),
+) -> None:
+    """Show profile evidence and why each candidate is active or blocked."""
+    import json as _json
+
+    from .meta.stream_weights import StreamWeightProfiles
+
+    root = _stream_weights_root(meta_dir)
+    rows = StreamWeightProfiles(root / "stream-weight-candidates").report()
+    rows.extend(StreamWeightProfiles(root / "stream-weights").report(active=True))
+    if json_out:
+        console.print_json(_json.dumps(rows))
+        return
+    table = Table(title="Stream weight profiles", show_lines=True)
+    table.add_column("Repository", style="cyan")
+    table.add_column("Status")
+    table.add_column("Examples", justify="right")
+    table.add_column("Sources")
+    table.add_column("Reason")
+    for row in rows:
+        table.add_row(
+            str(row.get("repo", row.get("path", "—"))),
+            str(row["status"]),
+            str(row.get("examples", "—")),
+            ", ".join(
+                f"{source}={count}"
+                for source, count in sorted((row.get("source_counts") or {}).items())
+            ) or "—",
+            "; ".join(row.get("blocked_reasons") or ()) or "—",
+        )
+    console.print(table)
+
+
+@stream_weights_app.command("validate")
+def stream_weights_validate_cmd(
+    repo_key: str = typer.Argument(...),
+    search_ndcg_delta: float = typer.Option(..., "--search-ndcg-delta"),
+    holdout_ndcg_delta: float = typer.Option(..., "--holdout-ndcg-delta"),
+    meta_dir: Path | None = typer.Option(None, "--meta-dir"),
+) -> None:
+    """Record benchmark deltas; activate only on search gain and no holdout regression."""
+    from .meta.stream_weights import MIN_ACTIVATION_EXAMPLES, validate_stream_weight_profile
+
+    root = _stream_weights_root(meta_dir)
+    try:
+        profile = validate_stream_weight_profile(
+            root / "stream-weight-candidates",
+            repo_key,
+            search_ndcg_delta=search_ndcg_delta,
+            holdout_ndcg_delta=holdout_ndcg_delta,
+            active_directory=root / "stream-weights",
+        )
+    except ValueError as exc:
+        console.print(f"[red]Validation failed:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+    status = (
+        "active"
+        if profile.validated and profile.examples >= MIN_ACTIVATION_EXAMPLES
+        else "blocked"
+    )
+    console.print(f"[bold]{repo_key}[/bold]: {status} ({profile.examples} examples)")
 
 
 @meta_app.command("prune")
