@@ -6,12 +6,16 @@ import hashlib
 import json
 import math
 import os
+import fcntl
 from collections.abc import Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from ..eval import EvalCase, run_eval
+from ..errors import StrophaError
 from ..logging import get_logger
 from .outcome import TierLabel
 
@@ -21,6 +25,10 @@ PROFILE_VERSION = 2
 MIN_ACTIVATION_EXAMPLES = 50
 DEFAULT_PRIOR_OBSERVATIONS = 10.0
 DEFAULT_LEARNING_RATE = 0.5
+
+
+class StreamWeightBenchmarkLockError(StrophaError):
+    """Raised when the repository already has a stream-weight benchmark."""
 
 
 @dataclass(frozen=True)
@@ -37,7 +45,7 @@ class StreamWeightProfile:
     since_sha: str
     head_sha: str
     validated: bool = False
-    validation: dict[str, float] = field(default_factory=dict)
+    validation: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -52,6 +60,38 @@ class StreamWeightProfile:
             "commit_range": {"since": self.since_sha, "head": self.head_sha},
             "validated": self.validated,
             "validation": self.validation,
+        }
+
+
+@dataclass(frozen=True)
+class StreamWeightBenchmark:
+    """NDCG evidence from default and candidate production retrieval runs."""
+
+    baseline_search_ndcg: float
+    candidate_search_ndcg: float
+    baseline_holdout_ndcg: float
+    candidate_holdout_ndcg: float
+    search_cases: int
+    holdout_cases: int
+
+    @property
+    def search_ndcg_delta(self) -> float:
+        return self.candidate_search_ndcg - self.baseline_search_ndcg
+
+    @property
+    def holdout_ndcg_delta(self) -> float:
+        return self.candidate_holdout_ndcg - self.baseline_holdout_ndcg
+
+    def to_dict(self) -> dict[str, float | int]:
+        return {
+            "baseline_search_ndcg": self.baseline_search_ndcg,
+            "candidate_search_ndcg": self.candidate_search_ndcg,
+            "search_ndcg_delta": self.search_ndcg_delta,
+            "baseline_holdout_ndcg": self.baseline_holdout_ndcg,
+            "candidate_holdout_ndcg": self.candidate_holdout_ndcg,
+            "holdout_ndcg_delta": self.holdout_ndcg_delta,
+            "search_cases": self.search_cases,
+            "holdout_cases": self.holdout_cases,
         }
 
 
@@ -148,6 +188,24 @@ def profile_path(directory: Path, repo_key: str) -> Path:
     return directory / f"{digest}.json"
 
 
+@contextmanager
+def stream_weight_benchmark_lock(directory: Path, repo_key: str):
+    """Hold a non-blocking, per-repository benchmark lock."""
+    directory.mkdir(parents=True, exist_ok=True)
+    lock_path = profile_path(directory, repo_key).with_suffix(".lock")
+    with lock_path.open("a+", encoding="utf-8") as handle:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise StreamWeightBenchmarkLockError(
+                f"stream-weight benchmark already running for {repo_key}"
+            ) from exc
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
 def write_stream_weight_profile(
     directory: Path,
     profile: StreamWeightProfile,
@@ -164,6 +222,21 @@ def write_stream_weight_profile(
         if temporary.exists():
             temporary.unlink()
     return target
+
+
+def load_stream_weight_profile(
+    directory: Path,
+    repo_key: str,
+    *,
+    require_active: bool = True,
+) -> StreamWeightProfile | None:
+    """Load one profile, returning ``None`` when it is missing or invalid."""
+    try:
+        raw = json.loads(profile_path(directory, repo_key).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    profile = _parse_profile(raw, require_active=require_active)
+    return profile if profile is not None and profile.repo == repo_key else None
 
 
 def _parse_profile(raw: Any, *, require_active: bool = True) -> StreamWeightProfile | None:
@@ -194,7 +267,7 @@ def _parse_profile(raw: Any, *, require_active: bool = True) -> StreamWeightProf
     parsed_observations: dict[str, int] = {}
     parsed_scores: dict[str, float] = {}
     parsed_sources: dict[str, int] = {}
-    parsed_validation: dict[str, float] = {}
+    parsed_validation: dict[str, Any] = dict(validation)
     try:
         if examples is None:
             return None
@@ -222,11 +295,6 @@ def _parse_profile(raw: Any, *, require_active: bool = True) -> StreamWeightProf
             if not isinstance(source, str) or not source or count < 0:
                 return None
             parsed_sources[source] = count
-        for metric, value in validation.items():
-            score = float(value)
-            if not isinstance(metric, str) or not metric or not math.isfinite(score):
-                return None
-            parsed_validation[metric] = score
     except (TypeError, ValueError):
         return None
     since_sha = commit_range.get("since")
@@ -241,11 +309,19 @@ def _parse_profile(raw: Any, *, require_active: bool = True) -> StreamWeightProf
         return None
     if sum(parsed_sources.values()) != example_count:
         return None
-    if validated and (
-        parsed_validation.get("search_ndcg_delta", 0.0) <= 0
-        or parsed_validation.get("holdout_ndcg_delta", -1.0) < 0
-    ):
-        return None
+    if validated:
+        try:
+            search_delta = float(parsed_validation.get("search_ndcg_delta", 0.0))
+            holdout_delta = float(parsed_validation.get("holdout_ndcg_delta", -1.0))
+        except (TypeError, ValueError):
+            return None
+        if (
+            not math.isfinite(search_delta)
+            or not math.isfinite(holdout_delta)
+            or search_delta <= 0
+            or holdout_delta < 0
+        ):
+            return None
     if require_active and (not validated or example_count < MIN_ACTIVATION_EXAMPLES):
         return None
     return StreamWeightProfile(
@@ -270,6 +346,7 @@ def validate_stream_weight_profile(
     search_ndcg_delta: float,
     holdout_ndcg_delta: float,
     active_directory: Path | None = None,
+    evidence: dict[str, Any] | None = None,
 ) -> StreamWeightProfile:
     """Record benchmark evidence; activate only on search gain and no holdout regression."""
     try:
@@ -279,24 +356,53 @@ def validate_stream_weight_profile(
         raise ValueError("benchmark deltas must be finite numbers") from exc
     if not math.isfinite(search_delta) or not math.isfinite(holdout_delta):
         raise ValueError("benchmark deltas must be finite numbers")
-    path = profile_path(candidate_directory, repo_key)
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise ValueError(f"could not load stream-weight profile for {repo_key!r}") from exc
-    profile = _parse_profile(raw, require_active=False)
-    if profile is None or profile.repo != repo_key:
+    profile = load_stream_weight_profile(
+        candidate_directory,
+        repo_key,
+        require_active=False,
+    )
+    if profile is None:
         raise ValueError(f"invalid stream-weight profile for {repo_key!r}")
     validation = {
+        **(evidence or {}),
         "search_ndcg_delta": search_delta,
         "holdout_ndcg_delta": holdout_delta,
     }
     eligible = search_delta > 0 and holdout_delta >= 0
     updated = replace(profile, validated=eligible, validation=validation)
     write_stream_weight_profile(candidate_directory, updated)
+    activation_directory = active_directory or candidate_directory
     if eligible and profile.examples >= MIN_ACTIVATION_EXAMPLES:
-        write_stream_weight_profile(active_directory or candidate_directory, updated)
+        write_stream_weight_profile(activation_directory, updated)
+    elif active_directory is not None:
+        profile_path(active_directory, repo_key).unlink(missing_ok=True)
     return updated
+
+
+def benchmark_stream_weight_profile(
+    *,
+    baseline_engine: Any,
+    candidate_engine: Any,
+    cases: Sequence[EvalCase],
+    top_k: int = 10,
+    repo_id: int | None = None,
+) -> StreamWeightBenchmark:
+    """Compare default and candidate retrieval over the same search and holdout cases."""
+    search_cases = sum(case.split == "search" for case in cases)
+    holdout_cases = sum(case.split == "holdout" for case in cases)
+    if not search_cases or not holdout_cases:
+        raise ValueError("stream-weight benchmark requires search and holdout cases")
+
+    baseline = run_eval(cases, baseline_engine, top_k=top_k, repo_id=repo_id).by_split()
+    candidate = run_eval(cases, candidate_engine, top_k=top_k, repo_id=repo_id).by_split()
+    return StreamWeightBenchmark(
+        baseline_search_ndcg=baseline["search"].ndcg_at_k,
+        candidate_search_ndcg=candidate["search"].ndcg_at_k,
+        baseline_holdout_ndcg=baseline["holdout"].ndcg_at_k,
+        candidate_holdout_ndcg=candidate["holdout"].ndcg_at_k,
+        search_cases=search_cases,
+        holdout_cases=holdout_cases,
+    )
 
 
 class StreamWeightProfiles:
@@ -379,10 +485,15 @@ class StreamWeightProfiles:
 
 __all__ = [
     "MIN_ACTIVATION_EXAMPLES",
+    "StreamWeightBenchmark",
+    "StreamWeightBenchmarkLockError",
     "StreamWeightProfile",
     "StreamWeightProfiles",
+    "benchmark_stream_weight_profile",
     "fit_stream_weights",
+    "load_stream_weight_profile",
     "profile_path",
+    "stream_weight_benchmark_lock",
     "validate_stream_weight_profile",
     "write_stream_weight_profile",
 ]

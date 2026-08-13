@@ -2505,34 +2505,182 @@ def stream_weights_report_cmd(
     console.print(table)
 
 
-@stream_weights_app.command("validate")
-def stream_weights_validate_cmd(
+@stream_weights_app.command("benchmark")
+def stream_weights_benchmark_cmd(
     repo_key: str = typer.Argument(...),
-    search_ndcg_delta: float = typer.Option(..., "--search-ndcg-delta"),
-    holdout_ndcg_delta: float = typer.Option(..., "--holdout-ndcg-delta"),
+    golden: Path = typer.Option(Path("tests/eval/golden.jsonl"), "--golden", "-g"),
+    top_k: int = typer.Option(10, "--top-k", "-k", min=1, max=100),
+    repo: Path | None = typer.Option(None, "--repo", "-r"),
     meta_dir: Path | None = typer.Option(None, "--meta-dir"),
+    json_out: bool = typer.Option(False, "--json"),
 ) -> None:
-    """Record benchmark deltas; activate only on search gain and no holdout regression."""
-    from .meta.stream_weights import MIN_ACTIVATION_EXAMPLES, validate_stream_weight_profile
+    """Benchmark a candidate against adaptive/default weights, then validate it."""
+    import copy
+    import hashlib
+    import json as _json
+    import subprocess
+    import tempfile
+    from dataclasses import replace
+
+    from .eval import load_golden
+    from .ingest.git_meta import detect as detect_repo
+    from .meta.stream_weights import (
+        MIN_ACTIVATION_EXAMPLES,
+        benchmark_stream_weight_profile,
+        load_stream_weight_profile,
+        validate_stream_weight_profile,
+        write_stream_weight_profile,
+    )
 
     root = _stream_weights_root(meta_dir)
-    try:
-        profile = validate_stream_weight_profile(
-            root / "stream-weight-candidates",
-            repo_key,
-            search_ndcg_delta=search_ndcg_delta,
-            holdout_ndcg_delta=holdout_ndcg_delta,
-            active_directory=root / "stream-weights",
+    candidate_directory = root / "stream-weight-candidates"
+    profile = load_stream_weight_profile(candidate_directory, repo_key, require_active=False)
+    if profile is None:
+        console.print(f"[red]Invalid candidate profile:[/red] {repo_key}")
+        raise typer.Exit(code=1)
+    if profile.examples < MIN_ACTIVATION_EXAMPLES:
+        console.print(
+            f"[red]Insufficient evidence:[/red] {profile.examples} examples; "
+            f"requires {MIN_ACTIVATION_EXAMPLES}"
         )
+        raise typer.Exit(code=1)
+    if not golden.is_file():
+        console.print(f"[red]Golden file not found:[/red] {golden}")
+        raise typer.Exit(code=1)
+    try:
+        cases = load_golden(golden)
     except ValueError as exc:
-        console.print(f"[red]Validation failed:[/red] {exc}")
+        console.print(f"[red]Golden file invalid:[/red] {exc}")
         raise typer.Exit(code=1) from exc
-    status = (
-        "active"
-        if profile.validated and profile.examples >= MIN_ACTIVATION_EXAMPLES
-        else "blocked"
+
+    cfg = _load_config()
+    target_repo = (repo or cfg.target_repo or Path.cwd()).expanduser().resolve()
+    try:
+        detected_repo = detect_repo(target_repo).normalized_key
+    except (OSError, StrophaError) as exc:
+        console.print(f"[red]Could not resolve benchmark repository:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+    if detected_repo != repo_key:
+        console.print(
+            f"[red]Candidate repository mismatch:[/red] expected {repo_key}, got {detected_repo}"
+        )
+        raise typer.Exit(code=1)
+
+    base_config = load_pipeline_config()
+    baseline_config = copy.deepcopy(base_config)
+    baseline_retrieval = baseline_config.setdefault("retrieval", {}).setdefault("config", {})
+    baseline_retrieval["learned_weights_enabled"] = False
+    baseline_retrieval["reranker"] = None
+
+    with tempfile.TemporaryDirectory(prefix="stropha-stream-weights-") as temporary:
+        benchmark_directory = Path(temporary)
+        benchmark_profile = replace(
+            profile,
+            validated=True,
+            validation={"search_ndcg_delta": 1.0, "holdout_ndcg_delta": 0.0},
+        )
+        write_stream_weight_profile(benchmark_directory, benchmark_profile)
+        candidate_config = copy.deepcopy(base_config)
+        candidate_retrieval = candidate_config.setdefault("retrieval", {}).setdefault("config", {})
+        candidate_retrieval["learned_weights_enabled"] = True
+        candidate_retrieval["learned_weights_dir"] = str(benchmark_directory)
+        candidate_retrieval["reranker"] = None
+
+        try:
+            baseline = build_stages(baseline_config)
+            candidate = build_stages(candidate_config)
+        except StrophaError as exc:
+            console.print(f"[red]Pipeline build error:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+        baseline_retrieval_id = baseline.retrieval.adapter_id
+        candidate_retrieval_id = candidate.retrieval.adapter_id
+        if candidate_retrieval_id.endswith("learned=none"):
+            console.print("[red]Benchmark preflight failed:[/red] candidate weights did not load")
+            raise typer.Exit(code=1)
+
+        lookup_repo_id = getattr(baseline.storage, "lookup_repo_id", None)
+        repo_id = lookup_repo_id(repo_key) if callable(lookup_repo_id) else None
+        if repo_id is None:
+            console.print(f"[red]Repository is not indexed:[/red] {repo_key}")
+            raise typer.Exit(code=1)
+
+        indexed_repo = next(
+            (item for item in baseline.storage.list_repos() if item.normalized_key == repo_key),
+            None,
+        )
+        try:
+            working_head = subprocess.run(
+                ["git", "-C", str(target_repo), "rev-parse", "HEAD"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+        except (OSError, subprocess.CalledProcessError) as exc:
+            console.print(f"[red]Could not resolve benchmark HEAD:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+        if indexed_repo is None or indexed_repo.head_commit != working_head:
+            indexed_head = indexed_repo.head_commit if indexed_repo is not None else "missing"
+            console.print(
+                f"[red]Benchmark preflight failed:[/red] index commit {indexed_head} "
+                f"does not match HEAD {working_head}"
+            )
+            raise typer.Exit(code=1)
+
+        get_meta = getattr(baseline.storage, "get_meta", None)
+        indexed_enricher = get_meta("active_enricher_id") if callable(get_meta) else None
+        indexed_embedder = get_meta("active_embedder_id") if callable(get_meta) else None
+        active_enricher = baseline.effective_enricher_id()
+        active_embedder = getattr(getattr(baseline, "embedder", None), "adapter_id", None)
+        if (indexed_enricher and indexed_enricher != active_enricher) or (
+            indexed_embedder and indexed_embedder != active_embedder
+        ):
+            console.print(
+                "[red]Benchmark preflight failed:[/red] active embedder/enricher "
+                "differs from the indexed identity"
+            )
+            raise typer.Exit(code=1)
+
+        try:
+            with baseline.storage, candidate.storage:  # type: ignore[union-attr]
+                benchmark = benchmark_stream_weight_profile(
+                    baseline_engine=baseline.retrieval,
+                    candidate_engine=candidate.retrieval,
+                    cases=cases,
+                    top_k=top_k,
+                    repo_id=repo_id,
+                )
+        except StrophaError as exc:
+            console.print(f"[red]Benchmark failed:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+
+    validated = validate_stream_weight_profile(
+        candidate_directory,
+        repo_key,
+        search_ndcg_delta=benchmark.search_ndcg_delta,
+        holdout_ndcg_delta=benchmark.holdout_ndcg_delta,
+        active_directory=root / "stream-weights",
+        evidence={
+            **benchmark.to_dict(),
+            "golden_sha256": hashlib.sha256(golden.read_bytes()).hexdigest(),
+            "top_k": top_k,
+            "baseline_retrieval_id": baseline_retrieval_id,
+            "candidate_retrieval_id": candidate_retrieval_id,
+            "indexed_enricher_id": indexed_enricher,
+            "indexed_embedder_id": indexed_embedder,
+            "indexed_commit": indexed_repo.head_commit,
+        },
     )
-    console.print(f"[bold]{repo_key}[/bold]: {status} ({profile.examples} examples)")
+    payload = {**benchmark.to_dict(), "repo": repo_key, "active": validated.validated}
+    if json_out:
+        console.print_json(_json.dumps(payload))
+    else:
+        console.print(
+            f"[bold]{repo_key}[/bold]: search {benchmark.search_ndcg_delta:+.4f}, "
+            f"holdout {benchmark.holdout_ndcg_delta:+.4f}, "
+            f"{'active' if validated.validated else 'blocked'}"
+        )
+    if not validated.validated:
+        raise typer.Exit(code=2)
 
 
 @meta_app.command("prune")

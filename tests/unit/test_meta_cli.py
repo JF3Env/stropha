@@ -19,6 +19,7 @@ from stropha.meta import (
 from stropha.meta.proposer import make_bandit_proposer
 from stropha.meta.stream_weights import (
     MIN_ACTIVATION_EXAMPLES,
+    StreamWeightBenchmark,
     StreamWeightProfile,
     StreamWeightProfiles,
     write_stream_weight_profile,
@@ -805,9 +806,9 @@ class TestStreamWeightsCli:
         assert rows[0]["examples"] == 1
         assert "requires 50 examples" in rows[0]["blocked_reasons"][0]
 
-    def test_validate_activates_eligible_candidate(self, tmp_path: Path) -> None:
+    def test_benchmark_rejects_low_sample_candidate(self, tmp_path: Path) -> None:
         meta = tmp_path / "meta"
-        profile = _stream_weight_profile(examples=MIN_ACTIVATION_EXAMPLES)
+        profile = _stream_weight_profile(examples=1)
         write_stream_weight_profile(meta / "stream-weight-candidates", profile)
 
         result = CliRunner().invoke(
@@ -815,20 +816,136 @@ class TestStreamWeightsCli:
             [
                 "meta",
                 "stream-weights",
-                "validate",
+                "benchmark",
                 profile.repo,
-                "--search-ndcg-delta",
-                "0.02",
-                "--holdout-ndcg-delta",
-                "0.0",
                 "--meta-dir",
                 str(meta),
             ],
         )
 
+        assert result.exit_code == 1
+        assert "Insufficient evidence" in result.output
+        assert not (meta / "stream-weights").exists()
+
+    def test_benchmark_activates_candidate_from_computed_evidence(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        meta = tmp_path / "meta"
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        profile = _stream_weight_profile(examples=MIN_ACTIVATION_EXAMPLES)
+        write_stream_weight_profile(meta / "stream-weight-candidates", profile)
+        golden = tmp_path / "golden.jsonl"
+        golden.write_text(
+            json.dumps({
+                "id": "s",
+                "query": "search",
+                "expected_paths": ["src/a.py"],
+                "split": "search",
+            })
+            + "\n"
+            + json.dumps({
+                "id": "h",
+                "query": "holdout",
+                "expected_paths": ["src/b.py"],
+                "split": "holdout",
+            })
+            + "\n",
+            encoding="utf-8",
+        )
+
+        class _Storage:
+            def __enter__(self) -> _Storage:
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                return None
+
+            def lookup_repo_id(self, _repo_key: str) -> int:
+                return 1
+
+            def get_meta(self, key: str) -> str:
+                return {
+                    "active_enricher_id": "enricher",
+                    "active_embedder_id": "embedder",
+                }[key]
+
+            def list_repos(self) -> list[Any]:
+                return [type("Repo", (), {
+                    "normalized_key": profile.repo,
+                    "head_commit": "head",
+                })()]
+
+        class _Built:
+            def __init__(self, adapter_id: str) -> None:
+                self.storage = _Storage()
+                self.retrieval = type("Retrieval", (), {"adapter_id": adapter_id})()
+                self.embedder = type("Embedder", (), {"adapter_id": "embedder"})()
+
+            def effective_enricher_id(self) -> str:
+                return "enricher"
+
+        configs: list[dict[str, Any]] = []
+
+        def build(config: dict[str, Any]) -> _Built:
+            configs.append(config)
+            enabled = config["retrieval"]["config"]["learned_weights_enabled"]
+            return _Built("candidate" if enabled else "baseline")
+
+        monkeypatch.setattr("stropha.cli.load_pipeline_config", lambda: {
+            "retrieval": {"config": {"learned_weights_enabled": True}},
+        })
+        monkeypatch.setattr("stropha.cli.build_stages", build)
+        monkeypatch.setattr(
+            "stropha.ingest.git_meta.detect",
+            lambda _path: type("Repo", (), {"normalized_key": profile.repo})(),
+        )
+        monkeypatch.setattr(
+            "stropha.meta.stream_weights.benchmark_stream_weight_profile",
+            lambda **_kwargs: StreamWeightBenchmark(
+                baseline_search_ndcg=0.7,
+                candidate_search_ndcg=0.72,
+                baseline_holdout_ndcg=0.8,
+                candidate_holdout_ndcg=0.8,
+                search_cases=1,
+                holdout_cases=1,
+            ),
+        )
+        monkeypatch.setattr(
+            "subprocess.run",
+            lambda *_args, **_kwargs: type("Completed", (), {"stdout": "head\n"})(),
+        )
+
+        result = CliRunner().invoke(
+            app,
+            [
+                "meta",
+                "stream-weights",
+                "benchmark",
+                profile.repo,
+                "--golden",
+                str(golden),
+                "--repo",
+                str(repo),
+                "--meta-dir",
+                str(meta),
+                "--json",
+            ],
+        )
+
         assert result.exit_code == 0, result.output
-        assert "active" in result.output
-        assert StreamWeightProfiles(meta / "stream-weights").weights()[profile.repo]
+        assert configs[0]["retrieval"]["config"]["learned_weights_enabled"] is False
+        assert configs[0]["retrieval"]["config"]["reranker"] is None
+        assert configs[1]["retrieval"]["config"]["learned_weights_enabled"] is True
+        assert configs[1]["retrieval"]["config"]["reranker"] is None
+        active = StreamWeightProfiles(meta / "stream-weights").report(active=True)[0]
+        assert active["status"] == "active"
+        assert active["validation"]["golden_sha256"]
+        assert active["validation"]["baseline_retrieval_id"] == "baseline"
+        assert active["validation"]["candidate_retrieval_id"] == "candidate"
+        assert active["validation"]["indexed_commit"] == "head"
 
 
 # ---------------------------------------------------------------------------
@@ -867,4 +984,4 @@ class TestCliWiring:
                 break
         assert stream_weights_app is not None
         stream_weight_cmds = {cmd.name for cmd in stream_weights_app.registered_commands}
-        assert stream_weight_cmds == {"report", "validate"}
+        assert stream_weight_cmds == {"benchmark", "report"}

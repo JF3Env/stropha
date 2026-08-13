@@ -641,8 +641,17 @@ example counts, source counts, generation time, and commit range to
 profiles with at least 50 attributable examples and benchmark evidence showing a
 search NDCG gain with no holdout NDCG regression. Invalid, legacy, low-sample, or
 unvalidated profiles fail closed. `stropha meta stream-weights report` exposes
-active and blocked evidence; `validate` records externally produced benchmark
-deltas. Automated benchmark execution before activation remains pending.
+active and blocked evidence. `stropha meta stream-weights benchmark <repo>` now
+builds default/adaptive-only and isolated candidate retrieval stages over the
+same clean index with downstream reranking disabled so the learned fusion
+multipliers are the only changed ranking input. It evaluates both golden splits, records the golden hash, split
+sizes, retrieval and index identities, and NDCG metrics, then activates only when
+search improves without holdout regression. No schema-v2 candidate has yet met
+the evidence floor and passed this benchmark in the running environment. The
+first deterministic run used 87 search and 37 holdout cases at index commit
+`1ff91b6`, comparing `learned=off` with candidate fingerprint `b0b96d1d`.
+Search NDCG changed from 0.571292 to 0.569699 (-0.001594) and holdout NDCG from
+0.608799 to 0.608636 (-0.000163), so the candidate remained blocked.
 
 ## 11. Phase 5: Structural Query Routing
 
@@ -970,7 +979,7 @@ compatible reindex and must never be hidden by editing metadata.
 - [x] Deduplicate explicit and post-commit labels.
 - [x] Add profile evidence and reporting.
 - [x] Enforce minimum observations and regularization.
-- [ ] Validate learned weights on holdout.
+- [x] Validate learned weights on holdout before activation.
 
 ### Phase 5
 
