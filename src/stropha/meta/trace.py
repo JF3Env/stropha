@@ -72,6 +72,7 @@ class TraceRecord:
     query: str | None = None
     params: dict[str, Any] = field(default_factory=dict)
     candidate_id: str | None = None
+    run_id: str | None = None
     results: list[dict[str, Any]] = field(default_factory=list)
     latency_ms: float = 0.0
     returned_tokens: int = 0

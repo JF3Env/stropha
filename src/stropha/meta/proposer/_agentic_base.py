@@ -23,20 +23,65 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
+from pydantic import BaseModel, Field, ValidationError, field_validator
+
 from ...logging import get_logger
 from ..fitness import ScoreCard
 from ..search_space import SearchSpace
 from ..store import CandidateRecord
 from .bandit import BanditProposer
+from .history import estimate_tokens, pack_history
 
 log = get_logger(__name__)
 
 
-# Trim each candidate's JSON to keep the prompt under control. ~50 KB is
-# plenty for any local LLM context; cloud models swallow more but extra
-# tokens cost money.
 MAX_PROMPT_BYTES = 50_000
+MAX_PROMPT_TOKENS = MAX_PROMPT_BYTES // 4
 MAX_ARCHIVE_ENTRIES = 10
+
+
+class Hypothesis(BaseModel):
+    """Testable rationale carried with an agentic proposal."""
+
+    statement: str
+    evidence_candidate_ids: list[str] = Field(default_factory=list)
+    evidence_trace_ids: list[str] = Field(default_factory=list)
+    expected_objective_deltas: dict[str, float] = Field(default_factory=dict)
+    confidence: float | None = None
+
+    @field_validator("statement")
+    @classmethod
+    def _statement_is_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("hypothesis statement must not be blank")
+        return value
+
+    @field_validator("confidence")
+    @classmethod
+    def _confidence_is_probability(cls, value: float | None) -> float | None:
+        if value is not None and not 0.0 <= value <= 1.0:
+            raise ValueError("confidence must be between 0 and 1")
+        return value
+
+
+class Proposal(BaseModel):
+    """Typed LLM response; callers still return its config to the loop."""
+
+    config: dict[str, Any] = Field(default_factory=dict)
+    hypothesis: Hypothesis | None = None
+    code_artifacts: dict[str, str] = Field(default_factory=dict)
+    usage: dict[str, Any] = Field(default_factory=dict)
+
+
+def _parse_proposal(obj: dict[str, Any]) -> Proposal:
+    """Parse the typed envelope, retaining the legacy flat-config shape."""
+    envelope_keys = {"config", "hypothesis", "code_artifacts", "usage"}
+    if envelope_keys.intersection(obj):
+        try:
+            return Proposal.model_validate(obj)
+        except ValidationError as exc:
+            raise ValueError(f"invalid typed proposal: {exc}") from exc
+    return Proposal(config=obj)
 
 
 def _summarise_card(card: ScoreCard) -> dict[str, Any]:
@@ -157,6 +202,7 @@ class AgenticProposerBase:
     env: dict[str, str] | None = None
     fallback_seed: int | None = None
     _fallback: BanditProposer | None = field(default=None, init=False, repr=False)
+    last_proposal: Proposal | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
         self._fallback = BanditProposer(
@@ -174,6 +220,7 @@ class AgenticProposerBase:
         archive: Iterable[tuple[CandidateRecord, ScoreCard]],
     ) -> dict[str, Any]:
         archive_list = list(archive)
+        self.last_proposal = None
         prompt = self._build_prompt(archive_list)
         try:
             raw = self._call_llm(prompt)
@@ -190,7 +237,7 @@ class AgenticProposerBase:
             )
             return self._fallback_propose(archive_list)
         try:
-            obj = _extract_json(raw)
+            proposal = _parse_proposal(_extract_json(raw))
         except ValueError as exc:
             log.warning(
                 "agentic_proposer.bad_json",
@@ -198,7 +245,8 @@ class AgenticProposerBase:
                 preview=raw[:120],
             )
             return self._fallback_propose(archive_list)
-        clamped = _clamp_to_space(obj, self.space)
+        self.last_proposal = proposal
+        clamped = _clamp_to_space(proposal.config, self.space)
         return self.space.apply_constraints(clamped, env=self.env or {})
 
     # ------------------------------------------------------------------ #
@@ -221,25 +269,49 @@ class AgenticProposerBase:
         self,
         archive: list[tuple[CandidateRecord, ScoreCard]],
     ) -> str:
-        archive_json = json.dumps(_summarise_archive(archive), indent=2)
         manifest = _summarise_manifest(self.space)
-        payload = (
+        prefix = (
             f"{self.skill}\n\n"
             "## Manifest (valid choices + ranges)\n\n"
             f"{json.dumps(manifest, indent=2)}\n\n"
-            "## Recent archive\n\n"
-            f"{archive_json}\n\n"
-            "## Your task\n\n"
-            "Return one JSON object — and ONLY that object — representing "
-            "the next candidate configuration. Stay within the manifest. "
-            "Do not include any text outside the JSON.\n"
         )
-        if len(payload) > MAX_PROMPT_BYTES:
-            # Aggressive trim — keep the head (skill + manifest) and
-            # truncate the archive section so the prompt fits.
-            trim_at = MAX_PROMPT_BYTES - 500
-            payload = payload[:trim_at] + "\n... (truncated)\n"
+        suffix = (
+            "## Your task\n\n"
+            "Return one typed proposal JSON object — and ONLY that object — "
+            "with `config` and a testable `hypothesis`. The hypothesis may "
+            "include `evidence_candidate_ids`, `evidence_trace_ids`, "
+            "`expected_objective_deltas`, and `confidence` (0..1). "
+            "Stay within the manifest. Legacy flat configuration JSON remains "
+            "accepted, but the typed shape is preferred.\n\n"
+            "Schema: {\"config\": {...}, \"hypothesis\": {\"statement\": "
+            "\"...\", \"evidence_candidate_ids\": [...], "
+            "\"evidence_trace_ids\": [...], \"expected_objective_deltas\": "
+            "{...}, \"confidence\": 0.0}}\n"
+        )
+        fixed_tokens = (
+            estimate_tokens(prefix)
+            + estimate_tokens(suffix)
+            + self._reserved_prompt_tokens()
+        )
+        history = pack_history(
+            archive,
+            budget_tokens=MAX_PROMPT_TOKENS,
+            fixed_tokens=fixed_tokens,
+        )
+        payload = (
+            prefix
+            + "## Full history bundle\n\n"
+            + json.dumps(history.to_dict(), separators=(",", ":"), default=str)
+            + "\n\n"
+            + suffix
+        )
+        if len(payload.encode("utf-8")) > MAX_PROMPT_BYTES:
+            raise ValueError("token estimate exceeded the hard prompt byte limit")
         return payload
+
+    def _reserved_prompt_tokens(self) -> int:
+        """Tokens a subclass will append after the standard prompt."""
+        return 0
 
 
 def _summarise_manifest(space: SearchSpace) -> dict[str, Any]:
@@ -268,5 +340,8 @@ def _summarise_manifest(space: SearchSpace) -> dict[str, Any]:
 __all__ = [
     "MAX_ARCHIVE_ENTRIES",
     "MAX_PROMPT_BYTES",
+    "MAX_PROMPT_TOKENS",
     "AgenticProposerBase",
+    "Hypothesis",
+    "Proposal",
 ]

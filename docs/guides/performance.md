@@ -20,6 +20,25 @@ The no-key default uses the local embedder, the hierarchical enricher, three RRF
 streams, and no reranker. Measure this baseline on a representative golden set
 before enabling features that add model calls.
 
+For automated tuning, keep selection and validation separate. `stropha meta run`
+pins the source, builds or reuses isolated candidate indexes, evaluates the
+active configuration plus proposal rounds on `search`, and freezes the Pareto
+shortlist. `stropha meta validate <run-id>` then opens holdout for that baseline
+and shortlist. Promotion is blocked unless the live baseline and candidate have
+comparable search and holdout evidence and the frozen runtime identity still
+matches.
+
+```bash
+uv run stropha meta run --iterations 5 --candidates 3 --parallel 2
+uv run stropha meta validate <run-id>
+uv run stropha meta promote <candidate-id> --run-id <run-id>  # review diff
+uv run stropha meta promote <candidate-id> --run-id <run-id> --apply
+```
+
+Run-level retrieval, indexing, proposer, verification, and artifact usage is in
+the meta directory's `runs/<run-id>/cost.json`. `stropha cost` below is a
+separate dashboard over structured hook logs.
+
 ## Configuration
 
 Tune settings only in `~/.stropha/config.yaml`. Environment-variable controls

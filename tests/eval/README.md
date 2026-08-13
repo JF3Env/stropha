@@ -12,6 +12,9 @@ indexing.
 
 The comparable production baseline for this hash is archived in
 `tests/eval/baseline-c61c5fef.json` with exact pipeline and index provenance.
+That checked-in all-case report is distinct from the Meta-Harness promotion
+baseline, which records same-run search and holdout evidence under
+`<meta>/runs/<run-id>/validation.json`.
 
 ## Workflow
 
@@ -56,6 +59,22 @@ for every new unseen holdout. Ordinary execution never changes user configuratio
 `--promote` is explicit and succeeds only when every gate and verification step
 passes.
 
+For Meta-Harness optimization, the search split may be used repeatedly, but the
+holdout split is opened only during explicit validation of a frozen shortlist:
+
+```text
+stropha meta run ...
+stropha meta validate <run-id>
+stropha meta promote <candidate-id> --run-id <run-id> --apply
+```
+
+The live baseline and every shortlisted candidate must use the same snapshot,
+golden hash, index identity, repository scope, and top-K. Holdout failures are
+blocking, never neutral. Validation evidence is excluded from proposer history.
+`meta run` evaluates only `search`; it cannot produce or overwrite
+`validation.json`. Promotion is diff-only unless `--apply` is supplied, and the
+apply path rechecks the frozen validation and current runtime identity.
+
 ## Case Contract
 
 - Use a stable unique ID and a natural query authored from source review.
@@ -63,4 +82,7 @@ passes.
 - Every relevance key must name an expected path or symbol; scores are 1-3.
 - Add exactly one category tag declared by the batch implementation.
 - Holdout catalogs must not reuse IDs or normalized queries from exposed goldens.
+- Do not tune against a holdout report or rerun an exposed unseen cohort.
+- Rotate holdout cases by creating a new frozen batch; never mutate an executed
+  catalog in place.
 - Prefer multi-entity graded judgments for workflow and conceptual queries.

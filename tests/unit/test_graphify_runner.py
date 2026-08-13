@@ -19,6 +19,8 @@ import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from stropha.pipeline.graphify_runner import (
     DEFAULT_TIMEOUT_S,
     GraphifyResult,
@@ -336,7 +338,13 @@ class TestRunGraphifyMulti:
 class TestPipelineGraphifyIntegration:
     """Verify Pipeline.run() calls _run_graphify when graphify=True."""
 
-    def _make_pipeline(self, tmp_path: Path, *, graphify: bool):
+    def _make_pipeline(
+        self,
+        tmp_path: Path,
+        *,
+        graphify: bool,
+        graph_fts_augment: bool | None = None,
+    ):
         """Build a Pipeline with all stubs, return it with run() patchable."""
         from stropha.pipeline.pipeline import Pipeline
 
@@ -366,6 +374,7 @@ class TestPipelineGraphifyIntegration:
             walker=walker,
             chunker=chunker,
             graphify=graphify,
+            graph_fts_augment=graph_fts_augment,
         )
         return pipeline
 
@@ -424,6 +433,33 @@ class TestPipelineGraphifyIntegration:
         """Default Pipeline() should have graphify enabled."""
         pipeline = self._make_pipeline(tmp_path, graphify=True)
         assert pipeline._graphify is True
+
+    @pytest.mark.parametrize("enabled", [True, False])
+    def test_explicit_fts_augment_does_not_read_global_config(
+        self,
+        tmp_path: Path,
+        enabled: bool,
+    ) -> None:
+        pipeline = self._make_pipeline(
+            tmp_path,
+            graphify=True,
+            graph_fts_augment=enabled,
+        )
+        pipeline._storage.augment_fts_with_graph.reset_mock()
+
+        with patch(
+            "stropha.ingest.graphify_loader.GraphifyLoader"
+        ) as loader_cls, patch(
+            "stropha.ingest.graph_vec_loader.GraphVecLoader"
+        ) as vec_loader_cls, patch(
+            "stropha.config.get_config",
+            side_effect=AssertionError("global config must not be read"),
+        ):
+            loader_cls.return_value.exists.return_value = False
+            vec_loader_cls.return_value.needs_run.return_value = False
+            pipeline._refresh_graphify_mirror()
+
+        assert pipeline._storage.augment_fts_with_graph.called is enabled
 
 
 class TestDefaultTimeout:

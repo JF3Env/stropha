@@ -1,11 +1,11 @@
 # Meta-Harness — implementation plan for stropha
 
-> **Status:** Historical RFC with partial delivery. The phased body records the
+> **Status:** Historical RFC with completed v1 delivery. The phased body records the
 > 2026-05 plan; it is not a current claim that "nothing shipped". The audited
 > delivery matrix below is authoritative for implementation status.
 > **Version:** 1.0 (RFC)
 > **Date:** 2026-05-21
-> **Delivery audit:** 2026-08-12. Current operational rows were reconciled with
+> **Delivery audit:** 2026-08-13. Current operational rows were reconciled with
 > the live source tree on that date.
 > **Audience:** maintainers of `stropha` and LLM agents operating it.
 > **Companion documents:**
@@ -28,19 +28,19 @@ actually wired at the audited commit.
 
 | Phase | Audited status | Delivered evidence | Current gap |
 |---|---|---|---|
-| 0 — traces/store/outcomes | **Delivered** | `meta/{trace,store,outcome,backfill,feedback}.py`; traced MCP calls and explicit bad-result feedback | Label quality still depends on post-hoc signals and calibration. |
-| 1 — evaluator/fitness | **Delivered and wired** | `meta/{fitness,evaluator,gate,frontier}.py`; live `stropha meta run` evaluation | End-to-end task success remains a future fitness dimension. |
-| 2 — reproducibility | **Delivered as library/CLI** | `meta/{snapshot,index_cache}.py`; `stropha meta snapshot` | Reproducibility helpers are not composed into `meta run`. |
+| 0 — traces/store/outcomes | **Delivered** | `meta/{trace,store,outcome,backfill,feedback}.py`; traced MCP calls, explicit bad-result feedback, and auditable per-hit outcome evidence | Label quality still depends on post-hoc signals and calibration. |
+| 1 — evaluator/fitness | **Delivered and wired** | `meta/{fitness,evaluator,gate,frontier,validation}.py`; candidate-specific outcome scoring, signed scalar reporting, search-only optimization, and explicit shortlist holdout validation | End-to-end task success remains a future fitness dimension. |
+| 2 — reproducibility | **Delivered** | `meta/{snapshot,index_cache,candidate_index}.py`; every run pins a source snapshot, builds normal-pipeline cache entries, and evaluates writable SQLite clones | Cache reuse still depends on exact indexing, graph, and cache-format identity. |
 | 3 — search space | **Delivered** | bundled manifest + `meta/search_space.py` validation/sampling | The manifest remains curated; registry metadata cannot infer every constraint. |
-| 4 — outer loop | **Delivered for query-time config search** | loop, Pareto frontier, bandit, local-agentic and cloud-agentic proposers; live retrieval evaluator | Indexing-stage proposals require snapshot/index-cache composition. |
-| 5 — code search | **Infrastructure only** | code proposers, pytest gate and subprocess adapter sandbox | Not selected or evaluated by the public run command; the subprocess is isolation, not a security boundary. |
-| 6 — promotion/operation | **Delivered with a bounded scope** | status/report/promote/prune commands; promotion deep-merges into canonical `~/.stropha/config.yaml`, preserves unrelated keys/secrets, defaults to diff-only, and writes only with explicit `--apply`; hook can trigger bounded live bandit iterations | Hook-triggered optimization requires a clean compatible index. |
+| 4 — outer loop | **Delivered** | batched loop, Pareto frontier, bandit and agentic proposers, bounded parallel evaluation, durable checkpoints, exact bandit resume, candidate traces, shortlist, and cost artifacts | Agentic proposer resume is intentionally unsupported because exact model state cannot be restored. |
+| 5 — code search | **Delivered with a bounded scope** | `local-code`/`cloud-code` proposers, static validation, pytest gate, and sandboxed reranker proxy | v1 accepts one generated reranker file per candidate; code candidates remain review-only. |
+| 6 — promotion/operation | **Delivered with a bounded scope** | status/report/promote/prune commands; explicit holdout validation; fail-closed schema-v2 promotion; atomic deep merge into canonical `~/.stropha/config.yaml`; hook-triggered bounded bandit runs | Hook-triggered optimization still depends on its configured runtime and budget. |
 
-**Current limitations:** `meta run` evaluates production retrieval but is
-restricted to query-time dimensions against the active index. Snapshot/index
-cache composition is still required before indexing adapters can be searched
-safely. The historical plan body below keeps the original estimates for
-traceability.
+**Current limitations:** exact resume is available only for the bandit proposer;
+generated code is limited to one sandboxed reranker and cannot be auto-applied;
+monetary run cost remains unknown unless exact provider usage and pricing are
+available. The historical plan body below keeps the original estimates and
+broader ambitions for traceability.
 
 ---
 
@@ -130,12 +130,171 @@ A new package `src/stropha/meta/` holds the optimizer. It *consumes* the existin
 
 | Command | Purpose |
 |---|---|
-| `stropha meta snapshot [--commit SHA]` | Freeze a source snapshot for reproducible evaluation |
-| `stropha meta run [--iterations N] [--candidates k] [--proposer bandit\|agent] [--budget …]` | Run the loop |
+| `stropha meta snapshot [--ref REF] [--repo PATH] [--list]` | Create or list pinned source worktrees |
+| `stropha meta run [--iterations N] [--candidates K] [--parallel N] [--resume RUN_ID]` | Search on a pinned snapshot and write a frozen search shortlist |
+| `stropha meta validate RUN_ID` | Evaluate the frozen baseline and shortlist on holdout |
 | `stropha meta status` | Artifact store summary + current best candidate |
-| `stropha meta report [--json]` | Candidate leaderboard, search vs. held-out scores |
-| `stropha meta promote <candidate_id>` | Emit a `stropha.yaml` diff for human review (never auto-applies) |
-| `stropha meta trace {tail,stats}` | Inspect the execution-trace log |
+| `stropha meta report [--json]` | Candidate leaderboard and promoted-baseline alerts |
+| `stropha meta promote CANDIDATE_ID [--run-id RUN_ID] [--apply]` | Print a diff by default; apply only eligible validated config candidates |
+| `stropha meta trace CANDIDATE_ID` | List one candidate's evaluation trace files |
+| `stropha meta prune` | Apply the artifact-retention policy |
+
+---
+
+## 3.1 Completion contract
+
+This section is the implementation contract for completing the original scope.
+It supersedes future-tense details in the historical phase descriptions below.
+The behavior in this section is shipped and covered by the Meta-Harness tests.
+
+### Run lifecycle
+
+`stropha meta run` is a search-only optimization command. It freezes one source
+snapshot, evaluates the active configuration as the initial seed, then proposes
+`K` candidates per round. `--iterations N` is the number of proposal rounds; the
+legacy loop attempt budget remains internal. Holdout is not shown to proposers
+and is opened only by explicit validation. The original RFC's suggestion of 2–3
+additional hand-picked seeds remains historical guidance, not a v1 requirement:
+
+```text
+meta run [--candidates K] [--parallel N] [--resume RUN_ID]
+  -> snapshot -> baseline(search) -> seeds -> batched search -> shortlist
+
+meta validate RUN_ID
+  -> baseline(holdout) + frozen shortlist(holdout) -> validation.json
+
+meta promote CANDIDATE_ID --run-id RUN_ID --apply
+  -> recheck identity + validation gate -> atomic config merge
+```
+
+Every batch is deterministic under the run seed: proposals are generated and
+registered in slot order against the same pre-batch archive; evaluation may run
+in parallel, but archive insertion, hooks, checkpoint writes, and output remain
+slot ordered. Failed proposals, gates, timeouts, and evaluations consume budget.
+
+### Snapshot and index isolation
+
+- A run pins `HEAD` into one detached worktree. Dirty source changes are not
+  included. Every candidate in the run uses that same snapshot SHA.
+- Evaluation uses an isolated SQLite workspace even when production storage is
+  PostgreSQL. This is an evaluation artifact, never the production index.
+- The immutable cache identity is
+  `(repo_key, snapshot_sha, indexing_hash, graph_identity, cache_format)`.
+- A cache miss runs the normal `Pipeline.run()` against the snapshot; that method
+  remains the sole owner of graphify loading and FTS augmentation order.
+- Candidate databases are reflink/full-copy clones of a closed cache database.
+  Writable hardlinks and symlinks are forbidden.
+- Retrieval-only candidates share one cache entry. Indexing-stage candidates
+  produce one entry per distinct indexing identity.
+- Canonical cache publication is atomic and metadata is verified on every read.
+
+### Code-search boundary
+
+Phase 5 v1 accepts only one generated **reranker** adapter per candidate. This is
+an intentional reduction from arbitrary harness code:
+
+- proposer modes are `local-code` and `cloud-code`, both explicit opt-ins;
+- exactly one file `adapters/reranker/<name>.py`, at most 64 KiB;
+- exactly one literal `@register_adapter(stage="reranker", name="<name>")`;
+- the candidate's `reranker` setting must name that registration;
+- static AST checks reject prohibited stages, imports, calls, and path mismatch;
+- candidate-aware tests and import/protocol checks run before scoring;
+- reranking executes in a fresh constrained subprocess receiving only serialized
+  query/hit data, never storage or production pipeline objects;
+- candidate files are never copied into `src/stropha/adapters/` and promotion
+  remains review-only for code candidates.
+
+The subprocess is defense in depth, not a hostile multi-tenant security
+boundary. It uses a sanitized environment, temporary HOME, candidate cwd,
+process-group termination, bounded output, wall/CPU/address-space/file/process
+limits where supported, and no inherited credentials. Network denial is applied
+only where the host OS provides a reliable sandbox facility.
+
+### Proposal history and learning
+
+Proposals have a typed shape: configuration, optional code artifact, hypothesis,
+evidence candidate/trace IDs, expected objective deltas, confidence, and usage.
+After evaluation, the store records actual parent-relative deltas and a verdict.
+
+Agentic proposers receive a token-budgeted history bundle containing:
+
+1. a compact ledger for every candidate available to the run;
+2. full records for the baseline, current Pareto frontier, recent candidates,
+   representative failures, and objective-space-diverse examples;
+3. selected candidate code, gate/sandbox diagnostics, hypotheses, and traces;
+4. explicit included/spilled IDs and token estimates.
+
+Sections are serialized atomically and never substring-truncated. Candidate
+evaluation traces are written beneath `candidates/<id>/traces/` and carry the
+candidate/run IDs. Holdout evidence is excluded from proposer history.
+
+The local bandit learns categorical, boolean, and enumerated integer arms using
+all signed objectives. It samples an objective preference per proposal and adds
+frontier-crowding pressure so exploration does not collapse to quality alone.
+
+### Manifest preflight
+
+The search-space manifest is validated against the complete adapter registry.
+Every registered stage/adapter must be eligible or explicitly excluded with a
+reason. Every feature has one runtime config binding. Invalid ranges, steps,
+defaults, duplicate names, dangling constraints, active adapters absent from the
+manifest, and CLI/evaluator dimension disagreement fail before any candidate is
+registered. The manifest and registry hashes are persisted in provenance.
+
+### Artifacts and resume
+
+```text
+meta/
+  snapshots/worktrees/<sha>/
+  index-cache/<cache-key>/{index.db,meta.json}
+  candidates/<candidate-id>/
+    config.yaml
+    meta.json                 # run/round/slot/hypothesis/status
+    scores.json
+    gate.json
+    sandbox.json
+    hypothesis-verdict.json
+    adapters/                 # code candidates only
+    traces/*.jsonl
+  runs/<run-id>/
+    provenance.json
+    checkpoint.json
+    report.json
+    cost.json
+    shortlist.json
+    validation.json           # written only by meta validate
+```
+
+`checkpoint.json` is atomically replaced after the seed and every batch. It records
+archive/frontier IDs, registered candidate states, next round/slot, proposer RNG
+state, budgets, and identity. `--resume` requires exact repository, snapshot,
+golden, manifest, registry, options, and index-format compatibility. Scored
+candidates are never rerun; registered/evaluating candidates are recovered once.
+
+### Budgets and costs
+
+Run limits include wall clock, rounds, candidate attempts/evaluations, proposer
+tokens, per-candidate timeout, and maximum parallel candidates. Search and
+explicit holdout validation have separate usage. `cost.json` records proposer
+calls/fallbacks, estimated and provider-reported tokens, indexing/cache work,
+retrieval queries/tokens/time, candidate states, verification duration, and
+artifact bytes. Monetary cost stays `null` unless exact provider usage and a
+configured price are available.
+
+### Baseline and promotion gate
+
+The live configuration is evaluated alongside candidates under identical search
+and holdout identities. Promotion requires a schema-v2 validation artifact with:
+
+- completed comparable search and holdout evidence for baseline and candidate;
+- a search improvement on the declared primary metric;
+- no material holdout regression in Success, Recall, MRR, NDCG, latency,
+  returned tokens, per-tag metrics, or per-case rank under configured thresholds;
+- all named verification checks passing;
+- current config/source/index/runtime identity matching validation.
+
+Legacy scalar-only baselines are retained as `legacy_unverified`; they never
+authorize promotion and are replaced only after same-identity revalidation.
 
 ---
 

@@ -23,6 +23,7 @@ class _FakeHit:
     path: str
     symbol: str | None
     score: float = 1.0
+    chunk_id: str | None = None
 
 
 class _FakeEngine:

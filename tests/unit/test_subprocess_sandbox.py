@@ -84,6 +84,35 @@ def _completed(returncode: int, stdout: str = "", stderr: str = "") -> Any:
     )
 
 
+class _FakePopen:
+    def __init__(
+        self,
+        completed: Any,
+        *args: Any,
+        timeout: bool = False,
+        **kwargs: Any,
+    ) -> None:
+        self.returncode = completed.returncode
+        self.pid = 12345
+        self._timeout = timeout
+        self.stdin = kwargs.get("stdin")
+        kwargs["stdout"].write(completed.stdout.encode())
+        kwargs["stderr"].write(completed.stderr.encode())
+
+    def wait(self, timeout: float | None = None) -> int:
+        if self._timeout:
+            self._timeout = False
+            raise subprocess.TimeoutExpired("candidate", timeout)
+        return self.returncode
+
+    def kill(self) -> None:
+        self.returncode = -9
+
+
+def _popen(completed: Any, *, timeout: bool = False):
+    return lambda *args, **kwargs: _FakePopen(completed, *args, timeout=timeout, **kwargs)
+
+
 # ---------------------------------------------------------------------------
 # Module helpers
 # ---------------------------------------------------------------------------
@@ -185,8 +214,8 @@ class TestSandboxExecution:
     def test_returncode_zero_succeeds(self, tmp_path: Path) -> None:
         cand = _make_candidate_with(tmp_path, ("foo.py", VALID_ADAPTER_SRC))
         with patch(
-            "subprocess.run",
-            return_value=_completed(0, stdout='{"ok": true, "imported": ["foo.py"]}'),
+            "subprocess.Popen",
+            side_effect=_popen(_completed(0, stdout='{"ok": true, "imported": ["foo.py"]}')),
         ) as run_mock:
             sandbox = SubprocessSandbox()
             result = sandbox.run(cand)
@@ -203,8 +232,8 @@ class TestSandboxExecution:
     def test_returncode_nonzero_fails(self, tmp_path: Path) -> None:
         cand = _make_candidate_with(tmp_path, ("foo.py", BROKEN_ADAPTER_SRC))
         with patch(
-            "subprocess.run",
-            return_value=_completed(1, stdout='{"ok": false, "failed": ["foo.py"]}'),
+            "subprocess.Popen",
+            side_effect=_popen(_completed(1, stdout='{"ok": false, "failed": ["foo.py"]}')),
         ):
             sandbox = SubprocessSandbox()
             result = sandbox.run(cand)
@@ -216,8 +245,8 @@ class TestSandboxExecution:
     def test_crashed_when_negative_returncode(self, tmp_path: Path) -> None:
         cand = _make_candidate_with(tmp_path, ("foo.py", VALID_ADAPTER_SRC))
         with patch(
-            "subprocess.run",
-            return_value=_completed(-11, stdout="", stderr="Segmentation fault"),
+            "subprocess.Popen",
+            side_effect=_popen(_completed(-11, stderr="Segmentation fault")),
         ):
             sandbox = SubprocessSandbox()
             result = sandbox.run(cand)
@@ -228,13 +257,16 @@ class TestSandboxExecution:
 
     def test_timeout(self, tmp_path: Path) -> None:
         cand = _make_candidate_with(tmp_path, ("foo.py", VALID_ADAPTER_SRC))
-        exc = subprocess.TimeoutExpired(
-            cmd=["python", "-m", RUNNER_MODULE],
-            timeout=0.1,
-            output=b"part-stdout",
-            stderr=b"part-stderr",
-        )
-        with patch("subprocess.run", side_effect=exc):
+        with (
+            patch(
+                "subprocess.Popen",
+                side_effect=_popen(
+                    _completed(0, stdout="part-stdout", stderr="part-stderr"),
+                    timeout=True,
+                ),
+            ),
+            patch("os.killpg"),
+        ):
             sandbox = SubprocessSandbox(timeout_s=0.1)
             result = sandbox.run(cand)
         assert result.timed_out is True
@@ -246,14 +278,14 @@ class TestSandboxExecution:
 
     def test_os_error_raises_sandbox_error(self, tmp_path: Path) -> None:
         cand = _make_candidate_with(tmp_path, ("foo.py", VALID_ADAPTER_SRC))
-        with patch("subprocess.run", side_effect=OSError("denied")):
+        with patch("subprocess.Popen", side_effect=OSError("denied")):
             sandbox = SubprocessSandbox()
             with pytest.raises(SandboxError, match="spawn"):
                 sandbox.run(cand)
 
     def test_pythonpath_prepended_to_existing(self, tmp_path: Path) -> None:
         cand = _make_candidate_with(tmp_path, ("foo.py", VALID_ADAPTER_SRC))
-        with patch("subprocess.run", return_value=_completed(0, stdout="{}")) as rm:
+        with patch("subprocess.Popen", side_effect=_popen(_completed(0, stdout="{}"))) as rm:
             sandbox = SubprocessSandbox(extra_env={"PYTHONPATH": "/preexisting"})
             sandbox.run(cand)
         env = rm.call_args.kwargs["env"]
@@ -265,27 +297,33 @@ class TestSandboxExecution:
     def test_pythonpath_set_when_absent(self, tmp_path: Path, monkeypatch: Any) -> None:
         monkeypatch.delenv("PYTHONPATH", raising=False)
         cand = _make_candidate_with(tmp_path, ("foo.py", VALID_ADAPTER_SRC))
-        with patch("subprocess.run", return_value=_completed(0, stdout="{}")) as rm:
+        with patch("subprocess.Popen", side_effect=_popen(_completed(0, stdout="{}"))) as rm:
             sandbox = SubprocessSandbox()
             sandbox.run(cand)
         env = rm.call_args.kwargs["env"]
-        assert env["PYTHONPATH"] == str(cand / "adapters")
+        assert env["PYTHONPATH"].split(":")[0] == str(cand / "adapters")
 
     def test_extra_env_merged(self, tmp_path: Path) -> None:
         cand = _make_candidate_with(tmp_path, ("foo.py", VALID_ADAPTER_SRC))
-        with patch("subprocess.run", return_value=_completed(0, stdout="{}")) as rm:
-            sandbox = SubprocessSandbox(extra_env={"STROPHA_SANDBOX_FLAG": "yes"})
+        with patch("subprocess.Popen", side_effect=_popen(_completed(0, stdout="{}"))) as rm:
+            sandbox = SubprocessSandbox(extra_env={"LANG": "C"})
             sandbox.run(cand)
         env = rm.call_args.kwargs["env"]
-        assert env["STROPHA_SANDBOX_FLAG"] == "yes"
+        assert env["LANG"] == "C"
         # Parent env is preserved (PATH is always present in CI).
         assert "PATH" in env
+
+    def test_extra_env_rejects_credentials(self, tmp_path: Path) -> None:
+        cand = _make_candidate_with(tmp_path, ("foo.py", VALID_ADAPTER_SRC))
+        sandbox = SubprocessSandbox(extra_env={"AWS_SECRET_ACCESS_KEY": "secret"})
+        with pytest.raises(SandboxError, match="not allowed"):
+            sandbox.run(cand)
 
     def test_stdout_not_json_falls_back(self, tmp_path: Path) -> None:
         cand = _make_candidate_with(tmp_path, ("foo.py", VALID_ADAPTER_SRC))
         with patch(
-            "subprocess.run",
-            return_value=_completed(0, stdout="hello world"),
+            "subprocess.Popen",
+            side_effect=_popen(_completed(0, stdout="hello world")),
         ):
             sandbox = SubprocessSandbox()
             result = sandbox.run(cand)
@@ -295,8 +333,8 @@ class TestSandboxExecution:
     def test_stdout_json_list_falls_back(self, tmp_path: Path) -> None:
         cand = _make_candidate_with(tmp_path, ("foo.py", VALID_ADAPTER_SRC))
         with patch(
-            "subprocess.run",
-            return_value=_completed(0, stdout="[1, 2, 3]"),
+            "subprocess.Popen",
+            side_effect=_popen(_completed(0, stdout="[1, 2, 3]")),
         ):
             sandbox = SubprocessSandbox()
             result = sandbox.run(cand)
@@ -304,20 +342,42 @@ class TestSandboxExecution:
 
     def test_explicit_python_binary(self, tmp_path: Path) -> None:
         cand = _make_candidate_with(tmp_path, ("foo.py", VALID_ADAPTER_SRC))
-        with patch("subprocess.run", return_value=_completed(0, stdout="{}")) as rm:
+        with patch("subprocess.Popen", side_effect=_popen(_completed(0, stdout="{}"))) as rm:
             sandbox = SubprocessSandbox(python_binary="/opt/python")
             sandbox.run(cand)
         assert rm.call_args.args[0][0] == "/opt/python"
 
     def test_explicit_project_root(self, tmp_path: Path) -> None:
         cand = _make_candidate_with(tmp_path, ("foo.py", VALID_ADAPTER_SRC))
-        with patch("subprocess.run", return_value=_completed(0, stdout="{}")) as rm:
+        with patch("subprocess.Popen", side_effect=_popen(_completed(0, stdout="{}"))) as rm:
             sandbox = SubprocessSandbox(project_root=tmp_path)
             sandbox.run(cand)
-        assert rm.call_args.kwargs["cwd"] == str(tmp_path)
+        assert rm.call_args.kwargs["cwd"] == str(cand)
 
     def test_default_timeout_constant(self) -> None:
         assert SubprocessSandbox().timeout_s == SANDBOX_DEFAULT_TIMEOUT_S
+
+    def test_bounded_input_is_sent_over_stdin(self, tmp_path: Path) -> None:
+        cand = _make_candidate_with(tmp_path, ("foo.py", VALID_ADAPTER_SRC))
+        seen_input = b""
+
+        def capture_input(*args: Any, **kwargs: Any) -> _FakePopen:
+            nonlocal seen_input
+            seen_input = kwargs["stdin"].read()
+            return _FakePopen(_completed(0, stdout="{}"), *args, **kwargs)
+
+        with patch("subprocess.Popen", side_effect=capture_input):
+            SubprocessSandbox().run(cand, input_data='{"query":"x"}')
+        assert seen_input == b'{"query":"x"}'
+
+    def test_oversized_input_fails_before_spawn(self, tmp_path: Path) -> None:
+        cand = _make_candidate_with(tmp_path, ("foo.py", VALID_ADAPTER_SRC))
+        with (
+            patch("subprocess.Popen") as run_mock,
+            pytest.raises(SandboxError, match="input exceeds"),
+        ):
+            SubprocessSandbox(max_input_bytes=3).run(cand, input_data="four")
+        run_mock.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -381,9 +441,7 @@ class TestRunnerImportCheck:
         rc = _sandbox_runner.main(["import_check", str(cand)])
         assert rc == 1
         out = json.loads(capsys.readouterr().out)
-        assert any(
-            "SystemExit" in f["error"] for f in out["failed"]
-        )
+        assert any("SystemExit" in f["error"] for f in out["failed"])
 
     def test_no_adapters_dir(self, tmp_path: Path, capsys: Any) -> None:
         # The candidate dir exists but has no adapters/ subdir.
@@ -396,7 +454,9 @@ class TestRunnerImportCheck:
         assert out["reason"] == "no_adapters_dir"
 
     def test_partial_failure_marks_overall_failure(
-        self, tmp_path: Path, capsys: Any,
+        self,
+        tmp_path: Path,
+        capsys: Any,
     ) -> None:
         cand = _make_candidate_with(
             tmp_path,
@@ -411,7 +471,10 @@ class TestRunnerImportCheck:
         assert any(f["path"] == "bad.py" for f in out["failed"])
 
     def test_spec_from_file_location_none_treated_as_failure(
-        self, tmp_path: Path, capsys: Any, monkeypatch: Any,
+        self,
+        tmp_path: Path,
+        capsys: Any,
+        monkeypatch: Any,
     ) -> None:
         """Defensive: when ``importlib.util.spec_from_file_location``
         returns None (impossible with real .py files but cheap to
@@ -486,7 +549,8 @@ class TestEndToEnd:
         assert "foo.py" in result.payload["imported"]
 
     def test_real_subprocess_isolation_on_broken_candidate(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         """A candidate that crashes at import time does NOT crash the
         parent. The sandbox returns succeeded=False; the parent's
@@ -520,6 +584,7 @@ class TestEndToEnd:
 class TestExports:
     def test_meta_reexports(self) -> None:
         import stropha.meta as m
+
         for name in (
             "SubprocessSandbox",
             "SandboxResult",

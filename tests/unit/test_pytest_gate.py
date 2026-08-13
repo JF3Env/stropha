@@ -44,6 +44,7 @@ from stropha.meta import (
     run_loop,
 )
 from stropha.meta.gate import _stropha_project_root, _tail
+from stropha.meta.sandbox import SandboxResult
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -55,18 +56,46 @@ def _mk_candidate_with_artifact(store: ArtifactStore) -> Path:
     record = store.register_candidate(
         config={
             "walker": "git-ls-files",
+            "reranker": "proposed",
             "__code_artifacts__": {
-                "adapters/enricher/proposed.py": (
-                    "from stropha.pipeline.registry import register_adapter\n"
-                    "@register_adapter(stage='enricher', name='proposed')\n"
-                    "class Proposed:\n"
-                    "    class Config: ...\n"
-                ),
+                "adapters/reranker/proposed.py": _valid_source(),
             },
         },
     )
     assert record.base_dir is not None
     return record.base_dir
+
+
+def _valid_source() -> str:
+    return (
+        "from pydantic import BaseModel\n"
+        "from stropha.models import SearchHit\n"
+        "from stropha.pipeline.base import StageHealth\n"
+        "from stropha.pipeline.registry import register_adapter\n"
+        "class Config(BaseModel): pass\n"
+        "@register_adapter(stage='reranker', name='proposed')\n"
+        "class Proposed:\n"
+        "    Config = Config\n"
+        "    def __init__(self, config=None): self.config = config or Config()\n"
+        "    stage_name = property(lambda self: 'reranker')\n"
+        "    adapter_name = property(lambda self: 'proposed')\n"
+        "    adapter_id = property(lambda self: 'reranker:proposed')\n"
+        "    config_schema = property(lambda self: Config)\n"
+        "    def health(self): return StageHealth(status='ready', message='ok')\n"
+        "    def rerank(self, query: str, hits: list[SearchHit], *, top_k=10):\n"
+        "        return hits[:top_k]\n"
+    )
+
+
+class _PassingSandbox:
+    def run(self, candidate_dir: Path, *, job: str) -> SandboxResult:
+        return SandboxResult(succeeded=True, returncode=0, payload={"ok": True})
+
+
+def _write_candidate(tmp_path: Path) -> None:
+    (tmp_path / "adapters" / "reranker").mkdir(parents=True)
+    (tmp_path / "adapters" / "reranker" / "proposed.py").write_text(_valid_source())
+    (tmp_path / "config.yaml").write_text("reranker: proposed\n")
 
 
 def _mk_candidate_no_artifact(store: ArtifactStore) -> Path:
@@ -185,21 +214,21 @@ class TestPytestGateSkipping:
 
 class TestPytestGateExecution:
     def test_missing_uv_raises_gate_error(self, tmp_path: Path) -> None:
-        (tmp_path / "adapters").mkdir()
-        (tmp_path / "adapters" / "foo.py").write_text("# stub\n")
+        _write_candidate(tmp_path)
         with patch("shutil.which", return_value=None):
-            gate = PytestGate(uv_binary=None)
+            gate = PytestGate(uv_binary=None, sandbox=_PassingSandbox())  # type: ignore[arg-type]
             with pytest.raises(GateError, match="uv binary"):
                 gate(tmp_path)
 
     def test_returncode_zero_passes(self, tmp_path: Path) -> None:
-        (tmp_path / "adapters").mkdir()
-        (tmp_path / "adapters" / "foo.py").write_text("# stub\n")
+        _write_candidate(tmp_path)
         with patch(
             "subprocess.run",
             return_value=_completed(0, stdout="all ok"),
         ) as run_mock:
-            gate = PytestGate(uv_binary="/fake/uv", project_root=tmp_path)
+            gate = PytestGate(
+                uv_binary="/fake/uv", project_root=tmp_path, sandbox=_PassingSandbox()  # type: ignore[arg-type]
+            )
             result = gate(tmp_path)
         assert result.passed is True
         assert result.skipped is False
@@ -213,21 +242,19 @@ class TestPytestGateExecution:
         assert tuple(called_cmd[3:]) == DEFAULT_PYTEST_ARGS
 
     def test_returncode_nonzero_fails(self, tmp_path: Path) -> None:
-        (tmp_path / "adapters").mkdir()
-        (tmp_path / "adapters" / "foo.py").write_text("# stub\n")
+        _write_candidate(tmp_path)
         with patch(
             "subprocess.run",
             return_value=_completed(1, stdout="test failed"),
         ):
-            gate = PytestGate(uv_binary="/fake/uv")
+            gate = PytestGate(uv_binary="/fake/uv", sandbox=_PassingSandbox())  # type: ignore[arg-type]
             result = gate(tmp_path)
         assert result.passed is False
         assert result.returncode == 1
         assert result.stdout_tail == "test failed"
 
     def test_timeout_returns_failed_result(self, tmp_path: Path) -> None:
-        (tmp_path / "adapters").mkdir()
-        (tmp_path / "adapters" / "foo.py").write_text("# stub\n")
+        _write_candidate(tmp_path)
 
         exc = subprocess.TimeoutExpired(
             cmd=["uv", "run", "pytest"],
@@ -236,7 +263,9 @@ class TestPytestGateExecution:
             stderr=b"partial stderr",
         )
         with patch("subprocess.run", side_effect=exc):
-            gate = PytestGate(uv_binary="/fake/uv", timeout_s=0.1)
+            gate = PytestGate(
+                uv_binary="/fake/uv", timeout_s=0.1, sandbox=_PassingSandbox()  # type: ignore[arg-type]
+            )
             result = gate(tmp_path)
         assert result.passed is False
         assert result.returncode == -1
@@ -245,20 +274,19 @@ class TestPytestGateExecution:
         assert result.stderr_tail == "partial stderr"
 
     def test_os_error_raises_gate_error(self, tmp_path: Path) -> None:
-        (tmp_path / "adapters").mkdir()
-        (tmp_path / "adapters" / "foo.py").write_text("# stub\n")
+        _write_candidate(tmp_path)
         with patch("subprocess.run", side_effect=OSError("denied")):
-            gate = PytestGate(uv_binary="/fake/uv")
+            gate = PytestGate(uv_binary="/fake/uv", sandbox=_PassingSandbox())  # type: ignore[arg-type]
             with pytest.raises(GateError, match="spawn"):
                 gate(tmp_path)
 
     def test_custom_pytest_args_passed_through(self, tmp_path: Path) -> None:
-        (tmp_path / "adapters").mkdir()
-        (tmp_path / "adapters" / "foo.py").write_text("# stub\n")
+        _write_candidate(tmp_path)
         with patch("subprocess.run", return_value=_completed(0)) as run_mock:
             gate = PytestGate(
                 uv_binary="/fake/uv",
                 pytest_args=("-x", "tests/unit/"),
+                sandbox=_PassingSandbox(),  # type: ignore[arg-type]
             )
             gate(tmp_path)
         called_cmd = run_mock.call_args.args[0]
@@ -267,21 +295,21 @@ class TestPytestGateExecution:
     def test_project_root_used_as_cwd(self, tmp_path: Path) -> None:
         cand = tmp_path / "candidate"
         cand.mkdir()
-        (cand / "adapters").mkdir()
-        (cand / "adapters" / "foo.py").write_text("# stub\n")
+        _write_candidate(cand)
         with patch("subprocess.run", return_value=_completed(0)) as run_mock:
-            gate = PytestGate(uv_binary="/fake/uv", project_root=tmp_path)
+            gate = PytestGate(
+                uv_binary="/fake/uv", project_root=tmp_path, sandbox=_PassingSandbox()  # type: ignore[arg-type]
+            )
             gate(cand)
         assert run_mock.call_args.kwargs["cwd"] == str(tmp_path)
 
     def test_uv_binary_resolved_via_which(self, tmp_path: Path) -> None:
-        (tmp_path / "adapters").mkdir()
-        (tmp_path / "adapters" / "foo.py").write_text("# stub\n")
+        _write_candidate(tmp_path)
         with (
             patch("shutil.which", return_value="/usr/local/bin/uv") as which,
             patch("subprocess.run", return_value=_completed(0)) as run_mock,
         ):
-            gate = PytestGate(uv_binary=None)
+            gate = PytestGate(uv_binary=None, sandbox=_PassingSandbox())  # type: ignore[arg-type]
             gate(tmp_path)
         which.assert_called_with("uv")
         assert run_mock.call_args.args[0][0] == "/usr/local/bin/uv"

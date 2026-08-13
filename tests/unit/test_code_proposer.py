@@ -62,8 +62,8 @@ from stropha.meta.store import (
 VALID_SOURCE = (
     "from stropha.pipeline.registry import register_adapter\n"
     "\n"
-    "@register_adapter(stage='enricher', name='my-new-enricher')\n"
-    "class MyNewEnricher:\n"
+    "@register_adapter(stage='reranker', name='my-new-reranker')\n"
+    "class MyNewReranker:\n"
     "    class Config: ...\n"
 )
 
@@ -79,11 +79,11 @@ def _stub_space() -> SearchSpace:
                 choices=("git-ls-files", "filesystem"),
             ),
             Dimension(
-                name="enricher",
+                name="reranker",
                 kind="stage",
-                indexing=True,
+                indexing=False,
                 type="choice",
-                choices=("noop", "contextual"),
+                choices=("noop", "my-new-reranker"),
             ),
             Dimension(
                 name="cache_size",
@@ -153,9 +153,9 @@ def _make_fake(
 
 class TestArtifactPathValidator:
     def test_happy_path(self) -> None:
-        assert _is_valid_artifact_path("adapters/enricher/foo.py") is True
-        assert _is_valid_artifact_path("adapters/retrieval/streams/s.py") is True
-        assert _is_valid_artifact_path("adapters/walker/w.py") is True
+        assert _is_valid_artifact_path("adapters/reranker/foo.py") is True
+        assert _is_valid_artifact_path("adapters/enricher/foo.py") is False
+        assert _is_valid_artifact_path("adapters/walker/w.py") is False
 
     def test_rejects_non_adapters_prefix(self) -> None:
         """The Phase-5 contract: artifacts MUST land under adapters/."""
@@ -258,27 +258,21 @@ class TestValidateArtifacts:
 
     def test_mixed_good_and_bad_keeps_only_good(self) -> None:
         raw = {
-            "adapters/enricher/good.py": VALID_SOURCE,
+            "adapters/reranker/my-new-reranker.py": VALID_SOURCE,
             "/etc/passwd": VALID_SOURCE,  # absolute
             "../bad.py": VALID_SOURCE,  # traversal
             "adapters/x/no_decorator.py": "class Foo: pass",  # missing token
-            "adapters/y/another_good.py": VALID_SOURCE,
         }
         out = _validate_artifacts(raw)
-        assert set(out.keys()) == {
-            "adapters/enricher/good.py",
-            "adapters/y/another_good.py",
-        }
+        assert out == {}
 
-    def test_caps_at_max(self) -> None:
-        # MAX_ARTIFACTS_PER_CANDIDATE good entries + one more should
-        # surface exactly MAX_ARTIFACTS_PER_CANDIDATE.
+    def test_rejects_more_than_one(self) -> None:
         raw = {
-            f"adapters/x/a{i}.py": VALID_SOURCE
+            f"adapters/reranker/a{i}.py": VALID_SOURCE
             for i in range(MAX_ARTIFACTS_PER_CANDIDATE + 3)
         }
         out = _validate_artifacts(raw)
-        assert len(out) == MAX_ARTIFACTS_PER_CANDIDATE
+        assert out == {}
 
 
 # ---------------------------------------------------------------------------
@@ -289,7 +283,7 @@ class TestValidateArtifacts:
 class TestStorePathValidator:
     def test_accepts_valid(self) -> None:
         # Returns None on success (no exception).
-        _validate_artifact_rel_path("adapters/enricher/foo.py")
+        _validate_artifact_rel_path("adapters/reranker/foo.py")
 
     def test_rejects_absolute(self) -> None:
         with pytest.raises(ArtifactStoreError, match="relative"):
@@ -327,13 +321,14 @@ class TestStoreCodeArtifacts:
         record = store.register_candidate(
             config={
                 "walker": "git-ls-files",
+                "reranker": "my-new-reranker",
                 CODE_ARTIFACTS_KEY: {
-                    "adapters/enricher/my_new.py": VALID_SOURCE,
+                    "adapters/reranker/my-new-reranker.py": VALID_SOURCE,
                 },
             },
         )
         cand_dir = tmp_path / "meta" / "candidates" / record.id
-        target = cand_dir / "adapters" / "enricher" / "my_new.py"
+        target = cand_dir / "adapters" / "reranker" / "my-new-reranker.py"
         assert target.is_file()
         assert target.read_text() == VALID_SOURCE
         # config.yaml MUST NOT carry the artifacts key — proves the
@@ -385,19 +380,19 @@ class TestStoreCodeArtifacts:
             )
         assert list((tmp_path / "meta" / "candidates").iterdir()) == []
 
-    def test_nested_dirs_created(self, tmp_path: Path) -> None:
-        """Multi-level relative paths under adapters/ are auto-created."""
+    def test_reranker_dir_created(self, tmp_path: Path) -> None:
         store = ArtifactStore(tmp_path / "meta")
         record = store.register_candidate(
             config={
+                "reranker": "my-new-reranker",
                 CODE_ARTIFACTS_KEY: {
-                    "adapters/retrieval/streams/my_stream.py": VALID_SOURCE,
+                    "adapters/reranker/my-new-reranker.py": VALID_SOURCE,
                 },
             },
         )
         target = (
             tmp_path / "meta" / "candidates" / record.id
-            / "adapters" / "retrieval" / "streams" / "my_stream.py"
+            / "adapters" / "reranker" / "my-new-reranker.py"
         )
         assert target.is_file()
 
@@ -434,15 +429,16 @@ class TestStoreCodeArtifacts:
             record = store.register_candidate(
                 config={
                     CODE_ARTIFACTS_KEY: {
-                        "adapters/enricher/regression.py": VALID_SOURCE,
+                        "adapters/reranker/my-new-reranker.py": VALID_SOURCE,
                     },
+                    "reranker": "my-new-reranker",
                 },
             )
             # The materialised file must be reachable from the resolved
             # path (which is where the writer actually put it).
             resolved_target = (
                 record.base_dir.resolve()  # type: ignore[union-attr]
-                / "adapters" / "enricher" / "regression.py"
+                / "adapters" / "reranker" / "my-new-reranker.py"
             )
             assert resolved_target.is_file()
 
@@ -482,18 +478,18 @@ class TestProposerEndToEnd:
     def test_phase5_wrapper_shape_parsed(self) -> None:
         response = json.dumps(
             {
-                "config": {"walker": "filesystem", "enricher": "contextual"},
+                "config": {"walker": "filesystem", "reranker": "my-new-reranker"},
                 "code_artifacts": {
-                    "adapters/enricher/exp.py": VALID_SOURCE,
+                    "adapters/reranker/my-new-reranker.py": VALID_SOURCE,
                 },
             }
         )
         prop = _make_fake(response)
         cfg = prop([])
         assert cfg["walker"] == "filesystem"
-        assert cfg["enricher"] == "contextual"
+        assert cfg["reranker"] == "my-new-reranker"
         assert CODE_ARTIFACTS_KEY in cfg
-        assert "adapters/enricher/exp.py" in cfg[CODE_ARTIFACTS_KEY]
+        assert "adapters/reranker/my-new-reranker.py" in cfg[CODE_ARTIFACTS_KEY]
 
     def test_back_compat_plain_dict(self) -> None:
         """If the LLM emits a flat config (no wrapper), still works."""
@@ -558,9 +554,9 @@ class TestProposerEndToEnd:
         prop = _make_fake(response)
         archive = [(_record(0, {"walker": "git-ls-files"}), ScoreCard(quality=0.9))]
         prop(archive)
-        # The standard agentic prompt shape includes "Recent archive";
-        # we want to confirm the code proposer didn't accidentally drop it.
-        assert "Recent archive" in prop.last_prompt
+        # The standard agentic prompt shape includes the packed history bundle;
+        # confirm the code proposer didn't accidentally drop it.
+        assert "Full history bundle" in prop.last_prompt
         assert "git-ls-files" in prop.last_prompt
 
 
@@ -626,9 +622,12 @@ class TestProductionIsolation:
         # path lands under the candidate's adapters/, NEVER under prod.
         response = json.dumps(
             {
-                "config": {"walker": "git-ls-files"},
+                "config": {
+                    "walker": "git-ls-files",
+                    "reranker": "my-new-reranker",
+                },
                 "code_artifacts": {
-                    "adapters/enricher/safe_new.py": VALID_SOURCE,
+                    "adapters/reranker/my-new-reranker.py": VALID_SOURCE,
                 },
             }
         )
@@ -639,7 +638,7 @@ class TestProductionIsolation:
         # Candidate file landed where expected.
         cand_target = (
             tmp_path / "meta" / "candidates" / record.id
-            / "adapters" / "enricher" / "safe_new.py"
+            / "adapters" / "reranker" / "my-new-reranker.py"
         )
         assert cand_target.is_file()
 

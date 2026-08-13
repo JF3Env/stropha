@@ -15,13 +15,16 @@ import pytest
 
 from stropha.meta.baseline import (
     BASELINE_FILENAME,
+    BASELINE_SCHEMA_VERSION,
     BaselineError,
     BaselineRecord,
+    BaselineValidationProvenance,
     Comparison,
     compare_candidates,
     read_baseline,
     regressions,
     write_baseline,
+    write_verified_baseline,
 )
 from stropha.meta.store import CandidateRecord
 
@@ -54,13 +57,15 @@ class TestReadBaseline:
 
     def test_loads_valid_baseline(self, tmp_path: Path) -> None:
         (tmp_path / BASELINE_FILENAME).write_text(
-            json.dumps({
-                "candidate_id": "abc",
-                "promoted_at": "2026-05-23T12:00:00+00:00",
-                "fitness": 0.85,
-                "label": "best-so-far",
-                "meta": {"reason": "manual"},
-            }),
+            json.dumps(
+                {
+                    "candidate_id": "abc",
+                    "promoted_at": "2026-05-23T12:00:00+00:00",
+                    "fitness": 0.85,
+                    "label": "best-so-far",
+                    "meta": {"reason": "manual"},
+                }
+            ),
             encoding="utf-8",
         )
         rec = read_baseline(tmp_path)
@@ -69,15 +74,96 @@ class TestReadBaseline:
         assert rec.fitness == pytest.approx(0.85)
         assert rec.label == "best-so-far"
         assert rec.meta == {"reason": "manual"}
+        assert rec.schema_version == 1
+        assert rec.verification_status == "legacy_unverified"
+        assert rec.is_verified is False
+
+    def test_loads_verified_schema_v2_baseline(self, tmp_path: Path) -> None:
+        (tmp_path / BASELINE_FILENAME).write_text(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "verification_status": "verified",
+                    "candidate_id": "abc",
+                    "fitness": 0.85,
+                    "validation_provenance": {
+                        "schema_version": 2,
+                        "run_id": "run-1",
+                        "artifact_name": "validation.json",
+                        "baseline_id": "old-live",
+                        "candidate_id": "abc",
+                        "validated_identity": {"runtime": "r1"},
+                        "verification_checks": {"pytest": True},
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        rec = read_baseline(tmp_path)
+
+        assert rec is not None
+        assert rec.schema_version == BASELINE_SCHEMA_VERSION
+        assert rec.is_verified is True
+
+    def test_rejects_verified_baseline_without_provenance(self, tmp_path: Path) -> None:
+        (tmp_path / BASELINE_FILENAME).write_text(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "verification_status": "verified",
+                    "candidate_id": "abc",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with pytest.raises(BaselineError, match="requires validation provenance"):
+            read_baseline(tmp_path)
+
+    def test_rejects_mismatched_validation_provenance(self, tmp_path: Path) -> None:
+        (tmp_path / BASELINE_FILENAME).write_text(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "verification_status": "verified",
+                    "candidate_id": "abc",
+                    "validation_provenance": {
+                        "schema_version": 2,
+                        "run_id": "run-1",
+                        "artifact_name": "validation.json",
+                        "baseline_id": "old-live",
+                        "candidate_id": "different",
+                        "validated_identity": {"runtime": "r1"},
+                        "verification_checks": {},
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with pytest.raises(BaselineError, match="candidate_id does not match"):
+            read_baseline(tmp_path)
+
+    def test_rejects_unknown_schema_version(self, tmp_path: Path) -> None:
+        (tmp_path / BASELINE_FILENAME).write_text(
+            json.dumps({"schema_version": 3, "candidate_id": "abc"}),
+            encoding="utf-8",
+        )
+
+        with pytest.raises(BaselineError, match="unsupported schema_version"):
+            read_baseline(tmp_path)
 
     def test_loads_baseline_with_null_fitness(self, tmp_path: Path) -> None:
         """A baseline promoted without scores has fitness=null —
         comparisons fall back gracefully."""
         (tmp_path / BASELINE_FILENAME).write_text(
-            json.dumps({
-                "candidate_id": "abc",
-                "fitness": None,
-            }),
+            json.dumps(
+                {
+                    "candidate_id": "abc",
+                    "fitness": None,
+                }
+            ),
             encoding="utf-8",
         )
         rec = read_baseline(tmp_path)
@@ -85,9 +171,7 @@ class TestReadBaseline:
         assert rec.fitness is None
 
     def test_malformed_json_raises(self, tmp_path: Path) -> None:
-        (tmp_path / BASELINE_FILENAME).write_text(
-            "not valid {{ json", encoding="utf-8"
-        )
+        (tmp_path / BASELINE_FILENAME).write_text("not valid {{ json", encoding="utf-8")
         with pytest.raises(BaselineError, match="not valid JSON"):
             read_baseline(tmp_path)
 
@@ -115,9 +199,7 @@ class TestReadBaseline:
         with pytest.raises(BaselineError, match="must be a number"):
             read_baseline(tmp_path)
 
-    def test_missing_promoted_at_synthesises_now(
-        self, tmp_path: Path
-    ) -> None:
+    def test_missing_promoted_at_synthesises_now(self, tmp_path: Path) -> None:
         """Legacy / hand-edited baselines may lack promoted_at — fill
         with a fresh UTC timestamp instead of failing."""
         (tmp_path / BASELINE_FILENAME).write_text(
@@ -146,22 +228,19 @@ class TestWriteBaseline:
         rec = write_baseline(tmp_path, candidate=cand)
         assert rec.candidate_id == "c1"
         assert rec.label == "winner"
-        # Fitness is the mean of numeric scores.
-        assert rec.fitness == pytest.approx((0.8 + 50.0) / 2)
+        assert rec.fitness == pytest.approx(0.8 - 0.05)
+        assert rec.schema_version == BASELINE_SCHEMA_VERSION
+        assert rec.verification_status == "unverified"
         # File persisted.
         assert (tmp_path / BASELINE_FILENAME).is_file()
 
-    def test_no_fitness_when_candidate_unscored(
-        self, tmp_path: Path
-    ) -> None:
+    def test_no_fitness_when_candidate_unscored(self, tmp_path: Path) -> None:
         """Promoting blind (no scores) is allowed; fitness stays None."""
         cand = _make_candidate("c1")
         rec = write_baseline(tmp_path, candidate=cand)
         assert rec.fitness is None
         # JSON round-trips with null fitness.
-        payload = json.loads(
-            (tmp_path / BASELINE_FILENAME).read_text(encoding="utf-8")
-        )
+        payload = json.loads((tmp_path / BASELINE_FILENAME).read_text(encoding="utf-8"))
         assert payload["fitness"] is None
 
     def test_creates_meta_dir_if_missing(self, tmp_path: Path) -> None:
@@ -170,9 +249,7 @@ class TestWriteBaseline:
         write_baseline(deep, candidate=cand)
         assert (deep / BASELINE_FILENAME).is_file()
 
-    def test_atomic_replace_no_tmp_leftover(
-        self, tmp_path: Path
-    ) -> None:
+    def test_atomic_replace_no_tmp_leftover(self, tmp_path: Path) -> None:
         cand = _make_candidate("c1", scores={"quality": 1.0})
         write_baseline(tmp_path, candidate=cand)
         leftovers = list(tmp_path.glob("*.tmp"))
@@ -204,6 +281,104 @@ class TestWriteBaseline:
             promoted_at="2026-01-01T00:00:00+00:00",
         )
         assert rec.promoted_at == "2026-01-01T00:00:00+00:00"
+
+    def test_verified_write_records_validation_provenance(self, tmp_path: Path) -> None:
+        from stropha.meta.validation import (
+            EvaluationEvidence,
+            EvaluationMetrics,
+            build_validation_artifact,
+        )
+
+        metrics = EvaluationMetrics(
+            success_at_k=0.8,
+            recall_at_k=0.8,
+            mrr=0.8,
+            ndcg_at_k=0.8,
+            latency_p95_ms=10.0,
+            returned_tokens=100,
+        )
+        identity = {"runtime": "r1"}
+        evidence = EvaluationEvidence(
+            search=metrics,
+            holdout=metrics,
+            search_identity={"golden": "search"},
+            holdout_identity={"golden": "holdout"},
+            runtime_identity=identity,
+        )
+        candidate_evidence = evidence.model_copy(
+            update={"search": metrics.model_copy(update={"ndcg_at_k": 0.9})}
+        )
+        validation = build_validation_artifact(
+            baseline_record=BaselineRecord(
+                candidate_id="old-live",
+                promoted_at="2026-08-13T00:00:00+00:00",
+                verification_status="verified",
+                validation_provenance=BaselineValidationProvenance(
+                    run_id="run-0",
+                    artifact_name="validation.json",
+                    baseline_id="previous-live",
+                    candidate_id="old-live",
+                    validated_identity=identity,
+                    verification_checks={"pytest": True},
+                ),
+            ),
+            candidate_id="candidate",
+            baseline=evidence,
+            candidate=candidate_evidence,
+            verification_checks={"pytest": True},
+            current_identity=identity,
+        )
+        candidate = _make_candidate("candidate", scores={"quality": 0.9})
+
+        record = write_verified_baseline(
+            tmp_path,
+            candidate=candidate,
+            validation=validation,
+            run_id="run-1",
+        )
+
+        assert record.is_verified is True
+        assert record.validation_provenance == BaselineValidationProvenance(
+            run_id="run-1",
+            artifact_name="validation.json",
+            baseline_id="old-live",
+            candidate_id="candidate",
+            validated_identity=identity,
+            verification_checks={"pytest": True},
+        )
+        assert read_baseline(tmp_path) == record
+
+    def test_verified_write_rejects_ineligible_validation(self, tmp_path: Path) -> None:
+        from stropha.meta.validation import (
+            EvaluationEvidence,
+            EvaluationMetrics,
+            build_validation_artifact,
+        )
+
+        metrics = EvaluationMetrics(
+            success_at_k=0.8,
+            recall_at_k=0.8,
+            mrr=0.8,
+            ndcg_at_k=0.8,
+            latency_p95_ms=10.0,
+            returned_tokens=100,
+        )
+        evidence = EvaluationEvidence(search=metrics, holdout=metrics)
+        validation = build_validation_artifact(
+            baseline_record=BaselineRecord(candidate_id="old", promoted_at="now"),
+            candidate_id="candidate",
+            baseline=evidence,
+            candidate=evidence,
+        )
+
+        with pytest.raises(BaselineError, match="ineligible"):
+            write_verified_baseline(
+                tmp_path,
+                candidate=_make_candidate("candidate"),
+                validation=validation,
+                run_id="run-1",
+            )
+        assert not (tmp_path / BASELINE_FILENAME).exists()
 
 
 # ---------------------------------------------------------------------------
@@ -258,11 +433,7 @@ class TestCompareCandidates:
         assert len(cmps) == 1
         assert cmps[0].candidate.id == "scored"
 
-    def test_baseline_without_fitness_uses_neg_inf(self) -> None:
-        """Baseline promoted blind → every scored candidate looks like
-        an improvement (delta is huge). The UI surfaces this via the
-        ``baseline.fitness is None`` check; the library still emits
-        comparisons so the JSON consumer sees the data."""
+    def test_baseline_without_fitness_disables_comparisons(self) -> None:
         baseline = BaselineRecord(
             candidate_id="b",
             promoted_at="2026-01-01T00:00:00+00:00",
@@ -270,8 +441,7 @@ class TestCompareCandidates:
         )
         candidates = [_make_candidate("a", scores={"quality": 0.5})]
         cmps = compare_candidates(candidates, baseline)
-        assert len(cmps) == 1
-        assert cmps[0].delta == float("inf")
+        assert cmps == []
 
     def test_empty_candidates_list(self) -> None:
         baseline = BaselineRecord(
@@ -359,3 +529,4 @@ class TestPublicReexports:
         assert meta.compare_candidates is compare_candidates
         assert meta.regressions is regressions
         assert meta.BASELINE_FILENAME == BASELINE_FILENAME
+        assert meta.BASELINE_SCHEMA_VERSION == BASELINE_SCHEMA_VERSION

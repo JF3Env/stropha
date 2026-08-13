@@ -83,6 +83,7 @@ class BackfillSummary:
     tier_counts: dict[str, int] = field(default_factory=dict)
     per_trace_scores: dict[str, float] = field(default_factory=dict)
     overall_score: float = 0.0
+    hit_outcomes: list[dict[str, Any]] = field(default_factory=list)
     tasks_observed: int = 0
     solved_tasks: int = 0
     total_returned_tokens: int = 0
@@ -107,6 +108,7 @@ class BackfillSummary:
             "tier_counts": self.tier_counts,
             "per_trace_scores": self.per_trace_scores,
             "overall_score": self.overall_score,
+            "hit_outcomes": self.hit_outcomes,
             "tasks_observed": self.tasks_observed,
             "solved_tasks": self.solved_tasks,
             "total_returned_tokens": self.total_returned_tokens,
@@ -300,6 +302,7 @@ def run_backfill(
     )
 
     all_labels: list[TierLabel] = []
+    hit_outcomes: list[dict[str, Any]] = []
     learning_examples: dict[
         tuple[str, str], tuple[dict[str, Any], TierLabel, str]
     ] = {}
@@ -311,10 +314,13 @@ def run_backfill(
         task_key = _trace_task_key(trace, index)
         task_keys.add(task_key)
         total_returned_tokens += _trace_returned_tokens(trace)
-        hits = [
-            hit for hit in (trace.get("results") or [])
-            if isinstance(hit, dict)
-        ]
+        hits = []
+        for raw_hit in trace.get("results") or []:
+            if not isinstance(raw_hit, dict):
+                continue
+            hit = dict(raw_hit)
+            hit["rel_path"] = hit.get("rel_path") or hit.get("path")
+            hits.append(hit)
         if not hits:
             continue
         labels = label_hits(hits, ctx)
@@ -322,6 +328,11 @@ def run_backfill(
         trace_id = str(trace.get("trace_id") or "")
         explicit_relevance = trace_id in relevance_trace_ids
         for hit_index, (hit, label) in enumerate(zip(hits, labels, strict=True)):
+            hit_outcomes.append({
+                "trace_id": trace_id,
+                "rank": hit_index + 1,
+                "label": label.model_dump(mode="json"),
+            })
             entity = str(
                 hit.get("chunk_id")
                 or hit.get("rel_path")
@@ -383,6 +394,7 @@ def run_backfill(
         tier_counts={t.value: c for t, c in counts.items()},
         per_trace_scores=per_trace,
         overall_score=aggregate_score(all_labels),
+        hit_outcomes=hit_outcomes,
         tasks_observed=len(task_keys),
         solved_tasks=len(solved_task_keys),
         total_returned_tokens=total_returned_tokens,

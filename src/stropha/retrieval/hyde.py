@@ -144,16 +144,21 @@ def _use_code_tuned() -> bool:
     return get_config().retrieval_features.hyde_code_tuned
 
 
-def _prompt_template(query: str) -> str:
+def _prompt_template(query: str, *, code_tuned: bool | None = None) -> str:
     """Get the appropriate prompt template for the query."""
     # Use code-tuned prompts by default
-    if _use_code_tuned():
+    if _use_code_tuned() if code_tuned is None else code_tuned:
         return _select_prompt(query)
     
     return _DEFAULT_PROMPT
 
 
-def maybe_hyde_rewrite(query: str, *, force_enabled: bool = False) -> str | None:
+def maybe_hyde_rewrite(
+    query: str,
+    *,
+    force_enabled: bool = False,
+    code_tuned: bool | None = None,
+) -> str | None:
     """Return a hypothetical document for ``query`` or ``None`` on fail/skip.
 
     Uses MLX on Apple Silicon, falls back to Ollama on other platforms.
@@ -166,6 +171,8 @@ def maybe_hyde_rewrite(query: str, *, force_enabled: bool = False) -> str | None
         query: The user's search query.
         force_enabled: If True, skip the _enabled() check. Used when caller
             already determined HyDE should run (e.g., config flag).
+        code_tuned: Explicit prompt selection. ``None`` inherits the unified
+            runtime setting; candidate evaluation passes a bool to stay isolated.
 
     Never raises. Worst case it returns None and the caller falls back
     to the raw query — same behaviour as if the feature were off.
@@ -175,7 +182,7 @@ def maybe_hyde_rewrite(query: str, *, force_enabled: bool = False) -> str | None
     if not query or not query.strip():
         return None
 
-    prompt = _prompt_template(query).format(query=query)
+    prompt = _prompt_template(query, code_tuned=code_tuned).format(query=query)
     
     log.debug("hyde.prompt_selected", query=query[:50], prompt_start=prompt[:30])
 

@@ -53,6 +53,8 @@ from typing import Any
 
 from ..errors import StrophaError
 from ..logging import get_logger
+from .code_candidate import CodeCandidateError, validate_code_candidate_directory
+from .sandbox import SandboxError, SubprocessSandbox
 
 log = get_logger(__name__)
 
@@ -141,6 +143,7 @@ class PytestGate:
     pytest_args: tuple[str, ...] = DEFAULT_PYTEST_ARGS
     timeout_s: float | None = DEFAULT_TIMEOUT_S
     uv_binary: str | None = None
+    sandbox: SubprocessSandbox | None = None
 
     def __call__(self, candidate_dir: Path) -> GateResult:
         adapters_dir = candidate_dir / "adapters"
@@ -153,6 +156,32 @@ class PytestGate:
                 reason="no_artifacts",
             )
             return GateResult(passed=True, skipped=True)
+
+        try:
+            validate_code_candidate_directory(candidate_dir)
+        except CodeCandidateError as exc:
+            return GateResult(
+                passed=False,
+                returncode=1,
+                error=f"candidate code validation failed: {exc}",
+            )
+
+        try:
+            smoke = (self.sandbox or SubprocessSandbox()).run(
+                candidate_dir, job="reranker_smoke"
+            )
+        except SandboxError as exc:
+            raise GateError(f"failed to run candidate smoke subprocess: {exc}") from exc
+        if not smoke.succeeded:
+            return GateResult(
+                passed=False,
+                returncode=smoke.returncode,
+                duration_s=smoke.duration_s,
+                command=smoke.command,
+                stdout_tail=_tail(smoke.stdout),
+                stderr_tail=smoke.stderr_tail,
+                error=smoke.error or "candidate reranker import/protocol smoke failed",
+            )
 
         uv = self.uv_binary or shutil.which("uv")
         if uv is None:

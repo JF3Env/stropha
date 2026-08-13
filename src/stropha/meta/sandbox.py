@@ -50,10 +50,14 @@ is a small fraction of total per-candidate wall time.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
+import resource
+import signal
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -77,6 +81,13 @@ class SandboxError(StrophaError):
 # Trim noisy stderr to a manageable tail. Stdout is preserved in full
 # because the runner uses it as its JSON return channel.
 _TAIL_BYTES = 4_000
+MAX_OUTPUT_BYTES = 64 * 1024
+MAX_INPUT_BYTES = 1024 * 1024
+DEFAULT_CPU_S = 10
+DEFAULT_MEMORY_BYTES = 512 * 1024 * 1024
+DEFAULT_FILE_BYTES = 1024 * 1024
+DEFAULT_PROCESSES = 8
+_SAFE_ENV_KEYS = ("LANG", "LC_ALL", "PATH", "PYTHONHASHSEED", "PYTHONPATH", "TZ")
 
 DEFAULT_TIMEOUT_S: float = 60.0
 """Default per-call sandbox wall-clock. ``import_check`` typically
@@ -147,6 +158,12 @@ class SubprocessSandbox:
     timeout_s: float | None = DEFAULT_TIMEOUT_S
     project_root: Path | None = None
     extra_env: dict[str, str] | None = None
+    max_output_bytes: int = MAX_OUTPUT_BYTES
+    max_input_bytes: int = MAX_INPUT_BYTES
+    cpu_limit_s: int = DEFAULT_CPU_S
+    memory_limit_bytes: int = DEFAULT_MEMORY_BYTES
+    file_limit_bytes: int = DEFAULT_FILE_BYTES
+    process_limit: int = DEFAULT_PROCESSES
 
     def run(
         self,
@@ -155,6 +172,7 @@ class SubprocessSandbox:
         module: str = RUNNER_MODULE,
         job: str = "import_check",
         extra_args: tuple[str, ...] = (),
+        input_data: str | bytes | None = None,
     ) -> SandboxResult:
         """Spawn the child + return a :class:`SandboxResult`.
 
@@ -163,6 +181,12 @@ class SubprocessSandbox:
         "skipped": True, "reason": "no_adapters_dir"})`` — there is
         nothing to isolate.
         """
+        encoded_input = (
+            input_data.encode("utf-8") if isinstance(input_data, str) else input_data or b""
+        )
+        if len(encoded_input) > self.max_input_bytes:
+            raise SandboxError(f"sandbox input exceeds {self.max_input_bytes} bytes")
+
         adapters_dir = candidate_dir / "adapters"
         if not adapters_dir.is_dir():
             log.info(
@@ -180,17 +204,19 @@ class SubprocessSandbox:
         cmd = [py, "-m", module, job, str(candidate_dir), *extra_args]
         cwd = self.project_root or _stropha_project_root()
 
-        env = dict(os.environ)
+        env = {key: os.environ[key] for key in _SAFE_ENV_KEYS if key in os.environ}
         if self.extra_env:
-            env.update(self.extra_env)
+            for key, value in self.extra_env.items():
+                if key not in _SAFE_ENV_KEYS:
+                    raise SandboxError(f"sandbox environment key is not allowed: {key}")
+                env[key] = value
         # Prepend candidate adapters to PYTHONPATH so import-by-module
         # resolves to candidate code first.
         existing_pp = env.get("PYTHONPATH", "")
-        env["PYTHONPATH"] = (
-            f"{adapters_dir}{os.pathsep}{existing_pp}"
-            if existing_pp
-            else str(adapters_dir)
-        )
+        python_paths = [str(adapters_dir), str(cwd / "src")]
+        if existing_pp:
+            python_paths.append(existing_pp)
+        env["PYTHONPATH"] = os.pathsep.join(python_paths)
 
         log.info(
             "sandbox.start",
@@ -201,44 +227,67 @@ class SubprocessSandbox:
             timeout_s=self.timeout_s,
         )
 
+        proc: subprocess.Popen[bytes] | None = None
         t0 = time.monotonic()
-        try:
-            proc = subprocess.run(
-                cmd,
-                cwd=str(cwd),
-                env=env,
-                capture_output=True,
-                text=True,
-                timeout=self.timeout_s,
-                check=False,
+        with tempfile.TemporaryDirectory(prefix="stropha-candidate-") as home:
+            env.update(
+                {
+                    "HOME": home,
+                    "TMPDIR": home,
+                    "PYTHONDONTWRITEBYTECODE": "1",
+                    "PYTHONNOUSERSITE": "1",
+                }
             )
-        except subprocess.TimeoutExpired as exc:
-            duration = time.monotonic() - t0
-            log.warning(
-                "sandbox.timeout",
-                candidate=str(candidate_dir),
-                timeout_s=self.timeout_s,
-                duration_s=round(duration, 3),
-            )
-            return SandboxResult(
-                succeeded=False,
-                returncode=-1,
-                timed_out=True,
-                duration_s=duration,
-                command=cmd,
-                stdout=_tail_str(exc.stdout, _TAIL_BYTES),
-                stderr_tail=_tail_str(exc.stderr, _TAIL_BYTES),
-                error=f"timeout after {self.timeout_s}s",
-            )
-        except OSError as exc:
-            raise SandboxError(
-                f"failed to spawn sandbox subprocess: {exc}"
-            ) from exc
+            with (
+                tempfile.TemporaryFile() as stdin_file,
+                tempfile.TemporaryFile() as stdout_file,
+                tempfile.TemporaryFile() as stderr_file,
+            ):
+                stdin_file.write(encoded_input)
+                stdin_file.seek(0)
+                try:
+                    proc = subprocess.Popen(
+                        cmd,
+                        cwd=str(candidate_dir),
+                        env=env,
+                        stdin=stdin_file,
+                        stdout=stdout_file,
+                        stderr=stderr_file,
+                        start_new_session=True,
+                        preexec_fn=(self._apply_resource_limits if os.name == "posix" else None),
+                    )
+                    try:
+                        proc.wait(timeout=self.timeout_s)
+                    except subprocess.TimeoutExpired:
+                        if os.name == "posix":
+                            os.killpg(proc.pid, signal.SIGKILL)
+                        else:  # pragma: no cover - Windows fallback
+                            proc.kill()
+                        proc.wait()
+                        stdout, _ = _read_bounded(stdout_file, self.max_output_bytes)
+                        stderr, _ = _read_bounded(stderr_file, self.max_output_bytes)
+                        duration = time.monotonic() - t0
+                        return SandboxResult(
+                            succeeded=False,
+                            returncode=-1,
+                            timed_out=True,
+                            duration_s=duration,
+                            command=cmd,
+                            stdout=_tail_str(stdout, self.max_output_bytes),
+                            stderr_tail=_tail_str(stderr, _TAIL_BYTES),
+                            error=f"timeout after {self.timeout_s}s",
+                        )
+                    stdout, stdout_limited = _read_bounded(stdout_file, self.max_output_bytes)
+                    stderr, _ = _read_bounded(stderr_file, self.max_output_bytes)
+                except OSError as exc:
+                    raise SandboxError(f"failed to spawn sandbox subprocess: {exc}") from exc
 
         duration = time.monotonic() - t0
+        assert proc is not None
         crashed = proc.returncode < 0
-        succeeded = proc.returncode == 0
-        payload = _parse_payload(proc.stdout)
+        stdout = _tail_str(stdout, self.max_output_bytes)
+        succeeded = proc.returncode == 0 and not stdout_limited
+        payload = _parse_payload(stdout)
 
         log.info(
             "sandbox.done",
@@ -254,10 +303,23 @@ class SubprocessSandbox:
             crashed=crashed,
             duration_s=duration,
             command=cmd,
-            stdout=proc.stdout or "",
-            stderr_tail=_tail_str(proc.stderr, _TAIL_BYTES),
+            stdout=stdout,
+            stderr_tail=_tail_str(stderr, _TAIL_BYTES),
+            error="stdout exceeded sandbox limit" if stdout_limited else None,
             payload=payload,
         )
+
+    def _apply_resource_limits(self) -> None:
+        """Set best-effort POSIX limits in the child immediately before exec."""
+        limits = (
+            (resource.RLIMIT_CPU, self.cpu_limit_s),
+            (resource.RLIMIT_AS, self.memory_limit_bytes),
+            (resource.RLIMIT_FSIZE, min(self.file_limit_bytes, self.max_output_bytes)),
+            (resource.RLIMIT_NPROC, self.process_limit),
+        )
+        for limit, value in limits:
+            with contextlib.suppress(OSError, ValueError):
+                resource.setrlimit(limit, (value, value))
 
 
 def _parse_payload(stdout: str | None) -> dict[str, Any]:
@@ -290,6 +352,12 @@ def _tail_str(text: str | bytes | None, n: int) -> str:
     return text
 
 
+def _read_bounded(stream: Any, limit: int) -> tuple[str, bool]:
+    stream.seek(0)
+    data = stream.read(limit + 1)
+    return data[:limit].decode("utf-8", errors="replace"), len(data) > limit
+
+
 def _stropha_project_root() -> Path:
     """``src/stropha/meta/sandbox.py`` → ``stropha-repo/``. Three parents."""
     return Path(__file__).resolve().parents[3]
@@ -297,6 +365,7 @@ def _stropha_project_root() -> Path:
 
 __all__ = [
     "DEFAULT_TIMEOUT_S",
+    "MAX_INPUT_BYTES",
     "RUNNER_MODULE",
     "SandboxError",
     "SandboxResult",

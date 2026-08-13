@@ -15,7 +15,11 @@ from stropha.meta import (
     SearchSpaceError,
     load_search_space,
 )
-from stropha.meta.search_space import _sample_dimension, _when_matches
+from stropha.meta.search_space import (
+    _sample_dimension,
+    _when_matches,
+    resolve_candidate_config,
+)
 
 # ---------------------------------------------------------------------------
 # Bundled manifest sanity (WIN-182)
@@ -46,6 +50,83 @@ class TestBundledManifest:
             assert by_name[stage].indexing is True
         for stage in ("storage", "retrieval", "reranker"):
             assert by_name[stage].indexing is False
+
+    def test_bundled_manifest_passes_strict_shape_validation(self) -> None:
+        space = load_search_space(strict=True)
+        assert all(
+            dimension.binding
+            for dimension in space.enumerate_dimensions()
+        )
+
+
+class TestResolveCandidateConfig:
+    def test_resolves_every_bundled_dimension_without_mutating_base(self) -> None:
+        space = load_search_space(strict=True)
+        candidate = {dimension.name: dimension.default for dimension in space.dimensions}
+        candidate.update(
+            walker="filesystem",
+            enricher="noop",
+            embedder="model2vec",
+            reranker="code-aware",
+            hyde=True,
+            hyde_code_tuned=False,
+            query_rewrite=True,
+            multi_query=True,
+            multi_query_count=5,
+            recursive=True,
+            recursive_adjacency=20,
+            adaptive_weighting=False,
+            candidate_k=50,
+            rrf_k=100,
+            graph_fts_augment=False,
+        )
+        base = {
+            "walker": {"adapter": "git-ls-files", "config": {"tracked": True}},
+            "chunker": {"adapter": "tree-sitter-dispatch", "config": {"keep": True}},
+            "enricher": {"adapter": "contextual", "config": {"model": "old"}},
+            "embedder": {"adapter": "local", "config": {"model": "old"}},
+            "storage": {"adapter": "sqlite-vec", "config": {"path": "index.db"}},
+            "retrieval": {
+                "adapter": "hybrid-rrf",
+                "config": {"reranker": {"adapter": "llm", "config": {"model": "old"}}},
+            },
+        }
+
+        resolved = resolve_candidate_config(
+            candidate,
+            base_pipeline_config=base,
+            search_space=space,
+        )
+
+        assert base["walker"] == {
+            "adapter": "git-ls-files",
+            "config": {"tracked": True},
+        }
+        assert resolved.pipeline["walker"] == {"adapter": "filesystem"}
+        assert resolved.pipeline["chunker"]["config"] == {"keep": True}
+        assert resolved.pipeline["enricher"] == {"adapter": "noop"}
+        assert resolved.pipeline["embedder"] == {"adapter": "model2vec"}
+        assert resolved.pipeline["retrieval"]["config"] == {
+            "reranker": {"adapter": "code-aware"},
+            "hyde_enabled": True,
+            "query_rewrite_enabled": True,
+            "multi_query_enabled": True,
+            "multi_query_count": 5,
+            "recursive_enabled": True,
+            "recursive_adjacency": 20,
+            "adaptive_weighting": False,
+            "candidate_k": 50,
+            "rrf_k": 100,
+        }
+        assert resolved.retrieval_features == {"hyde_code_tuned": False}
+        assert resolved.graph == {"fts_augment": False}
+
+    def test_rejects_unknown_and_out_of_domain_dimensions(self) -> None:
+        space = load_search_space(strict=True)
+        with pytest.raises(SearchSpaceError, match="unknown dimensions"):
+            space.resolve_candidate({"unknown": True}, base_pipeline_config={})
+        with pytest.raises(SearchSpaceError, match="outside its domain"):
+            space.resolve_candidate({"candidate_k": 11}, base_pipeline_config={})
 
 
 # ---------------------------------------------------------------------------
@@ -133,6 +214,56 @@ class TestLoaderErrors:
         )
         with pytest.raises(SearchSpaceError, match=r"constraint\.kind must be"):
             load_search_space(p)
+
+    def test_duplicate_yaml_key_raises(self, tmp_path: Path) -> None:
+        p = tmp_path / "x.yaml"
+        p.write_text("features:\n  hyde: {type: bool, default: false}\n"
+                     "  hyde: {type: bool, default: true}\n")
+        with pytest.raises(SearchSpaceError, match="duplicate manifest key"):
+            load_search_space(p)
+
+    def test_invalid_int_default_and_step_raise(self, tmp_path: Path) -> None:
+        p = tmp_path / "x.yaml"
+        p.write_text(
+            "features:\n  k:\n    type: int\n    range: [10, 30]\n"
+            "    step: 10\n    default: 15\n"
+        )
+        with pytest.raises(SearchSpaceError, match="outside its stepped range"):
+            load_search_space(p)
+
+    def test_dangling_constraint_raises(self, tmp_path: Path) -> None:
+        p = tmp_path / "x.yaml"
+        p.write_text(
+            "features:\n  enabled: {type: bool, default: false}\n"
+            "constraints:\n  - kind: gated_by\n    when: {missing: true}\n"
+            "    set: {enabled: false}\n"
+        )
+        with pytest.raises(SearchSpaceError, match="unknown dimension 'missing'"):
+            load_search_space(p)
+
+    def test_strict_requires_feature_binding(self, tmp_path: Path) -> None:
+        p = tmp_path / "x.yaml"
+        p.write_text("features:\n  hyde: {type: bool, default: false}\n")
+        with pytest.raises(SearchSpaceError, match="runtime config binding"):
+            load_search_space(p, strict=True)
+
+    def test_strict_accepts_feature_binding(self, tmp_path: Path) -> None:
+        p = tmp_path / "x.yaml"
+        p.write_text(
+            "features:\n  hyde:\n    type: bool\n    default: false\n"
+            "    binding: pipeline.retrieval.config.hyde_enabled\n"
+        )
+        assert load_search_space(p, strict=True).by_name["hyde"].binding
+
+    def test_strict_rejects_duplicate_feature_bindings(self, tmp_path: Path) -> None:
+        p = tmp_path / "x.yaml"
+        p.write_text(
+            "features:\n"
+            "  hyde: {type: bool, default: false, binding: retrieval.enabled}\n"
+            "  recursive: {type: bool, default: false, binding: retrieval.enabled}\n"
+        )
+        with pytest.raises(SearchSpaceError, match="bindings must be unique"):
+            load_search_space(p, strict=True)
 
 
 # ---------------------------------------------------------------------------
@@ -444,3 +575,74 @@ class TestDiscoverGaps:
         # because we treated the registry as empty.
         for dim in space.enumerate_dimensions(kind="stage"):
             assert dim.name in gaps["missing_from_registry"]
+
+    def test_complete_registry_reports_unmanifested_stage(self) -> None:
+        from stropha.meta import discover_gaps
+
+        space = SearchSpace(dimensions=[
+            Dimension(name="walker", kind="stage", indexing=True,
+                      choices=("filesystem",)),
+        ])
+        gaps = discover_gaps(space, available_adapters={
+            "walker": ["filesystem"],
+            "router": ["pattern"],
+        })
+        assert gaps["missing_from_manifest"] == {"router": ["pattern"]}
+
+    def test_excluded_adapter_with_reason_is_not_a_gap(self) -> None:
+        from stropha.meta import discover_gaps
+
+        space = SearchSpace(
+            dimensions=[Dimension(name="storage", kind="stage", indexing=False,
+                                  choices=("sqlite-vec",))],
+            excluded_adapters={"storage": {"postgres": "not isolated in search"}},
+        )
+        gaps = discover_gaps(space, available_adapters={
+            "storage": ["sqlite-vec", "postgres"],
+        })
+        assert gaps == {"missing_from_manifest": {}, "missing_from_registry": {}}
+
+    def test_strict_drift_raises(self) -> None:
+        from stropha.meta import discover_gaps
+
+        space = SearchSpace(dimensions=[
+            Dimension(name="walker", kind="stage", indexing=True, choices=("a",)),
+        ])
+        with pytest.raises(SearchSpaceError, match="preflight failed"):
+            discover_gaps(space, available_adapters={"walker": ["a", "b"]}, strict=True)
+
+    def test_strict_registry_failure_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from stropha.meta import discover_gaps
+
+        monkeypatch.setattr(
+            "stropha.pipeline.registry.all_adapters",
+            lambda: (_ for _ in ()).throw(RuntimeError("registry unavailable")),
+        )
+        with pytest.raises(SearchSpaceError, match="registry discovery failed"):
+            discover_gaps(load_search_space(), strict=True)
+
+    def test_consumer_dimension_disagreement_reported_and_strictly_rejected(self) -> None:
+        from stropha.meta import discover_gaps
+
+        space = SearchSpace(dimensions=[
+            Dimension(name="walker", kind="stage", indexing=True, choices=("a",)),
+            Dimension(name="hyde", kind="feature", indexing=False,
+                      type="bool", default=False),
+        ])
+        adapters = {"walker": ["a"]}
+        gaps = discover_gaps(
+            space,
+            available_adapters=adapters,
+            supported_dimensions={"walker", "unknown"},
+        )
+        assert gaps["missing_from_consumer"] == {"dimensions": ["hyde"]}
+        assert gaps["missing_from_manifest_dimensions"] == {"dimensions": ["unknown"]}
+        with pytest.raises(SearchSpaceError, match="dimension disagreement"):
+            discover_gaps(
+                space,
+                available_adapters=adapters,
+                supported_dimensions={"walker"},
+                strict=True,
+            )

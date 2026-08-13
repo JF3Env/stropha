@@ -13,17 +13,40 @@ This package is built up phase-by-phase per the RFC:
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .candidate_index import (
+        CandidateIndex,
+        CandidateIndexError,
+        CandidateIndexIdentity,
+        CandidateIndexProvider,
+    )
+
 from .baseline import (
     BASELINE_FILENAME,
+    BASELINE_SCHEMA_VERSION,
     BaselineError,
     BaselineRecord,
+    BaselineValidationProvenance,
     Comparison,
     compare_candidates,
     read_baseline,
     regressions,
     write_baseline,
+    write_verified_baseline,
+)
+from .code_candidate import (
+    CodeCandidateError,
+    CodeCandidateSpec,
+    validate_code_candidate,
+    validate_code_candidate_directory,
+    validate_code_candidate_source,
 )
 from .evaluator import (
+    CandidateEvaluationResult,
+    EvaluationContext,
+    EvaluationRecorder,
     EvaluatorError,
     evaluate_candidate,
     evaluate_from_golden,
@@ -58,7 +81,20 @@ from .gate import (
     PytestGate,
 )
 from .index_cache import CacheEntry, IndexCache, IndexCacheError
-from .loop import EvaluatorFn, GateFn, LoopError, LoopResult, ProposerFn, run_loop
+from .loop import (
+    CandidateCheckpoint,
+    CheckpointCallback,
+    EvaluatorFn,
+    GateFn,
+    Hypothesis,
+    LoopCheckpoint,
+    LoopError,
+    LoopResult,
+    Proposal,
+    ProposerFn,
+    RegisteredEvaluatorFn,
+    run_loop,
+)
 from .outcome import (
     TIER_SCORE,
     LabelingContext,
@@ -82,6 +118,17 @@ from .prune import (
     disk_usage,
     prune,
 )
+from .reranker_proxy import SandboxedRerankerConfig, SandboxedRerankerProxy
+from .run_cost import (
+    RUN_COST_SCHEMA_VERSION,
+    AggregatedMeasurement,
+    CostMeasurement,
+    RunCostArtifact,
+    RunCostBreakdown,
+    RunCostSample,
+    aggregate_measurements,
+    aggregate_run_cost,
+)
 from .sandbox import DEFAULT_TIMEOUT_S as SANDBOX_DEFAULT_TIMEOUT_S
 from .sandbox import (
     RUNNER_MODULE,
@@ -93,10 +140,12 @@ from .search_space import (
     DEFAULT_MANIFEST,
     Constraint,
     Dimension,
+    ResolvedCandidateConfig,
     SearchSpace,
     SearchSpaceError,
     discover_gaps,
     load_search_space,
+    resolve_candidate_config,
 )
 from .snapshot import (
     Snapshot,
@@ -108,28 +157,82 @@ from .snapshot import (
 )
 from .store import ArtifactStore, ArtifactStoreError, CandidateRecord
 from .trace import TraceRecord, TraceRecorder
+from .validation import (
+    VALIDATION_SCHEMA_VERSION,
+    BaselineValidationArtifact,
+    BlockedReason,
+    EvaluationEvidence,
+    EvaluationMetrics,
+    EvaluationValidationArtifact,
+    QualityMetrics,
+    RunValidationArtifact,
+    RunValidationEnvelope,
+    ValidationGate,
+    ValidationThresholds,
+    build_validation_artifact,
+    evaluate_validation_gate,
+)
+
+_LAZY_CANDIDATE_INDEX_EXPORTS = {
+    "CANDIDATE_INDEX_CACHE_FORMAT",
+    "CandidateIndex",
+    "CandidateIndexError",
+    "CandidateIndexIdentity",
+    "CandidateIndexProvider",
+}
+
+
+def __getattr__(name: str) -> object:
+    if name in _LAZY_CANDIDATE_INDEX_EXPORTS:
+        from . import candidate_index
+
+        return getattr(candidate_index, name)
+    raise AttributeError(name)
 
 __all__ = [
     "BASELINE_FILENAME",
+    "BASELINE_SCHEMA_VERSION",
+    "CANDIDATE_INDEX_CACHE_FORMAT",
     "DEFAULT_MANIFEST",
     "DEFAULT_PYTEST_ARGS",
     "DEFAULT_TIMEOUT_S",
     "DEFAULT_TRACE_MAX_AGE_DAYS",
     "DIMENSION_SIGNS",
     "RUNNER_MODULE",
+    "RUN_COST_SCHEMA_VERSION",
     "SANDBOX_DEFAULT_TIMEOUT_S",
     "TIER_SCORE",
+    "VALIDATION_SCHEMA_VERSION",
+    "AggregatedMeasurement",
     "ArtifactStore",
     "ArtifactStoreError",
     "BadResult",
     "BadResultStore",
     "BaselineError",
     "BaselineRecord",
+    "BaselineValidationArtifact",
+    "BaselineValidationProvenance",
+    "BlockedReason",
     "CacheEntry",
+    "CandidateCheckpoint",
+    "CandidateEvaluationResult",
+    "CandidateIndex",
+    "CandidateIndexError",
+    "CandidateIndexIdentity",
+    "CandidateIndexProvider",
     "CandidateRecord",
+    "CheckpointCallback",
+    "CodeCandidateError",
+    "CodeCandidateSpec",
     "Comparison",
     "Constraint",
+    "CostMeasurement",
     "Dimension",
+    "EvaluationContext",
+    "EvaluationEvidence",
+    "EvaluationMetrics",
+    "EvaluationRecorder",
+    "EvaluationValidationArtifact",
     "EvaluatorError",
     "EvaluatorFn",
     "FeedbackError",
@@ -140,18 +243,31 @@ __all__ = [
     "GateFn",
     "GateResult",
     "HoldoutEvaluatorFn",
+    "Hypothesis",
     "IndexCache",
     "IndexCacheError",
     "LabelingContext",
+    "LoopCheckpoint",
     "LoopError",
     "LoopResult",
     "PromotionError",
     "PromotionPlan",
+    "Proposal",
     "ProposerFn",
     "PrunePlan",
     "PytestGate",
+    "QualityMetrics",
+    "RegisteredEvaluatorFn",
+    "ResolvedCandidateConfig",
+    "RunCostArtifact",
+    "RunCostBreakdown",
+    "RunCostSample",
+    "RunValidationArtifact",
+    "RunValidationEnvelope",
     "SandboxError",
     "SandboxResult",
+    "SandboxedRerankerConfig",
+    "SandboxedRerankerProxy",
     "ScoreCard",
     "SearchSpace",
     "SearchSpaceError",
@@ -162,10 +278,15 @@ __all__ = [
     "TierLabel",
     "TraceRecord",
     "TraceRecorder",
+    "ValidationGate",
+    "ValidationThresholds",
+    "aggregate_measurements",
+    "aggregate_run_cost",
     "aggregate_score",
     "apply_plan",
     "build_plan",
     "build_scorecard",
+    "build_validation_artifact",
     "compare_candidates",
     "create_snapshot",
     "discover_gaps",
@@ -173,6 +294,7 @@ __all__ = [
     "evaluate_candidate",
     "evaluate_from_golden",
     "evaluate_frontier_on_holdout",
+    "evaluate_validation_gate",
     "label_hit",
     "label_hits",
     "learning_channel",
@@ -186,9 +308,14 @@ __all__ = [
     "regressions",
     "render_summary",
     "resolve_bad_chunks",
+    "resolve_candidate_config",
     "resolve_sha",
     "run_loop",
     "scorecard_pareto_frontier",
     "tier_summary",
+    "validate_code_candidate",
+    "validate_code_candidate_directory",
+    "validate_code_candidate_source",
     "write_baseline",
+    "write_verified_baseline",
 ]

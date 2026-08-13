@@ -60,10 +60,22 @@ PRODUCTION_ADAPTERS = (
 )
 
 VALID_ADAPTER_SRC = (
+    "from pydantic import BaseModel\n"
+    "from stropha.models import SearchHit\n"
+    "from stropha.pipeline.base import StageHealth\n"
     "from stropha.pipeline.registry import register_adapter\n"
-    "@register_adapter(stage='enricher', name='candidate-enricher')\n"
-    "class CandidateEnricher:\n"
-    "    class Config: ...\n"
+    "class Config(BaseModel): pass\n"
+    "@register_adapter(stage='reranker', name='candidate-reranker')\n"
+    "class CandidateReranker:\n"
+    "    Config = Config\n"
+    "    def __init__(self, config=None): self.config = config or Config()\n"
+    "    stage_name = property(lambda self: 'reranker')\n"
+    "    adapter_name = property(lambda self: 'candidate-reranker')\n"
+    "    adapter_id = property(lambda self: 'reranker:candidate-reranker')\n"
+    "    config_schema = property(lambda self: Config)\n"
+    "    def health(self): return StageHealth(status='ready', message='ok')\n"
+    "    def rerank(self, query: str, hits: list[SearchHit], *, top_k=10):\n"
+    "        return hits[:top_k]\n"
 )
 
 CRASHING_SRC = (
@@ -206,9 +218,9 @@ class TestStoreLayer:
         store.register_candidate(
             config={
                 "walker": "git-ls-files",
+                "reranker": "candidate-reranker",
                 CODE_ARTIFACTS_KEY: {
-                    "adapters/enricher/foo.py": VALID_ADAPTER_SRC,
-                    "adapters/walker/bar.py": VALID_ADAPTER_SRC,
+                    "adapters/reranker/candidate-reranker.py": VALID_ADAPTER_SRC,
                 },
             },
         )
@@ -587,22 +599,24 @@ class TestCrossCandidateIsolation:
         store = ArtifactStore(tmp_path / "meta")
         rec_a = store.register_candidate(
             config={
+                "reranker": "candidate-reranker",
                 CODE_ARTIFACTS_KEY: {
-                    "adapters/enricher/shared_name.py": VALID_ADAPTER_SRC,
+                    "adapters/reranker/candidate-reranker.py": VALID_ADAPTER_SRC,
                 },
             },
             label="A",
         )
         rec_b = store.register_candidate(
             config={
+                "reranker": "candidate-reranker",
                 CODE_ARTIFACTS_KEY: {
-                    "adapters/enricher/shared_name.py": VALID_ADAPTER_SRC,
+                    "adapters/reranker/candidate-reranker.py": VALID_ADAPTER_SRC,
                 },
             },
             label="B",
         )
-        a_file = rec_a.base_dir / "adapters" / "enricher" / "shared_name.py"  # type: ignore[union-attr]
-        b_file = rec_b.base_dir / "adapters" / "enricher" / "shared_name.py"  # type: ignore[union-attr]
+        a_file = rec_a.base_dir / "adapters" / "reranker" / "candidate-reranker.py"  # type: ignore[union-attr]
+        b_file = rec_b.base_dir / "adapters" / "reranker" / "candidate-reranker.py"  # type: ignore[union-attr]
         assert a_file.is_file()
         assert b_file.is_file()
         assert a_file != b_file  # different on-disk paths.

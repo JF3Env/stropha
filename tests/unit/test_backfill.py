@@ -234,6 +234,7 @@ class TestRunBackfill:
             "since_sha", "head_sha", "diff_paths", "diff_symbols",
             "traces_scanned", "hits_labeled", "tier_counts",
             "per_trace_scores", "overall_score", "output_path",
+            "hit_outcomes",
             "tasks_observed", "solved_tasks", "total_returned_tokens",
             "returned_tokens_per_solved_task", "stream_weights_repo",
             "stream_weights", "stream_weight_observations",
@@ -259,6 +260,28 @@ class TestRunBackfill:
         repo, meta, prev, _head = self._build_scenario(tmp_path)
         summary = run_backfill(since_sha=prev, meta_dir=meta, repo_dir=repo)
         assert "tr-1" in summary.per_trace_scores
+
+    def test_persists_per_hit_outcome_evidence(self, tmp_path: Path) -> None:
+        repo, meta, prev, _head = self._build_scenario(tmp_path)
+        summary = run_backfill(since_sha=prev, meta_dir=meta, repo_dir=repo)
+
+        first = summary.hit_outcomes[0]
+        assert first["trace_id"] == "tr-1"
+        assert first["rank"] == 1
+        assert first["label"]["chunk_id"] == "c1"
+        assert first["label"]["tier"] == "T1"
+
+    def test_normalizes_production_trace_path_field(self, tmp_path: Path) -> None:
+        repo, meta, prev, _head = self._build_scenario(tmp_path)
+        trace_path = meta / "traces" / "t.jsonl"
+        payload = json.loads(trace_path.read_text(encoding="utf-8"))
+        payload["results"][0]["path"] = payload["results"][0].pop("rel_path")
+        trace_path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+        summary = run_backfill(since_sha=prev, meta_dir=meta, repo_dir=repo)
+
+        assert summary.hit_outcomes[0]["label"]["rel_path"] == "src.py"
+        assert summary.hit_outcomes[0]["label"]["tier"] == "T1"
 
     def test_fits_and_persists_repo_stream_weights(self, tmp_path: Path) -> None:
         repo, meta, prev, _head = self._build_scenario(tmp_path)

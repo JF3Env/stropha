@@ -141,8 +141,48 @@ class TestCreateSnapshot:
             # Second call must return the same path (reuse, not recreate).
             snap_b = create_snapshot(source_repo=repo)
             assert snap_b.path == snap_a.path
+            assert _git(["rev-parse", "HEAD"], snap_b.path).strip() == snap_b.sha
         finally:
             snap_a.release()
+
+    def test_registered_worktree_with_wrong_head_is_recreated(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        expected_sha = _init_repo(repo)
+        (repo / "a.py").write_text("x = 2\n")
+        _git(["add", "-A"], repo)
+        _git(
+            ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "next"],
+            repo,
+        )
+        wrong_sha = _git(["rev-parse", "HEAD"], repo).strip()
+        root = tmp_path / "snap"
+        target = root / expected_sha
+        root.mkdir()
+        _git(["worktree", "add", "--detach", str(target), wrong_sha], repo)
+
+        snap = create_snapshot(source_repo=repo, ref=expected_sha, snapshot_root=root)
+        try:
+            assert snap.path == target
+            assert _git(["rev-parse", "HEAD"], target).strip() == expected_sha
+            assert (target / "a.py").read_text() == "x = 1\n"
+        finally:
+            snap.release()
+
+    def test_accepts_linked_worktree_as_source(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        sha = _init_repo(repo)
+        linked = tmp_path / "linked"
+        _git(["worktree", "add", "--detach", str(linked), sha], repo)
+        snap = create_snapshot(
+            source_repo=linked,
+            snapshot_root=tmp_path / "snapshots",
+        )
+        try:
+            assert snap.sha == sha
+            assert _git(["rev-parse", "HEAD"], snap.path).strip() == sha
+        finally:
+            snap.release()
+            _git(["worktree", "remove", "--force", str(linked)], repo)
 
     def test_orphan_worktree_dir_is_recreated(self, tmp_path: Path) -> None:
         """A directory left behind from a prior crash (not registered with

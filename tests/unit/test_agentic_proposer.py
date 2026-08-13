@@ -9,6 +9,7 @@ then verify each concrete subclass picks the right backend.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -25,10 +26,12 @@ from stropha.meta.proposer._agentic_base import (
     AgenticProposerBase,
     _clamp_to_space,
     _extract_json,
+    _parse_proposal,
     _summarise_archive,
     _summarise_card,
     _summarise_manifest,
 )
+from stropha.meta.proposer.history import estimate_tokens, pack_history
 from stropha.meta.store import CandidateRecord
 
 
@@ -131,6 +134,39 @@ class TestExtractJson:
             _extract_json("[1, 2, 3]")
 
 
+class TestProposalParsing:
+    def test_typed_proposal_with_hypothesis(self) -> None:
+        proposal = _parse_proposal({
+            "config": {"walker": "filesystem"},
+            "hypothesis": {
+                "statement": "Filesystem walking will include untracked fixtures",
+                "evidence_candidate_ids": ["c01"],
+                "expected_objective_deltas": {"quality": 0.05},
+                "confidence": 0.7,
+            },
+        })
+        assert proposal.config == {"walker": "filesystem"}
+        assert proposal.hypothesis is not None
+        assert proposal.hypothesis.evidence_candidate_ids == ["c01"]
+
+    def test_legacy_flat_config_fallback(self) -> None:
+        proposal = _parse_proposal({"walker": "filesystem"})
+        assert proposal.config == {"walker": "filesystem"}
+        assert proposal.hypothesis is None
+
+    def test_code_only_typed_envelope(self) -> None:
+        proposal = _parse_proposal({"code_artifacts": {"candidate.py": "source"}})
+        assert proposal.config == {}
+        assert proposal.code_artifacts == {"candidate.py": "source"}
+
+    def test_invalid_typed_hypothesis_rejected(self) -> None:
+        with pytest.raises(ValueError, match="invalid typed proposal"):
+            _parse_proposal({
+                "config": {"walker": "filesystem"},
+                "hypothesis": {"statement": "", "confidence": 2.0},
+            })
+
+
 class TestClampToSpace:
     def test_unknown_choice_falls_back_to_default(self) -> None:
         space = _stub_space()
@@ -190,6 +226,72 @@ class TestSummariseArchive:
         assert out["tier_counts"] == {"T1": 5}
 
 
+class TestHistoryPacking:
+    def test_ledger_carries_all_ids_when_full_records_spill(self) -> None:
+        archive = [
+            (_record(i, {"walker": "git-ls-files", "payload": "x" * 800}),
+             ScoreCard(quality=i / 10.0))
+            for i in range(8)
+        ]
+        ledger_tokens = estimate_tokens({
+            "all_ids": [record.id for record, _ in archive],
+            "ledger": [
+                {
+                    "id": record.id,
+                    "parent_id": record.parent_id,
+                    "label": record.label,
+                    "scores": _summarise_card(card),
+                }
+                for record, card in archive
+            ],
+        })
+        bundle = pack_history(archive, budget_tokens=ledger_tokens + 500)
+        assert bundle.all_ids == [f"c{i:02d}" for i in range(8)]
+        assert set(bundle.included_ids).isdisjoint(bundle.spilled_ids)
+        assert set(bundle.included_ids + bundle.spilled_ids) == set(bundle.all_ids)
+        assert bundle.spilled
+        assert all(spill.reason == "token_budget" for spill in bundle.spilled)
+
+    def test_full_record_includes_meta_code_traces_and_diagnostics(
+        self, tmp_path: Path
+    ) -> None:
+        record = _record(0, {"walker": "filesystem"})
+        record.meta = {"hypothesis": {"statement": "test the walker"}}
+        record.base_dir = tmp_path
+        (tmp_path / "adapters" / "reranker").mkdir(parents=True)
+        (tmp_path / "adapters" / "reranker" / "candidate.py").write_text(
+            "class Candidate: pass\n"
+        )
+        (tmp_path / "traces").mkdir()
+        (tmp_path / "traces" / "search.jsonl").write_text('{"trace_id":"t1"}\n')
+        (tmp_path / "gate.json").write_text('{"passed":false,"stderr":"boom"}')
+
+        bundle = pack_history(
+            [(record, ScoreCard(quality=0.5))], budget_tokens=20_000
+        )
+        full = bundle.records[0]
+        assert full["hypothesis"]["statement"] == "test the walker"
+        assert "adapters/reranker/candidate.py" in full["artifacts"]["code"]
+        assert full["artifacts"]["diagnostics"]["gate"]["passed"] is False
+        assert full["artifacts"]["traces"][0]["content"][0]["trace_id"] == "t1"
+
+    def test_oversize_record_spills_whole(self) -> None:
+        record = _record(0, {"payload": "x" * 10_000})
+        archive = [(record, ScoreCard(quality=0.5))]
+        ledger_budget = estimate_tokens({
+            "all_ids": [record.id],
+            "ledger": [{
+                "id": record.id,
+                "parent_id": record.parent_id,
+                "label": record.label,
+                "scores": _summarise_card(archive[0][1]),
+            }],
+        })
+        bundle = pack_history(archive, budget_tokens=ledger_budget + 100)
+        assert bundle.records == []
+        assert bundle.spilled_ids == [record.id]
+
+
 class TestSummariseManifest:
     def test_segregates_stages_and_features(self) -> None:
         space = _stub_space()
@@ -247,6 +349,18 @@ class TestBaseHappyPath:
         out = p([])
         assert out["walker"] == "filesystem"
         assert out["enricher"] == "contextual"
+
+    def test_typed_response_returns_config(self) -> None:
+        p = _FakeProposer(
+            response=json.dumps({
+                "config": {"walker": "filesystem"},
+                "hypothesis": {"statement": "Try the alternate walker"},
+            }),
+            space=_stub_space(), skill=load_skill(), backend_name="fake",
+        )
+        assert p([])["walker"] == "filesystem"
+        assert p.last_proposal is not None
+        assert p.last_proposal.hypothesis is not None
 
     def test_constraints_applied_after_parse(self) -> None:
         space = _stub_space(with_constraints=True)
@@ -327,6 +441,8 @@ class TestPromptAssembly:
         assert "JSON" in prompt or "json" in prompt
         # Skill content (first heading from skill.md).
         assert "Meta-Harness" in prompt
+        assert "typed proposal" in prompt
+        assert "all_ids" in prompt
 
     def test_prompt_truncates_when_oversized(self) -> None:
         space = _stub_space()
@@ -343,7 +459,8 @@ class TestPromptAssembly:
         )
         prompt = p._build_prompt(huge_archive)
         assert len(prompt) <= MAX_PROMPT_BYTES
-        assert "truncated" in prompt
+        assert "spilled_ids" in prompt
+        assert "truncated" not in prompt
 
 
 # ---------------------------------------------------------------------------
@@ -453,5 +570,6 @@ class TestPackageExports:
         for name in (
             "LocalAgenticProposer", "CloudAgenticProposer",
             "make_local_agentic_proposer", "make_cloud_agentic_proposer",
+            "Proposal", "Hypothesis", "HistoryBundle", "pack_history",
         ):
             assert hasattr(proposer, name)

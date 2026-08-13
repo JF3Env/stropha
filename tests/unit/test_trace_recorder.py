@@ -98,6 +98,7 @@ class TestTraceRecord:
             query="foo",
             params={"top_k": 5},
             candidate_id="c-001",
+            run_id="run-001",
             results=[{"chunk_id": "abc", "score": 0.9}],
             latency_ms=12.4,
             returned_tokens=128,
@@ -105,6 +106,7 @@ class TestTraceRecord:
         d = r.to_dict()
         assert d["tool"] == "search_code"
         assert d["params"]["top_k"] == 5
+        assert d["run_id"] == "run-001"
         assert d["results"][0]["chunk_id"] == "abc"
         assert d["latency_ms"] == 12.4
 

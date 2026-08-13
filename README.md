@@ -352,6 +352,9 @@ stropha adapters list
 stropha hook install|status|uninstall
 stropha watch
 stropha eval
+stropha cost
+stropha bench
+stropha meta run|validate|status|report|promote|trace|snapshot|prune|outcome|stream-weights
 ```
 
 Run `stropha <command> --help` for the live option set. `stropha stats` opens the
@@ -383,12 +386,127 @@ pipeline/index provenance, and reranker fallback diagnostics. Use
 `--include-other-repos` only for an explicit cross-repository benchmark and
 `--require-clean-index` when non-comparable index drift must fail CI.
 
-The Meta-Harness evaluates query-time candidates against the active compatible
-index rather than synthetic scores:
+### Meta-Harness
+
+The Meta-Harness searches stropha's registered configuration space for retrieval
+settings that improve quality, context efficiency, or latency on the target
+repository's golden set. It evaluates the real production pipeline rather than
+synthetic scores, maintains a Pareto frontier instead of forcing every objective
+into one winner, and leaves the live configuration unchanged during search and
+validation.
+
+Evaluation is split deliberately:
+
+- `meta run` repeatedly evaluates candidates on the visible `search` split.
+- `meta validate` evaluates the frozen baseline and shortlist on hidden
+  `holdout` cases to detect overfitting.
+- `meta promote` prints a reviewable diff by default and changes
+  `~/.stropha/config.yaml` only with an eligible validation and explicit
+  `--apply`.
+
+Each run pins committed `HEAD`; uncommitted source changes are excluded. It uses
+isolated writable SQLite clones, never the production index, so candidates can
+be evaluated concurrently without corrupting shared retrieval state.
+
+First confirm the configured repository and pipeline:
 
 ```bash
-uv run stropha meta run --iterations 5 --proposer bandit
+uv run stropha pipeline show
+uv run stropha pipeline validate
 ```
+
+Start with a small reproducible bandit smoke run:
+
+```bash
+uv run stropha meta run \
+  --iterations 2 \
+  --candidates 2 \
+  --parallel 2 \
+  --seed 42 \
+  --proposer bandit
+```
+
+The result prints a `<run-id>`. Inspect the archive and candidate leaderboard:
+
+```bash
+uv run stropha meta status
+uv run stropha meta report
+```
+
+When the frozen shortlist is ready, validate it against holdout once:
+
+```bash
+uv run stropha meta validate <run-id>
+```
+
+Choose a `<candidate-id>` from the report or shortlist and review its proposed
+configuration diff. This command does not write the configuration:
+
+```bash
+uv run stropha meta promote <candidate-id> --run-id <run-id>
+```
+
+Apply only after reviewing the diff:
+
+```bash
+uv run stropha meta promote <candidate-id> \
+  --run-id <run-id> \
+  --apply
+```
+
+After the smoke run, a reasonable larger local run is:
+
+```bash
+uv run stropha meta run \
+  --iterations 5 \
+  --candidates 3 \
+  --parallel 2 \
+  --seed 42 \
+  --proposer bandit
+```
+
+Resume an interrupted bandit run by repeating all frozen options exactly and
+adding `--resume`. Changing the seed, golden set, budgets, parallelism, source,
+runtime configuration, manifest, registry, graph identity, or cache format is
+rejected:
+
+```bash
+uv run stropha meta run \
+  --iterations 2 \
+  --candidates 2 \
+  --parallel 2 \
+  --seed 42 \
+  --proposer bandit \
+  --resume <run-id>
+```
+
+With the default `~/.stropha/index.db`, run artifacts are stored under
+`~/.stropha/meta/runs/<run-id>/`:
+
+```text
+provenance.json
+checkpoint.json
+report.json
+shortlist.json
+validation.json
+cost.json
+```
+
+`validation.json` appears only after explicit validation. The top-level
+`stropha cost` command is a separate hook-log dashboard; Meta-Harness retrieval,
+indexing, proposer, verification, and artifact usage is recorded in the run's
+`cost.json`.
+
+Do not repeatedly validate the same run while tuning against its results. Use
+the `search` split for iteration and open holdout only for a frozen shortlist.
+Exact resume is currently bandit-only. Generated-code proposer modes
+(`local-code` and `cloud-code`) are explicit opt-ins, restricted to one sandboxed
+reranker adapter per candidate, and always review-only.
+
+Promotion with `--apply` fails closed unless the candidate has eligible
+schema-v2 validation and its candidate hash, source snapshot, runtime
+configuration, manifest, registry, graph identity, and cache format still match
+the frozen run.
 
 The active-stack benchmark matrix is available at
 `src/stropha/bench/active_matrix.yaml`.

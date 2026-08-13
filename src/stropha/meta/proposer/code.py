@@ -61,6 +61,13 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ...logging import get_logger
+from ..code_candidate import (
+    MAX_CODE_ARTIFACT_BYTES,
+    MAX_CODE_ARTIFACTS,
+    CodeCandidateError,
+    validate_code_candidate,
+    validate_code_candidate_source,
+)
 from ..fitness import ScoreCard
 from ..search_space import SearchSpace
 from ..store import CODE_ARTIFACTS_KEY, CandidateRecord
@@ -69,11 +76,16 @@ from ._agentic_base import (
     AgenticProposerBase,
     _clamp_to_space,
     _extract_json,
+    _parse_proposal,
 )
 from .agentic import CloudAgenticProposer
+from .history import estimate_tokens
 from .inference_helper import LocalAgenticProposer
 
 log = get_logger(__name__)
+_RERANKER_PATH_RE = re.compile(
+    r"adapters/reranker/[A-Za-z0-9][A-Za-z0-9_-]*\.py"
+)
 
 
 # A proposed adapter source MUST contain this token. The registry decorator
@@ -89,26 +101,8 @@ REGISTER_ADAPTER_TOKEN = "@register_adapter"
 # defensively (defence-in-depth, see _validate_artifact_rel_path in
 # meta/store.py), but the proposer-side validator avoids the round-trip
 # entirely for the common case of a malformed LLM response.
-_ALLOWED_PATH_RE = re.compile(r"^[A-Za-z0-9_./-]+$")
-"""Whitelist of characters allowed inside an artifact's relative path.
-
-Underscores, dashes, dots, and forward slashes only. NUL bytes,
-backslashes, drive prefixes, and anything fancy are rejected. The
-``ArtifactStore._write_code_artifacts`` validator catches anything this
-regex misses (e.g. ``./../foo`` which passes the regex but contains
-``..``).
-"""
-
-
-# Hard cap on the byte size of one artifact source. Even with cloud
-# models a single adapter rarely needs more than this; the cap is a
-# defence against pathological prompt-injection cases that try to fill
-# the disk.
-MAX_ARTIFACT_SOURCE_BYTES = 64_000
-
-# Hard cap on the number of artifacts in a single proposal. The
-# proposer normally emits one or two files; ten+ is suspect.
-MAX_ARTIFACTS_PER_CANDIDATE = 10
+MAX_ARTIFACT_SOURCE_BYTES = MAX_CODE_ARTIFACT_BYTES
+MAX_ARTIFACTS_PER_CANDIDATE = MAX_CODE_ARTIFACTS
 
 
 # ---------------------------------------------------------------------------
@@ -133,42 +127,31 @@ def _is_valid_artifact_path(rel_path: str) -> bool:
     entry — the LLM still gets to evaluate its config dict; only the
     malformed artifact is dropped.
     """
-    if not rel_path or not isinstance(rel_path, str):
+    if not isinstance(rel_path, str):
         return False
-    if rel_path.startswith("/"):
-        return False
-    if "\\" in rel_path:
-        return False
-    if len(rel_path) >= 2 and rel_path[1] == ":":
-        return False
-    if not rel_path.endswith(".py"):
-        return False
-    if not _ALLOWED_PATH_RE.fullmatch(rel_path):
-        return False
-    for segment in rel_path.split("/"):
-        if segment in ("", "..", "."):
-            return False
-    # Must land under <candidate>/adapters/ — anything else is out of
-    # scope for Phase 5 code search (no proposer-emitted tests/, etc).
-    return rel_path.startswith("adapters/")
+    return _RERANKER_PATH_RE.fullmatch(rel_path) is not None
 
 
 def _is_valid_artifact_source(source: str) -> bool:
     """Return True when ``source`` looks like a real adapter module.
 
-    The bar is intentionally low — we only require the
-    ``@register_adapter`` token to be present somewhere. Concrete
-    importability is enforced by the subprocess sandbox + pytest gate
-    that come in WIN-197 + WIN-198.
+    Full AST and identity validation needs the artifact path and candidate
+    config, so this compatibility helper checks only type, size, and syntax.
     """
     if not isinstance(source, str) or not source.strip():
         return False
     if len(source.encode("utf-8")) > MAX_ARTIFACT_SOURCE_BYTES:
         return False
-    return REGISTER_ADAPTER_TOKEN in source
+    try:
+        validate_code_candidate_source(source)
+    except CodeCandidateError:
+        return False
+    return True
 
 
-def _validate_artifacts(raw: Any) -> dict[str, str]:
+def _validate_artifacts(
+    raw: Any, config: dict[str, Any] | None = None
+) -> dict[str, str]:
     """Return the subset of ``raw`` that survives every validation rule.
 
     Bad entries are logged at warning level and dropped — a single
@@ -181,22 +164,21 @@ def _validate_artifacts(raw: Any) -> dict[str, str]:
     if not isinstance(raw, dict):
         log.warning("code_proposer.bad_artifacts_type", got=type(raw).__name__)
         return {}
-    survivors: dict[str, str] = {}
-    for rel_path, source in raw.items():
-        if len(survivors) >= MAX_ARTIFACTS_PER_CANDIDATE:
-            log.warning(
-                "code_proposer.too_many_artifacts",
-                limit=MAX_ARTIFACTS_PER_CANDIDATE,
-            )
-            break
-        if not _is_valid_artifact_path(rel_path):
-            log.warning("code_proposer.bad_artifact_path", path=rel_path)
-            continue
-        if not _is_valid_artifact_source(source):
-            log.warning("code_proposer.bad_artifact_source", path=rel_path)
-            continue
-        survivors[rel_path] = source
-    return survivors
+    if config is None:
+        if len(raw) != 1:
+            return {}
+        rel_path, source = next(iter(raw.items()))
+        return (
+            {rel_path: source}
+            if _is_valid_artifact_path(rel_path) and _is_valid_artifact_source(source)
+            else {}
+        )
+    try:
+        spec = validate_code_candidate(config, raw)
+    except CodeCandidateError as exc:
+        log.warning("code_proposer.bad_code_candidate", error=str(exc))
+        return {}
+    return {spec.rel_path: spec.source}
 
 
 # ---------------------------------------------------------------------------
@@ -211,18 +193,19 @@ _CODE_PROMPT_TAIL = """\
 
 ## Code-search option (Phase 5)
 
-You MAY also propose ONE OR MORE brand-new adapter Python files in
+You MAY also propose exactly ONE brand-new reranker adapter Python file in
 addition to your config dict. Wrap them inside a top-level
 ``code_artifacts`` object mapping a relative path (under
-``adapters/<stage>/<name>.py``) to the file's full source. Every source
-MUST decorate at least one class with ``@register_adapter(stage=..., name=...)``.
+``adapters/reranker/<name>.py``) to the file's full source. The source
+MUST decorate exactly one top-level class with
+``@register_adapter(stage="reranker", name="<name>")`` and the config's
+``reranker`` value MUST select that same name.
 
 When you propose code:
 
 - Use forward-slash relative paths only. No leading ``/``, no ``..``,
   no backslashes.
-- Stick to ``adapters/<stage>/<name>.py`` shape. The stage name MUST be
-  one already in the manifest.
+- Stick to ``adapters/reranker/<name>.py`` shape.
 - Keep each file under {max_bytes} bytes.
 - A maximum of {max_files} files per proposal.
 
@@ -233,6 +216,7 @@ Schema:
 
     {{
       "config": {{ "<dim>": <value>, ... }},
+      "hypothesis": {{ "statement": "...", "evidence_candidate_ids": [...] }},
       "code_artifacts": {{ "<rel_path>": "<full python source>", ... }}
     }}
 
@@ -280,6 +264,9 @@ class CodeProposerMixin:
         base = AgenticProposerBase._build_prompt(self, archive)  # type: ignore[arg-type]
         return base + build_code_prompt_tail()
 
+    def _reserved_prompt_tokens(self) -> int:
+        return estimate_tokens(build_code_prompt_tail())
+
     def __call__(  # type: ignore[override]
         self,
         archive: Iterable[tuple[CandidateRecord, ScoreCard]],
@@ -320,20 +307,24 @@ class CodeProposerMixin:
         # wrapper. Otherwise treat the whole thing as the config.
         config_raw: Any
         artifacts_raw: Any
-        if isinstance(obj.get("config"), dict):
-            config_raw = obj["config"]
-            artifacts_raw = obj.get("code_artifacts")
-        else:
-            config_raw = obj
-            artifacts_raw = obj.get("code_artifacts") if isinstance(obj, dict) else None
+        try:
+            proposal = _parse_proposal(obj)
+        except ValueError as exc:
+            log.warning("code_proposer.bad_proposal", error=str(exc))
+            return self._fallback_propose(archive_list)  # type: ignore[attr-defined]
+        self.__dict__["last_proposal"] = proposal
+        config_raw = proposal.config
+        artifacts_raw = proposal.code_artifacts
 
         space: SearchSpace = self.space  # type: ignore[attr-defined]
         cleaned = _clamp_to_space(config_raw, space)
         env = getattr(self, "env", None) or {}
         constrained = space.apply_constraints(cleaned, env=env)
 
-        artifacts = _validate_artifacts(artifacts_raw)
+        validation_config = dict(config_raw) if isinstance(config_raw, dict) else {}
+        artifacts = _validate_artifacts(artifacts_raw, validation_config)
         if artifacts:
+            constrained["reranker"] = validation_config["reranker"]
             constrained[CODE_ARTIFACTS_KEY] = artifacts
             log.info(
                 "code_proposer.artifacts_attached",

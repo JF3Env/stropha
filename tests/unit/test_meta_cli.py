@@ -3,17 +3,28 @@ end-to-end loop integration (WIN-194)."""
 
 from __future__ import annotations
 
+import contextlib
 import json
+import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from typer.testing import CliRunner
 
 from stropha.cli import app
+from stropha.eval import EvalCase, EvalReport, EvalResult
 from stropha.meta import (
     ArtifactStore,
+    BaselineValidationArtifact,
+    CandidateEvaluationResult,
+    EvaluationEvidence,
+    EvaluationMetrics,
+    EvaluationValidationArtifact,
+    RunValidationArtifact,
     ScoreCard,
+    ValidationGate,
     run_loop,
 )
 from stropha.meta.proposer import make_bandit_proposer
@@ -67,6 +78,86 @@ def _stream_weight_profile(*, examples: int) -> StreamWeightProfile:
     )
 
 
+def _install_eligible_run(meta: Path, candidate: Any) -> str:
+    import stropha.cli as cli
+
+    run_id = "eligible-run"
+    repo = Path(__file__).resolve().parents[2]
+    _space, _registry, manifest_hash, registry_hash = cli._meta_preflight()
+    golden_hash = "golden"
+    snapshot_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    _graphify, graph_identity = cli._meta_graph_identity()
+    identity = cli._meta_runtime_identity(
+        target_repo=repo,
+        snapshot_sha=snapshot_sha,
+        base_config=cli.load_pipeline_config(),
+        golden_sha256=golden_hash,
+        manifest_sha256=manifest_hash,
+        registry_sha256=registry_hash,
+        graph_identity=graph_identity,
+    )
+    metrics = EvaluationMetrics(
+        success_at_k=1.0,
+        recall_at_k=1.0,
+        mrr=1.0,
+        ndcg_at_k=1.0,
+        latency_p95_ms=1.0,
+        returned_tokens=1,
+    )
+    evidence = EvaluationEvidence(
+        search=metrics,
+        holdout=metrics,
+        search_identity={"split": "search"},
+        holdout_identity={"split": "holdout"},
+        runtime_identity=identity,
+    )
+    validation = EvaluationValidationArtifact(
+        baseline_id="live",
+        candidate_id=candidate.id,
+        baseline=evidence,
+        candidate=evidence,
+        verification_checks={"pipeline_health": True, "candidate_gate": True},
+        validated_identity=identity,
+        gate=ValidationGate(eligible=True),
+    )
+    store = ArtifactStore(meta)
+    store.write_run_artifact(run_id, "provenance.json", {
+        "run_id": run_id,
+        "golden_sha256": golden_hash,
+        "manifest_sha256": manifest_hash,
+        "registry_sha256": registry_hash,
+        "repository": {"path": str(repo)},
+        "snapshot": {"sha": snapshot_sha, "path": str(repo)},
+    })
+    store.write_run_artifact(run_id, "shortlist.json", {
+        "run_id": run_id,
+        "entries": [{
+            "candidate_id": candidate.id,
+            "config_sha256": cli._meta_candidate_hash(candidate),
+        }],
+    })
+    store.write_run_artifact(
+        run_id,
+        "validation.json",
+        RunValidationArtifact(
+            run_id=run_id,
+            baseline=BaselineValidationArtifact(
+                baseline_id="live",
+                evidence=evidence,
+                validated_identity=identity,
+            ),
+            candidates={candidate.id: validation},
+        ),
+    )
+    return run_id
+
+
 # ---------------------------------------------------------------------------
 # stropha meta run (WIN-193)
 # ---------------------------------------------------------------------------
@@ -88,6 +179,148 @@ class TestMetaRun:
         assert result.exit_code == 0, result.output
         # The output mentions the loop result.
         assert "iterations" in result.output or "frontier_size" in result.output
+        run_dirs = list((tmp_path / "meta" / "runs").iterdir())
+        assert len(run_dirs) == 1
+        provenance = json.loads((run_dirs[0] / "provenance.json").read_text())
+        report = json.loads((run_dirs[0] / "report.json").read_text())
+        shortlist = json.loads((run_dirs[0] / "shortlist.json").read_text())
+        cost = json.loads((run_dirs[0] / "cost.json").read_text())
+        assert provenance["proposer"] == "bandit"
+        assert provenance["seed"] == 42
+        assert provenance["golden_sha256"]
+        assert provenance["manifest_sha256"]
+        assert provenance["registry_sha256"]
+        assert report["evaluation_scope"] == "search_only"
+        assert "holdout" not in json.dumps(report)
+        assert shortlist["baseline_id"]
+        assert shortlist["entries"]
+        assert all(entry["search_metrics"] for entry in shortlist["entries"])
+        assert cost["by_scope"]["search"]["retrieval_queries"] > 0
+        assert cost["proposer_tokens"]["exact"] == 0
+        candidate_id = shortlist["entries"][0]["candidate_id"]
+        assert list((tmp_path / "meta" / "candidates" / candidate_id / "traces").glob("*.jsonl"))
+
+    def test_options_and_resume_restore_checkpoint_without_rescoring(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        evaluations = self._install_live_eval_stubs(monkeypatch)
+
+        first = CliRunner().invoke(
+            app,
+            [
+                "meta", "run",
+                "--iterations", "2",
+                "--seed", "42",
+                "--candidates", "2",
+                "--parallel", "2",
+                "--evaluation-timeout", "30",
+                "--meta-dir", str(tmp_path / "meta"),
+            ],
+        )
+        assert first.exit_code == 0, first.output
+        run_dir = next((tmp_path / "meta" / "runs").iterdir())
+        run_id = run_dir.name
+        first_ids = set(evaluations)
+
+        resumed = CliRunner().invoke(
+            app,
+            [
+                "meta", "run",
+                "--iterations", "2",
+                "--seed", "42",
+                "--candidates", "2",
+                "--parallel", "2",
+                "--evaluation-timeout", "30",
+                "--resume", run_id,
+                "--meta-dir", str(tmp_path / "meta"),
+            ],
+        )
+
+        assert resumed.exit_code == 0, resumed.output
+        assert first_ids <= set(evaluations)
+        assert all(evaluations[candidate_id] == 1 for candidate_id in first_ids)
+        provenance = json.loads((run_dir / "provenance.json").read_text())
+        assert provenance["resume"]["resumed"] is True
+        assert provenance["resume"]["rng_state_restored"] is True
+
+    def test_resume_rejects_incompatible_options(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._install_live_eval_stubs(monkeypatch)
+        meta = tmp_path / "meta"
+        first = CliRunner().invoke(
+            app,
+            ["meta", "run", "--iterations", "2", "--seed", "42", "--meta-dir", str(meta)],
+        )
+        assert first.exit_code == 0, first.output
+        run_id = next((meta / "runs").iterdir()).name
+
+        resumed = CliRunner().invoke(
+            app,
+            [
+                "meta", "run", "--iterations", "3", "--seed", "42",
+                "--resume", run_id, "--meta-dir", str(meta),
+            ],
+        )
+
+        assert resumed.exit_code == 1
+        assert "Resume options differ" in resumed.output
+
+    def test_validate_uses_frozen_shortlist_and_adds_holdout_scope(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._install_live_eval_stubs(monkeypatch)
+        meta = tmp_path / "meta"
+        run = CliRunner().invoke(
+            app,
+            [
+                "meta", "run",
+                "--iterations", "3",
+                "--seed", "42",
+                "--meta-dir", str(meta),
+            ],
+        )
+        assert run.exit_code == 0, run.output
+        run_id = next((meta / "runs").iterdir()).name
+
+        validation = CliRunner().invoke(
+            app,
+            ["meta", "validate", run_id, "--meta-dir", str(meta)],
+        )
+
+        assert validation.exit_code == 0, validation.output
+        run_dir = meta / "runs" / run_id
+        artifact = json.loads((run_dir / "validation.json").read_text())
+        cost = json.loads((run_dir / "cost.json").read_text())
+        assert artifact["run_id"] == run_id
+        assert artifact["baseline"]["evidence"]["holdout"] is not None
+        assert artifact["candidates"]
+        assert all(
+            item["candidate"]["holdout"] is not None
+            for item in artifact["candidates"].values()
+        )
+        assert "holdout_validation" in cost["by_scope"]
+        assert cost["candidate_states"]
+
+    def test_validate_rejects_top_k_override(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._install_live_eval_stubs(monkeypatch)
+        meta = tmp_path / "meta"
+        run = CliRunner().invoke(
+            app,
+            ["meta", "run", "--iterations", "1", "--seed", "42", "--meta-dir", str(meta)],
+        )
+        assert run.exit_code == 0, run.output
+        run_id = next((meta / "runs").iterdir()).name
+
+        validation = CliRunner().invoke(
+            app,
+            ["meta", "validate", run_id, "--top-k", "20", "--meta-dir", str(meta)],
+        )
+
+        assert validation.exit_code == 1
+        assert "must match frozen" in validation.output
 
     def test_unknown_proposer_exits_nonzero(self, tmp_path: Path) -> None:
         result = CliRunner().invoke(
@@ -99,6 +332,27 @@ class TestMetaRun:
         )
         assert result.exit_code == 1
         assert "Unknown proposer" in result.output
+
+    @pytest.mark.parametrize(
+        "args, message",
+        [
+            (["--candidates", "0"], "must be at least 1"),
+            (["--parallel", "0"], "must be at least 1"),
+            (["--evaluation-timeout", "0"], "must be greater than 0"),
+        ],
+    )
+    def test_invalid_run_options_fail_before_indexing(
+        self,
+        args: list[str],
+        message: str,
+        tmp_path: Path,
+    ) -> None:
+        result = CliRunner().invoke(
+            app,
+            ["meta", "run", *args, "--meta-dir", str(tmp_path / "meta")],
+        )
+        assert result.exit_code == 1
+        assert message in result.output
 
     def test_local_agentic_proposer_can_be_selected(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -139,39 +393,57 @@ class TestMetaRun:
         )
         assert result.exit_code == 0, result.output
 
+    @pytest.mark.parametrize("mode", ["local-code", "cloud-code"])
+    def test_code_proposer_modes_can_be_selected(
+        self,
+        mode: str,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        backend_path = (
+            "stropha.meta.proposer.inference_helper.get_backend"
+            if mode == "local-code"
+            else "stropha.meta.proposer.agentic.get_backend"
+        )
+        monkeypatch.setattr(
+            backend_path,
+            lambda **_: (_ for _ in ()).throw(RuntimeError("no backend")),
+        )
+        self._install_live_eval_stubs(monkeypatch)
+        result = CliRunner().invoke(
+            app,
+            [
+                "meta", "run",
+                "--iterations", "2",
+                "--proposer", mode,
+                "--seed", "42",
+                "--meta-dir", str(tmp_path / "meta"),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+
     @staticmethod
-    def _install_live_eval_stubs(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _install_live_eval_stubs(
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> dict[str, int]:
         import dataclasses
 
         from stropha.config import get_config
 
-        class _Storage:
-            def lookup_repo_id(self, _key: str) -> int: return 1
-            def get_meta(self, key: str) -> str:
-                return "enricher" if "enricher" in key else "embedder"
-            def close(self) -> None: pass
-            def __enter__(self): return self
-            def __exit__(self, *_args): pass
-
-        class _Stage:
-            adapter_id = "enricher"
-
-        class _Embedder:
-            adapter_id = "embedder"
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=Path(__file__).resolve().parents[2],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
 
         class _Retrieval:
             def health(self):
                 return type("Health", (), {"status": "ready", "message": "ok"})()
 
-        class _Built:
-            storage = _Storage()
-            enricher = _Stage()
-            embedder = _Embedder()
-            retrieval = _Retrieval()
-
-            @staticmethod
-            def effective_enricher_id() -> str:
-                return "enricher"
+            def set_reranker(self, _reranker: object) -> None:
+                pass
 
         base = get_config()
         config = dataclasses.replace(
@@ -182,17 +454,81 @@ class TestMetaRun:
         )
         monkeypatch.setattr("stropha.cli._load_config", lambda: config)
         monkeypatch.setattr("stropha.cli.load_pipeline_config", lambda: {})
-        monkeypatch.setattr("stropha.cli.build_stages", lambda *_a, **_k: _Built())
+        evaluations: dict[str, int] = {}
+
+        class _Provider:
+            def __init__(self, **kwargs: object) -> None:
+                self.cache = kwargs["cache"]
+
+            def pin_snapshot(self, *, source_repo: Path, **_kwargs: object):
+                from stropha.meta import Snapshot
+
+                return Snapshot(head, source_repo, source_repo)
+
+            @contextlib.contextmanager
+            def open_candidate(self, *, candidate_id: str, **_kwargs: object):
+                evaluations[candidate_id] = evaluations.get(candidate_id, 0) + 1
+                yield SimpleNamespace(
+                    built=SimpleNamespace(retrieval=_Retrieval()),
+                    repo_id=1,
+                    cache_hit=len(evaluations) > 1,
+                )
+
+        monkeypatch.setattr(
+            "stropha.meta.candidate_index.CandidateIndexProvider",
+            _Provider,
+        )
+
+        def evaluate(**kwargs: object) -> CandidateEvaluationResult:
+            split = str(kwargs.get("split", "search"))
+            case = EvalCase(
+                id=f"{split}-case",
+                query=split,
+                expected_paths=("src/a.py",),
+                split=split,
+            )
+            report = EvalReport(
+                top_k=10,
+                results=[EvalResult(
+                    case=case,
+                    rank_of_first_hit=1,
+                    top_k=10,
+                    relevances=(1.0,),
+                    relevant_count=1,
+                    total_relevant=1,
+                    latency_ms=10.0,
+                    returned_tokens=20,
+                )],
+            )
+            context = kwargs.get("evaluation_context")
+            if context is not None:
+                recorder = context.open_recorder()
+                recorder.record({
+                    "tool": "search_code",
+                    "candidate_id": context.candidate_id,
+                    "run_id": context.run_id,
+                    "query": split,
+                    "results": [],
+                    "latency_ms": 10.0,
+                    "returned_tokens": 20,
+                })
+                recorder.close()
+            return CandidateEvaluationResult(
+                scorecard=ScoreCard(
+                    quality=0.7,
+                    context_efficiency=0.8,
+                    latency_ms=10.0,
+                    n_queries=1,
+                    n_hits=1,
+                ),
+                report=report,
+            )
+
         monkeypatch.setattr(
             "stropha.meta.evaluate_candidate",
-            lambda **_kwargs: ScoreCard(
-                quality=0.7,
-                context_efficiency=0.8,
-                latency_ms=10.0,
-                n_queries=10,
-                n_hits=8,
-            ),
+            evaluate,
         )
+        return evaluations
 
 
 # ---------------------------------------------------------------------------
@@ -303,11 +639,14 @@ class TestMetaReportBaseline:
         prev = Path.cwd()
         os.chdir(cwd)
         try:
+            candidate = ArtifactStore(meta).read_candidate(candidate_id)
+            run_id = _install_eligible_run(meta, candidate)
             result = CliRunner().invoke(
                 app,
                 ["meta", "promote", candidate_id,
                  "--meta-dir", str(meta),
-                 "--target", str(cwd / "config.yaml"), "--apply"],
+                 "--target", str(cwd / "config.yaml"), "--apply",
+                 "--run-id", run_id],
             )
             assert result.exit_code == 0, result.output
         finally:
@@ -509,6 +848,7 @@ class TestMetaPromote:
         """``--apply`` writes the canonical unified config by default."""
         meta = _make_meta(tmp_path)
         rec = ArtifactStore(meta).list_candidates()[0]
+        run_id = _install_eligible_run(meta, rec)
         target_cwd = tmp_path / "cwd"
         target_cwd.mkdir()
         monkeypatch.chdir(target_cwd)
@@ -516,7 +856,7 @@ class TestMetaPromote:
         result = CliRunner().invoke(
             app,
             ["meta", "promote", rec.id, "--meta-dir", str(meta),
-             "--apply"],
+             "--apply", "--run-id", run_id],
         )
         assert result.exit_code == 0
         assert (tmp_path / ".stropha" / "config.yaml").is_file()
@@ -552,12 +892,39 @@ class TestMetaPromote:
         assert result.exit_code == 0
         assert "No changes" in result.output
 
+    def test_validated_noop_apply_records_verified_baseline(
+        self, tmp_path: Path
+    ) -> None:
+        import yaml as _yaml
+
+        meta = _make_meta(tmp_path)
+        rec = ArtifactStore(meta).list_candidates()[0]
+        run_id = _install_eligible_run(meta, rec)
+        target = tmp_path / "config.yaml"
+        target.write_text(
+            _yaml.safe_dump({"pipeline": rec.config}, sort_keys=True),
+            encoding="utf-8",
+        )
+
+        result = CliRunner().invoke(
+            app,
+            [
+                "meta", "promote", rec.id, "--meta-dir", str(meta),
+                "--target", str(target), "--apply", "--run-id", run_id,
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        baseline = json.loads((meta / "baseline.json").read_text())
+        assert baseline["verification_status"] == "verified"
+
     def test_apply_to_explicit_target_path(
         self, tmp_path: Path
     ) -> None:
         """``--target`` uses the same merge semantics as the default path."""
         meta = _make_meta(tmp_path)
         rec = ArtifactStore(meta).list_candidates()[0]
+        run_id = _install_eligible_run(meta, rec)
         elsewhere = tmp_path / "elsewhere" / "config.yaml"
         elsewhere.parent.mkdir()
         elsewhere.write_text(
@@ -567,7 +934,7 @@ class TestMetaPromote:
         result = CliRunner().invoke(
             app,
             ["meta", "promote", rec.id, "--meta-dir", str(meta),
-             "--target", str(elsewhere), "--apply"],
+             "--target", str(elsewhere), "--apply", "--run-id", run_id],
         )
         assert result.exit_code == 0
         assert elsewhere.is_file()
@@ -577,6 +944,25 @@ class TestMetaPromote:
         assert written["secrets"] == {"voyage_api_key": "keep-me"}
         assert written["logging"] == {"level": "DEBUG"}
         assert written["pipeline"] == rec.config
+
+    def test_apply_without_validated_run_is_blocked(self, tmp_path: Path) -> None:
+        meta = _make_meta(tmp_path)
+        rec = ArtifactStore(meta).list_candidates()[0]
+        target = tmp_path / "config.yaml"
+
+        result = CliRunner().invoke(
+            app,
+            [
+                "meta", "promote", rec.id,
+                "--meta-dir", str(meta),
+                "--target", str(target),
+                "--apply",
+            ],
+        )
+
+        assert result.exit_code == 1
+        assert "requires --run-id" in result.output
+        assert not target.exists()
 
     def test_malformed_target_yaml_exits_nonzero(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -964,7 +1350,7 @@ class TestCliWiring:
         commands = {cmd.name for cmd in meta_app.registered_commands}
         # WIN-166 prune + WIN-193 run/status/report/promote/trace/snapshot.
         for name in (
-            "run", "status", "report", "promote", "trace", "snapshot",
+            "run", "validate", "status", "report", "promote", "trace", "snapshot",
             "prune",
         ):
             assert name in commands, f"missing command: {name}"

@@ -461,3 +461,56 @@ retrieval_features:
             # BM25 should receive the original query
             assert len(recording_storage.bm25_calls) == 1
             assert recording_storage.bm25_calls[0][0] == "original query"
+
+    def test_candidate_config_does_not_inherit_global_feature_toggles(
+        self, recording_storage, recording_embedder, isolated_test_env
+    ) -> None:
+        from stropha.adapters.retrieval.hybrid_rrf import HybridRrfConfig, HybridRrfRetrieval
+        from stropha.config import reset_config
+
+        (isolated_test_env / ".stropha").mkdir(exist_ok=True)
+        (isolated_test_env / ".stropha" / "config.yaml").write_text(
+            "retrieval_features:\n"
+            "  hyde_enabled: true\n"
+            "  query_rewrite_enabled: true\n"
+            "  multi_query_enabled: true\n"
+        )
+        reset_config()
+        retrieval = HybridRrfRetrieval(
+            HybridRrfConfig(inherit_global_features=False),
+            storage=recording_storage,
+            embedder=recording_embedder,
+        )
+
+        with patch("stropha.inference.generate") as generate:
+            retrieval.search("original query")
+
+        generate.assert_not_called()
+        assert recording_embedder.query_texts == ["original query"]
+        assert recording_storage.bm25_calls[0][0] == "original query"
+
+    def test_explicit_hyde_prompt_style_reaches_rewriter(
+        self, recording_storage, recording_embedder
+    ) -> None:
+        from stropha.adapters.retrieval.hybrid_rrf import HybridRrfConfig, HybridRrfRetrieval
+
+        retrieval = HybridRrfRetrieval(
+            HybridRrfConfig(
+                hyde_enabled=True,
+                hyde_code_tuned=False,
+                inherit_global_features=False,
+            ),
+            storage=recording_storage,
+            embedder=recording_embedder,
+        )
+        with patch(
+            "stropha.retrieval.hyde.maybe_hyde_rewrite",
+            return_value="hypothetical",
+        ) as rewrite:
+            retrieval.search("query")
+
+        rewrite.assert_called_once_with(
+            "query",
+            force_enabled=True,
+            code_tuned=False,
+        )

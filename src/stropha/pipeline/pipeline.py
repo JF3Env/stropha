@@ -121,6 +121,7 @@ class Pipeline:
         enricher_concurrency: int = 1,
         enricher_batch_size: int = 1,
         graphify: bool = True,
+        graph_fts_augment: bool | None = None,
     ) -> None:
         """Construct the indexing pipeline.
 
@@ -151,6 +152,8 @@ class Pipeline:
                 it on subsequent runs.  Gracefully skipped when the
                 ``graphify`` binary is not installed.  Pass ``False``
                 to disable (e.g. ``--no-graphify`` on the CLI).
+            graph_fts_augment: explicit graph-term FTS augmentation setting.
+                ``None`` preserves the unified global configuration default.
         """
         if not repos:
             raise ValueError("Pipeline requires at least one repo")
@@ -173,6 +176,7 @@ class Pipeline:
             self._enricher, enricher_batch_size
         )
         self._graphify = graphify
+        self._graph_fts_augment = graph_fts_augment
 
         # Pre-warm the enricher's lazy state (e.g. inference backend
         # singleton) so the first batch of N parallel enrichment calls
@@ -496,8 +500,12 @@ class Pipeline:
         # L2 retroactive FTS augmentation. Toggle via graph.fts_augment in
         # ~/.stropha/config.yaml (default true). The augmentation is a no-op when
         # graph_nodes is empty.
-        from ..config import get_config as _get_config
-        if _get_config().graph.fts_augment:
+        graph_fts_augment = self._graph_fts_augment
+        if graph_fts_augment is None:
+            from ..config import get_config as _get_config
+
+            graph_fts_augment = _get_config().graph.fts_augment
+        if graph_fts_augment:
             try:
                 self._storage.augment_fts_with_graph()  # type: ignore[attr-defined]
             except Exception as exc:

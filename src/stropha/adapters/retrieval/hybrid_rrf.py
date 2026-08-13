@@ -152,6 +152,17 @@ class HybridRrfConfig(BaseModel):
             "If null or omitted, RRF output is returned directly."
         ),
     )
+    inherit_global_features: bool = Field(
+        default=True,
+        description=(
+            "Inherit unified retrieval feature toggles. Meta-Harness candidates "
+            "disable this so the live process config cannot override an arm."
+        ),
+    )
+    hyde_code_tuned: bool | None = Field(
+        default=None,
+        description="Explicit HyDE prompt style; null inherits unified config.",
+    )
 
 
 @register_adapter(stage="retrieval", name="hybrid-rrf")
@@ -204,6 +215,12 @@ class HybridRrfRetrieval(RetrievalStage):
         return (
             f"hybrid-rrf:k={self._config.rrf_k}:streams={digest}:"
             f"reranker={reranker_id}:adaptive={int(self._config.adaptive_weighting)}:"
+            f"mq={int(self._config.multi_query_enabled)}:{self._config.multi_query_count}:"
+            f"rewrite={int(self._config.query_rewrite_enabled)}:"
+            f"hyde={int(self._config.hyde_enabled)}:{self._config.hyde_code_tuned}:"
+            f"recursive={int(self._config.recursive_enabled)}:"
+            f"adjacency={self._config.recursive_adjacency}:"
+            f"inherit={int(self._config.inherit_global_features)}:"
             f"learned={learned_id}"
         )
 
@@ -241,6 +258,12 @@ class HybridRrfRetrieval(RetrievalStage):
             out["learned_weights"] = self._learned_weights.report(active=True)
         return out
 
+    def set_reranker(self, reranker: RerankerStage | None) -> None:
+        """Inject a trusted reranker implementation after pipeline construction."""
+        if reranker is not None and not isinstance(reranker, RerankerStage):
+            raise TypeError("reranker must implement RerankerStage")
+        self._reranker = reranker
+
     # ----- search ---------------------------------------------------------
 
     def search(
@@ -255,12 +278,14 @@ class HybridRrfRetrieval(RetrievalStage):
             return []
         k = top_k or self._config.top_k
 
-        from ...config import get_config
-
         # Check if multi-query expansion is enabled
-        multi_query_enabled = (
-            self._config.multi_query_enabled or get_config().retrieval_features.multi_query_enabled
-        )
+        multi_query_enabled = self._config.multi_query_enabled
+        if self._config.inherit_global_features:
+            from ...config import get_config
+
+            multi_query_enabled = (
+                multi_query_enabled or get_config().retrieval_features.multi_query_enabled
+            )
 
         if multi_query_enabled:
             return self._search_multi_query(
@@ -287,15 +312,16 @@ class HybridRrfRetrieval(RetrievalStage):
         repo_id: int | None = None,
     ) -> list[SearchHit]:
         """Execute search with a single query (the standard path)."""
-        from ...config import get_config
-
         # Query rewriting: expand natural language to code terms (affects ALL streams)
         if search_query is None:
             search_query = query
-            rewrite_enabled = (
-                self._config.query_rewrite_enabled
-                or get_config().retrieval_features.query_rewrite_enabled
-            )
+            rewrite_enabled = self._config.query_rewrite_enabled
+            if self._config.inherit_global_features:
+                from ...config import get_config
+
+                rewrite_enabled = (
+                    rewrite_enabled or get_config().retrieval_features.query_rewrite_enabled
+                )
             if rewrite_enabled:
                 from ...retrieval.query_rewrite import maybe_rewrite_query
 
@@ -311,14 +337,18 @@ class HybridRrfRetrieval(RetrievalStage):
         # Enabled via config.hyde_enabled OR retrieval_features.hyde_enabled in YAML
         dense_query = search_query
         if needs_vec:
-            from ...config import get_config
+            hyde_enabled = self._config.hyde_enabled
+            if self._config.inherit_global_features:
+                from ...config import get_config
 
-            hyde_enabled = self._config.hyde_enabled or get_config().retrieval_features.hyde_enabled
+                hyde_enabled = hyde_enabled or get_config().retrieval_features.hyde_enabled
             if hyde_enabled:
                 from ...retrieval.hyde import maybe_hyde_rewrite
 
                 rewritten = maybe_hyde_rewrite(
-                    query, force_enabled=True
+                    query,
+                    force_enabled=True,
+                    code_tuned=self._config.hyde_code_tuned,
                 )  # Use original query for HyDE
                 if rewritten:
                     dense_query = rewritten

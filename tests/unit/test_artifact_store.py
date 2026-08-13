@@ -8,12 +8,14 @@ The tests are pure stdlib + tmp_path; no external services needed.
 from __future__ import annotations
 
 import json
+import os
 import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 import yaml
+from pydantic import BaseModel
 
 from stropha.meta import (
     ArtifactStore,
@@ -44,6 +46,7 @@ class TestModuleHelpers:
 
     def test_now_utc_iso_has_timezone(self) -> None:
         from datetime import datetime
+
         ts = _now_utc_iso()
         dt = datetime.fromisoformat(ts)
         assert dt.tzinfo is not None
@@ -59,27 +62,33 @@ class TestCandidateRecord:
         rec = CandidateRecord(id="x", created_at="2026-01-01T00:00:00+00:00")
         assert rec.fitness() == float("-inf")
 
-    def test_fitness_default_weights_average(self) -> None:
+    def test_fitness_uses_signed_objectives_only(self) -> None:
         rec = CandidateRecord(
             id="x",
             created_at="t",
-            scores={"recall": 0.8, "mrr": 0.6},
+            scores={
+                "quality": 0.8,
+                "context_efficiency": 0.6,
+                "outcome_score": 0.5,
+                "latency_ms": 100.0,
+                "n_queries": 1_000,
+                "n_hits": 1_000,
+            },
         )
-        assert rec.fitness() == pytest.approx(0.7)
+        assert rec.fitness() == pytest.approx(0.8 + 0.3 + 0.1 - 0.1)
 
     def test_fitness_with_weights(self) -> None:
         rec = CandidateRecord(
             id="x",
             created_at="t",
-            scores={"recall": 0.8, "mrr": 0.6},
+            scores={"quality": 0.8, "latency_ms": 100.0},
         )
-        # recall*2 + mrr*1 = 1.6 + 0.6 = 2.2
-        assert rec.fitness({"recall": 2.0, "mrr": 1.0}) == pytest.approx(2.2)
+        assert rec.fitness({"quality": 2.0, "latency_ms": 0.01}) == pytest.approx(0.6)
 
-    def test_fitness_missing_weight_defaults_to_one(self) -> None:
-        rec = CandidateRecord(id="x", created_at="t", scores={"a": 1.0, "b": 2.0})
-        # weight for 'b' missing → 1.0; total 1.0 + 2.0 = 3.0
-        assert rec.fitness({"a": 1.0}) == pytest.approx(3.0)
+    def test_lower_latency_has_higher_fitness(self) -> None:
+        fast = CandidateRecord(id="fast", created_at="t", scores={"latency_ms": 10.0})
+        slow = CandidateRecord(id="slow", created_at="t", scores={"latency_ms": 100.0})
+        assert fast.fitness() > slow.fitness()
 
     def test_fitness_all_non_numeric_returns_neg_inf(self) -> None:
         """WIN-193 follow-on: scores may carry dicts (e.g. tier_counts)
@@ -87,14 +96,16 @@ class TestCandidateRecord:
         score is non-numeric the candidate falls back to -inf so it
         sorts behind anything with real numbers."""
         rec = CandidateRecord(
-            id="x", created_at="t",
-            scores={"tier_counts": {"T1": 5}, "label": "foo"},
+            id="x",
+            created_at="t",
+            scores={"tier_counts": {"T1": 5}, "n_queries": 10, "label": "foo"},
         )
         assert rec.fitness() == float("-inf")
 
     def test_fitness_filters_non_numeric_from_mean(self) -> None:
         rec = CandidateRecord(
-            id="x", created_at="t",
+            id="x",
+            created_at="t",
             scores={"quality": 0.8, "tier_counts": {"T1": 5}},
         )
         # tier_counts is dict → filtered. Mean of {quality: 0.8} = 0.8.
@@ -122,6 +133,83 @@ class TestStoreConstruction:
     def test_idempotent_on_existing_dir(self, tmp_path: Path) -> None:
         ArtifactStore(tmp_path / "meta")
         ArtifactStore(tmp_path / "meta")  # second construction must not raise.
+
+    def test_write_run_artifact_is_atomic_and_scoped(self, tmp_path: Path) -> None:
+        store = ArtifactStore(tmp_path)
+
+        path = store.write_run_artifact("run-1", "report.json", {"ok": True})
+        store.write_run_artifact("run-1", "report.json", {"ok": False})
+
+        assert path == store.runs_dir / "run-1" / "report.json"
+        assert json.loads(path.read_text(encoding="utf-8")) == {"ok": False}
+
+    def test_write_run_artifact_accepts_typed_artifact(self, tmp_path: Path) -> None:
+        from stropha.meta.run_cost import RunCostArtifact
+
+        store = ArtifactStore(tmp_path)
+        path = store.write_run_artifact("run-1", "cost.json", RunCostArtifact(run_id="run-1"))
+
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        assert payload["schema_version"] == 1
+        assert payload["run_id"] == "run-1"
+
+    def test_read_run_artifact_validates_typed_payload(self, tmp_path: Path) -> None:
+        class StrictArtifact(BaseModel):
+            model_config = {"extra": "forbid"}
+
+            schema_version: Literal[1] = 1
+            run_id: str
+
+        store = ArtifactStore(tmp_path)
+        expected = StrictArtifact(run_id="run-1")
+        store.write_run_artifact("run-1", "strict.json", expected)
+
+        assert store.read_run_artifact("run-1", "strict.json") == expected.model_dump()
+        assert store.read_run_artifact("run-1", "strict.json", StrictArtifact) == expected
+
+    def test_read_run_artifact_rejects_invalid_model_payload(self, tmp_path: Path) -> None:
+        from stropha.meta.run_cost import RunCostArtifact
+
+        store = ArtifactStore(tmp_path)
+        store.write_run_artifact("run-1", "cost.json", {"schema_version": 2})
+
+        with pytest.raises(ArtifactStoreError, match="RunCostArtifact validation"):
+            store.read_run_artifact("run-1", "cost.json", RunCostArtifact)
+
+    def test_read_run_artifact_rejects_non_object_and_symlink_escape(
+        self, tmp_path: Path
+    ) -> None:
+        store = ArtifactStore(tmp_path / "meta")
+        run_dir = store.runs_dir / "run-1"
+        run_dir.mkdir()
+        (run_dir / "list.json").write_text("[]", encoding="utf-8")
+        with pytest.raises(ArtifactStoreError, match="JSON object"):
+            store.read_run_artifact("run-1", "list.json")
+
+        outside = tmp_path / "outside.json"
+        outside.write_text('{"safe": false}', encoding="utf-8")
+        os.symlink(outside, run_dir / "escape.json")
+        with pytest.raises(ArtifactStoreError, match="unsafe"):
+            store.read_run_artifact("run-1", "escape.json")
+
+    @pytest.mark.parametrize(
+        "run_id,name",
+        [
+            ("../escape", "report.json"),
+            ("run", "../report.json"),
+            ("run/nested", "report.json"),
+            ("run", "report.txt"),
+        ],
+    )
+    def test_write_run_artifact_rejects_unsafe_paths(
+        self, tmp_path: Path, run_id: str, name: str
+    ) -> None:
+        store = ArtifactStore(tmp_path)
+        with pytest.raises(ArtifactStoreError):
+            store.write_run_artifact(run_id, name, {})
+
+        with pytest.raises(ArtifactStoreError):
+            store.read_run_artifact(run_id, name)
 
 
 # ---------------------------------------------------------------------------
@@ -152,9 +240,7 @@ class TestRegisterCandidate:
         store = ArtifactStore(tmp_path)
         cfg = {"a": 1, "nested": {"b": [1, 2, 3]}}
         rec = store.register_candidate(cfg)
-        roundtrip = yaml.safe_load(
-            (store.candidates_dir / rec.id / "config.yaml").read_text()
-        )
+        roundtrip = yaml.safe_load((store.candidates_dir / rec.id / "config.yaml").read_text())
         assert roundtrip == cfg
 
     def test_meta_includes_label_and_parent(self, tmp_path: Path) -> None:
@@ -226,9 +312,25 @@ class TestWriteScores:
         with pytest.raises(ArtifactStoreError, match="missing"):
             store.write_scores("nonexistent", {"recall": 0.9})
 
-    def test_write_scores_handles_serialisation_error(
-        self, tmp_path: Path
+    def test_write_scores_atomically_replaces_target(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        store = ArtifactStore(tmp_path)
+        rec = store.register_candidate({})
+        target = store.candidates_dir / rec.id / "scores.json"
+        target.write_text('{"old": true}', encoding="utf-8")
+
+        def fail_replace(self: Path, target_path: Path) -> Path:
+            raise OSError("simulated replace failure")
+
+        monkeypatch.setattr(Path, "replace", fail_replace)
+        with pytest.raises(ArtifactStoreError, match="failed to write scores"):
+            store.write_scores(rec.id, {"quality": 0.9})
+
+        assert json.loads(target.read_text(encoding="utf-8")) == {"old": True}
+        assert not list(target.parent.glob(".scores.json.*.tmp"))
+
+    def test_write_scores_handles_serialisation_error(self, tmp_path: Path) -> None:
         store = ArtifactStore(tmp_path)
         rec = store.register_candidate({})
 
@@ -336,6 +438,7 @@ class TestListCandidates:
             rec = store.register_candidate({"v": i})
             ids.append(rec.id)
             import time
+
             time.sleep(0.005)  # ensure created_at differs
         listed = store.list_candidates()
         # newest first = reverse of insertion order
@@ -354,8 +457,8 @@ class TestListCandidates:
         a = store.register_candidate({})
         b = store.register_candidate({})
         c = store.register_candidate({})  # unscored — sorts last via -inf
-        store.write_scores(a.id, {"recall": 0.6})
-        store.write_scores(b.id, {"recall": 0.9})
+        store.write_scores(a.id, {"quality": 0.6})
+        store.write_scores(b.id, {"quality": 0.9})
         listed = store.list_candidates(sort_by="fitness")
         assert [r.id for r in listed] == [b.id, a.id, c.id]
 
@@ -383,6 +486,7 @@ class TestListCandidates:
         rec = store.register_candidate({})
         # Delete the candidate directory directly (simulating data corruption).
         import shutil
+
         shutil.rmtree(store.candidates_dir / rec.id)
         listed = store.list_candidates()
         assert listed == []
@@ -462,7 +566,7 @@ class TestCompact:
         records = []
         for i in range(5):
             r = store.register_candidate({"v": i})
-            store.write_scores(r.id, {"score": float(i)})  # 0.0 .. 4.0
+            store.write_scores(r.id, {"quality": float(i)})  # 0.0 .. 4.0
             records.append(r)
         pruned = store.compact(keep_top=2, keep_bottom=0, keep_recent=0)
         survivors = {r.id for r in store.list_candidates(include_pruned=False)}
@@ -476,7 +580,7 @@ class TestCompact:
         records = []
         for i in range(5):
             r = store.register_candidate({"v": i})
-            store.write_scores(r.id, {"score": float(i)})
+            store.write_scores(r.id, {"quality": float(i)})
             records.append(r)
         store.compact(keep_top=0, keep_bottom=2, keep_recent=0)
         survivors = {r.id for r in store.list_candidates(include_pruned=False)}
@@ -490,6 +594,7 @@ class TestCompact:
             r = store.register_candidate({"v": i})
             records.append(r)
             import time
+
             time.sleep(0.005)
         store.compact(keep_top=0, keep_bottom=0, keep_recent=2)
         survivors = {r.id for r in store.list_candidates(include_pruned=False)}
@@ -502,9 +607,10 @@ class TestCompact:
         records = []
         for i in range(6):
             r = store.register_candidate({})
-            store.write_scores(r.id, {"score": float(i)})
+            store.write_scores(r.id, {"quality": float(i)})
             records.append(r)
             import time
+
             time.sleep(0.005)
         store.compact(keep_top=1, keep_bottom=1, keep_recent=1)
         survivors = {r.id for r in store.list_candidates(include_pruned=False)}
@@ -522,9 +628,7 @@ class TestCompact:
             ids.append(store.register_candidate({}).id)
         store.compact(keep_top=1, keep_bottom=0, keep_recent=0)
         ledger = [
-            json.loads(line)
-            for line in store.index_path.read_text().splitlines()
-            if line.strip()
+            json.loads(line) for line in store.index_path.read_text().splitlines() if line.strip()
         ]
         pruned = [e for e in ledger if e.get("pruned")]
         assert len(pruned) == 2
@@ -534,7 +638,7 @@ class TestCompact:
         loser_ids = []
         for i in range(3):
             r = store.register_candidate({})
-            store.write_scores(r.id, {"score": float(i)})
+            store.write_scores(r.id, {"quality": float(i)})
             loser_ids.append(r.id)
         store.compact(keep_top=1, keep_bottom=0, keep_recent=0)
         # The two losers' directories no longer exist on disk.
@@ -598,6 +702,7 @@ class TestConcurrency:
 class TestPackageExports:
     def test_meta_package_exports(self) -> None:
         from stropha import meta
+
         assert hasattr(meta, "ArtifactStore")
         assert hasattr(meta, "ArtifactStoreError")
         assert hasattr(meta, "CandidateRecord")

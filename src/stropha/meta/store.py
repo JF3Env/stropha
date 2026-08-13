@@ -45,17 +45,25 @@ from __future__ import annotations
 import contextlib
 import fcntl
 import json
+import os
+import re
 import shutil
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar, overload
 
 import yaml  # type: ignore[import-untyped]
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from ..errors import StrophaError
 from ..logging import get_logger
+from .code_candidate import (
+    MAX_CODE_ARTIFACT_BYTES,
+    MAX_CODE_ARTIFACTS,
+    CodeCandidateError,
+    validate_code_candidate,
+)
 
 log = get_logger(__name__)
 
@@ -68,6 +76,8 @@ log = get_logger(__name__)
 # ``candidates/<id>/adapters/`` instead of letting them blob into
 # ``config.yaml``. Defense-in-depth path validation lives here too.
 CODE_ARTIFACTS_KEY = "__code_artifacts__"
+_CANDIDATE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
+_RunArtifactT = TypeVar("_RunArtifactT", bound=BaseModel)
 
 
 class ArtifactStoreError(StrophaError):
@@ -94,31 +104,28 @@ def _validate_artifact_rel_path(rel_path: str) -> None:
     :class:`ArtifactStoreError` on any violation.
     """
     if not isinstance(rel_path, str) or not rel_path:
-        raise ArtifactStoreError(
-            f"artifact path must be a non-empty string; got {rel_path!r}"
-        )
+        raise ArtifactStoreError(f"artifact path must be a non-empty string; got {rel_path!r}")
     if rel_path.startswith("/"):
-        raise ArtifactStoreError(
-            f"artifact path must be relative; got absolute {rel_path!r}"
-        )
+        raise ArtifactStoreError(f"artifact path must be relative; got absolute {rel_path!r}")
     if "\\" in rel_path:
-        raise ArtifactStoreError(
-            f"artifact path must use POSIX separators; got {rel_path!r}"
-        )
+        raise ArtifactStoreError(f"artifact path must use POSIX separators; got {rel_path!r}")
     # Windows drive prefix ("C:foo", "c:/foo", …) — defensive cross-platform.
     if len(rel_path) >= 2 and rel_path[1] == ":":
-        raise ArtifactStoreError(
-            f"artifact path must not carry a drive prefix; got {rel_path!r}"
-        )
+        raise ArtifactStoreError(f"artifact path must not carry a drive prefix; got {rel_path!r}")
     parts = rel_path.split("/")
     for segment in parts:
         if segment in ("", "..", "."):
             # Empty segment = leading "/", double "//", or trailing "/".
             # ".." and "." are traversal markers.
             raise ArtifactStoreError(
-                f"artifact path {rel_path!r} contains an illegal segment "
-                f"{segment!r}"
+                f"artifact path {rel_path!r} contains an illegal segment {segment!r}"
             )
+
+
+def _validate_candidate_id(candidate_id: str) -> None:
+    """Reject traversal and filesystem syntax in caller-supplied ids."""
+    if not isinstance(candidate_id, str) or not _CANDIDATE_ID_RE.fullmatch(candidate_id):
+        raise ArtifactStoreError("candidate id must match [A-Za-z0-9][A-Za-z0-9_-]{0,127}")
 
 
 class CandidateRecord(BaseModel):
@@ -144,25 +151,21 @@ class CandidateRecord(BaseModel):
     base_dir: Path | None = Field(default=None, exclude=True)
 
     def fitness(self, weights: dict[str, float] | None = None) -> float:
-        """Composite fitness — weighted sum of scores (defaults to equal weights).
+        """Return the signed scalar reduction of the ScoreCard objectives.
 
         Returns ``-inf`` when no scores are populated so unscored candidates
         always sort behind scored ones.
         """
-        if not self.scores:
-            return float("-inf")
-        numeric = {
-            k: float(v) for k, v in self.scores.items()
-            if isinstance(v, (int, float)) and not isinstance(v, bool)
-        }
-        if not numeric:
-            return float("-inf")
+        from .fitness import DIMENSION_SIGNS, FITNESS_WEIGHTS, scalar_fitness
+
         if weights is None:
-            return sum(numeric.values()) / len(numeric)
-        total = 0.0
-        for name, value in numeric.items():
-            total += value * weights.get(name, 1.0)
-        return total
+            return scalar_fitness(self.scores)
+        terms = []
+        for name, sign in DIMENSION_SIGNS.items():
+            value = self.scores.get(name)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                terms.append(float(value) * sign * weights.get(name, FITNESS_WEIGHTS[name]))
+        return sum(terms) if terms else float("-inf")
 
 
 class ArtifactStore:
@@ -208,14 +211,15 @@ class ArtifactStore:
         Raises ``ArtifactStoreError`` if the id is already used, the
         config is not JSON-serialisable, or any step fails on the way.
         """
-        cid = candidate_id or _short_id()
+        cid = _short_id() if candidate_id is None else candidate_id
+        _validate_candidate_id(cid)
+        if parent is not None:
+            _validate_candidate_id(parent)
         cand_dir = self.candidates_dir / cid
         try:
             cand_dir.mkdir(parents=True, exist_ok=False)
         except FileExistsError as exc:
-            raise ArtifactStoreError(
-                f"candidate id {cid!r} already exists at {cand_dir}"
-            ) from exc
+            raise ArtifactStoreError(f"candidate id {cid!r} already exists at {cand_dir}") from exc
 
         traces_dir = cand_dir / "traces"
         traces_dir.mkdir(parents=True, exist_ok=True)
@@ -228,14 +232,13 @@ class ArtifactStore:
         clean_config = dict(config)
         code_artifacts: dict[str, str] = {}
         raw_artifacts = clean_config.pop(CODE_ARTIFACTS_KEY, None)
-        if raw_artifacts:
-            if not isinstance(raw_artifacts, dict):
+        if raw_artifacts is not None:
+            try:
+                spec = validate_code_candidate(clean_config, raw_artifacts)
+            except CodeCandidateError as exc:
                 shutil.rmtree(cand_dir, ignore_errors=True)
-                raise ArtifactStoreError(
-                    f"{CODE_ARTIFACTS_KEY} must be a dict[str, str]; "
-                    f"got {type(raw_artifacts).__name__}"
-                )
-            code_artifacts = {str(k): str(v) for k, v in raw_artifacts.items()}
+                raise ArtifactStoreError(str(exc)) from exc
+            code_artifacts = {spec.rel_path: spec.source}
 
         created_at = _now_utc_iso()
         record = CandidateRecord(
@@ -281,9 +284,7 @@ class ArtifactStore:
             shutil.rmtree(cand_dir, ignore_errors=True)
             if isinstance(exc, ArtifactStoreError):
                 raise
-            raise ArtifactStoreError(
-                f"failed to write candidate {cid!r}: {exc}"
-            ) from exc
+            raise ArtifactStoreError(f"failed to write candidate {cid!r}: {exc}") from exc
 
         self._append_index({"id": cid, "parent_id": parent, "created_at": created_at})
         log.info(
@@ -326,6 +327,9 @@ class ArtifactStore:
         caller in :meth:`register_candidate` translates into a rollback
         so a partially-written candidate cannot be left on disk.
         """
+        _validate_candidate_id(candidate_id)
+        if not isinstance(artifacts, dict) or len(artifacts) != MAX_CODE_ARTIFACTS:
+            raise ArtifactStoreError("code candidate must contain exactly one artifact")
         cand_dir = self.candidates_dir / candidate_id
         # Resolve once up front so EVERY downstream comparison happens
         # against the canonical (symlink-followed) path. On macOS
@@ -334,13 +338,17 @@ class ArtifactStore:
         # ``relative_to`` would raise ValueError. Resolving both ends
         # avoids that footgun.
         cand_dir_resolved = cand_dir.resolve()
-        adapters_root = (cand_dir_resolved / "adapters")
+        adapters_root = cand_dir_resolved / "adapters"
         adapters_root.mkdir(parents=True, exist_ok=True)
         for rel_path, source in artifacts.items():
+            if not isinstance(rel_path, str) or not isinstance(source, str):
+                raise ArtifactStoreError("artifact path and source must both be strings")
+            if len(source.encode("utf-8")) > MAX_CODE_ARTIFACT_BYTES:
+                raise ArtifactStoreError(f"artifact exceeds {MAX_CODE_ARTIFACT_BYTES} UTF-8 bytes")
             _validate_artifact_rel_path(rel_path)
-            if not rel_path.startswith("adapters/"):
+            if not rel_path.startswith("adapters/reranker/"):
                 raise ArtifactStoreError(
-                    f"artifact path {rel_path!r} must start with 'adapters/'"
+                    f"artifact path {rel_path!r} must start with 'adapters/reranker/'"
                 )
             target = (cand_dir_resolved / rel_path).resolve()
             try:
@@ -351,8 +359,7 @@ class ArtifactStore:
                 ) from exc
             if target.suffix != ".py":
                 raise ArtifactStoreError(
-                    f"artifact path {rel_path!r} must end in .py "
-                    f"(got {target.suffix!r})"
+                    f"artifact path {rel_path!r} must end in .py (got {target.suffix!r})"
                 )
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(source, encoding="utf-8")
@@ -363,22 +370,25 @@ class ArtifactStore:
                 bytes=len(source),
             )
 
-    def write_scores(self, candidate_id: str, scores: dict[str, float]) -> None:
-        """Replace ``scores.json`` for ``candidate_id``.
+    def write_scores(self, candidate_id: str, scores: dict[str, Any]) -> None:
+        """Atomically replace ``scores.json`` for ``candidate_id``.
 
         Caller is expected to call this exactly once per evaluator run;
         re-runs overwrite. We do NOT merge to avoid stale-score leakage.
         """
         cand_dir = self._require_dir(candidate_id)
+        target = cand_dir / "scores.json"
+        temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
         try:
-            (cand_dir / "scores.json").write_text(
+            temporary.write_text(
                 json.dumps(scores, indent=2, sort_keys=True),
                 encoding="utf-8",
             )
+            temporary.replace(target)
         except (OSError, TypeError) as exc:
-            raise ArtifactStoreError(
-                f"failed to write scores for {candidate_id!r}: {exc}"
-            ) from exc
+            raise ArtifactStoreError(f"failed to write scores for {candidate_id!r}: {exc}") from exc
+        finally:
+            temporary.unlink(missing_ok=True)
         log.info("artifactstore.scores", id=candidate_id, fields=sorted(scores))
 
     def write_gate_result(
@@ -395,11 +405,7 @@ class ArtifactStore:
         dependency direction loop → gate, not the reverse.
         """
         cand_dir = self._require_dir(candidate_id)
-        payload = (
-            result.to_dict()
-            if hasattr(result, "to_dict")
-            else dict(result)
-        )
+        payload = result.to_dict() if hasattr(result, "to_dict") else dict(result)
         try:
             (cand_dir / "gate.json").write_text(
                 json.dumps(payload, indent=2, sort_keys=True),
@@ -416,9 +422,88 @@ class ArtifactStore:
             skipped=payload.get("skipped"),
         )
 
+    def write_run_artifact(
+        self,
+        run_id: str,
+        name: str,
+        payload: dict[str, Any] | Any,
+    ) -> Path:
+        """Atomically write one JSON artifact under ``runs/<run_id>/``."""
+        _validate_artifact_rel_path(run_id)
+        _validate_artifact_rel_path(name)
+        if "/" in run_id or "/" in name or not name.endswith(".json"):
+            raise ArtifactStoreError("run id and artifact name must be plain JSON filenames")
+        run_dir = self.runs_dir / run_id
+        run_dir.mkdir(parents=True, exist_ok=True)
+        target = run_dir / name
+        temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+        serializable = (
+            payload.to_dict()
+            if hasattr(payload, "to_dict")
+            else payload.model_dump(mode="json")
+            if hasattr(payload, "model_dump")
+            else dict(payload)
+        )
+        try:
+            temporary.write_text(
+                json.dumps(serializable, indent=2, sort_keys=True),
+                encoding="utf-8",
+            )
+            temporary.replace(target)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return target
+
     # ------------------------------------------------------------------ #
     # Reads                                                              #
     # ------------------------------------------------------------------ #
+
+    @overload
+    def read_run_artifact(self, run_id: str, name: str) -> dict[str, Any]: ...
+
+    @overload
+    def read_run_artifact(
+        self,
+        run_id: str,
+        name: str,
+        model: type[_RunArtifactT],
+    ) -> _RunArtifactT: ...
+
+    def read_run_artifact(
+        self,
+        run_id: str,
+        name: str,
+        model: type[_RunArtifactT] | None = None,
+    ) -> dict[str, Any] | _RunArtifactT:
+        """Read a scoped JSON run artifact and optionally validate its model."""
+
+        _validate_artifact_rel_path(run_id)
+        _validate_artifact_rel_path(name)
+        if "/" in run_id or "/" in name or not name.endswith(".json"):
+            raise ArtifactStoreError("run id and artifact name must be plain JSON filenames")
+        target = self.runs_dir / run_id / name
+        try:
+            resolved = target.resolve(strict=True)
+            resolved.relative_to(self.runs_dir.resolve())
+            payload = json.loads(resolved.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            raise ArtifactStoreError(
+                f"run artifact {run_id!r}/{name!r} is missing, unsafe, or malformed: {exc}"
+            ) from exc
+        if not isinstance(payload, dict):
+            raise ArtifactStoreError(
+                f"run artifact {run_id!r}/{name!r} must contain a JSON object"
+            )
+        if model is None:
+            return payload
+        if not isinstance(model, type) or not issubclass(model, BaseModel):
+            raise ArtifactStoreError("run artifact model must be a pydantic BaseModel type")
+        try:
+            return model.model_validate(payload)
+        except ValidationError as exc:
+            raise ArtifactStoreError(
+                f"run artifact {run_id!r}/{name!r} failed {model.__name__} validation: {exc}"
+            ) from exc
 
     def read_candidate(self, candidate_id: str) -> CandidateRecord:
         """Load every side-car for ``candidate_id`` into a single record.
@@ -443,9 +528,7 @@ class ArtifactStore:
 
         scores_raw: dict[str, float] = {}
         with contextlib.suppress(OSError, json.JSONDecodeError):
-            scores_raw = json.loads(
-                (cand_dir / "scores.json").read_text(encoding="utf-8")
-            ) or {}
+            scores_raw = json.loads((cand_dir / "scores.json").read_text(encoding="utf-8")) or {}
 
         trace_count = 0
         traces_dir = cand_dir / "traces"
@@ -639,6 +722,7 @@ class ArtifactStore:
     # ------------------------------------------------------------------ #
 
     def _require_dir(self, candidate_id: str) -> Path:
+        _validate_candidate_id(candidate_id)
         cand_dir = self.candidates_dir / candidate_id
         if not cand_dir.is_dir():
             raise ArtifactStoreError(

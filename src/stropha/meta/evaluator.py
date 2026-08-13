@@ -21,15 +21,17 @@ from __future__ import annotations
 
 import copy
 import json
-from collections.abc import Iterable
+from collections.abc import Collection, Iterable
+from dataclasses import asdict, dataclass, is_dataclass
 from pathlib import Path
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Protocol, overload
 
 from ..errors import StrophaError
 from ..eval import EvalCase, EvalReport, filter_by_split, load_golden, run_eval
 from ..logging import get_logger
 from .fitness import ScoreCard, build_scorecard
 from .outcome import TierLabel
+from .trace import TraceRecorder
 
 log = get_logger(__name__)
 
@@ -51,9 +53,204 @@ class _SearchEngineLike(Protocol):
         ...
 
 
+class EvaluationRecorder(Protocol):
+    """Recorder lifecycle required by candidate evaluation tracing."""
+
+    def record(self, event: dict[str, Any]) -> object: ...
+
+    def flush(self) -> None: ...
+
+    def close(self) -> None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class EvaluationContext:
+    """Route one candidate evaluation run to its trace directory."""
+
+    candidate_id: str
+    run_id: str
+    traces_dir: Path
+    recorder: EvaluationRecorder | None = None
+
+    @classmethod
+    def for_candidate(
+        cls,
+        *,
+        candidate_id: str,
+        run_id: str,
+        candidate_dir: Path,
+        recorder: EvaluationRecorder | None = None,
+    ) -> EvaluationContext:
+        """Build a context for the ArtifactStore ``candidates/<id>/`` layout."""
+        return cls(
+            candidate_id=candidate_id,
+            run_id=run_id,
+            traces_dir=candidate_dir / "traces",
+            recorder=recorder,
+        )
+
+    def open_recorder(self) -> EvaluationRecorder:
+        """Return the injected recorder or create the standard JSONL recorder."""
+        if self.recorder is not None:
+            return self.recorder
+        return TraceRecorder(base_dir=self.traces_dir, session_id=self.run_id)
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateEvaluationResult:
+    """One retrieval pass represented as both fitness and raw eval evidence."""
+
+    scorecard: ScoreCard
+    report: EvalReport
+
+
+def _serializable_hit(hit: Any) -> dict[str, Any]:
+    """Snapshot a hit's complete public surface as JSON-compatible data."""
+    payload: dict[str, Any]
+    if hasattr(hit, "model_dump"):
+        payload = dict(hit.model_dump(mode="json"))
+    elif isinstance(hit, dict):
+        payload = dict(hit)
+    elif is_dataclass(hit) and not isinstance(hit, type):
+        payload = asdict(hit)
+    else:
+        try:
+            payload = {key: value for key, value in vars(hit).items() if not key.startswith("_")}
+        except TypeError:
+            payload = {}
+
+    for field in ("chunk_id", "rel_path", "path", "symbol", "streams"):
+        if field not in payload:
+            payload[field] = getattr(hit, field, None)
+    path = payload.get("rel_path") or payload.get("path")
+    payload["rel_path"] = path
+    payload["path"] = path
+    return json.loads(json.dumps(payload, ensure_ascii=False, default=str))
+
+
+def _serializable_hits(hits: Iterable[Any]) -> list[dict[str, Any]]:
+    """Serialize every usable hit without letting tracing break evaluation."""
+    results = []
+    for hit in hits:
+        try:
+            results.append(_serializable_hit(hit))
+        except Exception as exc:  # pragma: no cover - defensive observability boundary
+            log.debug("evaluator.trace_result_failed", error=str(exc))
+    return results
+
+
+class _TracingSearchEngine:
+    """Transparent search wrapper that records one event per retrieval call."""
+
+    def __init__(
+        self,
+        engine: _SearchEngineLike,
+        context: EvaluationContext,
+        recorder: EvaluationRecorder,
+    ) -> None:
+        self._engine = engine
+        self._context = context
+        self._recorder = recorder
+
+    def search(
+        self,
+        query: str,
+        *,
+        top_k: int = 10,
+        repo_id: int | None = None,
+    ) -> list[Any]:
+        import time
+
+        start = time.perf_counter()
+        try:
+            if repo_id is None:
+                hits = self._engine.search(query, top_k=top_k)
+            else:
+                hits = self._engine.search(query, top_k=top_k, repo_id=repo_id)
+        except Exception as exc:
+            latency_ms = (time.perf_counter() - start) * 1000.0
+            self._record(
+                query=query,
+                top_k=top_k,
+                repo_id=repo_id,
+                results=[],
+                latency_ms=latency_ms,
+                returned_tokens=0,
+                error={"type": type(exc).__qualname__, "message": str(exc)},
+            )
+            raise
+
+        latency_ms = (time.perf_counter() - start) * 1000.0
+        results = _serializable_hits(hits)
+        self._record(
+            query=query,
+            top_k=top_k,
+            repo_id=repo_id,
+            results=results,
+            latency_ms=latency_ms,
+            returned_tokens=sum(
+                max(1, len(str(getattr(hit, "snippet", ""))) // 4) for hit in hits
+            ),
+        )
+        return hits
+
+    def reset_diagnostics(self) -> None:
+        reset = getattr(self._engine, "reset_diagnostics", None)
+        if callable(reset):
+            reset()
+
+    def diagnostics(self) -> dict[str, Any] | None:
+        diagnostics = getattr(self._engine, "diagnostics", None)
+        if not callable(diagnostics):
+            return None
+        result = diagnostics()
+        return result if isinstance(result, dict) else None
+
+    def _record(
+        self,
+        *,
+        query: str,
+        top_k: int,
+        repo_id: int | None,
+        results: list[dict[str, Any]],
+        latency_ms: float,
+        returned_tokens: int,
+        error: dict[str, str] | None = None,
+    ) -> None:
+        event: dict[str, Any] = {
+            "tool": "search_code",
+            "candidate_id": self._context.candidate_id,
+            "run_id": self._context.run_id,
+            "query": query,
+            "params": {"top_k": top_k, "repo_id": repo_id},
+            "results": results,
+            "latency_ms": latency_ms,
+            "returned_tokens": returned_tokens,
+        }
+        if error is not None:
+            event["error"] = error
+        try:
+            self._recorder.record(event)
+        except Exception as exc:  # pragma: no cover - defensive observability boundary
+            log.debug("evaluator.trace_record_failed", error=str(exc))
+
+
+def _close_recorder(recorder: EvaluationRecorder) -> None:
+    """Best-effort drain and close without changing evaluation outcomes."""
+    try:
+        recorder.flush()
+    except Exception as exc:  # pragma: no cover - defensive observability boundary
+        log.warning("evaluator.trace_flush_failed", error=str(exc))
+    try:
+        recorder.close()
+    except Exception as exc:  # pragma: no cover - defensive observability boundary
+        log.warning("evaluator.trace_close_failed", error=str(exc))
+
+
 def _load_labels_from_outcomes(
     outcomes_dir: Path,
     head_sha: str | None = None,
+    chunk_ids: Collection[str] | None = None,
 ) -> list[TierLabel]:
     """Best-effort hydration of TierLabels from a backfill outcome JSON.
 
@@ -81,6 +278,18 @@ def _load_labels_from_outcomes(
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
+            continue
+        hit_outcomes = payload.get("hit_outcomes")
+        if chunk_ids is not None and isinstance(hit_outcomes, list):
+            wanted = set(chunk_ids)
+            for row in hit_outcomes:
+                label_data = row.get("label") if isinstance(row, dict) else None
+                if not isinstance(label_data, dict) or label_data.get("chunk_id") not in wanted:
+                    continue
+                try:
+                    labels.append(TierLabel.model_validate(label_data))
+                except ValueError:
+                    continue
             continue
         tier_counts = payload.get("tier_counts") or {}
         for tier_name, count in tier_counts.items():
@@ -161,6 +370,7 @@ def query_candidate_config(
     return resolved
 
 
+@overload
 def evaluate_candidate(
     *,
     engine: _SearchEngineLike,
@@ -172,7 +382,42 @@ def evaluate_candidate(
     repo_size_bytes: int | None = None,
     labels: Iterable[TierLabel] | None = None,
     repo_id: int | None = None,
-) -> ScoreCard:
+    evaluation_context: EvaluationContext | None = None,
+    return_result: Literal[False] = False,
+) -> ScoreCard: ...
+
+
+@overload
+def evaluate_candidate(
+    *,
+    engine: _SearchEngineLike,
+    cases: Iterable[EvalCase],
+    top_k: int = 10,
+    split: Literal["search", "holdout", "all"] = "search",
+    outcomes_dir: Path | None = None,
+    head_sha: str | None = None,
+    repo_size_bytes: int | None = None,
+    labels: Iterable[TierLabel] | None = None,
+    repo_id: int | None = None,
+    evaluation_context: EvaluationContext | None = None,
+    return_result: Literal[True],
+) -> CandidateEvaluationResult: ...
+
+
+def evaluate_candidate(
+    *,
+    engine: _SearchEngineLike,
+    cases: Iterable[EvalCase],
+    top_k: int = 10,
+    split: Literal["search", "holdout", "all"] = "search",
+    outcomes_dir: Path | None = None,
+    head_sha: str | None = None,
+    repo_size_bytes: int | None = None,
+    labels: Iterable[TierLabel] | None = None,
+    repo_id: int | None = None,
+    evaluation_context: EvaluationContext | None = None,
+    return_result: bool = False,
+) -> ScoreCard | CandidateEvaluationResult:
     """Run the golden against ``engine`` and build a fitness ScoreCard.
 
     Args:
@@ -193,65 +438,102 @@ def evaluate_candidate(
         labels: explicit TierLabel iterable. If passed, takes precedence
             over ``outcomes_dir`` — the proposer can hand-craft a label
             set to score against.
+        evaluation_context: optional candidate/run trace routing. Every
+            attempted golden query is written to ``traces_dir`` and the
+            recorder is flushed and closed before this function returns
+            or raises.
 
     Returns the :class:`ScoreCard`.
     """
-    cases_list = list(cases)
-    if split != "all":
-        cases_list = filter_by_split(cases_list, split)
-    if not cases_list:
-        raise EvaluatorError(
-            f"no cases to evaluate after filtering split={split!r}"
+    recorder = evaluation_context.open_recorder() if evaluation_context else None
+    traced_engine: _SearchEngineLike = engine
+    if evaluation_context is not None and recorder is not None:
+        traced_engine = _TracingSearchEngine(engine, evaluation_context, recorder)
+    try:
+        cases_list = list(cases)
+        if split != "all":
+            cases_list = filter_by_split(cases_list, split)
+        if not cases_list:
+            raise EvaluatorError(
+                f"no cases to evaluate after filtering split={split!r}"
+            )
+
+        report = run_eval(
+            cases_list,
+            traced_engine,  # type: ignore[arg-type]
+            top_k=top_k,
+            repo_id=repo_id,
         )
 
-    report = run_eval(
-        cases_list,
-        engine,  # type: ignore[arg-type]
-        top_k=top_k,
-        repo_id=repo_id,
-    )
+        tier_labels: list[TierLabel] = []
+        if labels is not None:
+            tier_labels = list(labels)
+        elif outcomes_dir is not None:
+            returned_chunk_ids = {
+                chunk_id
+                for result in report.results
+                for chunk_id in result.returned_chunk_ids
+            }
+            tier_labels = _load_labels_from_outcomes(
+                outcomes_dir,
+                head_sha=head_sha,
+                chunk_ids=returned_chunk_ids,
+            )
 
-    tier_labels: list[TierLabel] = []
-    if labels is not None:
-        tier_labels = list(labels)
-    elif outcomes_dir is not None:
-        tier_labels = _load_labels_from_outcomes(outcomes_dir, head_sha=head_sha)
-
-    n_hits = sum(1 for r in report.results if r.hit)
-    card = build_scorecard(
-        recall_at_k=report.recall_at_k,
-        ndcg_at_k=report.ndcg_at_k,
-        mrr=report.mrr,
-        returned_tokens=_returned_tokens_from_report(report),
-        baseline_tokens=_baseline_tokens_from_repo(repo_size_bytes),
-        latency_ms=report.latency_p95_ms,
-        labels=tier_labels,
-        n_queries=report.n,
-        n_hits=n_hits,
-    )
-    log.info(
-        "evaluator.done",
-        split=split,
-        n_queries=report.n,
-        quality=round(card.quality, 4),
-        outcome_score=round(card.outcome_score, 4),
-        latency_p95_ms=round(card.latency_ms, 3),
-    )
-    return card
+        n_hits = sum(1 for r in report.results if r.hit)
+        card = build_scorecard(
+            recall_at_k=report.recall_at_k,
+            ndcg_at_k=report.ndcg_at_k,
+            mrr=report.mrr,
+            returned_tokens=_returned_tokens_from_report(report),
+            baseline_tokens=_baseline_tokens_from_repo(repo_size_bytes),
+            latency_ms=report.latency_p95_ms,
+            labels=tier_labels,
+            n_queries=report.n,
+            n_hits=n_hits,
+        )
+        log.info(
+            "evaluator.done",
+            split=split,
+            n_queries=report.n,
+            quality=round(card.quality, 4),
+            outcome_score=round(card.outcome_score, 4),
+            latency_p95_ms=round(card.latency_ms, 3),
+        )
+        if return_result:
+            return CandidateEvaluationResult(scorecard=card, report=report)
+        return card
+    finally:
+        if recorder is not None:
+            _close_recorder(recorder)
 
 
 def evaluate_from_golden(
     *,
     engine: _SearchEngineLike,
     golden_path: Path,
+    evaluation_context: EvaluationContext | None = None,
     **kwargs: Any,
 ) -> ScoreCard:
     """Convenience wrapper: load the golden then call :func:`evaluate_candidate`."""
-    cases = load_golden(golden_path)
-    return evaluate_candidate(engine=engine, cases=cases, **kwargs)
+    try:
+        cases = load_golden(golden_path)
+    except Exception:
+        if evaluation_context is not None:
+            _close_recorder(evaluation_context.open_recorder())
+        raise
+    return evaluate_candidate(
+        engine=engine,
+        cases=cases,
+        evaluation_context=evaluation_context,
+        **kwargs,
+    )
 
 
 __all__ = [
+    "CandidateEvaluationResult",
+    "EvaluationContext",
+    "EvaluationRecorder",
     "EvaluatorError",
     "evaluate_candidate",
     "evaluate_from_golden",

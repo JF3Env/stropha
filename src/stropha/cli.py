@@ -2515,6 +2515,37 @@ def stream_weights_benchmark_cmd(
     json_out: bool = typer.Option(False, "--json"),
 ) -> None:
     """Benchmark a candidate against adaptive/default weights, then validate it."""
+    from .meta.stream_weights import (
+        StreamWeightBenchmarkLockError,
+        stream_weight_benchmark_lock,
+    )
+
+    root = _stream_weights_root(meta_dir)
+    try:
+        with stream_weight_benchmark_lock(root / "stream-weight-locks", repo_key):
+            _stream_weights_benchmark(
+                repo_key=repo_key,
+                golden=golden,
+                top_k=top_k,
+                repo=repo,
+                meta_dir=meta_dir,
+                json_out=json_out,
+            )
+    except StreamWeightBenchmarkLockError as exc:
+        console.print(f"[red]Benchmark unavailable:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+
+def _stream_weights_benchmark(
+    *,
+    repo_key: str,
+    golden: Path,
+    top_k: int,
+    repo: Path | None,
+    meta_dir: Path | None,
+    json_out: bool,
+) -> None:
+    """Benchmark a candidate against adaptive/default weights, then validate it."""
     import copy
     import hashlib
     import json as _json
@@ -2552,6 +2583,7 @@ def stream_weights_benchmark_cmd(
     except ValueError as exc:
         console.print(f"[red]Golden file invalid:[/red] {exc}")
         raise typer.Exit(code=1) from exc
+    golden_sha256 = hashlib.sha256(golden.read_bytes()).hexdigest()
 
     cfg = _load_config()
     target_repo = (repo or cfg.target_repo or Path.cwd()).expanduser().resolve()
@@ -2640,6 +2672,13 @@ def stream_weights_benchmark_cmd(
             )
             raise typer.Exit(code=1)
 
+        initial_identity = {
+            "working_head": working_head,
+            "indexed_head": indexed_repo.head_commit,
+            "indexed_enricher": indexed_enricher,
+            "indexed_embedder": indexed_embedder,
+        }
+
         try:
             with baseline.storage, candidate.storage:  # type: ignore[union-attr]
                 benchmark = benchmark_stream_weight_profile(
@@ -2649,19 +2688,60 @@ def stream_weights_benchmark_cmd(
                     top_k=top_k,
                     repo_id=repo_id,
                 )
+                current_profile = load_stream_weight_profile(
+                    candidate_directory,
+                    repo_key,
+                    require_active=False,
+                )
+                current_repo = next(
+                    (
+                        item
+                        for item in baseline.storage.list_repos()
+                        if item.normalized_key == repo_key
+                    ),
+                    None,
+                )
+                current_head = subprocess.run(
+                    ["git", "-C", str(target_repo), "rev-parse", "HEAD"],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                ).stdout.strip()
+                current_identity = {
+                    "working_head": current_head,
+                    "indexed_head": current_repo.head_commit if current_repo else None,
+                    "indexed_enricher": get_meta("active_enricher_id") if callable(get_meta) else None,
+                    "indexed_embedder": get_meta("active_embedder_id") if callable(get_meta) else None,
+                }
         except StrophaError as exc:
             console.print(f"[red]Benchmark failed:[/red] {exc}")
             raise typer.Exit(code=1) from exc
 
-    validated = validate_stream_weight_profile(
+    if current_profile != profile:
+        console.print(
+            "[red]Benchmark invalidated:[/red] candidate profile changed during evaluation"
+        )
+        raise typer.Exit(code=1)
+    if hashlib.sha256(golden.read_bytes()).hexdigest() != golden_sha256:
+        console.print("[red]Benchmark invalidated:[/red] golden set changed during evaluation")
+        raise typer.Exit(code=1)
+    if current_identity != initial_identity:
+        console.print(
+            "[red]Benchmark invalidated:[/red] repository or index identity changed "
+            "during evaluation"
+        )
+        raise typer.Exit(code=1)
+
+    active_directory = root / "stream-weights"
+    validate_stream_weight_profile(
         candidate_directory,
         repo_key,
         search_ndcg_delta=benchmark.search_ndcg_delta,
         holdout_ndcg_delta=benchmark.holdout_ndcg_delta,
-        active_directory=root / "stream-weights",
+        active_directory=active_directory,
         evidence={
             **benchmark.to_dict(),
-            "golden_sha256": hashlib.sha256(golden.read_bytes()).hexdigest(),
+            "golden_sha256": golden_sha256,
             "top_k": top_k,
             "baseline_retrieval_id": baseline_retrieval_id,
             "candidate_retrieval_id": candidate_retrieval_id,
@@ -2670,16 +2750,17 @@ def stream_weights_benchmark_cmd(
             "indexed_commit": indexed_repo.head_commit,
         },
     )
-    payload = {**benchmark.to_dict(), "repo": repo_key, "active": validated.validated}
+    active = load_stream_weight_profile(active_directory, repo_key) is not None
+    payload = {**benchmark.to_dict(), "repo": repo_key, "active": active}
     if json_out:
         console.print_json(_json.dumps(payload))
     else:
         console.print(
             f"[bold]{repo_key}[/bold]: search {benchmark.search_ndcg_delta:+.4f}, "
             f"holdout {benchmark.holdout_ndcg_delta:+.4f}, "
-            f"{'active' if validated.validated else 'blocked'}"
+            f"{'active' if active else 'blocked'}"
         )
-    if not validated.validated:
+    if not active:
         raise typer.Exit(code=2)
 
 
@@ -2795,6 +2876,243 @@ def _meta_dir_default() -> Path:
     return index_path.parent / "meta"
 
 
+def _meta_hash(value: Any) -> str:
+    import hashlib
+    import json
+
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _meta_head(repo: Path) -> str:
+    import subprocess
+
+    return subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
+def _meta_source_tree_sha256(repo: Path) -> str:
+    import hashlib
+    import subprocess
+
+    digest = hashlib.sha256()
+    digest.update(subprocess.run(
+        ["git", "-C", str(repo), "diff", "--binary", "HEAD"],
+        check=True,
+        capture_output=True,
+    ).stdout)
+    untracked = subprocess.run(
+        ["git", "-C", str(repo), "ls-files", "--others", "--exclude-standard", "-z"],
+        check=True,
+        capture_output=True,
+    ).stdout.split(b"\0")
+    for raw_path in sorted(path for path in untracked if path):
+        path = repo / raw_path.decode("utf-8", errors="surrogateescape")
+        digest.update(raw_path)
+        digest.update(b"\0")
+        if path.is_file():
+            digest.update(path.read_bytes())
+    return digest.hexdigest()
+
+
+def _meta_golden_path(golden: Path) -> Path:
+    if golden.is_file():
+        return golden.resolve()
+    source_golden = Path(__file__).resolve().parents[2] / golden
+    if source_golden.is_file():
+        return source_golden.resolve()
+    raise FileNotFoundError(golden)
+
+
+def _meta_runtime_identity(
+    *,
+    target_repo: Path,
+    snapshot_sha: str,
+    base_config: dict[str, Any],
+    golden_sha256: str,
+    manifest_sha256: str,
+    registry_sha256: str,
+    graph_identity: str = "disabled",
+    cache_format: str | None = None,
+) -> dict[str, Any]:
+    if cache_format is None:
+        from .meta.candidate_index import CANDIDATE_INDEX_CACHE_FORMAT
+
+        cache_format = CANDIDATE_INDEX_CACHE_FORMAT
+    return {
+        "source_head": _meta_head(target_repo),
+        "source_tree_sha256": _meta_source_tree_sha256(target_repo),
+        "snapshot_sha": snapshot_sha,
+        "pipeline_config_sha256": _meta_hash(base_config),
+        "golden_sha256": golden_sha256,
+        "manifest_sha256": manifest_sha256,
+        "registry_sha256": registry_sha256,
+        "graph_identity": graph_identity,
+        "cache_format": cache_format,
+    }
+
+
+def _meta_candidate_hash(record: Any) -> str:
+    import hashlib
+
+    artifacts: dict[str, str] = {}
+    if record.base_dir is not None:
+        adapters = record.base_dir / "adapters"
+        if adapters.is_dir():
+            for path in sorted(adapters.rglob("*.py")):
+                artifacts[path.relative_to(record.base_dir).as_posix()] = hashlib.sha256(
+                    path.read_bytes()
+                ).hexdigest()
+    return _meta_hash({"config": record.config, "artifacts": artifacts})
+
+
+def _meta_tree_bytes(path: Path) -> int:
+    return sum(item.stat().st_size for item in path.rglob("*") if item.is_file())
+
+
+def _meta_run_artifact_bytes(store: Any, run_id: str) -> int:
+    total = _meta_tree_bytes(store.runs_dir / run_id)
+    for record in store.list_candidates():
+        if record.meta.get("run_id") == run_id and record.base_dir is not None:
+            total += _meta_tree_bytes(record.base_dir)
+    return total
+
+
+def _meta_cost_sample_from_breakdown(
+    scope: Literal["search", "holdout_validation", "verification", "other"],
+    value: dict[str, Any],
+) -> Any:
+    from .meta import CostMeasurement, RunCostSample
+
+    def measurement(name: str) -> CostMeasurement:
+        raw = value.get(name) or {}
+        if not isinstance(raw, dict):
+            return CostMeasurement()
+        exact_samples = int(raw.get("exact_samples") or 0)
+        estimated_samples = int(raw.get("estimated_samples") or 0)
+        return CostMeasurement(
+            exact=float(raw.get("exact") or 0.0) if exact_samples else None,
+            estimated=(
+                float(raw.get("estimated") or 0.0)
+                if not exact_samples and estimated_samples
+                else None
+            ),
+        )
+
+    return RunCostSample(
+        scope=scope,
+        proposer_calls=int(value.get("proposer_calls") or 0),
+        proposer_fallbacks=int(value.get("proposer_fallbacks") or 0),
+        proposer_tokens=measurement("proposer_tokens"),
+        indexing_files=int(value.get("indexing_files") or 0),
+        indexing_chunks=int(value.get("indexing_chunks") or 0),
+        cache_hits=int(value.get("cache_hits") or 0),
+        cache_misses=int(value.get("cache_misses") or 0),
+        retrieval_queries=int(value.get("retrieval_queries") or 0),
+        retrieval_tokens=measurement("retrieval_tokens"),
+        retrieval_duration_ms=measurement("retrieval_duration_ms"),
+        candidate_states={
+            str(state): int(count)
+            for state, count in (value.get("candidate_states") or {}).items()
+        },
+        verification_duration_ms=measurement("verification_duration_ms"),
+    )
+
+
+def _meta_preflight() -> tuple[Any, dict[str, list[str]], str, str]:
+    from .meta import DEFAULT_MANIFEST, discover_gaps, load_search_space
+
+    space = load_search_space(strict=True)
+    registry = all_adapters()
+    discover_gaps(
+        space,
+        available_adapters=registry,
+        supported_dimensions=set(space.by_name),
+        strict=True,
+    )
+    import hashlib
+
+    manifest_sha256 = hashlib.sha256(Path(DEFAULT_MANIFEST).read_bytes()).hexdigest()
+    return space, registry, manifest_sha256, _meta_hash(registry)
+
+
+def _meta_graph_identity() -> tuple[bool, str]:
+    from .pipeline.graphify_runner import find_graphify
+
+    binary = find_graphify()
+    if binary is None:
+        return False, "disabled"
+    path = Path(binary).resolve()
+    stat = path.stat()
+    return True, _meta_hash(
+        {"path": str(path), "size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+    )
+
+
+def _meta_active_candidate(space: Any, base_config: dict[str, Any], runtime_cfg: Config) -> dict[str, Any]:
+    """Project the active runtime onto the flat, isolated evaluation space."""
+
+    def nested(source: Any, path: list[str]) -> Any:
+        current = source
+        for part in path:
+            if isinstance(current, dict):
+                current = current.get(part)
+            else:
+                current = getattr(current, part, None)
+            if current is None:
+                return None
+        return current
+
+    candidate: dict[str, Any] = {}
+    runtime_feature_names = {
+        "hyde": "hyde_enabled",
+        "hyde_code_tuned": "hyde_code_tuned",
+        "query_rewrite": "query_rewrite_enabled",
+        "multi_query": "multi_query_enabled",
+        "multi_query_count": "multi_query_count",
+        "recursive": "recursive_enabled",
+        "recursive_adjacency": "recursive_adjacency",
+        "adaptive_weighting": "adaptive_weighting",
+    }
+    for dimension in space.dimensions:
+        runtime_feature = runtime_feature_names.get(dimension.name)
+        value = (
+            getattr(runtime_cfg.retrieval_features, runtime_feature)
+            if runtime_feature is not None
+            else None
+        )
+        if dimension.binding:
+            section, _, raw_path = dimension.binding.partition(".")
+            path = raw_path.split(".")
+            if value is None and section == "pipeline":
+                value = nested(base_config, path)
+            elif value is None and section == "retrieval_features":
+                value = nested(runtime_cfg.retrieval_features, path)
+            elif value is None and section == "graph":
+                value = nested(runtime_cfg.graph, path)
+        domain = (
+            set(dimension.choices)
+            if dimension.type == "choice"
+            else {False, True}
+            if dimension.type == "bool"
+            else set(
+                range(
+                    dimension.range[0],
+                    dimension.range[1] + 1,
+                    dimension.step or 1,
+                )
+            )
+            if dimension.range is not None
+            else set()
+        )
+        candidate[dimension.name] = value if value in domain else dimension.default
+    return space.apply_constraints(candidate)
+
+
 @meta_app.command("run")
 def meta_run_cmd(
     iterations: int = typer.Option(
@@ -2811,7 +3129,10 @@ def meta_run_cmd(
     proposer: str = typer.Option(
         "bandit",
         "--proposer",
-        help="Proposer strategy: bandit | local-agentic | cloud-agentic.",
+        help=(
+            "Proposer strategy: bandit | local-agentic | cloud-agentic | "
+            "local-code | cloud-code."
+        ),
     ),
     seed: int | None = typer.Option(
         None,
@@ -2830,138 +3151,396 @@ def meta_run_cmd(
         help="Golden JSONL used for live candidate evaluation.",
     ),
     top_k: int = typer.Option(10, "--top-k", min=1, max=100),
+    candidates: int = typer.Option(
+        3,
+        "--candidates",
+        help="Candidates proposed per iteration (default 3).",
+    ),
+    parallel: int = typer.Option(
+        1,
+        "--parallel",
+        help="Maximum concurrent candidate evaluations (default 1).",
+    ),
+    resume: str | None = typer.Option(
+        None,
+        "--resume",
+        help="Resume a bandit run from runs/RUN_ID/checkpoint.json.",
+    ),
+    evaluation_timeout_s: float | None = typer.Option(
+        None,
+        "--evaluation-timeout",
+        help="Soft timeout in seconds for each candidate evaluation batch.",
+    ),
 ) -> None:
-    """Run the Meta-Harness outer loop (Algorithm 1, WIN-187).
+    """Search the full registered Meta-Harness space on a pinned isolated index."""
+    import hashlib
+    import uuid
+    from datetime import UTC, datetime
+    from threading import Lock
 
-    Loads the search space from the bundled manifest, instantiates the
-    chosen proposer, and iterates ``--iterations`` times (or until
-    ``--wall-clock`` expires). Persists every candidate via the
-    ArtifactStore (WIN-161). Reports the final frontier.
-
-    Only query-time dimensions are varied. Indexing stages remain pinned to
-    the active index identity so candidates are compared against compatible
-    vectors and enrichment.
-    """
     from .meta import (
         ArtifactStore,
-        EvaluatorError,
-        SearchSpace,
+        CandidateEvaluationResult,
+        CostMeasurement,
+        EvaluationContext,
+        EvaluationMetrics,
+        IndexCache,
+        LoopCheckpoint,
+        PytestGate,
+        RunCostSample,
+        SandboxedRerankerProxy,
+        aggregate_run_cost,
         evaluate_candidate,
-        load_search_space,
-        query_candidate_config,
         run_loop,
+        validate_code_candidate_directory,
+    )
+    from .meta.candidate_index import (
+        CANDIDATE_INDEX_CACHE_FORMAT,
+        CandidateIndexProvider,
     )
     from .meta.proposer import (
         make_bandit_proposer,
         make_cloud_agentic_proposer,
+        make_cloud_code_proposer,
         make_local_agentic_proposer,
+        make_local_code_proposer,
     )
 
     if meta_dir is None:
         meta_dir = _meta_dir_default()
     meta_dir = meta_dir.expanduser().resolve()
-
-    declared_space = load_search_space()
-    if proposer not in {"bandit", "local-agentic", "cloud-agentic"}:
+    proposer_modes = {
+        "bandit",
+        "local-agentic",
+        "cloud-agentic",
+        "local-code",
+        "cloud-code",
+    }
+    if proposer not in proposer_modes:
         console.print(f"[red]Unknown proposer:[/red] {proposer}")
         raise typer.Exit(code=1)
-
-    if not golden.is_file():
-        source_golden = Path(__file__).resolve().parents[2] / golden
-        if source_golden.is_file():
-            golden = source_golden
-        else:
-            console.print(f"[red]Golden file not found:[/red] {golden}")
-            raise typer.Exit(code=1)
+    if iterations < 1 or candidates < 1 or parallel < 1:
+        console.print("[red]--iterations, --candidates, and --parallel must be at least 1.[/red]")
+        raise typer.Exit(code=1)
+    if wall_clock_s is not None and wall_clock_s <= 0:
+        console.print("[red]--wall-clock must be greater than 0.[/red]")
+        raise typer.Exit(code=1)
+    if evaluation_timeout_s is not None and evaluation_timeout_s <= 0:
+        console.print("[red]--evaluation-timeout must be greater than 0.[/red]")
+        raise typer.Exit(code=1)
+    if resume is not None and proposer != "bandit":
+        console.print(
+            "[red]Exact agentic resume is unavailable; --resume currently supports "
+            "only bandit checkpoints.[/red]"
+        )
+        raise typer.Exit(code=1)
+    try:
+        golden = _meta_golden_path(golden)
+        space, registry, manifest_sha256, registry_sha256 = _meta_preflight()
+    except Exception as exc:
+        console.print(f"[red]Meta preflight failed:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
     from .eval import load_golden
 
     cases = load_golden(golden)
-    allowed_dimensions = {
-        "reranker",
-        "hyde",
-        "query_rewrite",
-        "multi_query",
-        "multi_query_count",
-        "recursive",
-        "recursive_adjacency",
-        "adaptive_weighting",
-        "candidate_k",
-        "rrf_k",
-    }
-    space = SearchSpace(
-        dimensions=[d for d in declared_space.dimensions if d.name in allowed_dimensions],
-        constraints=declared_space.constraints,
-    )
+    golden_sha256 = hashlib.sha256(golden.read_bytes()).hexdigest()
+    runtime_cfg = _load_config()
+    target_repo = (runtime_cfg.target_repo or Path.cwd()).expanduser().resolve()
+    base_config = load_pipeline_config()
+    graphify, graph_identity = _meta_graph_identity()
+    store = ArtifactStore(meta_dir)
+    run_id = resume or uuid.uuid4().hex[:12]
+    checkpoint: LoopCheckpoint | None = None
+    if resume is not None:
+        try:
+            provenance = store.read_run_artifact(run_id, "provenance.json")
+            checkpoint = LoopCheckpoint.from_dict(
+                store.read_run_artifact(run_id, "checkpoint.json")
+            )
+        except Exception as exc:
+            console.print(f"[red]Cannot resume run {run_id}:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+        if provenance.get("proposer") != proposer:
+            console.print("[red]Resume proposer does not match frozen provenance.[/red]")
+            raise typer.Exit(code=1)
+        if provenance.get("golden_sha256") != golden_sha256:
+            console.print("[red]Resume golden set does not match frozen provenance.[/red]")
+            raise typer.Exit(code=1)
+        frozen_options = {
+            "max_iterations": iterations,
+            "wall_clock_s": wall_clock_s,
+            "candidates_per_iteration": candidates,
+            "max_parallel": parallel,
+            "evaluation_timeout_s": evaluation_timeout_s,
+            "top_k": top_k,
+        }
+        mismatched = sorted(
+            name for name, value in frozen_options.items() if provenance.get(name) != value
+        )
+        if mismatched:
+            console.print(
+                "[red]Resume options differ from frozen provenance:[/red] "
+                + ", ".join(mismatched)
+            )
+            raise typer.Exit(code=1)
+        if seed is not None and provenance.get("seed") != seed:
+            console.print("[red]Resume seed differs from frozen provenance.[/red]")
+            raise typer.Exit(code=1)
+        seed = provenance.get("seed")
 
-    # All concrete proposers implement ``ProposerFn`` but do not share a
-    # nominal base class, so keep this boundary structurally typed.
     prop: Any
     if proposer == "bandit":
         prop = make_bandit_proposer(space, seed=seed)
     elif proposer == "local-agentic":
         prop = make_local_agentic_proposer(space, fallback_seed=seed)
-    else:
+    elif proposer == "cloud-agentic":
         prop = make_cloud_agentic_proposer(space, fallback_seed=seed)
+    elif proposer == "local-code":
+        prop = make_local_code_proposer(space, fallback_seed=seed)
+    else:
+        prop = make_cloud_code_proposer(space, fallback_seed=seed)
+    if resume is not None and checkpoint is not None:
+        if not checkpoint.proposer_state:
+            console.print("[red]Checkpoint has no proposer RNG state; exact resume is unavailable.[/red]")
+            raise typer.Exit(code=1)
+        prop.load_state(checkpoint.proposer_state)
 
-    from .ingest.git_meta import detect as _detect_repo
+    provider = CandidateIndexProvider(
+        cache=IndexCache(meta_dir / "index-cache"),
+        workspace_root=meta_dir / "runs" / run_id / "workspaces",
+        base_pipeline_config=base_config,
+        search_space=space,
+        graphify=graphify,
+        graph_identity=graph_identity if graphify else None,
+    )
+    try:
+        if resume is None:
+            snapshot = provider.pin_snapshot(
+                source_repo=target_repo,
+                snapshot_root=meta_dir / "snapshots" / "worktrees",
+            )
+        else:
+            from .meta import Snapshot
 
-    runtime_cfg = _load_config()
-    target_repo = (runtime_cfg.target_repo or Path.cwd()).expanduser().resolve()
-    base_config = load_pipeline_config()
-    baseline = build_stages(base_config)
-    repo_key = _detect_repo(target_repo).normalized_key
-    repo_id = baseline.storage.lookup_repo_id(repo_key)
-    if repo_id is None:
-        console.print(f"[red]Repository is not indexed:[/red] {repo_key}")
-        raise typer.Exit(code=1)
-    indexed_enricher = baseline.storage.get_meta("active_enricher_id")
-    indexed_embedder = baseline.storage.get_meta("active_embedder_id")
-    if (
-        indexed_enricher != baseline.effective_enricher_id()
-        or indexed_embedder != baseline.embedder.adapter_id
-    ):
-        console.print(
-            "[red]Meta evaluation requires a clean index identity; "
-            "active embedder/enricher differs from indexed metadata.[/red]"
-        )
-        raise typer.Exit(code=1)
-    baseline.storage.close()
+            snapshot_data = provenance.get("snapshot") or {}
+            snapshot = Snapshot(
+                sha=str(snapshot_data["sha"]),
+                path=Path(snapshot_data["path"]),
+                source_repo=target_repo,
+            )
+    except Exception as exc:
+        console.print(f"[red]Cannot pin Meta-Harness snapshot:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
 
     repo_size_bytes = sum(
         path.stat().st_size
-        for path in target_repo.rglob("*")
-        if path.is_file() and ".git" not in path.relative_to(target_repo).parts
+        for path in snapshot.path.rglob("*")
+        if path.is_file() and ".git" not in path.relative_to(snapshot.path).parts
     )
+    started_at = (
+        str(provenance["started_at"])
+        if resume is not None
+        else datetime.now(UTC).isoformat()
+    )
+    identity = _meta_runtime_identity(
+        target_repo=target_repo,
+        snapshot_sha=snapshot.sha,
+        base_config=base_config,
+        golden_sha256=golden_sha256,
+        manifest_sha256=manifest_sha256,
+        registry_sha256=registry_sha256,
+        graph_identity=graph_identity,
+        cache_format=CANDIDATE_INDEX_CACHE_FORMAT,
+    )
+    if resume is not None and provenance.get("identity") != identity:
+        console.print("[red]Resume source/runtime identity differs from frozen provenance.[/red]")
+        raise typer.Exit(code=1)
+    provenance = {
+        "run_id": run_id,
+        "started_at": started_at,
+        "proposer": proposer,
+        "seed": seed,
+        "max_iterations": iterations,
+        "wall_clock_s": wall_clock_s,
+        "candidates_per_iteration": candidates,
+        "max_parallel": parallel,
+        "evaluation_timeout_s": evaluation_timeout_s,
+        "top_k": top_k,
+        "golden": str(golden),
+        "golden_sha256": golden_sha256,
+        "manifest_sha256": manifest_sha256,
+        "registry_sha256": registry_sha256,
+        "registry": registry,
+        "snapshot": {"sha": snapshot.sha, "path": str(snapshot.path)},
+        "repository": {"path": str(target_repo)},
+        "identity": identity,
+        "resume": {
+            "resumed": resume is not None,
+            "rng_state_restored": resume is not None,
+        },
+    }
+    store.write_run_artifact(run_id, "provenance.json", provenance)
 
-    def live_eval(candidate: dict[str, Any]):
-        resolved = query_candidate_config(base_config, candidate)
-        built = build_stages(resolved)
-        health = built.retrieval.health()
-        if health.status == "error":
-            built.storage.close()
-            raise EvaluatorError(health.message)
+    baseline_candidate = _meta_active_candidate(space, base_config, runtime_cfg)
+    evidence: dict[str, EvaluationMetrics] = {}
+    cost_samples: list[RunCostSample] = []
+    if resume is not None:
         try:
-            with built.storage:
-                return evaluate_candidate(
-                    engine=built.retrieval,
-                    cases=cases,
-                    top_k=top_k,
-                    split="search",
-                    outcomes_dir=meta_dir / "outcomes",
-                    repo_size_bytes=repo_size_bytes,
-                    repo_id=repo_id,
-                )
-        finally:
-            built.storage.close()
+            previous_cost = store.read_run_artifact(run_id, "cost.json")
+            for scope, breakdown in (previous_cost.get("by_scope") or {}).items():
+                if scope in {"search", "holdout_validation", "verification", "other"}:
+                    prior = _meta_cost_sample_from_breakdown(cast(Any, scope), breakdown)
+                    prior.proposer_calls = 0
+                    prior.proposer_fallbacks = 0
+                    prior.proposer_tokens = CostMeasurement()
+                    prior.candidate_states = {}
+                    cost_samples.append(prior)
+        except Exception:
+            pass
+    evidence_lock = Lock()
 
-    store = ArtifactStore(meta_dir)
+    def registered_eval(candidate: dict[str, Any], record: Any) -> Any:
+        provider_config = dict(candidate)
+        code_spec = None
+        if record.base_dir is not None and (record.base_dir / "adapters").is_dir():
+            code_spec = validate_code_candidate_directory(record.base_dir)
+            provider_config["reranker"] = "noop"
+        with provider.open_candidate(
+            snapshot=snapshot,
+            candidate_config=provider_config,
+            run_id=run_id,
+            candidate_id=record.id,
+        ) as opened:
+            if code_spec is not None:
+                set_reranker = getattr(opened.built.retrieval, "set_reranker", None)
+                if not callable(set_reranker):
+                    raise RuntimeError("candidate retrieval does not support reranker injection")
+                set_reranker(
+                    SandboxedRerankerProxy(
+                        record.base_dir,
+                        adapter_name=code_spec.name,
+                    )
+                )
+            health = opened.built.retrieval.health()
+            if health.status == "error":
+                raise RuntimeError(health.message)
+            result = evaluate_candidate(
+                engine=opened.built.retrieval,
+                cases=cases,
+                top_k=top_k,
+                split="search",
+                outcomes_dir=meta_dir / "outcomes",
+                repo_size_bytes=repo_size_bytes,
+                repo_id=opened.repo_id,
+                evaluation_context=EvaluationContext.for_candidate(
+                    candidate_id=record.id,
+                    run_id=run_id,
+                    candidate_dir=record.base_dir,
+                ),
+                return_result=True,
+            )
+            assert isinstance(result, CandidateEvaluationResult)
+            metrics = EvaluationMetrics.from_eval_report(result.report)
+            metrics_path = record.base_dir / "search-metrics.json"
+            temporary = metrics_path.with_name(f".{metrics_path.name}.tmp")
+            temporary.write_text(
+                metrics.model_dump_json(indent=2),
+                encoding="utf-8",
+            )
+            temporary.replace(metrics_path)
+            with evidence_lock:
+                evidence[record.id] = metrics
+                cost_samples.append(RunCostSample(
+                    scope="search",
+                    cache_hits=int(opened.cache_hit),
+                    cache_misses=int(not opened.cache_hit),
+                    retrieval_queries=result.report.n,
+                    retrieval_tokens=CostMeasurement(exact=float(metrics.returned_tokens)),
+                    retrieval_duration_ms=CostMeasurement(
+                        exact=sum(item.latency_ms for item in result.report.results)
+                    ),
+                ))
+            return result.scorecard
+
+    def persist_checkpoint(value: LoopCheckpoint) -> None:
+        if proposer == "bandit":
+            value.proposer_state = prop.dump_state()
+        store.write_run_artifact(run_id, "checkpoint.json", value)
+
     result = run_loop(
         proposer=prop,
-        evaluator=live_eval,
+        registered_evaluator=registered_eval,
         store=store,
-        max_iterations=iterations,
+        seeds=None if resume is not None else [baseline_candidate],
+        max_rounds=iterations,
         wall_clock_s=wall_clock_s,
+        candidates_per_iteration=candidates,
+        max_parallel=parallel,
+        evaluation_timeout_s=evaluation_timeout_s,
+        on_checkpoint=persist_checkpoint,
+        checkpoint=checkpoint,
+        gate=PytestGate(),
+        run_id=run_id,
     )
+    baseline_id = result.archive[0][0].id if result.archive else None
+    shortlisted = list(result.frontier)
+    if baseline_id is not None and all(record.id != baseline_id for record, _card in shortlisted):
+        shortlisted.insert(0, result.archive[0])
+    frontier_rows = []
+    for record, card in shortlisted:
+        metrics = evidence.get(record.id)
+        if metrics is None and record.base_dir is not None:
+            metrics_path = record.base_dir / "search-metrics.json"
+            if metrics_path.is_file():
+                metrics = EvaluationMetrics.model_validate_json(metrics_path.read_text())
+        frontier_rows.append({
+            "candidate_id": record.id,
+            "baseline": record.id == baseline_id,
+            "config_sha256": _meta_candidate_hash(record),
+            "scores": card.to_dict(),
+            "search_metrics": metrics.model_dump(mode="json") if metrics else None,
+        })
+    shortlist = {
+        "schema_version": 2,
+        "run_id": run_id,
+        "baseline_id": baseline_id,
+        "snapshot_sha": snapshot.sha,
+        "identity": identity,
+        "entries": frontier_rows,
+    }
+    store.write_run_artifact(run_id, "shortlist.json", shortlist)
+    store.write_run_artifact(run_id, "report.json", {
+        "schema_version": 2,
+        "run_id": run_id,
+        "started_at": started_at,
+        "finished_at": datetime.now(UTC).isoformat(),
+        "evaluation_scope": "search_only",
+        "loop": result.to_dict(),
+        "baseline_id": baseline_id,
+        "shortlist_size": len(frontier_rows),
+        "identity": identity,
+    })
+    candidate_states: dict[str, int] = {}
+    if result.checkpoint is not None:
+        for candidate_state in result.checkpoint.candidates:
+            candidate_states[candidate_state.status] = (
+                candidate_states.get(candidate_state.status, 0) + 1
+            )
+    proposer_calls = sum(
+        count
+        for state, count in candidate_states.items()
+        if state in {"deduplicated", "failed", "registered", "scored", "timed_out"}
+    )
+    cost_samples.append(RunCostSample(
+        scope="search",
+        proposer_calls=max(0, proposer_calls - int(baseline_id is not None)),
+        proposer_tokens=(
+            CostMeasurement(exact=0.0) if proposer == "bandit" else CostMeasurement()
+        ),
+        candidate_states=candidate_states,
+        artifact_bytes=_meta_run_artifact_bytes(store, run_id),
+    ))
+    store.write_run_artifact(run_id, "cost.json", aggregate_run_cost(run_id, cost_samples))
     table = Table(title=f"stropha meta run — {result.stopped_reason}")
     table.add_column("Metric", style="cyan")
     table.add_column("Value")
@@ -2970,7 +3549,313 @@ def meta_run_cmd(
     table.add_row("archive_size", str(len(result.archive)))
     table.add_row("frontier_size", str(len(result.frontier)))
     table.add_row("errors", str(len(result.errors)))
+    table.add_row("evaluation_scope", "search_only")
+    table.add_row("run_id", run_id)
     console.print(table)
+
+
+@meta_app.command("validate")
+def meta_validate_cmd(
+    run_id: str = typer.Argument(..., help="Frozen Meta-Harness run id."),
+    meta_dir: Path = typer.Option(None, "--meta-dir"),
+    top_k: int | None = typer.Option(
+        None,
+        "--top-k",
+        help="Override frozen top-k (normally omitted for comparable validation).",
+    ),
+) -> None:
+    """Evaluate a frozen run baseline and shortlist on holdout."""
+    import hashlib
+    from datetime import UTC, datetime
+
+    from .eval import load_golden
+    from .meta import (
+        ArtifactStore,
+        BaselineRecord,
+        BaselineValidationArtifact,
+        BaselineValidationProvenance,
+        CandidateEvaluationResult,
+        CostMeasurement,
+        EvaluationContext,
+        EvaluationEvidence,
+        EvaluationMetrics,
+        IndexCache,
+        PytestGate,
+        RunCostSample,
+        RunValidationArtifact,
+        SandboxedRerankerProxy,
+        Snapshot,
+        aggregate_run_cost,
+        build_validation_artifact,
+        evaluate_candidate,
+        validate_code_candidate_directory,
+    )
+    from .meta.candidate_index import (
+        CANDIDATE_INDEX_CACHE_FORMAT,
+        CandidateIndexProvider,
+    )
+
+    if meta_dir is None:
+        meta_dir = _meta_dir_default()
+    meta_dir = meta_dir.expanduser().resolve()
+    store = ArtifactStore(meta_dir)
+    try:
+        provenance = store.read_run_artifact(run_id, "provenance.json")
+        shortlist = store.read_run_artifact(run_id, "shortlist.json")
+    except Exception as exc:
+        console.print(f"[red]Cannot load frozen run {run_id}:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+    if shortlist.get("run_id") != run_id or provenance.get("run_id") != run_id:
+        console.print("[red]Frozen run artifacts disagree on run id.[/red]")
+        raise typer.Exit(code=1)
+    entries = shortlist.get("entries")
+    if not isinstance(entries, list) or not entries:
+        console.print("[red]Frozen shortlist is empty or malformed.[/red]")
+        raise typer.Exit(code=1)
+    baseline_id = shortlist.get("baseline_id")
+    if not isinstance(baseline_id, str) or not baseline_id:
+        console.print("[red]Frozen shortlist has no baseline entry.[/red]")
+        raise typer.Exit(code=1)
+
+    try:
+        golden = Path(str(provenance["golden"])).resolve()
+        if hashlib.sha256(golden.read_bytes()).hexdigest() != provenance["golden_sha256"]:
+            raise ValueError("golden set hash differs from frozen provenance")
+        cases = load_golden(golden)
+        target_repo = Path(str(provenance["repository"]["path"])).resolve()
+        snapshot_data = provenance["snapshot"]
+        snapshot = Snapshot(
+            sha=str(snapshot_data["sha"]),
+            path=Path(str(snapshot_data["path"])).resolve(),
+            source_repo=target_repo,
+        )
+        space, _registry, manifest_sha256, registry_sha256 = _meta_preflight()
+        if manifest_sha256 != provenance["manifest_sha256"]:
+            raise ValueError("search-space manifest differs from frozen provenance")
+        if registry_sha256 != provenance["registry_sha256"]:
+            raise ValueError("adapter registry differs from frozen provenance")
+    except Exception as exc:
+        console.print(f"[red]Frozen provenance cannot be reopened:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    base_config = load_pipeline_config()
+    graphify, graph_identity = _meta_graph_identity()
+    current_identity = _meta_runtime_identity(
+        target_repo=target_repo,
+        snapshot_sha=snapshot.sha,
+        base_config=base_config,
+        golden_sha256=str(provenance["golden_sha256"]),
+        manifest_sha256=manifest_sha256,
+        registry_sha256=registry_sha256,
+        graph_identity=graph_identity,
+        cache_format=CANDIDATE_INDEX_CACHE_FORMAT,
+    )
+    if current_identity != provenance.get("identity"):
+        console.print("[red]Current source/runtime identity differs from the frozen run.[/red]")
+        raise typer.Exit(code=1)
+    provider = CandidateIndexProvider(
+        cache=IndexCache(meta_dir / "index-cache"),
+        workspace_root=meta_dir / "runs" / run_id / "workspaces",
+        base_pipeline_config=base_config,
+        search_space=space,
+        graphify=graphify,
+        graph_identity=graph_identity if graphify else None,
+    )
+    effective_top_k = int(top_k or provenance.get("top_k") or 10)
+    if effective_top_k != int(provenance.get("top_k") or 10):
+        console.print("[red]Validation top-k must match frozen run provenance.[/red]")
+        raise typer.Exit(code=1)
+    repo_size_bytes = sum(
+        path.stat().st_size
+        for path in snapshot.path.rglob("*")
+        if path.is_file() and ".git" not in path.relative_to(snapshot.path).parts
+    )
+    records = {}
+    for entry in entries:
+        if not isinstance(entry, dict) or not isinstance(entry.get("candidate_id"), str):
+            console.print("[red]Frozen shortlist entry is malformed.[/red]")
+            raise typer.Exit(code=1)
+        candidate_id = entry["candidate_id"]
+        try:
+            record = store.read_candidate(candidate_id)
+        except Exception as exc:
+            console.print(f"[red]Cannot read shortlisted candidate {candidate_id}:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+        if _meta_candidate_hash(record) != entry.get("config_sha256"):
+            console.print(f"[red]Candidate {candidate_id} differs from the frozen shortlist.[/red]")
+            raise typer.Exit(code=1)
+        records[candidate_id] = record
+    if baseline_id not in records:
+        console.print("[red]Frozen baseline is not present in the shortlist.[/red]")
+        raise typer.Exit(code=1)
+
+    holdout: dict[str, EvaluationMetrics] = {}
+    checks: dict[str, dict[str, bool]] = {}
+    cost_samples: list[RunCostSample] = []
+    gate = PytestGate()
+    for candidate_id, record in records.items():
+        assert record.base_dir is not None
+        gate_result = gate(record.base_dir)
+        store.write_gate_result(candidate_id, gate_result)
+        candidate_checks = {
+            "pipeline_health": False,
+            "candidate_gate": gate_result.passed,
+        }
+        checks[candidate_id] = candidate_checks
+        if not gate_result.passed:
+            continue
+        provider_config = dict(record.config)
+        code_spec = None
+        if (record.base_dir / "adapters").is_dir():
+            code_spec = validate_code_candidate_directory(record.base_dir)
+            provider_config["reranker"] = "noop"
+        with provider.open_candidate(
+            snapshot=snapshot,
+            candidate_config=provider_config,
+            run_id=run_id,
+            candidate_id=f"validation-{candidate_id}",
+        ) as opened:
+            if code_spec is not None:
+                set_reranker = getattr(opened.built.retrieval, "set_reranker", None)
+                if not callable(set_reranker):
+                    raise RuntimeError("candidate retrieval does not support reranker injection")
+                set_reranker(
+                    SandboxedRerankerProxy(record.base_dir, adapter_name=code_spec.name)
+                )
+            health = opened.built.retrieval.health()
+            candidate_checks["pipeline_health"] = health.status != "error"
+            if health.status == "error":
+                continue
+            result = evaluate_candidate(
+                engine=opened.built.retrieval,
+                cases=cases,
+                top_k=effective_top_k,
+                split="holdout",
+                repo_size_bytes=repo_size_bytes,
+                repo_id=opened.repo_id,
+                evaluation_context=EvaluationContext.for_candidate(
+                    candidate_id=candidate_id,
+                    run_id=f"{run_id}-validation",
+                    candidate_dir=record.base_dir,
+                ),
+                return_result=True,
+            )
+            assert isinstance(result, CandidateEvaluationResult)
+            metrics = EvaluationMetrics.from_eval_report(result.report)
+            holdout[candidate_id] = metrics
+            cost_samples.append(RunCostSample(
+                scope="holdout_validation",
+                cache_hits=int(opened.cache_hit),
+                cache_misses=int(not opened.cache_hit),
+                retrieval_queries=result.report.n,
+                retrieval_tokens=CostMeasurement(exact=float(metrics.returned_tokens)),
+                retrieval_duration_ms=CostMeasurement(
+                    exact=sum(item.latency_ms for item in result.report.results)
+                ),
+                verification_duration_ms=CostMeasurement(exact=gate_result.duration_s * 1000.0),
+            ))
+
+    baseline_search = next(
+        EvaluationMetrics.model_validate(entry["search_metrics"])
+        for entry in entries
+        if entry["candidate_id"] == baseline_id
+    )
+    search_identity = {
+        "golden_sha256": provenance["golden_sha256"],
+        "split": "search",
+        "snapshot_sha": snapshot.sha,
+        "top_k": int(provenance.get("top_k") or 10),
+    }
+    holdout_identity = {
+        "golden_sha256": provenance["golden_sha256"],
+        "split": "holdout",
+        "snapshot_sha": snapshot.sha,
+        "top_k": effective_top_k,
+    }
+    baseline_evidence = EvaluationEvidence(
+        search=baseline_search,
+        holdout=holdout.get(baseline_id),
+        search_identity=search_identity,
+        holdout_identity=holdout_identity,
+        runtime_identity=current_identity,
+    )
+    if not baseline_evidence.complete:
+        console.print("[red]Fresh baseline validation did not produce complete evidence.[/red]")
+        raise typer.Exit(code=1)
+    synthetic_baseline = BaselineRecord(
+        candidate_id=baseline_id,
+        promoted_at=datetime.now(UTC).isoformat(),
+        verification_status="verified",
+        validation_provenance=BaselineValidationProvenance(
+            run_id=run_id,
+            artifact_name="validation.json",
+            baseline_id=baseline_id,
+            candidate_id=baseline_id,
+            validated_identity=current_identity,
+            verification_checks=checks[baseline_id],
+        ),
+    )
+    validations = {}
+    for entry in entries:
+        candidate_id = entry["candidate_id"]
+        if candidate_id == baseline_id:
+            continue
+        candidate_evidence = EvaluationEvidence(
+            search=(
+                EvaluationMetrics.model_validate(entry["search_metrics"])
+                if entry.get("search_metrics") is not None
+                else None
+            ),
+            holdout=holdout.get(candidate_id),
+            search_identity=search_identity,
+            holdout_identity=holdout_identity,
+            runtime_identity=current_identity,
+        )
+        validations[candidate_id] = build_validation_artifact(
+            baseline_record=synthetic_baseline,
+            candidate_id=candidate_id,
+            baseline=baseline_evidence,
+            candidate=candidate_evidence,
+            verification_checks=checks[candidate_id],
+            current_identity=current_identity,
+        )
+    if not validations:
+        console.print("[red]Frozen shortlist contains no candidate beyond the baseline.[/red]")
+        raise typer.Exit(code=1)
+    artifact = RunValidationArtifact(
+        run_id=run_id,
+        baseline=BaselineValidationArtifact(
+            baseline_id=baseline_id,
+            evidence=baseline_evidence,
+            validated_identity=current_identity,
+        ),
+        candidates=validations,
+    )
+    store.write_run_artifact(run_id, "validation.json", artifact)
+    previous_samples: list[RunCostSample] = []
+    try:
+        previous_cost = store.read_run_artifact(run_id, "cost.json")
+        for scope, breakdown in (previous_cost.get("by_scope") or {}).items():
+            if scope in {"search", "holdout_validation", "verification", "other"}:
+                previous_samples.append(
+                    _meta_cost_sample_from_breakdown(cast(Any, scope), breakdown)
+                )
+    except Exception:
+        pass
+    cost_samples.append(RunCostSample(
+        scope="holdout_validation",
+        artifact_bytes=_meta_run_artifact_bytes(store, run_id),
+    ))
+    store.write_run_artifact(
+        run_id,
+        "cost.json",
+        aggregate_run_cost(run_id, [*previous_samples, *cost_samples]),
+    )
+    eligible = sum(item.gate.eligible for item in validations.values())
+    console.print(
+        f"[green]Validation persisted[/green] for run {run_id}: "
+        f"{eligible}/{len(validations)} candidates eligible"
+    )
 
 
 @meta_app.command("status")
@@ -3185,6 +4070,11 @@ def meta_report_cmd(
 def meta_promote_cmd(
     candidate_id: str = typer.Argument(..., help="Candidate id to promote."),
     meta_dir: Path = typer.Option(None, "--meta-dir"),
+    run_id: str | None = typer.Option(
+        None,
+        "--run-id",
+        help="Validated run containing this candidate. Required with --apply.",
+    ),
     apply: bool = typer.Option(
         False,
         "--apply",
@@ -3222,7 +4112,15 @@ def meta_promote_cmd(
     secrets and unrelated top-level keys survive. Pass ``--apply`` to write
     the merged result atomically (temp file + replace).
     """
-    from .meta import ArtifactStore, PromotionError, apply_plan, build_plan
+    from .meta import (
+        ArtifactStore,
+        PromotionError,
+        RunValidationArtifact,
+        apply_plan,
+        build_plan,
+        write_verified_baseline,
+    )
+    from .meta.candidate_index import CANDIDATE_INDEX_CACHE_FORMAT
 
     if meta_dir is None:
         meta_dir = _meta_dir_default()
@@ -3246,6 +4144,59 @@ def meta_promote_cmd(
         console.print(f"[red]Cannot plan promotion:[/red] {exc}")
         raise typer.Exit(code=1) from exc
 
+    validation = None
+    if apply:
+        if run_id is None:
+            console.print("[red]--apply requires --run-id with eligible validation.[/red]")
+            raise typer.Exit(code=1)
+        if rec.base_dir is not None and (rec.base_dir / "adapters").is_dir():
+            console.print(
+                "[red]Code candidates are diff/review only and cannot be applied automatically.[/red]"
+            )
+            raise typer.Exit(code=1)
+        try:
+            envelope = store.read_run_artifact(
+                run_id,
+                "validation.json",
+                RunValidationArtifact,
+            )
+            shortlist = store.read_run_artifact(run_id, "shortlist.json")
+            provenance = store.read_run_artifact(run_id, "provenance.json")
+            validation = envelope.candidates.get(candidate_id)
+            entries = shortlist.get("entries") or []
+            shortlisted = next(
+                (
+                    entry
+                    for entry in entries
+                    if isinstance(entry, dict) and entry.get("candidate_id") == candidate_id
+                ),
+                None,
+            )
+            if validation is None or not validation.gate.eligible:
+                raise ValueError("candidate has no eligible validation in this run")
+            if shortlisted is None:
+                raise ValueError("candidate is absent from the frozen run shortlist")
+            if shortlisted.get("config_sha256") != _meta_candidate_hash(rec):
+                raise ValueError("candidate config/artifact hash differs from the shortlist")
+            target_repo = Path(str(provenance["repository"]["path"])).resolve()
+            _space, _registry, manifest_sha256, registry_sha256 = _meta_preflight()
+            _graphify, graph_identity = _meta_graph_identity()
+            current_identity = _meta_runtime_identity(
+                target_repo=target_repo,
+                snapshot_sha=str(provenance["snapshot"]["sha"]),
+                base_config=load_pipeline_config(),
+                golden_sha256=str(provenance["golden_sha256"]),
+                manifest_sha256=manifest_sha256,
+                registry_sha256=registry_sha256,
+                graph_identity=graph_identity,
+                cache_format=CANDIDATE_INDEX_CACHE_FORMAT,
+            )
+            if current_identity != validation.validated_identity:
+                raise ValueError("current source/runtime identity differs from validation")
+        except Exception as exc:
+            console.print(f"[red]Promotion validation failed:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+
     if dry_run:
         console.print(
             "[yellow]--dry-run is deprecated[/yellow] — diff-only is now "
@@ -3253,6 +4204,14 @@ def meta_promote_cmd(
         )
 
     if plan.is_noop:
+        if apply:
+            assert run_id is not None and validation is not None
+            write_verified_baseline(
+                meta_dir,
+                candidate=rec,
+                validation=validation,
+                run_id=run_id,
+            )
         console.print(
             f"[yellow]No changes[/yellow] — candidate {candidate_id} matches current {target}."
         )
@@ -3279,9 +4238,13 @@ def meta_promote_cmd(
     # report` runs surface candidates that beat the live config
     # (WIN-204). The baseline lives next to the meta dir as a
     # side-car JSON; existing prior records are atomically replaced.
-    from .meta import write_baseline
-
-    baseline = write_baseline(meta_dir, candidate=rec)
+    assert run_id is not None and validation is not None
+    baseline = write_verified_baseline(
+        meta_dir,
+        candidate=rec,
+        validation=validation,
+        run_id=run_id,
+    )
     console.print(f"[green]Promoted[/green] {candidate_id} → {target}")
     if baseline.fitness is not None:
         console.print(

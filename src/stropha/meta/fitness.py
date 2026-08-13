@@ -40,6 +40,26 @@ DIMENSION_SIGNS: dict[str, int] = {
     "latency_ms": -1,
 }
 
+# Scalar reduction used only for archive sorting and baseline alerts. Pareto
+# dominance remains authoritative for selecting candidates.
+FITNESS_WEIGHTS: dict[str, float] = {
+    "quality": 1.0,
+    "context_efficiency": 0.5,
+    "outcome_score": 0.2,
+    "latency_ms": 0.001,
+}
+FITNESS_VERSION = 2
+
+
+def scalar_fitness(scores: dict[str, Any]) -> float:
+    """Reduce known objectives to a signed scalar; ignore provenance fields."""
+    terms = []
+    for name, sign in DIMENSION_SIGNS.items():
+        value = scores.get(name)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            terms.append(float(value) * sign * FITNESS_WEIGHTS[name])
+    return sum(terms) if terms else float("-inf")
+
 
 @dataclass
 class ScoreCard:

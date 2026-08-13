@@ -48,7 +48,8 @@ class TestStats:
         s = _Stats()
         s.update(0.3, above_mean=False)
         assert s.total == 1
-        assert s.successes == 0.0  # only above_mean contributes
+        assert s.successes == 0.0
+        assert s.failures == 0.3
 
     def test_negative_reward_clamped(self) -> None:
         s = _Stats()
@@ -222,6 +223,71 @@ class TestBanditProposer:
         # Must still produce a valid config.
         cfg = p(archive)
         assert cfg["walker"] in ("a", "b")
+
+    def test_learns_bool_and_enumerated_int_dimensions(self) -> None:
+        space = SearchSpace(dimensions=[
+            Dimension(name="hyde", kind="feature", indexing=False,
+                      type="bool", default=False),
+            Dimension(name="candidate_k", kind="feature", indexing=False,
+                      type="int", range=(10, 30), step=10, default=20),
+        ])
+        archive = []
+        for i in range(20):
+            archive.extend([
+                (_record(i, {"hyde": True, "candidate_k": 30}),
+                 ScoreCard(quality=1.0, context_efficiency=1.0,
+                           outcome_score=1.0, latency_ms=10)),
+                (_record(i + 100, {"hyde": False, "candidate_k": 10}),
+                 ScoreCard(quality=0.0, context_efficiency=0.0,
+                           outcome_score=-1.0, latency_ms=1000)),
+            ])
+        proposer = BanditProposer(space=space, seed=21)
+        picks = [proposer(archive) for _ in range(30)]
+        assert sum(config["hyde"] is True for config in picks) > 15
+        assert sum(config["candidate_k"] == 30 for config in picks) > 15
+
+    def test_signed_latency_rewards_lower_values(self) -> None:
+        space = SearchSpace(dimensions=[
+            Dimension(name="walker", kind="stage", indexing=True,
+                      choices=("fast", "slow")),
+        ])
+        archive = [
+            (_record(i, {"walker": "fast"}), ScoreCard(latency_ms=10))
+            for i in range(10)
+        ] + [
+            (_record(i + 10, {"walker": "slow"}), ScoreCard(latency_ms=1000))
+            for i in range(10)
+        ]
+        proposer = BanditProposer(space=space, seed=9)
+        proposer._update_stats(archive)
+        fast = proposer._stats[("latency_ms", "walker", "fast")]
+        slow = proposer._stats[("latency_ms", "walker", "slow")]
+        assert fast.successes > slow.successes
+        assert slow.failures > fast.failures
+
+    def test_avoids_archive_and_in_session_duplicates(self) -> None:
+        space = SearchSpace(dimensions=[
+            Dimension(name="walker", kind="stage", indexing=True,
+                      choices=("a", "b", "c")),
+        ])
+        archive = [(_record(0, {"walker": "a"}), ScoreCard(quality=0.5))]
+        proposer = BanditProposer(space=space, seed=3)
+        first = proposer(archive)
+        second = proposer(archive)
+        assert first["walker"] != "a"
+        assert second["walker"] != "a"
+        assert first != second
+
+    def test_deterministic_fallback_finds_rare_unseen_config(self) -> None:
+        space = SearchSpace(dimensions=[
+            Dimension(name="a", kind="feature", indexing=False, type="bool",
+                      default=False),
+            Dimension(name="b", kind="feature", indexing=False, type="bool",
+                      default=False),
+        ])
+        proposer = BanditProposer(space=space, seed=3)
+        seen = {(False, False), (False, True), (True, False)}
+        assert proposer._first_unseen(seen) == {"a": True, "b": True}
 
     def test_proposal_applies_constraints(self) -> None:
         """``gated_by`` constraints must fire after sampling."""

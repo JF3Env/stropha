@@ -238,6 +238,7 @@ class EvalResult:
     latency_ms: float = 0.0
     returned_tokens: int = 0
     returned_hits: int = 0
+    returned_chunk_ids: tuple[str, ...] = ()
 
     @property
     def hit(self) -> bool:
@@ -611,6 +612,11 @@ def run_eval(
                 max(1, len(str(getattr(hit, "snippet", ""))) // 4) for hit in hits
             ),
             returned_hits=len(hits),
+            returned_chunk_ids=tuple(
+                str(chunk_id)
+                for hit in hits
+                if (chunk_id := getattr(hit, "chunk_id", None))
+            ),
         )
         report.results.append(result)
         log.info(

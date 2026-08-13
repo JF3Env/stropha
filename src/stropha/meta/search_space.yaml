@@ -22,10 +22,12 @@ stages:
   walker:
     indexing: true
     choices: [git-ls-files, filesystem, nested-git, git-diff]
+    binding: pipeline.walker.adapter
 
   chunker:
     indexing: true
     choices: [tree-sitter-dispatch]
+    binding: pipeline.chunker.adapter
     # All language sub-adapters live under tree-sitter-dispatch; the
     # proposer can flip language strategies via the `languages.*`
     # sub-adapter knob (left for the agentic proposer in Phase 5).
@@ -33,22 +35,27 @@ stages:
   enricher:
     indexing: true
     choices: [noop, hierarchical, graph-aware, ollama, mlx, contextual]
+    binding: pipeline.enricher.adapter
 
   embedder:
     indexing: true
     choices: [local, voyage, bge-m3, model2vec, mlx]
+    binding: pipeline.embedder.adapter
 
   storage:
     indexing: false  # storage swap (e.g. lancedb) doesn't re-index
     choices: [sqlite-vec]
+    binding: pipeline.storage.adapter
 
   retrieval:
     indexing: false  # changing fusion does NOT re-embed
     choices: [hybrid-rrf]
+    binding: pipeline.retrieval.adapter
 
   reranker:
     indexing: false
     choices: [noop, cross-encoder, code-aware, llm]
+    binding: pipeline.retrieval.config.reranker.adapter
 
 
 features:
@@ -57,43 +64,51 @@ features:
     indexing: false
     type: bool
     default: false
+    binding: pipeline.retrieval.config.hyde_enabled
 
   hyde_code_tuned:
     indexing: false
     type: bool
     default: true
+    binding: retrieval_features.hyde_code_tuned
 
   query_rewrite:
     indexing: false
     type: bool
     default: false
+    binding: pipeline.retrieval.config.query_rewrite_enabled
 
   multi_query:
     indexing: false
     type: bool
     default: false
+    binding: pipeline.retrieval.config.multi_query_enabled
 
   multi_query_count:
     indexing: false
     type: int
     range: [1, 5]
     default: 3
+    binding: pipeline.retrieval.config.multi_query_count
 
   recursive:
     indexing: false
     type: bool
     default: false
+    binding: pipeline.retrieval.config.recursive_enabled
 
   recursive_adjacency:
     indexing: false
     type: int
     range: [1, 20]
     default: 5
+    binding: pipeline.retrieval.config.recursive_adjacency
 
   adaptive_weighting:
     indexing: false
     type: bool
     default: true
+    binding: pipeline.retrieval.config.adaptive_weighting
 
   candidate_k:
     indexing: false
@@ -101,6 +116,7 @@ features:
     range: [10, 50]
     step: 10
     default: 20
+    binding: pipeline.retrieval.config.candidate_k
 
   rrf_k:
     indexing: false
@@ -108,11 +124,41 @@ features:
     range: [20, 100]
     step: 20
     default: 60
+    binding: pipeline.retrieval.config.rrf_k
 
   graph_fts_augment:
     indexing: true  # re-builds the FTS5 contentless table
     type: bool
     default: true
+    binding: graph.fts_augment
+
+
+# Registered adapters that are intentionally outside this bounded search.
+excluded_adapters:
+  embedder:
+    amd: requires hardware-specific evaluation
+    intel-npu: requires hardware-specific evaluation
+    nvidia: requires hardware-specific evaluation
+  storage:
+    postgres: isolated Meta-Harness evaluation uses sqlite-vec
+  language-chunker:
+    ast-generic: selected internally by tree-sitter-dispatch
+    file-level: selected internally by tree-sitter-dispatch
+    heading-split: selected internally by tree-sitter-dispatch
+    regex-feature-scenario: selected internally by tree-sitter-dispatch
+    sfc-split: selected internally by tree-sitter-dispatch
+    yaml-structure: selected internally by tree-sitter-dispatch
+  retrieval-stream:
+    fts5-bm25: configured inside hybrid-rrf
+    graph-vec: configured inside hybrid-rrf
+    like-tokens: configured inside hybrid-rrf
+    model2vec-cosine: configured inside hybrid-rrf
+    vec-cosine: configured inside hybrid-rrf
+  router:
+    escalating: not a pipeline stage dimension
+    llm: not a pipeline stage dimension
+    noop: not a pipeline stage dimension
+    pattern: not a pipeline stage dimension
 
 
 constraints:

@@ -623,11 +623,17 @@ The paper explicitly argues against scalar collapse. Its evidence is Figure 3 (t
 
 #### 8.2.3 Initial seed population — implicit in our docs, explicit in Algorithm 1
 
+> **Delivery note (2026-08-13):** The shipped v1 loop evaluates the active
+> configuration as its explicit initial seed. The 2–3 hand-picked variants below
+> remain an RFC recommendation, not an implemented correctness requirement.
+
 **Paper's Algorithm 1 line 2:** `Initialize: population ℋ` with a comment `⊳ Initial set of valid harnesses`. The seed is *always* a set of human-designed baselines (zero-shot, few-shot, ACE, MCE for text classification; Terminus 2 and Terminus-KIRA for TerminalBench-2). Line 4-6 evaluates the seed before the iteration loop starts.
 
-**Our rev-2 RFC:** Implicitly started the loop from random sampling of the search space (or didn't say). For stropha, the obvious seed is the live `stropha.yaml`, but we never stated this.
+**Our rev-2 RFC:** Implicitly started the loop from random sampling of the search space (or did not say). It omitted the obvious live-configuration seed.
 
-**Fixed in RFC rev 3:** Phase 4 `meta/loop.py` explicitly initializes `ℋ` with the live `stropha.yaml` plus 2-3 hand-picked variants, evaluates the seed, then enters the iteration loop. This matches the paper's protocol and means the first iterations don't waste effort rediscovering reasonable defaults.
+**RFC rev 3 recommendation:** initialize `ℋ` with the live configuration plus
+2–3 hand-picked variants before entering the iteration loop. Shipped v1 uses the
+live configuration alone, as recorded in the delivery note above.
 
 #### 8.2.4 The proposer "skill" — missing entirely from rev 2
 

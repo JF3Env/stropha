@@ -121,7 +121,13 @@ def create_snapshot(
     Raises :class:`SnapshotError` for any git failure.
     """
     source_repo = Path(source_repo).resolve()
-    if not (source_repo / ".git").exists():
+    try:
+        inside_worktree = _run_git(
+            ["rev-parse", "--is-inside-work-tree"], cwd=source_repo
+        ).strip()
+    except SnapshotError as exc:
+        raise SnapshotError(f"not a git repo: {source_repo}") from exc
+    if inside_worktree != "true":
         raise SnapshotError(f"not a git repo: {source_repo}")
 
     sha = resolve_sha(ref, source_repo)
@@ -132,13 +138,21 @@ def create_snapshot(
     target = snapshot_root / sha
 
     if target.exists():
-        # Either an earlier run left it behind (legit reuse) or git has
-        # it registered (also legit). Verify with `git worktree list` —
-        # if registered, reuse; if orphaned, drop + re-create.
-        if _is_registered_worktree(target, source_repo):
-            log.info("snapshot.reused", sha=sha, path=str(target))
-            return Snapshot(sha=sha, path=target, source_repo=source_repo)
-        shutil.rmtree(target, ignore_errors=True)
+        registered_head = _registered_worktree_head(target, source_repo)
+        if registered_head is not None:
+            try:
+                actual_head = resolve_sha("HEAD", target)
+            except SnapshotError:
+                actual_head = None
+            if registered_head == sha and actual_head == sha:
+                log.info("snapshot.reused", sha=sha, path=str(target))
+                return Snapshot(sha=sha, path=target, source_repo=source_repo)
+            _run_git(
+                ["worktree", "remove", "--force", str(target)],
+                cwd=source_repo,
+            )
+        if target.exists():
+            shutil.rmtree(target, ignore_errors=True)
 
     _run_git(
         ["worktree", "add", "--detach", str(target), sha],
@@ -150,15 +164,29 @@ def create_snapshot(
 
 def _is_registered_worktree(path: Path, source_repo: Path) -> bool:
     """``True`` when git knows about ``path`` as a worktree of ``source_repo``."""
+    return _registered_worktree_head(path, source_repo) is not None
+
+
+def _registered_worktree_head(path: Path, source_repo: Path) -> str | None:
+    """Return the registered worktree's HEAD, or ``None`` when unknown."""
     try:
         out = _run_git(["worktree", "list", "--porcelain"], cwd=source_repo)
     except SnapshotError:
-        return False
-    target = str(path)
-    for line in out.splitlines():
-        if line.startswith("worktree ") and line[len("worktree "):] == target:
-            return True
-    return False
+        return None
+    target = path.resolve()
+    worktree: Path | None = None
+    head: str | None = None
+    for line in [*out.splitlines(), ""]:
+        if not line:
+            if worktree == target:
+                return head
+            worktree = None
+            head = None
+        elif line.startswith("worktree "):
+            worktree = Path(line[len("worktree "):]).resolve()
+        elif line.startswith("HEAD "):
+            head = line[len("HEAD "):]
+    return None
 
 
 def list_snapshots(snapshot_root: Path) -> list[str]:

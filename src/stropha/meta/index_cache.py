@@ -3,8 +3,8 @@
 Two candidates whose ``BuiltStages.indexing_hash()`` (WIN-176) match
 produce identical index databases — the only differences are at query
 time (storage / retrieval / reranker). Re-indexing from scratch per
-candidate would be wasteful; the cache lets the second candidate
-*hardlink-or-copy* the first's index instead of paying full re-embed.
+candidate would be wasteful; the cache lets the second candidate copy
+the first's index instead of paying full re-embed.
 
 Filesystem layout::
 
@@ -28,7 +28,9 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import shutil
+import tempfile
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -54,6 +56,7 @@ class CacheEntry:
     size_bytes: int = 0
     created_at: str = ""
     sha: str | None = None
+    source_repo: str | None = None
     adapter_ids: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -64,6 +67,7 @@ class CacheEntry:
             "size_bytes": self.size_bytes,
             "created_at": self.created_at,
             "sha": self.sha,
+            "source_repo": self.source_repo,
             "adapter_ids": dict(self.adapter_ids),
         }
 
@@ -94,15 +98,39 @@ class IndexCache:
     # Reads                                                              #
     # ------------------------------------------------------------------ #
 
-    def get(self, indexing_hash: str) -> Path | None:
-        """Return the cached index.db path for ``indexing_hash`` or None."""
+    def get(
+        self,
+        indexing_hash: str,
+        *,
+        source_repo: Path | str | None = None,
+        sha: str | None = None,
+    ) -> Path | None:
+        """Return a complete cached index matching the requested identity."""
         candidate = self._entry_dir(indexing_hash) / self.INDEX_FILENAME
-        return candidate if candidate.is_file() else None
+        if not candidate.is_file() or candidate.is_symlink():
+            return None
+        try:
+            self.read_meta(indexing_hash, source_repo=source_repo, sha=sha)
+        except IndexCacheError:
+            return None
+        return candidate
 
-    def has(self, indexing_hash: str) -> bool:
-        return self.get(indexing_hash) is not None
+    def has(
+        self,
+        indexing_hash: str,
+        *,
+        source_repo: Path | str | None = None,
+        sha: str | None = None,
+    ) -> bool:
+        return self.get(indexing_hash, source_repo=source_repo, sha=sha) is not None
 
-    def read_meta(self, indexing_hash: str) -> dict[str, Any]:
+    def read_meta(
+        self,
+        indexing_hash: str,
+        *,
+        source_repo: Path | str | None = None,
+        sha: str | None = None,
+    ) -> dict[str, Any]:
         """Load the meta.json for a cached entry.
 
         Raises ``IndexCacheError`` when the entry is missing or the
@@ -114,9 +142,21 @@ class IndexCache:
                 f"no meta for indexing_hash={indexing_hash!r} at {meta_path}"
             )
         try:
-            return json.loads(meta_path.read_text(encoding="utf-8"))
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             raise IndexCacheError(f"meta.json malformed for {indexing_hash!r}: {exc}") from exc
+        if not isinstance(meta, dict):
+            raise IndexCacheError(f"meta.json malformed for {indexing_hash!r}: expected object")
+        expected_repo = _normalise_source_repo(source_repo)
+        if meta.get("indexing_hash") != indexing_hash:
+            raise IndexCacheError(f"cache identity mismatch for {indexing_hash!r}: indexing_hash")
+        if meta.get("copy_mode") != "copy":
+            raise IndexCacheError(f"cache identity mismatch for {indexing_hash!r}: copy_mode")
+        if expected_repo is not None and meta.get("source_repo") != expected_repo:
+            raise IndexCacheError(f"cache identity mismatch for {indexing_hash!r}: source_repo")
+        if sha is not None and meta.get("sha") != sha:
+            raise IndexCacheError(f"cache identity mismatch for {indexing_hash!r}: sha")
+        return meta
 
     # ------------------------------------------------------------------ #
     # Writes                                                             #
@@ -129,7 +169,8 @@ class IndexCache:
         index_path: Path | str,
         adapter_ids: dict[str, str] | None = None,
         sha: str | None = None,
-        copy_mode: str = "hardlink",
+        source_repo: Path | str | None = None,
+        copy_mode: str = "copy",
     ) -> CacheEntry:
         """Materialise ``index_path`` into the cache under ``indexing_hash``.
 
@@ -141,8 +182,10 @@ class IndexCache:
                 meta.json provenance.
             sha: optional source-tree SHA the index was built against
                 (matches WIN-175 snapshots).
-            copy_mode: ``"hardlink"`` (default, near-instant + dedup'd),
-                ``"copy"`` (safe across filesystems), or ``"symlink"``.
+            source_repo: optional source repository path. When provided,
+                cache hits must match its normalized path.
+            copy_mode: only ``"copy"`` is accepted. Cached data must not
+                share writable storage with its source.
 
         Idempotent: if an entry for ``indexing_hash`` already exists,
         the existing entry is returned without re-materialising.
@@ -150,45 +193,55 @@ class IndexCache:
         src = Path(index_path).resolve()
         if not src.is_file():
             raise IndexCacheError(f"source index does not exist: {src}")
+        if copy_mode != "copy":
+            raise IndexCacheError("copy_mode must be 'copy'; hardlinks and symlinks are unsafe")
 
         entry_dir = self._entry_dir(indexing_hash)
-        dst_index = entry_dir / self.INDEX_FILENAME
-        dst_meta = entry_dir / self.META_FILENAME
+        normalized_repo = _normalise_source_repo(source_repo)
 
-        if dst_index.is_file():
-            # Idempotent — re-using cached entry.
+        existing = self.get(indexing_hash, source_repo=normalized_repo, sha=sha)
+        if existing is not None:
             log.info("index_cache.reuse", indexing_hash=indexing_hash)
             return self._inspect_entry(indexing_hash)
+        if entry_dir.exists():
+            raise IndexCacheError(f"cache identity mismatch for {indexing_hash!r}")
 
-        entry_dir.mkdir(parents=True, exist_ok=True)
+        staging_dir = Path(
+            tempfile.mkdtemp(prefix=f".{indexing_hash}.tmp-", dir=self.base_dir)
+        )
+        staging_index = staging_dir / self.INDEX_FILENAME
+        staging_meta = staging_dir / self.META_FILENAME
         try:
-            _materialise(src, dst_index, copy_mode)
+            _materialise(src, staging_index, copy_mode)
+            meta = {
+                "indexing_hash": indexing_hash,
+                "sha": sha,
+                "source_repo": normalized_repo,
+                "adapter_ids": dict(adapter_ids or {}),
+                "created_at": _now_utc_iso(),
+                "source_path": str(src),
+                "copy_mode": copy_mode,
+            }
+            staging_meta.write_text(
+                json.dumps(meta, indent=2, sort_keys=True), encoding="utf-8"
+            )
+            os.rename(staging_dir, entry_dir)
         except OSError as exc:
-            # WIN-180 race-condition fix: if a concurrent ``put()`` for
-            # the same hash already wrote ``dst_index``, our hardlink /
-            # copy raises FileExistsError or similar. The entry is
-            # actually valid (someone else won the race), so DO NOT
-            # rmtree the dir — that would destroy the sibling's work.
-            if dst_index.is_file():
+            shutil.rmtree(staging_dir, ignore_errors=True)
+            if self.get(indexing_hash, source_repo=normalized_repo, sha=sha) is not None:
                 log.info(
                     "index_cache.race_idempotent",
                     indexing_hash=indexing_hash,
                 )
-            else:
-                shutil.rmtree(entry_dir, ignore_errors=True)
-                raise IndexCacheError(
-                    f"failed to materialise index for {indexing_hash!r}: {exc}"
-                ) from exc
+                return self._inspect_entry(indexing_hash)
+            raise IndexCacheError(
+                f"failed to materialise index for {indexing_hash!r}: {exc}"
+            ) from exc
+        finally:
+            if staging_dir.exists():
+                shutil.rmtree(staging_dir, ignore_errors=True)
 
-        meta = {
-            "indexing_hash": indexing_hash,
-            "sha": sha,
-            "adapter_ids": dict(adapter_ids or {}),
-            "created_at": _now_utc_iso(),
-            "source_path": str(src),
-            "copy_mode": copy_mode,
-        }
-        dst_meta.write_text(json.dumps(meta, indent=2, sort_keys=True), encoding="utf-8")
+        dst_index = entry_dir / self.INDEX_FILENAME
         log.info(
             "index_cache.put",
             indexing_hash=indexing_hash,
@@ -196,6 +249,40 @@ class IndexCache:
             size_bytes=dst_index.stat().st_size,
         )
         return self._inspect_entry(indexing_hash)
+
+    def clone_writable(
+        self,
+        *,
+        indexing_hash: str,
+        destination: Path | str,
+        source_repo: Path | str | None = None,
+        sha: str | None = None,
+    ) -> Path:
+        """Copy a cache hit to an independent, writable database file."""
+        cached = self.get(indexing_hash, source_repo=source_repo, sha=sha)
+        if cached is None:
+            raise IndexCacheError(f"no matching cache entry for indexing_hash={indexing_hash!r}")
+
+        dst = Path(destination).expanduser()
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        if dst.resolve() == cached.resolve():
+            raise IndexCacheError("writable clone destination must not be the cached index")
+
+        fd, temporary_name = tempfile.mkstemp(
+            prefix=f".{dst.name}.tmp-", dir=dst.parent
+        )
+        os.close(fd)
+        temporary = Path(temporary_name)
+        try:
+            shutil.copyfile(cached, temporary)
+            os.replace(temporary, dst)
+        except OSError as exc:
+            with contextlib.suppress(OSError):
+                temporary.unlink()
+            raise IndexCacheError(
+                f"failed to clone cached index {indexing_hash!r} to {dst}: {exc}"
+            ) from exc
+        return dst
 
     # ------------------------------------------------------------------ #
     # Listing + pruning                                                  #
@@ -209,7 +296,7 @@ class IndexCache:
         for sub in sorted(self.base_dir.iterdir()):
             if not sub.is_dir():
                 continue
-            if not (sub / self.INDEX_FILENAME).is_file():
+            if sub.name.startswith(".") or self.get(sub.name) is None:
                 continue
             with contextlib.suppress(IndexCacheError):
                 out.append(self._inspect_entry(sub.name))
@@ -253,32 +340,23 @@ class IndexCache:
             size_bytes=size,
             created_at=str(meta.get("created_at") or ""),
             sha=meta.get("sha"),
+            source_repo=meta.get("source_repo"),
             adapter_ids=dict(meta.get("adapter_ids") or {}),
         )
 
 
 def _materialise(src: Path, dst: Path, mode: str) -> None:
-    """Place ``src`` at ``dst`` according to ``mode``.
-
-    ``hardlink`` (default) tries to use ``Path.link_to`` / ``os.link``;
-    falls back to copy when across-filesystem. ``copy`` always copies;
-    ``symlink`` creates a symlink.
-    """
-    import os
-
-    if mode == "symlink":
-        os.symlink(src, dst)
-        return
+    """Copy ``src`` to ``dst`` without sharing writable storage."""
     if mode == "copy":
         shutil.copyfile(src, dst)
         return
-    if mode == "hardlink":
-        try:
-            os.link(src, dst)
-        except OSError:
-            shutil.copyfile(src, dst)
-        return
-    raise IndexCacheError(f"unknown copy_mode={mode!r}; expected hardlink|copy|symlink")
+    raise IndexCacheError(f"unknown copy_mode={mode!r}; expected copy")
+
+
+def _normalise_source_repo(source_repo: Path | str | None) -> str | None:
+    if source_repo is None:
+        return None
+    return str(Path(source_repo).expanduser().resolve())
 
 
 __all__ = [

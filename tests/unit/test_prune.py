@@ -187,7 +187,7 @@ class TestPruneDryRun:
         store = ArtifactStore(meta)
         for i in range(5):
             rec = store.register_candidate({"v": i})
-            store.write_scores(rec.id, {"score": float(i)})
+            store.write_scores(rec.id, {"quality": float(i)})
         plan = prune(meta, keep_top=1, keep_bottom=0, keep_recent=0, dry_run=True)
         assert len(plan.candidates_to_prune) == 4  # top-1 keeps 1, prunes 4
         # No mutation yet — ledger still has all 5 entries live.
@@ -218,7 +218,7 @@ class TestPruneReal:
         ids = []
         for i in range(5):
             rec = store.register_candidate({"v": i})
-            store.write_scores(rec.id, {"score": float(i)})
+            store.write_scores(rec.id, {"quality": float(i)})
             ids.append(rec.id)
         plan = prune(meta, keep_top=2, keep_bottom=1, keep_recent=1, dry_run=False)
         # Pruned 2 candidates (out of 5). Survivors are top-2, bottom-1, recent-1.
@@ -313,7 +313,7 @@ class TestCompactPreview:
         store_dry = ArtifactStore(meta)
         for i in range(5):
             rec = store_dry.register_candidate({"v": i})
-            store_dry.write_scores(rec.id, {"score": float(i)})
+            store_dry.write_scores(rec.id, {"quality": float(i)})
 
         # Compute the dry preview.
         preview_ids = set(_compact_preview(store_dry, 2, 1, 1))

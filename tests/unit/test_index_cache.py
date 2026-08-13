@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 import pytest
 
 from stropha.meta import CacheEntry, IndexCache, IndexCacheError
-from stropha.meta.index_cache import _materialise
 
 
 def _fake_index(tmp_path: Path, content: bytes = b"sqlite:db") -> Path:
@@ -58,6 +56,34 @@ class TestGet:
         assert cached is not None
         assert cached.read_bytes() == b"sqlite:db"
 
+    def test_requires_complete_entry(self, tmp_path: Path) -> None:
+        cache = IndexCache(tmp_path / "cache")
+        partial = cache.base_dir / "h1"
+        partial.mkdir()
+        (partial / "index.db").write_bytes(b"not published")
+        assert cache.get("h1") is None
+
+    def test_rejects_legacy_shared_storage_entry(self, tmp_path: Path) -> None:
+        cache = IndexCache(tmp_path / "cache")
+        entry = cache.base_dir / "h1"
+        entry.mkdir()
+        (entry / "index.db").write_bytes(b"legacy")
+        (entry / "meta.json").write_text(
+            json.dumps({"indexing_hash": "h1", "copy_mode": "hardlink"})
+        )
+        assert cache.get("h1") is None
+
+    def test_validates_source_identity(self, tmp_path: Path) -> None:
+        cache = IndexCache(tmp_path / "cache")
+        src = _fake_index(tmp_path)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        cache.put(indexing_hash="h1", index_path=src, source_repo=repo, sha="abc")
+
+        assert cache.get("h1", source_repo=repo / ".", sha="abc") is not None
+        assert cache.get("h1", source_repo=tmp_path / "other", sha="abc") is None
+        assert cache.get("h1", source_repo=repo, sha="def") is None
+
 
 # ---------------------------------------------------------------------------
 # put
@@ -73,10 +99,12 @@ class TestPut:
             index_path=src,
             adapter_ids={"walker": "git-ls-files", "chunker": "tree-sitter"},
             sha="deadbeef",
+            source_repo=tmp_path / "repo",
         )
         meta = json.loads((cache.base_dir / "h1" / "meta.json").read_text())
         assert meta["indexing_hash"] == "h1"
         assert meta["sha"] == "deadbeef"
+        assert meta["source_repo"] == str((tmp_path / "repo").resolve())
         assert meta["adapter_ids"]["walker"] == "git-ls-files"
         assert "created_at" in meta
 
@@ -94,39 +122,40 @@ class TestPut:
         # Content unchanged from the first put.
         assert (cache.base_dir / "h1" / "index.db").read_bytes() == b"sqlite:db"
 
+    def test_existing_entry_with_different_identity_raises(self, tmp_path: Path) -> None:
+        cache = IndexCache(tmp_path / "cache")
+        src = _fake_index(tmp_path)
+        cache.put(indexing_hash="h1", index_path=src, source_repo=tmp_path, sha="abc")
+
+        with pytest.raises(IndexCacheError, match="identity mismatch"):
+            cache.put(
+                indexing_hash="h1",
+                index_path=src,
+                source_repo=tmp_path,
+                sha="def",
+            )
+
     def test_missing_source_raises(self, tmp_path: Path) -> None:
         cache = IndexCache(tmp_path / "cache")
         with pytest.raises(IndexCacheError, match="source index does not exist"):
             cache.put(indexing_hash="h1", index_path=tmp_path / "missing.db")
 
-    def test_copy_mode_copy(self, tmp_path: Path) -> None:
+    def test_default_copy_does_not_share_storage(self, tmp_path: Path) -> None:
         cache = IndexCache(tmp_path / "cache")
         src = _fake_index(tmp_path)
-        cache.put(indexing_hash="h1", index_path=src, copy_mode="copy")
-        # Distinct inode — change source, cache unchanged.
+        cache.put(indexing_hash="h1", index_path=src)
+        dst = cache.base_dir / "h1" / "index.db"
+        assert not dst.is_symlink()
+        assert dst.stat().st_ino != src.stat().st_ino
         src.write_bytes(b"mutated")
-        assert (cache.base_dir / "h1" / "index.db").read_bytes() == b"sqlite:db"
+        assert dst.read_bytes() == b"sqlite:db"
 
-    def test_copy_mode_hardlink_dedupes(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize("copy_mode", ["hardlink", "symlink", "bogus"])
+    def test_unsafe_copy_modes_raise(self, tmp_path: Path, copy_mode: str) -> None:
         cache = IndexCache(tmp_path / "cache")
         src = _fake_index(tmp_path)
-        cache.put(indexing_hash="h1", index_path=src, copy_mode="hardlink")
-        dst = cache.base_dir / "h1" / "index.db"
-        # Same inode → mutating one updates both. (Hardlink on same fs.)
-        assert dst.stat().st_ino == src.stat().st_ino
-
-    def test_copy_mode_symlink(self, tmp_path: Path) -> None:
-        cache = IndexCache(tmp_path / "cache")
-        src = _fake_index(tmp_path)
-        cache.put(indexing_hash="h1", index_path=src, copy_mode="symlink")
-        dst = cache.base_dir / "h1" / "index.db"
-        assert dst.is_symlink()
-
-    def test_unknown_copy_mode_raises(self, tmp_path: Path) -> None:
-        cache = IndexCache(tmp_path / "cache")
-        src = _fake_index(tmp_path)
-        with pytest.raises(IndexCacheError, match="unknown copy_mode"):
-            cache.put(indexing_hash="h1", index_path=src, copy_mode="bogus")
+        with pytest.raises(IndexCacheError, match="hardlinks and symlinks are unsafe"):
+            cache.put(indexing_hash="h1", index_path=src, copy_mode=copy_mode)
 
     def test_materialise_failure_rolls_back(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -144,6 +173,31 @@ class TestPut:
             cache.put(indexing_hash="h1", index_path=src)
         # Entry dir cleaned up so a retry can re-create.
         assert not (cache.base_dir / "h1").exists()
+        assert not list(cache.base_dir.glob(".h1.tmp-*"))
+
+    def test_publishes_complete_entry_with_one_rename(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cache = IndexCache(tmp_path / "cache")
+        src = _fake_index(tmp_path)
+        destination = cache.base_dir / "h1"
+        observed: dict[str, bool] = {}
+
+        import stropha.meta.index_cache as mod
+
+        real_rename = mod.os.rename
+
+        def inspect_then_rename(staging: Path, target: Path) -> None:
+            observed["hidden"] = not destination.exists()
+            observed["index"] = (Path(staging) / "index.db").is_file()
+            observed["meta"] = (Path(staging) / "meta.json").is_file()
+            real_rename(staging, target)
+
+        monkeypatch.setattr(mod.os, "rename", inspect_then_rename)
+        cache.put(indexing_hash="h1", index_path=src)
+
+        assert observed == {"hidden": True, "index": True, "meta": True}
+        assert cache.get("h1") == destination / "index.db"
 
 
 # ---------------------------------------------------------------------------
@@ -172,6 +226,13 @@ class TestReadMeta:
         cache.put(indexing_hash="h1", index_path=src, sha="abc")
         meta = cache.read_meta("h1")
         assert meta["sha"] == "abc"
+
+    def test_identity_mismatch_raises(self, tmp_path: Path) -> None:
+        cache = IndexCache(tmp_path / "cache")
+        src = _fake_index(tmp_path)
+        cache.put(indexing_hash="h1", index_path=src, source_repo=tmp_path, sha="abc")
+        with pytest.raises(IndexCacheError, match="source_repo"):
+            cache.read_meta("h1", source_repo=tmp_path / "other", sha="abc")
 
 
 # ---------------------------------------------------------------------------
@@ -205,7 +266,7 @@ class TestListEntries:
     def test_missing_base_dir_returns_empty(self, tmp_path: Path) -> None:
         # Construct then delete the dir.
         cache = IndexCache(tmp_path / "cache")
-        os.rmdir(cache.base_dir)
+        cache.base_dir.rmdir()
         assert cache.list_entries() == []
 
     def test_entry_size_reflects_index(self, tmp_path: Path) -> None:
@@ -258,43 +319,76 @@ class TestCacheEntry:
             size_bytes=42,
             created_at="2026-05-22T12:00:00+00:00",
             sha="abc",
+            source_repo="/repo",
             adapter_ids={"walker": "git-ls-files"},
         )
         d = entry.to_dict()
         for key in (
             "indexing_hash", "index_path", "meta_path",
-            "size_bytes", "created_at", "sha", "adapter_ids",
+            "size_bytes", "created_at", "sha", "source_repo", "adapter_ids",
         ):
             assert key in d
         assert d["size_bytes"] == 42
 
 
 # ---------------------------------------------------------------------------
-# _materialise (direct)
+# writable clones
 # ---------------------------------------------------------------------------
 
 
-class TestMaterialiseHelper:
-    def test_hardlink_falls_back_to_copy_across_fs(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Force os.link to raise (simulates cross-filesystem) and verify
-        the copy fallback path."""
+class TestCloneWritable:
+    def test_returns_independent_regular_file(self, tmp_path: Path) -> None:
+        cache = IndexCache(tmp_path / "cache")
         src = _fake_index(tmp_path)
-        dst = tmp_path / "out.db"
+        cache.put(indexing_hash="h1", index_path=src, source_repo=tmp_path, sha="abc")
+        cached = cache.get("h1", source_repo=tmp_path, sha="abc")
+        assert cached is not None
 
-        original_link = os.link
+        clone = cache.clone_writable(
+            indexing_hash="h1",
+            destination=tmp_path / "candidate" / "index.db",
+            source_repo=tmp_path,
+            sha="abc",
+        )
 
-        def cross_fs(a, b):  # type: ignore[no-untyped-def]
-            raise OSError("simulated EXDEV")
+        assert clone.is_file()
+        assert not clone.is_symlink()
+        assert clone.stat().st_ino != cached.stat().st_ino
+        clone.write_bytes(b"candidate mutation")
+        assert cached.read_bytes() == b"sqlite:db"
 
-        monkeypatch.setattr(os, "link", cross_fs)
-        _materialise(src, dst, "hardlink")
-        # Restore for cleanup safety.
-        monkeypatch.setattr(os, "link", original_link)
-        assert dst.read_bytes() == src.read_bytes()
-        # Different inodes (it was a copy, not a hardlink).
-        assert dst.stat().st_ino != src.stat().st_ino
+    def test_identity_mismatch_is_not_cloned(self, tmp_path: Path) -> None:
+        cache = IndexCache(tmp_path / "cache")
+        src = _fake_index(tmp_path)
+        cache.put(indexing_hash="h1", index_path=src, sha="abc")
+        with pytest.raises(IndexCacheError, match="no matching cache entry"):
+            cache.clone_writable(
+                indexing_hash="h1", destination=tmp_path / "clone.db", sha="def"
+            )
+
+    def test_replaces_destination_atomically(self, tmp_path: Path) -> None:
+        cache = IndexCache(tmp_path / "cache")
+        src = _fake_index(tmp_path)
+        cache.put(indexing_hash="h1", index_path=src)
+        destination = tmp_path / "clone.db"
+        destination.write_bytes(b"old")
+
+        cache.clone_writable(indexing_hash="h1", destination=destination)
+
+        assert destination.read_bytes() == b"sqlite:db"
+        assert not list(tmp_path.glob(".clone.db.tmp-*"))
+
+    def test_rejects_destination_aliasing_cache(self, tmp_path: Path) -> None:
+        cache = IndexCache(tmp_path / "cache")
+        src = _fake_index(tmp_path)
+        cache.put(indexing_hash="h1", index_path=src)
+        alias = tmp_path / "alias"
+        alias.symlink_to(cache.base_dir / "h1", target_is_directory=True)
+
+        with pytest.raises(IndexCacheError, match="must not be the cached index"):
+            cache.clone_writable(
+                indexing_hash="h1", destination=alias / "index.db"
+            )
 
 
 # ---------------------------------------------------------------------------
