@@ -1,0 +1,57 @@
+{
+  "eligible": true,
+  "failures": [],
+  "command": "uv run stropha bench routing --route-iterations 10000 --json",
+  "executed_at": "2026-08-13T16:31:44Z",
+  "cases": 14,
+  "top_k": 10,
+  "routing": {
+    "correct": 14,
+    "accuracy": 1.0,
+    "graph_fallbacks": 0
+  },
+  "baseline": {
+    "router": "noop",
+    "success_at_k": 0.7142857142857143,
+    "ndcg_at_k": 0.6615613933673511,
+    "latency_p50_ms": 139.8656669916818,
+    "latency_p95_ms": 1760.431292001158
+  },
+  "candidate": {
+    "router": "pattern:llm=0",
+    "success_at_k": 1.0,
+    "ndcg_at_k": 0.9472756790816368,
+    "latency_p50_ms": 7.255207994603552,
+    "latency_p95_ms": 568.0338750098599
+  },
+  "delta": {
+    "success_at_k": 0.2857142857142857,
+    "ndcg_at_k": 0.2857142857142857
+  },
+  "router_latency": {
+    "iterations": 10000,
+    "p50_ms": 0.005334,
+    "p95_ms": 0.009458,
+    "limit_ms": 0.1
+  },
+  "lost_baseline_hits": [],
+  "provenance": {
+    "golden_path": "tests/eval/routing.jsonl",
+    "golden_sha256": "997e15e9ba67be90442f49e4c4eae82504bf2683fc87028c68ce145cbe248286",
+    "repo_key": "github.com/jonatasfischer/stropha",
+    "repo_id": 1,
+    "source_commit": "245b3c392edc8a47edf9227c868b11e339815662",
+    "source_dirty": false,
+    "indexed_commit": "245b3c392edc8a47edf9227c868b11e339815662",
+    "pipeline": {
+      "enricher": "contextual:t=0.0:p=93f8f282:cfg=c5ab6279:llm=f1f4ec43:batch=8",
+      "embedder": "mlx:mlx-community/Qwen3-Embedding-4B-4bit-DWQ:2560",
+      "storage": "postgres:dim=2560",
+      "retrieval": "hybrid-rrf:k=60:streams=35c9b110:reranker=reranker:noop:adaptive=1:mq=0:3:rewrite=0:hyde=0:None:recursive=1:adjacency=5:inherit=1:learned=none"
+    },
+    "index": {
+      "preflight_failures": [],
+      "comparable": true
+    }
+  }
+}

@@ -21,8 +21,9 @@ The command compares semantic-only search with deterministic `PatternRouter`
 dispatch over the same repository-scoped runtime. It fails closed on routing
 accuracy below 95%, graph fallback, Success@K or NDCG regression, lost baseline
 hits, router p95 above 0.1 ms, source changes, index commit drift, or adapter
-identity drift. After the first clean run, the catalog is exposed and must be
-replaced rather than tuned or rerun.
+identity drift. The one-time clean run at commit `245b3c3` passed and is archived
+in `tests/eval/routing-baseline-997e15e9.json`. The catalog is now exposed and
+must be replaced rather than tuned or rerun.
 
 The comparable production baseline for this hash is archived in
 `tests/eval/baseline-c61c5fef.json` with exact pipeline and index provenance.

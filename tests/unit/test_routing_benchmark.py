@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -82,7 +83,8 @@ def test_load_routing_cases_requires_frozen_holdout_contract(tmp_path: Path) -> 
 
 def test_checked_in_routing_catalog_matches_deterministic_router() -> None:
     root = Path(__file__).resolve().parents[2]
-    cases = load_routing_cases(root / "tests/eval/routing.jsonl")
+    catalog = root / "tests/eval/routing.jsonl"
+    cases = load_routing_cases(catalog)
     router = PatternRouter()
 
     assert len(cases) >= 12
@@ -90,6 +92,14 @@ def test_checked_in_routing_catalog_matches_deterministic_router() -> None:
         routed = router.route(case.eval_case.query)
         assert routed.intent == case.expected_intent, case.eval_case.id
         assert routed.symbol == case.expected_route_symbol, case.eval_case.id
+
+    evidence = json.loads(
+        (root / "tests/eval/routing-baseline-997e15e9.json").read_text(encoding="utf-8")
+    )
+    assert evidence["provenance"]["golden_sha256"] == hashlib.sha256(
+        catalog.read_bytes()
+    ).hexdigest()
+    assert evidence["eligible"] is True
 
 
 def test_benchmark_accepts_non_regressing_deterministic_routes() -> None:

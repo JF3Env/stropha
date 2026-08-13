@@ -724,6 +724,14 @@ NDCG comparison, and a 10,000-call router latency microbenchmark. The fresh coho
 must be run once after its defining commit is indexed; that first clean run becomes
 the promotion evidence and exposes the catalog.
 
+The one-time clean holdout ran at commit `245b3c3` against catalog fingerprint
+`997e15e9`. All 14 routes matched intent, extracted symbol, and tool with no graph
+fallback. Success@10 improved from 0.7143 to 1.0000 (+0.2857), NDCG@10 from
+0.6616 to 0.9473 (+0.2857), and no baseline hit was lost. The 10,000-call pattern
+router microbenchmark measured 0.009458 ms p95 against the 0.1 ms limit. Evidence
+is archived in `tests/eval/routing-baseline-997e15e9.json`; the cohort is exposed
+and must not be rerun or tuned.
+
 ## 12. Phase 6: Selective Query Expansion
 
 ### Goal
