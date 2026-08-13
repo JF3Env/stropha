@@ -528,23 +528,63 @@ class TestEvalSplit:
             load_golden(f)
 
     def test_real_golden_file_is_validly_split(self):
-        """End-to-end: the shipped tests/eval/golden.jsonl loads and the
-        70/30 split target holds (allowing for some slack)."""
+        """The production golden satisfies the Phase 3 dataset contract."""
         from pathlib import Path as _Path
 
         from stropha.eval import load_golden, split_counts
 
-        golden = _Path(__file__).resolve().parent.parent.parent / "tests" / "eval" / "golden.jsonl"
+        root = _Path(__file__).resolve().parents[2]
+        golden = root / "tests/eval/golden.jsonl"
+        from stropha.ingest.walker import Walker
+
+        assert Walker(root).evaluate_path("tests/eval/golden.jsonl") is None
         cases = load_golden(golden)
         counts = split_counts(cases)
         total = counts["search"] + counts["holdout"]
-        assert total >= 25, f"expected >=25 golden cases, got {total}"
-        # Holdout share between 20% and 40% — wide tolerance.
+        assert total >= 120, f"expected >=120 golden cases, got {total}"
+        assert len({case.id for case in cases}) == total
+
         holdout_pct = counts["holdout"] / total
         assert 0.20 <= holdout_pct <= 0.40, (
             f"holdout share {holdout_pct:.0%} outside [20%, 40%] "
             f"(counts={counts})"
         )
+
+        major_categories = {
+            "exact-lookup",
+            "conceptual",
+            "callers-usage",
+            "tests-contracts",
+            "feature-trace",
+            "config-ops",
+            "docs-rationale",
+            "ambiguous-symbols",
+            "noisy-negative",
+            "multi-repo",
+        }
+        for split in ("search", "holdout"):
+            covered = {tag for case in cases if case.split == split for tag in case.tags}
+            assert major_categories <= covered
+
+        multi_or_graded = sum(
+            case.relevant_entity_count > 1 or bool(case.relevance_map) for case in cases
+        )
+        assert multi_or_graded / total >= 0.5
+
+        for case in cases:
+            expected_entities = set(case.expected_paths) | set(case.expected_symbols)
+            assert expected_entities
+            if case.relevance_map:
+                assert set(case.relevance_map) == expected_entities
+                assert all(1 <= score <= 3 for score in case.relevance_map.values())
+            assert len(case.expected_symbols) <= len(case.expected_paths)
+            for index, symbol in enumerate(case.expected_symbols):
+                source = (root / case.expected_paths[index]).read_text(
+                    encoding="utf-8", errors="replace"
+                )
+                assert symbol.rsplit(".", 1)[-1] in source, (
+                    f"{case.id}: {symbol!r} not found in {case.expected_paths[index]!r}"
+                )
 
 
 # ---------------------------------------------------------------------------

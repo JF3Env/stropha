@@ -3,6 +3,13 @@
 Golden data is generated through checked-in batch specifications. Do not hand-edit
 materialized files under `.stropha/bench/batches/`.
 
+The production golden contains 124 source-reviewed cases: 88 search and 36
+holdout, with 72 graded or multi-entity cases and every major category represented
+in both splits. SHA-256:
+`c61c5fef05bd3f2f0f67e3da425d3bd46d79c2bca9b779aa135187c4c5e01b1b`.
+`tests/eval/golden.jsonl` is an answer catalog and must remain excluded from
+indexing.
+
 ## Workflow
 
 `phase3-unseen-holdout-v1` is retained as an invalidated historical specification

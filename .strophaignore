@@ -63,6 +63,7 @@
 
 # Evaluation answer catalogs must never be retrieval candidates.
 **/bench/*holdout*_cases.yaml
+tests/eval/golden.jsonl
 
 # Graphify output — graph.json is consumed via loader, not text-indexed.
 # manifest.json (~700KB) and cache/ast/ are graphify internals.

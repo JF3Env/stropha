@@ -564,6 +564,14 @@ For every confirmed poor production result:
 - Search and holdout both contain every major query category.
 - Baseline scores are archived with the expanded golden hash.
 
+The representative dataset was expanded to 124 source-reviewed cases on
+2026-08-13. It contains 88 search and 36 holdout cases, 72 graded or multi-entity
+cases, and both splits cover all ten major categories. The answer catalog is
+excluded from indexing and has SHA-256
+`c61c5fef05bd3f2f0f67e3da425d3bd46d79c2bca9b779aa135187c4c5e01b1b`.
+Baseline archival remains pending until the post-commit index refresh removes
+the catalog and resolves the active contextual-enricher identity drift.
+
 ## 10. Phase 4: Feedback-Driven Stream Learning
 
 ### Goal
@@ -936,9 +944,9 @@ compatible reindex and must never be hidden by editing metadata.
 - [x] Define category quotas and authoring guide.
 - [x] Freeze a replacement unseen promotion cohort with answer catalogs excluded.
 - [x] Add reproducible batch gates, verification, and explicit promotion tooling.
-- [ ] Expand to at least 120 reviewed cases.
-- [ ] Make at least half multi-entity or graded.
-- [ ] Validate search/holdout category coverage.
+- [x] Expand to at least 120 reviewed cases.
+- [x] Make at least half multi-entity or graded.
+- [x] Validate search/holdout category coverage.
 - [ ] Archive expanded-golden baseline.
 
 ### Phase 4

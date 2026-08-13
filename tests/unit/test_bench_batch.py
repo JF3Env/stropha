@@ -11,8 +11,10 @@ from typer.testing import CliRunner
 
 from stropha.bench.batch import (
     BatchError,
+    _load_catalog,
     _promote,
     _run_verification,
+    _validate_cases,
     evaluate_gates,
     prepare_batch,
     run_batch,
@@ -563,18 +565,17 @@ def test_batch_cli_reports_batch_errors(monkeypatch: pytest.MonkeyPatch) -> None
     assert "Batch failed: unsafe batch" in result.output
 
 
-def test_phase3_v4_catalog_prepares_with_balanced_unseen_cases(tmp_path: Path) -> None:
+def test_phase3_v4_catalog_has_balanced_valid_cases() -> None:
     root = Path(__file__).resolve().parents[2]
-    source_spec = root / "src/stropha/bench/phase3_v4_holdout_batch.yaml"
-    raw = yaml.safe_load(source_spec.read_text(encoding="utf-8"))
-    raw["repo"] = str(root)
-    spec = tmp_path / "phase3_v4_holdout_batch.yaml"
-    spec.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    cases = _load_catalog(root / "src/stropha/bench/phase3_v4_holdout_cases.yaml")
+    exposed = _load_catalog(root / "src/stropha/bench/phase3_holdout_cases.yaml")
+    validation = _validate_cases(
+        cases,
+        exposed,
+        root,
+        {"min_cases": 30, "min_per_category": 3, "min_multi_or_graded_ratio": 1.0},
+    )
 
-    prepared = prepare_batch(spec, artifact_root=tmp_path / "artifacts")
-    manifest = json.loads(prepared.manifest_path.read_text(encoding="utf-8"))
-
-    assert prepared.case_count == 30
-    assert manifest["validation"]["exposed_case_count"] == 84
-    assert manifest["validation"]["multi_or_graded_ratio"] == 1.0
-    assert set(manifest["validation"]["category_counts"].values()) == {3}
+    assert len(cases) == 30
+    assert validation["multi_or_graded_ratio"] == 1.0
+    assert set(validation["category_counts"].values()) == {3}
