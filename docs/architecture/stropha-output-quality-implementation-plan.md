@@ -569,8 +569,10 @@ The representative dataset was expanded to 124 source-reviewed cases on
 cases, and both splits cover all ten major categories. The answer catalog is
 excluded from indexing and has SHA-256
 `c61c5fef05bd3f2f0f67e3da425d3bd46d79c2bca9b779aa135187c4c5e01b1b`.
-Baseline archival remains pending until the post-commit index refresh removes
-the catalog and resolves the active contextual-enricher identity drift.
+The post-commit refresh removed the catalog from retrieval and resolved the
+active contextual-enricher identity drift at commit `c22a556`. The comparable production baseline
+was archived in `tests/eval/baseline-c61c5fef.json`: Success@10 `0.9032`,
+Recall@10 `0.8199`, MRR `0.8224`, and NDCG@10 `0.7810` at `rrf_k=60`.
 
 ## 10. Phase 4: Feedback-Driven Stream Learning
 
@@ -947,7 +949,7 @@ compatible reindex and must never be hidden by editing metadata.
 - [x] Expand to at least 120 reviewed cases.
 - [x] Make at least half multi-entity or graded.
 - [x] Validate search/holdout category coverage.
-- [ ] Archive expanded-golden baseline.
+- [x] Archive expanded-golden baseline.
 
 ### Phase 4
 

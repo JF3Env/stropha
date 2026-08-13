@@ -538,6 +538,14 @@ class TestEvalSplit:
         from stropha.ingest.walker import Walker
 
         assert Walker(root).evaluate_path("tests/eval/golden.jsonl") is None
+        import hashlib
+        import json
+
+        baseline = json.loads(
+            (root / "tests/eval/baseline-c61c5fef.json").read_text(encoding="utf-8")
+        )
+        assert baseline["golden_sha256"] == hashlib.sha256(golden.read_bytes()).hexdigest()
+        assert baseline["index"]["comparable"] is True
         cases = load_golden(golden)
         counts = split_counts(cases)
         total = counts["search"] + counts["holdout"]

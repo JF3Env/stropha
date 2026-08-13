@@ -10,6 +10,9 @@ in both splits. SHA-256:
 `tests/eval/golden.jsonl` is an answer catalog and must remain excluded from
 indexing.
 
+The comparable production baseline for this hash is archived in
+`tests/eval/baseline-c61c5fef.json` with exact pipeline and index provenance.
+
 ## Workflow
 
 `phase3-unseen-holdout-v1` is retained as an invalidated historical specification

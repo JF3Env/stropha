@@ -1,0 +1,51 @@
+{
+  "recorded_at": "2026-08-13T09:51:32Z",
+  "source_commit": "c22a5569758de31f8c23718ec6b64917c628204e",
+  "golden_sha256": "c61c5fef05bd3f2f0f67e3da425d3bd46d79c2bca9b779aa135187c4c5e01b1b",
+  "repo_scope": "current",
+  "repo_key": "github.com/jonatasfischer/stropha",
+  "top_k": 10,
+  "summary": {
+    "cases": 124,
+    "hits": 112,
+    "success@10": 0.9032,
+    "recall@10": 0.8199,
+    "mrr": 0.8224,
+    "ndcg@10": 0.781,
+    "precision@10": 0.1306,
+    "map@10": 0.7255,
+    "latency_p50_ms": 1805.172,
+    "latency_p95_ms": 7861.088,
+    "latency_p99_ms": 9513.327,
+    "returned_tokens": 83948,
+    "reranker_attempts": 124,
+    "reranker_fallbacks": 0,
+    "reranker_fallback_rate": 0.0
+  },
+  "major_categories": {
+    "exact-lookup": {"success@10": 1.0, "recall@10": 1.0, "ndcg@10": 0.9473},
+    "conceptual": {"success@10": 0.8571, "recall@10": 0.7143, "ndcg@10": 0.6568},
+    "callers-usage": {"success@10": 1.0, "recall@10": 0.6667, "ndcg@10": 0.7273},
+    "tests-contracts": {"success@10": 1.0, "recall@10": 0.8571, "ndcg@10": 0.9329},
+    "feature-trace": {"success@10": 0.8571, "recall@10": 0.8571, "ndcg@10": 0.7101},
+    "config-ops": {"success@10": 1.0, "recall@10": 0.9524, "ndcg@10": 0.9653},
+    "docs-rationale": {"success@10": 0.8571, "recall@10": 0.5476, "ndcg@10": 0.5819},
+    "ambiguous-symbols": {"success@10": 1.0, "recall@10": 0.8333, "ndcg@10": 0.806},
+    "noisy-negative": {"success@10": 0.8571, "recall@10": 0.7619, "ndcg@10": 0.6978},
+    "multi-repo": {"success@10": 1.0, "recall@10": 0.8333, "ndcg@10": 0.7265}
+  },
+  "pipeline": {
+    "walker": "git-ls-files:max=524288",
+    "chunker": "tree-sitter-dispatch:adf5cceb",
+    "enricher": "contextual:t=0.0:p=93f8f282:cfg=c5ab6279:llm=f1f4ec43:batch=8",
+    "embedder": "mlx:mlx-community/Qwen3-Embedding-4B-4bit-DWQ:2560",
+    "storage": "postgres:dim=2560",
+    "retrieval": "hybrid-rrf:k=60:streams=35c9b110:reranker=reranker:llm:cfg=cd5a99c0:llm=f1f4ec43:p=8a547f62:adaptive=1:learned=d8e254e8"
+  },
+  "index": {
+    "indexed_enricher": "contextual:t=0.0:p=93f8f282:cfg=c5ab6279:llm=f1f4ec43:batch=8",
+    "indexed_embedder": "mlx:mlx-community/Qwen3-Embedding-4B-4bit-DWQ:2560",
+    "config_drift": false,
+    "comparable": true
+  }
+}
