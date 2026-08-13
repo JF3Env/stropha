@@ -2219,6 +2219,179 @@ def bench_batch_cmd(
     console.print_json(data=result)
 
 
+@bench_app.command("routing")
+def bench_routing_cmd(
+    golden: Path = typer.Option(
+        Path("tests/eval/routing.jsonl"),
+        "--golden",
+        "-g",
+        help="Frozen structural-routing holdout JSONL.",
+    ),
+    top_k: int = typer.Option(10, "--top-k", "-k", min=1, max=100),
+    repo: Path | None = typer.Option(
+        None,
+        "--repo",
+        "-r",
+        help="Repository to evaluate. Defaults to the configured target repository.",
+    ),
+    route_iterations: int = typer.Option(
+        10_000,
+        "--route-iterations",
+        min=1,
+        help="Pattern-router calls used for the latency microbenchmark.",
+    ),
+    require_clean_index: bool = typer.Option(
+        True,
+        "--require-clean-index/--allow-dirty-index",
+        help="Require matching source commit and embedder/enricher identities.",
+    ),
+    json_out: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit machine-readable JSON instead of the summary table.",
+    ),
+) -> None:
+    """Compare deterministic structural routing with semantic-only search."""
+    import hashlib as _hashlib
+    import json as _json
+
+    from .bench.routing import (
+        RoutingBenchmarkError,
+        benchmark_routing,
+        load_routing_cases,
+    )
+    from .bench.runner import _source_worktree_state
+    from .ingest.git_meta import detect as _detect_repo
+    from .retrieval.graph import graph_loaded
+
+    if not golden.is_file():
+        console.print(f"[red]Routing golden file not found:[/red] {golden}")
+        raise typer.Exit(code=1)
+    try:
+        cases = load_routing_cases(golden)
+    except (OSError, RoutingBenchmarkError) as exc:
+        console.print(f"[red]Routing golden file invalid:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    resolved = load_pipeline_config(
+        overrides={"retrieval": {"config": {"reranker": {"adapter": "noop"}}}}
+    )
+    try:
+        built = build_stages(resolved)
+    except StrophaError as exc:
+        console.print(f"[red]Pipeline build error:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    cfg = _load_config()
+    target_repo = (repo or cfg.target_repo or Path.cwd()).expanduser().resolve()
+    identity = _detect_repo(target_repo)
+    source_state = _source_worktree_state(target_repo)
+    source_diff_sha = _hashlib.sha256(source_state).hexdigest() if source_state else None
+    repo_id = built.storage.lookup_repo_id(identity.normalized_key)
+    if repo_id is None:
+        console.print(f"[red]Repository is not indexed:[/red] {identity.normalized_key}")
+        raise typer.Exit(code=1)
+    indexed_repo = next(
+        (
+            item
+            for item in built.storage.list_repos()
+            if item.normalized_key == identity.normalized_key
+        ),
+        None,
+    )
+    indexed_enricher = built.storage.get_meta("active_enricher_id")
+    indexed_embedder = built.storage.get_meta("active_embedder_id")
+    active_enricher = built.effective_enricher_id()
+    active_embedder = built.embedder.adapter_id
+    preflight_failures = []
+    if source_state:
+        preflight_failures.append("working repository has uncommitted source changes")
+    if indexed_repo is None or indexed_repo.head_commit != identity.head_commit:
+        preflight_failures.append(
+            "indexed repository commit does not match the working repository HEAD"
+        )
+    if indexed_enricher != active_enricher:
+        preflight_failures.append("active enricher differs from the indexed identity")
+    if indexed_embedder != active_embedder:
+        preflight_failures.append("active embedder differs from the indexed identity")
+    if not graph_loaded(cast(Any, built.storage), repo_id=repo_id):
+        preflight_failures.append("repository graph is unavailable")
+    if preflight_failures and require_clean_index:
+        console.print("[red]Routing benchmark preflight failed:[/red]")
+        for failure in preflight_failures:
+            console.print(f"  - {failure}")
+        raise typer.Exit(code=1)
+
+    provenance = {
+        "golden_path": str(golden.resolve()),
+        "golden_sha256": _hashlib.sha256(golden.read_bytes()).hexdigest(),
+        "repo_key": identity.normalized_key,
+        "repo_id": repo_id,
+        "source_commit": identity.head_commit,
+        "source_dirty": bool(source_state),
+        "source_diff_sha256": source_diff_sha,
+        "indexed_commit": indexed_repo.head_commit if indexed_repo else None,
+        "pipeline": {
+            "enricher": active_enricher,
+            "embedder": active_embedder,
+            "storage": built.storage.adapter_id,
+            "retrieval": built.retrieval.adapter_id,
+        },
+        "index": {
+            "indexed_enricher": indexed_enricher,
+            "indexed_embedder": indexed_embedder,
+            "preflight_failures": preflight_failures,
+            "comparable": not preflight_failures,
+        },
+    }
+    try:
+        with built.storage:
+            result = benchmark_routing(
+                cases=cases,
+                storage=built.storage,
+                embedder=built.embedder,
+                search_engine=built.retrieval,
+                top_k=top_k,
+                repo_id=repo_id,
+                provenance=provenance,
+                route_iterations=route_iterations,
+            )
+    except StrophaError as exc:
+        console.print(f"[red]Routing benchmark failed:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    payload = result.to_dict() | {"provenance": provenance}
+    if json_out:
+        console.print_json(_json.dumps(payload))
+    else:
+        table = Table(title=f"Structural routing holdout ({len(cases)} cases)")
+        table.add_column("Arm", style="cyan")
+        table.add_column(f"Success@{top_k}", justify="right")
+        table.add_column(f"NDCG@{top_k}", justify="right")
+        table.add_column("Latency p95", justify="right")
+        table.add_row(
+            "semantic-only",
+            f"{result.baseline.success_at_k:.3f}",
+            f"{result.baseline.ndcg_at_k:.3f}",
+            f"{result.baseline.latency_p95_ms:.3f} ms",
+        )
+        table.add_row(
+            "pattern",
+            f"{result.candidate.success_at_k:.3f}",
+            f"{result.candidate.ndcg_at_k:.3f}",
+            f"{result.candidate.latency_p95_ms:.3f} ms",
+        )
+        console.print(table)
+        console.print(
+            f"[bold]Routing:[/bold] accuracy={result.routing_accuracy:.3f} · "
+            f"router_p95={result.router_latency_p95_ms:.6f} ms · "
+            f"eligible={result.eligible}"
+        )
+        for failure in result.failures:
+            console.print(f"[red]- {failure}[/red]")
+    raise typer.Exit(code=0 if result.eligible else 2)
+
+
 @bench_app.command("report")
 def bench_report_cmd(
     results: Path = typer.Argument(..., help="Results JSONL produced by `bench run`."),

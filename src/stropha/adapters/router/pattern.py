@@ -31,8 +31,7 @@ class PatternRouterConfig(BaseModel):
         default=False,
         description=(
             "Force route_query to escalate ambiguous queries to LLM "
-            "classification. False delegates to the global "
-            "retrieval_features.query_router_llm setting."
+            "classification. False keeps routing deterministic."
         ),
     )
 

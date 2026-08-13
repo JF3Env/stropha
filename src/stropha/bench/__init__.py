@@ -22,6 +22,13 @@ from __future__ import annotations
 from .batch import BatchError, prepare_batch, run_batch
 from .matrix import Cell, Matrix, MatrixError, load_matrix
 from .report import BenchReport, load_results
+from .routing import (
+    RoutingBenchmark,
+    RoutingBenchmarkError,
+    RoutingCase,
+    benchmark_routing,
+    load_routing_cases,
+)
 
 __all__ = [
     "BatchError",
@@ -29,8 +36,13 @@ __all__ = [
     "Cell",
     "Matrix",
     "MatrixError",
+    "RoutingBenchmark",
+    "RoutingBenchmarkError",
+    "RoutingCase",
+    "benchmark_routing",
     "load_matrix",
     "load_results",
+    "load_routing_cases",
     "prepare_batch",
     "run_batch",
 ]

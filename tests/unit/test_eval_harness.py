@@ -536,9 +536,12 @@ class TestEvalSplit:
 
         root = _Path(__file__).resolve().parents[2]
         golden = root / "tests/eval/golden.jsonl"
+        routing = root / "tests/eval/routing.jsonl"
         from stropha.ingest.walker import Walker
 
         assert Walker(root).evaluate_path("tests/eval/golden.jsonl") is None
+        assert Walker(root).evaluate_path("tests/eval/routing.jsonl") is None
+        assert routing.is_file()
         import hashlib
         import json
 

@@ -717,6 +717,12 @@ configuration opts in. Routed graph and symbol tools preserve repository scope;
 when the graph is unavailable, smart search performs an explicit semantic fallback
 whose route, confidence, and reason are exposed in MCP response metadata. The
 structural holdout retrieval-quality comparison remains a separate promotion gate.
+`stropha bench routing` now implements that gate with a separately frozen,
+index-excluded catalog, same-runtime semantic and pattern-router arms, repository
+and source/index identity preflight, per-case route diagnostics, Success@K and
+NDCG comparison, and a 10,000-call router latency microbenchmark. The fresh cohort
+must be run once after its defining commit is indexed; that first clean run becomes
+the promotion evidence and exposes the catalog.
 
 ## 12. Phase 6: Selective Query Expansion
 

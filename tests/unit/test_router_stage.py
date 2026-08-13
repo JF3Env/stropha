@@ -436,6 +436,88 @@ class TestSmartSearchUsesRouter:
         assert result.tool_used == "get_symbol"
         storage.lookup_by_symbol.assert_called_once_with("Foo", limit=10, repo_id=42)
 
+    def test_trace_route_converts_flat_graph_nodes_to_hits(self) -> None:
+        from stropha.retrieval.smart_search import smart_search
+
+        router = MagicMock()
+        router.route.return_value = RoutedQuery(
+            intent=QueryIntent.TRACE_FEATURE,
+            symbol="feature flow",
+            original_query="trace feature flow",
+            confidence=0.9,
+            reason="trace pattern",
+        )
+        node = {
+            "node_id": "repo:src_feature_run",
+            "label": "run()",
+            "source_file": "src/feature.py",
+            "source_location": "L12",
+        }
+        with (
+            patch("stropha.retrieval.graph.graph_loaded", return_value=True),
+            patch(
+                "stropha.retrieval.graph.trace_feature",
+                return_value={"paths": [{"chain": [node]}], "nodes": [node]},
+            ),
+        ):
+            result = smart_search(
+                "trace feature flow",
+                MagicMock(),
+                MagicMock(),
+                router=router,
+                repo_id=42,
+            )
+
+        assert result.tool_used == "trace_feature"
+        assert [hit.rel_path for hit in result.hits] == ["src/feature.py"]
+
+    def test_trace_route_preserves_path_chain_order(self) -> None:
+        from stropha.retrieval.smart_search import smart_search
+
+        router = MagicMock()
+        router.route.return_value = RoutedQuery(
+            intent=QueryIntent.TRACE_FEATURE,
+            symbol="feature flow",
+            original_query="trace feature flow",
+            confidence=0.9,
+            reason="trace pattern",
+        )
+        entry = {
+            "node_id": "repo:entry",
+            "label": "entry()",
+            "source_file": "src/entry.py",
+        }
+        called = {
+            "node_id": "repo:called",
+            "label": "called()",
+            "source_file": "src/called.py",
+        }
+        unrelated = {
+            "node_id": "repo:unrelated",
+            "label": "unrelated()",
+            "source_file": "src/unrelated.py",
+        }
+        with (
+            patch("stropha.retrieval.graph.graph_loaded", return_value=True),
+            patch(
+                "stropha.retrieval.graph.trace_feature",
+                return_value={
+                    "paths": [{"chain": [entry, called]}],
+                    "nodes": [unrelated, called, entry],
+                },
+            ),
+        ):
+            result = smart_search(
+                "trace feature flow",
+                MagicMock(),
+                MagicMock(),
+                top_k=2,
+                router=router,
+                repo_id=42,
+            )
+
+        assert [hit.rel_path for hit in result.hits] == ["src/entry.py", "src/called.py"]
+
     def test_graph_unavailable_fallback_is_explicit_and_scoped(self) -> None:
         from stropha.retrieval.smart_search import smart_search
 

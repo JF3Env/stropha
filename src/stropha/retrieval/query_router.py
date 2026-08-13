@@ -219,7 +219,7 @@ def route_query(
     # Try pattern matching first (fast)
     result = _pattern_match(query)
     if result:
-        log.info(
+        log.debug(
             "query_router.pattern_match",
             intent=result.intent.value,
             symbol=result.symbol,

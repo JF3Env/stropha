@@ -10,6 +10,20 @@ in both splits. SHA-256:
 `tests/eval/golden.jsonl` is an answer catalog and must remain excluded from
 indexing.
 
+`tests/eval/routing.jsonl` is the frozen Phase 5 structural-routing holdout. Run
+it once, after its defining commit has been indexed, with:
+
+```bash
+uv run stropha bench routing
+```
+
+The command compares semantic-only search with deterministic `PatternRouter`
+dispatch over the same repository-scoped runtime. It fails closed on routing
+accuracy below 95%, graph fallback, Success@K or NDCG regression, lost baseline
+hits, router p95 above 0.1 ms, source changes, index commit drift, or adapter
+identity drift. After the first clean run, the catalog is exposed and must be
+replaced rather than tuned or rerun.
+
 The comparable production baseline for this hash is archived in
 `tests/eval/baseline-c61c5fef.json` with exact pipeline and index provenance.
 That checked-in all-case report is distinct from the Meta-Harness promotion

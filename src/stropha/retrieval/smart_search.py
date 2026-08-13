@@ -169,14 +169,15 @@ def smart_search(
         # trace_feature uses the full query, not just symbol
         feature = routed.symbol or routed.original_query
         result = graph.trace_feature(storage, feature, max_paths=top_k, repo_id=repo_id)
-        # Flatten paths to hits
-        all_nodes = []
-        for path in result.get("paths", []):
-            all_nodes.extend(path.get("nodes", []))
-        # Dedupe by node_id
-        seen = set()
+        path_nodes = [
+            node
+            for path in result.get("paths", [])
+            for node in path.get("chain", [])
+        ]
+        nodes = path_nodes or result.get("nodes", [])
+        seen: set[str] = set()
         unique_nodes = []
-        for node in all_nodes:
+        for node in nodes:
             node_id = node.get("node_id") or node.get("symbol")
             if node_id and node_id not in seen:
                 seen.add(node_id)
