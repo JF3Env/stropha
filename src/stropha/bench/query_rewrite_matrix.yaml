@@ -1,0 +1,16 @@
+# Phase 6 query-rewrite-only development matrix.
+# Reuse the search split while tuning; holdout requires a separately frozen batch.
+
+repo: .
+golden: tests/eval/golden.jsonl
+top_k: 10
+
+axes:
+  query_rewrite: [false, true]
+  query_rewrite_max_terms: [6]
+
+baseline:
+  query_rewrite: false
+  query_rewrite_max_terms: 6
+
+constraints: []

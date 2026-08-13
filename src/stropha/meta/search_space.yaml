@@ -78,6 +78,13 @@ features:
     default: false
     binding: pipeline.retrieval.config.query_rewrite_enabled
 
+  query_rewrite_max_terms:
+    indexing: false
+    type: int
+    range: [1, 20]
+    default: 6
+    binding: pipeline.retrieval.config.query_rewrite_max_terms
+
   multi_query:
     indexing: false
     type: bool

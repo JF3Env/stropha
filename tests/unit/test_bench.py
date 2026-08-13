@@ -92,8 +92,7 @@ def test_expand_product_minus_constraints(matrix) -> None:
     # No cell violates the skip constraint.
     for c in cells:
         assert not (
-            c.values["embedder"] == {"adapter": "mlx"}
-            and c.values["enricher"] == "hierarchical"
+            c.values["embedder"] == {"adapter": "mlx"} and c.values["enricher"] == "hierarchical"
         )
 
 
@@ -121,10 +120,17 @@ def test_groups_by_indexing_signature(matrix) -> None:
 
 
 def test_query_only_change_shares_index(matrix) -> None:
-    a = Cell(values={"embedder": {"adapter": "mlx"}, "enricher": "noop",
-                     "reranker": None, "hyde": False})
-    b = Cell(values={"embedder": {"adapter": "mlx"}, "enricher": "noop",
-                     "reranker": "code-aware", "hyde": True})
+    a = Cell(
+        values={"embedder": {"adapter": "mlx"}, "enricher": "noop", "reranker": None, "hyde": False}
+    )
+    b = Cell(
+        values={
+            "embedder": {"adapter": "mlx"},
+            "enricher": "noop",
+            "reranker": "code-aware",
+            "hyde": True,
+        }
+    )
     assert a.indexing_sig == b.indexing_sig  # only query axes differ
     assert a.cell_id != b.cell_id
 
@@ -158,14 +164,20 @@ def test_select_axes_rejects_unknown_or_unpinned_axes(matrix) -> None:
 
 
 def test_retrieval_axes_map_to_runtime_config_fields() -> None:
-    overrides = _retrieval_overrides(Cell(values={
-        "rrf_k": 80,
-        "candidate_k": 40,
-        "recursive": True,
-        "recursive_adjacency": 9,
-        "adaptive_weighting": False,
-        "learned_weights": True,
-    }))
+    overrides = _retrieval_overrides(
+        Cell(
+            values={
+                "rrf_k": 80,
+                "candidate_k": 40,
+                "recursive": True,
+                "recursive_adjacency": 9,
+                "adaptive_weighting": False,
+                "learned_weights": True,
+                "query_rewrite": True,
+                "query_rewrite_max_terms": 6,
+            }
+        )
+    )
     config = overrides["retrieval"]["config"]
     assert config == {
         "rrf_k": 80,
@@ -174,7 +186,18 @@ def test_retrieval_axes_map_to_runtime_config_fields() -> None:
         "recursive_adjacency": 9,
         "adaptive_weighting": False,
         "learned_weights_enabled": True,
+        "query_rewrite_enabled": True,
+        "query_rewrite_max_terms": 6,
     }
+
+
+def test_query_rewrite_matrix_is_two_isolated_search_arms() -> None:
+    path = Path(__file__).resolve().parents[2] / "src/stropha/bench/query_rewrite_matrix.yaml"
+    matrix = load_matrix(path)
+
+    assert [cell.values["query_rewrite"] for cell in matrix.expand()] == [False, True]
+    assert matrix.baseline_cell() is not None
+    assert matrix.baseline_cell().values["query_rewrite"] is False
 
 
 def test_active_matrix_parses_and_has_declared_baseline() -> None:
@@ -199,18 +222,17 @@ def test_active_matrix_pins_deployed_contextual_identity() -> None:
 
 
 def test_phase2_shortlist_is_frozen_to_four_cells() -> None:
-    path = (
-        Path(__file__).resolve().parents[2]
-        / "src/stropha/bench/phase2_shortlist_matrix.yaml"
-    )
+    path = Path(__file__).resolve().parents[2] / "src/stropha/bench/phase2_shortlist_matrix.yaml"
     shortlist = load_matrix(path)
     cells = shortlist.expand()
 
     assert len(cells) == 4
-    assert {
-        (cell.values["adaptive_weighting"], cell.values["rrf_k"])
-        for cell in cells
-    } == {(True, 60), (True, 40), (False, 60), (False, 80)}
+    assert {(cell.values["adaptive_weighting"], cell.values["rrf_k"]) for cell in cells} == {
+        (True, 60),
+        (True, 40),
+        (False, 60),
+        (False, 80),
+    }
     assert shortlist.baseline_cell() is not None
     active_path = Path(__file__).resolve().parents[2] / "src/stropha/bench/active_matrix.yaml"
     assert set(shortlist.groups()) == set(load_matrix(active_path).groups())
@@ -235,19 +257,26 @@ def test_all_excluded_raises(tmp_path: Path) -> None:
 
 # --------------------------------------------------------------------------- report
 
+
 def _results() -> list[dict]:
     provenance = {"run_id": "run-one", "golden_sha256": "golden-one"}
     return [
         {
-            "ok": True, "cell_id": "a", "indexing_sig": "i1",
-            "label": "reranker=None", "values": {"reranker": None, "hyde": False},
+            "ok": True,
+            "cell_id": "a",
+            "indexing_sig": "i1",
+            "label": "reranker=None",
+            "values": {"reranker": None, "hyde": False},
             "metrics": {"recall@10": 0.8, "mrr": 0.5},
             "provenance": provenance,
             "per_query": {"q1": 1, "q2": None, "q3": 2},
         },
         {
-            "ok": True, "cell_id": "b", "indexing_sig": "i1",
-            "label": "reranker=code-aware", "values": {"reranker": "code-aware", "hyde": False},
+            "ok": True,
+            "cell_id": "b",
+            "indexing_sig": "i1",
+            "label": "reranker=code-aware",
+            "values": {"reranker": "code-aware", "hyde": False},
             "metrics": {"recall@10": 0.7, "mrr": 0.55},
             "provenance": provenance,
             "per_query": {"q1": 1, "q2": 3, "q3": None},
@@ -258,12 +287,16 @@ def _results() -> list[dict]:
 def test_load_results_filters_failures(tmp_path: Path) -> None:
     p = tmp_path / "r.jsonl"
     lines = [json.dumps(r) for r in _results()]
-    lines.append(json.dumps({
-        "ok": False,
-        "cell_id": "c",
-        "provenance": {"run_id": "run-one"},
-        "error": "boom",
-    }))
+    lines.append(
+        json.dumps(
+            {
+                "ok": False,
+                "cell_id": "c",
+                "provenance": {"run_id": "run-one"},
+                "error": "boom",
+            }
+        )
+    )
     lines.append("")  # blank line tolerated
     p.write_text("\n".join(lines), encoding="utf-8")
     out = load_results(p)
@@ -286,11 +319,16 @@ def test_load_results_rejects_mixed_or_missing_run_identity(tmp_path: Path) -> N
 
 def test_resume_rejects_incomparable_output(tmp_path: Path) -> None:
     p = tmp_path / "results.jsonl"
-    p.write_text(json.dumps({
-        "ok": True,
-        "cell_id": "a",
-        "provenance": {"run_id": "old"},
-    }), encoding="utf-8")
+    p.write_text(
+        json.dumps(
+            {
+                "ok": True,
+                "cell_id": "a",
+                "provenance": {"run_id": "old"},
+            }
+        ),
+        encoding="utf-8",
+    )
     with pytest.raises(BenchError, match="use a new --out path"):
         _validate_output_identity(p, "new")
 
@@ -344,10 +382,12 @@ def test_source_state_includes_untracked_content(
 
     first = _source_worktree_state(tmp_path)
     untracked.write_text("second\n", encoding="utf-8")
-    runs.extend([
-        SimpleNamespace(returncode=0, stdout=b"tracked diff"),
-        SimpleNamespace(returncode=0, stdout=b"new.py\0"),
-    ])
+    runs.extend(
+        [
+            SimpleNamespace(returncode=0, stdout=b"tracked diff"),
+            SimpleNamespace(returncode=0, stdout=b"new.py\0"),
+        ]
+    )
 
     assert first != _source_worktree_state(tmp_path)
 
@@ -404,9 +444,7 @@ def test_run_matrix_filters_cases_to_selected_split(
         },
     )
     monkeypatch.setattr("stropha.bench.runner._source_worktree_state", lambda _repo: b"")
-    monkeypatch.setattr(
-        "stropha.bench.runner._assert_run_environment", lambda *_args: None
-    )
+    monkeypatch.setattr("stropha.bench.runner._assert_run_environment", lambda *_args: None)
     index_paths: list[Path] = []
     monkeypatch.setattr(
         "stropha.bench.runner.build_index",
@@ -430,9 +468,7 @@ def test_run_matrix_filters_cases_to_selected_split(
     assert summary["evaluated"] == 1
     assert seen == ["search-case"]
     first_sig = next(iter(matrix.groups()))
-    assert index_paths == [
-        tmp_path / f"indexes/index_{first_sig}_source-one_index-runtime-one.db"
-    ]
+    assert index_paths == [tmp_path / f"indexes/index_{first_sig}_source-one_index-runtime-one.db"]
 
 
 def test_rank_table_sorts_desc() -> None:
@@ -444,13 +480,15 @@ def test_rank_table_sorts_desc() -> None:
 
 def test_metric_names_prioritize_quality_and_guardrails() -> None:
     results = _results()
-    results[0]["metrics"].update({
-        "success@10": 0.8,
-        "ndcg@10": 0.7,
-        "returned_tokens": 100,
-        "latency_p99_ms": 12.0,
-        "reranker_fallback_rate": 0.1,
-    })
+    results[0]["metrics"].update(
+        {
+            "success@10": 0.8,
+            "ndcg@10": 0.7,
+            "returned_tokens": 100,
+            "latency_p99_ms": 12.0,
+            "reranker_fallback_rate": 0.1,
+        }
+    )
     names = BenchReport(results).metric_names()
     assert names.index("ndcg@10") < names.index("returned_tokens")
     assert names.index("returned_tokens") < names.index("latency_p99_ms")
@@ -459,14 +497,16 @@ def test_metric_names_prioritize_quality_and_guardrails() -> None:
 
 def test_quality_columns_are_concise_and_keep_selected_metric() -> None:
     results = _results()
-    results[0]["metrics"].update({
-        "success@10": 0.8,
-        "ndcg@10": 0.7,
-        "returned_tokens": 100,
-        "latency_p95_ms": 12.0,
-        "latency_p99_ms": 15.0,
-        "reranker_fallback_rate": 0.1,
-    })
+    results[0]["metrics"].update(
+        {
+            "success@10": 0.8,
+            "ndcg@10": 0.7,
+            "returned_tokens": 100,
+            "latency_p95_ms": 12.0,
+            "latency_p99_ms": 15.0,
+            "reranker_fallback_rate": 0.1,
+        }
+    )
     columns = BenchReport(results).quality_columns("ndcg@10")
     assert columns == [
         "ndcg@10",
@@ -575,9 +615,7 @@ def test_eval_cell_records_full_metrics_provenance_and_diagnostics(
     run_eval = MagicMock(return_value=report)
     monkeypatch.setattr("stropha.pipeline.builder.build_stages", lambda _cfg: built)
     monkeypatch.setattr("stropha.eval.run_eval", run_eval)
-    monkeypatch.setattr(
-        "stropha.pipeline.config.pipeline_config_from_dict", lambda _overrides: {}
-    )
+    monkeypatch.setattr("stropha.pipeline.config.pipeline_config_from_dict", lambda _overrides: {})
 
     record = eval_cell(
         SimpleNamespace(top_k=10),
@@ -614,9 +652,7 @@ def test_eval_cell_rejects_index_identity_drift(
         effective_enricher_id=lambda: "enricher:test",
     )
     monkeypatch.setattr("stropha.pipeline.builder.build_stages", lambda _cfg: built)
-    monkeypatch.setattr(
-        "stropha.pipeline.config.pipeline_config_from_dict", lambda _overrides: {}
-    )
+    monkeypatch.setattr("stropha.pipeline.config.pipeline_config_from_dict", lambda _overrides: {})
 
     with pytest.raises(BenchError, match="index identity drift"):
         eval_cell(

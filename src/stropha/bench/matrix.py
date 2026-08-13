@@ -54,6 +54,7 @@ FEATURE_AXES: frozenset[str] = frozenset(
         "hyde",
         "hyde_code_tuned",
         "query_rewrite",
+        "query_rewrite_max_terms",
         "query_decomposition",
         "multi_query",
         "multi_query_count",

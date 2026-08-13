@@ -30,8 +30,16 @@ Usage:
 
 from __future__ import annotations
 
+import hashlib
+import math
+import time
+from dataclasses import dataclass
+from typing import Literal
+
 from ..config import get_config
 from ..logging import get_logger
+from .query_classify import classify_query
+from .query_router import QueryIntent, route_query
 
 log = get_logger(__name__)
 
@@ -42,6 +50,69 @@ _DEFAULT_PROMPT = (
     "QUESTION: {query}\n\n"
     "SEARCH TERMS (just the terms, no explanation):"
 )
+
+DEFAULT_MAX_TERMS = 6
+_POLICY_VERSION = "short-natural-v1"
+
+RewriteReason = Literal[
+    "success",
+    "disabled",
+    "empty_query",
+    "symbol_query",
+    "structural_query",
+    "not_natural",
+    "too_long",
+    "empty_response",
+    "backend_error",
+]
+
+
+@dataclass(frozen=True)
+class QueryRewriteResult:
+    """Rewrite output plus the measurements needed for promotion evidence."""
+
+    query: str | None
+    reason: RewriteReason
+    generation_calls: int = 0
+    estimated_input_tokens: int = 0
+    estimated_output_tokens: int = 0
+    latency_ms: float = 0.0
+
+
+def policy_id(max_terms: int = DEFAULT_MAX_TERMS) -> str:
+    """Stable identity for the deterministic policy and generation prompt."""
+    prompt_hash = hashlib.sha256(_DEFAULT_PROMPT.encode("utf-8")).hexdigest()[:8]
+    return f"{_POLICY_VERSION}:max={max_terms}:p={prompt_hash}"
+
+
+def _estimate_tokens(text: str) -> int:
+    return max(1, math.ceil(len(text) / 4)) if text else 0
+
+
+def _policy_reason(query: str, max_terms: int) -> RewriteReason | None:
+    stripped = query.strip()
+    if not stripped:
+        return "empty_query"
+
+    classification = classify_query(stripped)
+    if classification.is_symbol_like:
+        return "symbol_query"
+
+    routed = route_query(stripped, use_llm=False)
+    if routed.intent in {
+        QueryIntent.FIND_CALLERS,
+        QueryIntent.FIND_TESTS,
+        QueryIntent.FIND_RELATED,
+        QueryIntent.TRACE_FEATURE,
+    }:
+        return "structural_query"
+    if routed.intent is QueryIntent.GET_SYMBOL:
+        return "symbol_query"
+    if not classification.is_natural:
+        return "not_natural"
+    if len(classification.tokens) > max_terms:
+        return "too_long"
+    return None
 
 
 def _enabled() -> bool:
@@ -54,7 +125,70 @@ def _prompt_template() -> str:
     return _DEFAULT_PROMPT
 
 
-def maybe_rewrite_query(query: str, *, force_enabled: bool = False) -> str | None:
+def rewrite_query(
+    query: str,
+    *,
+    force_enabled: bool = False,
+    max_terms: int = DEFAULT_MAX_TERMS,
+) -> QueryRewriteResult:
+    """Selectively rewrite a short natural-language query and never raise."""
+    if not force_enabled and not _enabled():
+        return QueryRewriteResult(query=None, reason="disabled")
+
+    max_terms = max(1, min(20, max_terms))
+    reason = _policy_reason(query, max_terms)
+    if reason is not None:
+        return QueryRewriteResult(query=None, reason=reason)
+
+    prompt = _prompt_template().format(query=query)
+    started = time.perf_counter()
+    try:
+        from ..inference import generate
+
+        text = generate(
+            prompt,
+            max_tokens=128,
+            temperature=0.0,
+        )
+    except Exception as exc:
+        latency_ms = (time.perf_counter() - started) * 1000.0
+        log.warning("query_rewrite.generation_failed", error=str(exc))
+        return QueryRewriteResult(
+            query=None,
+            reason="backend_error",
+            generation_calls=1,
+            estimated_input_tokens=_estimate_tokens(prompt),
+            latency_ms=latency_ms,
+        )
+
+    latency_ms = (time.perf_counter() - started) * 1000.0
+    if not text or not text.strip():
+        log.info("query_rewrite.skip_generation_failed")
+        return QueryRewriteResult(
+            query=None,
+            reason="empty_response",
+            generation_calls=1,
+            estimated_input_tokens=_estimate_tokens(prompt),
+            latency_ms=latency_ms,
+        )
+
+    combined = f"{query} {text}"[:500]
+    return QueryRewriteResult(
+        query=combined,
+        reason="success",
+        generation_calls=1,
+        estimated_input_tokens=_estimate_tokens(prompt),
+        estimated_output_tokens=_estimate_tokens(text),
+        latency_ms=latency_ms,
+    )
+
+
+def maybe_rewrite_query(
+    query: str,
+    *,
+    force_enabled: bool = False,
+    max_terms: int = DEFAULT_MAX_TERMS,
+) -> str | None:
     """Return a rewritten query optimized for code search, or None on fail/skip.
 
     Uses MLX on Apple Silicon, falls back to Ollama on other platforms.
@@ -70,27 +204,8 @@ def maybe_rewrite_query(query: str, *, force_enabled: bool = False) -> str | Non
 
     Never raises. Returns None on failure, letting caller use original query.
     """
-    if not force_enabled and not _enabled():
-        return None
-    if not query or not query.strip():
-        return None
-
-    prompt = _prompt_template().format(query=query)
-
-    # Use unified inference backend (MLX preferred, Ollama fallback)
-    from ..inference import generate
-
-    text = generate(
-        prompt,
-        max_tokens=128,
-        temperature=0.0,
-    )
-
-    if not text:
-        log.info("query_rewrite.skip_generation_failed")
-        return None
-
-    # Combine original query with rewritten terms for better coverage
-    # Keep it bounded to avoid token explosion
-    combined = f"{query} {text}"
-    return combined[:500]
+    return rewrite_query(
+        query,
+        force_enabled=force_enabled,
+        max_terms=max_terms,
+    ).query

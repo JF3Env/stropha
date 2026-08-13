@@ -234,6 +234,7 @@ def _parse_retrieval_features(raw: dict[str, Any]) -> RetrievalFeatures:
         query_decomposition_llm=_bool(raw.get("query_decomposition_llm"), False),
         query_router_llm=_bool(raw.get("query_router_llm"), False),
         query_rewrite_enabled=_bool(raw.get("query_rewrite_enabled"), False),
+        query_rewrite_max_terms=_int(raw.get("query_rewrite_max_terms"), 6),
         multi_query_enabled=_bool(raw.get("multi_query_enabled"), False),
         multi_query_count=_int(raw.get("multi_query_count"), 3),
         recursive_enabled=_bool(raw.get("recursive_enabled"), False),

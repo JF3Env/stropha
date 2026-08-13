@@ -2392,7 +2392,10 @@ def _features_snapshot(app: AppContext) -> dict:
         },
         "query_rewrite": {
             "enabled": rf.query_rewrite_enabled or _retrieval_value("query_rewrite_enabled", False),
-            "purpose": "LLM expands natural language into code-style terms. Redundant with HyDE for most cases.",
+            "max_terms": _retrieval_value("query_rewrite_max_terms", None)
+            or rf.query_rewrite_max_terms,
+            "policy": "short natural-language queries only; exact and structural queries bypass it",
+            "purpose": "Selectively expand vague natural language into code-style terms.",
         },
         "multi_query": {
             "enabled": rf.multi_query_enabled or _retrieval_value("multi_query_enabled", False),

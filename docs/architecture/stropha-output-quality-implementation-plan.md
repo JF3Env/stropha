@@ -759,6 +759,15 @@ Use deterministic query classification first:
 Make expansion policy explicit in configuration and diagnostics. Search-time toggles
 must not alter adapter freshness or require reindexing.
 
+The query-rewrite-only implementation uses deterministic `short-natural-v1`
+selection: bare or symbol-shaped lookups and pattern-routed structural queries skip
+generation, mixed queries skip generation, and natural-language queries longer than
+`query_rewrite_max_terms` (default 6) skip generation. Retrieval diagnostics record
+selection reasons, generation calls, successes, fallbacks, estimated input/output
+tokens, and generation latency including p95. The retrieval adapter identity includes
+the effective policy, prompt, term limit, and inference backend when rewriting is
+enabled. Benchmark promotion and holdout validation remain pending.
+
 ### Files
 
 - `src/stropha/adapters/retrieval/hybrid_rrf.py`

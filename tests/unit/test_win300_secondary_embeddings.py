@@ -13,6 +13,7 @@ from stropha.errors import ConfigError
 from stropha.ingest.secondary_embedding_loader import SecondaryEmbeddingLoader
 from stropha.models import SearchHit
 from stropha.pipeline.builder import build_stages
+from stropha.retrieval.query_rewrite import QueryRewriteResult
 
 
 class _PrimaryEmbedder:
@@ -93,9 +94,7 @@ class _SecondaryStorage:
             upserted += 1
         return upserted
 
-    def count_secondary_embeddings(
-        self, embedder_id: str, embedding_dim: int = 256
-    ) -> int:
+    def count_secondary_embeddings(self, embedder_id: str, embedding_dim: int = 256) -> int:
         assert embedding_dim == 256
         return sum(
             content_hash == self.chunks[chunk_id][0] and stored_id == embedder_id
@@ -174,9 +173,7 @@ def test_builder_enabled_shares_one_secondary_embedder(tmp_path, monkeypatch) ->
         {"dim": 256, "normalize": False},
     ],
 )
-def test_builder_rejects_secondary_dim_or_normalize(
-    tmp_path, monkeypatch, bad_config
-) -> None:
+def test_builder_rejects_secondary_dim_or_normalize(tmp_path, monkeypatch, bad_config) -> None:
     _patch_simple_stages(monkeypatch)
     spec = {"adapter": "model2vec-cosine", "config": bad_config}
     with pytest.raises(ConfigError):
@@ -247,8 +244,8 @@ def test_model2vec_stream_embeds_rewritten_literal_not_primary_hyde() -> None:
 
     with (
         patch(
-            "stropha.retrieval.query_rewrite.maybe_rewrite_query",
-            return_value="rewritten literal",
+            "stropha.retrieval.query_rewrite.rewrite_query",
+            return_value=QueryRewriteResult(query="rewritten literal", reason="success"),
         ),
         patch("stropha.retrieval.hyde.maybe_hyde_rewrite", return_value="hyde vector text"),
     ):

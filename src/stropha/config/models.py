@@ -49,6 +49,7 @@ class RetrievalFeatures:
 
     # Query rewrite — LLM expands natural language into code terms.
     query_rewrite_enabled: bool = False
+    query_rewrite_max_terms: int = 6
 
     # Multi-query — N paraphrases of the query, RRF-fused.
     multi_query_enabled: bool = False

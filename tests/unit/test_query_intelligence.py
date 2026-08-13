@@ -8,8 +8,14 @@ import pytest
 
 from stropha.retrieval.hyde import _enabled as hyde_enabled
 from stropha.retrieval.hyde import maybe_hyde_rewrite
-from stropha.retrieval.query_rewrite import _enabled as rewrite_enabled
-from stropha.retrieval.query_rewrite import maybe_rewrite_query
+from stropha.retrieval.query_rewrite import (
+    QueryRewriteResult,
+    _enabled,
+    maybe_rewrite_query,
+    rewrite_query,
+)
+
+rewrite_enabled = _enabled
 
 
 class TestHyDE:
@@ -24,6 +30,7 @@ class TestHyDE:
     def test_hyde_returns_none_for_empty_query(self, isolated_test_env) -> None:
         """HyDE should return None for empty queries even when enabled."""
         from stropha.config import reset_config
+
         (isolated_test_env / ".stropha").mkdir(exist_ok=True)
         yaml_path = isolated_test_env / ".stropha" / "config.yaml"
         yaml_path.write_text("""
@@ -38,6 +45,7 @@ retrieval_features:
     def test_hyde_calls_inference_backend(self, mock_gen: MagicMock, isolated_test_env) -> None:
         """HyDE should call inference backend when enabled."""
         from stropha.config import reset_config
+
         (isolated_test_env / ".stropha").mkdir(exist_ok=True)
         yaml_path = isolated_test_env / ".stropha" / "config.yaml"
         yaml_path.write_text("""
@@ -55,6 +63,7 @@ retrieval_features:
     def test_hyde_handles_inference_failure(self, mock_gen: MagicMock, isolated_test_env) -> None:
         """HyDE should return None when inference fails."""
         from stropha.config import reset_config
+
         (isolated_test_env / ".stropha").mkdir(exist_ok=True)
         yaml_path = isolated_test_env / ".stropha" / "config.yaml"
         yaml_path.write_text("""
@@ -71,6 +80,7 @@ retrieval_features:
     def test_hyde_handles_empty_response(self, mock_gen: MagicMock, isolated_test_env) -> None:
         """HyDE should return None when inference returns empty."""
         from stropha.config import reset_config
+
         (isolated_test_env / ".stropha").mkdir(exist_ok=True)
         yaml_path = isolated_test_env / ".stropha" / "config.yaml"
         yaml_path.write_text("""
@@ -96,6 +106,7 @@ class TestQueryRewrite:
     def test_rewrite_returns_none_for_empty_query(self, isolated_test_env) -> None:
         """Query rewriting should return None for empty queries even when enabled."""
         from stropha.config import reset_config
+
         (isolated_test_env / ".stropha").mkdir(exist_ok=True)
         yaml_path = isolated_test_env / ".stropha" / "config.yaml"
         yaml_path.write_text("""
@@ -110,6 +121,7 @@ retrieval_features:
     def test_rewrite_calls_inference_backend(self, mock_gen: MagicMock, isolated_test_env) -> None:
         """Query rewriting should call inference backend when enabled."""
         from stropha.config import reset_config
+
         (isolated_test_env / ".stropha").mkdir(exist_ok=True)
         yaml_path = isolated_test_env / ".stropha" / "config.yaml"
         yaml_path.write_text("""
@@ -125,9 +137,12 @@ retrieval_features:
         assert "fsrs" in result.lower()
 
     @patch("stropha.inference.generate")
-    def test_rewrite_combines_original_and_expanded(self, mock_gen: MagicMock, isolated_test_env) -> None:
+    def test_rewrite_combines_original_and_expanded(
+        self, mock_gen: MagicMock, isolated_test_env
+    ) -> None:
         """Query rewriting should combine original query with expanded terms."""
         from stropha.config import reset_config
+
         (isolated_test_env / ".stropha").mkdir(exist_ok=True)
         yaml_path = isolated_test_env / ".stropha" / "config.yaml"
         yaml_path.write_text("""
@@ -144,9 +159,12 @@ retrieval_features:
         assert "authentication" in result
 
     @patch("stropha.inference.generate")
-    def test_rewrite_handles_inference_failure(self, mock_gen: MagicMock, isolated_test_env) -> None:
+    def test_rewrite_handles_inference_failure(
+        self, mock_gen: MagicMock, isolated_test_env
+    ) -> None:
         """Query rewriting should return None when inference fails."""
         from stropha.config import reset_config
+
         (isolated_test_env / ".stropha").mkdir(exist_ok=True)
         yaml_path = isolated_test_env / ".stropha" / "config.yaml"
         yaml_path.write_text("""
@@ -163,6 +181,7 @@ retrieval_features:
     def test_rewrite_truncates_long_output(self, mock_gen: MagicMock, isolated_test_env) -> None:
         """Query rewriting should truncate very long outputs."""
         from stropha.config import reset_config
+
         (isolated_test_env / ".stropha").mkdir(exist_ok=True)
         yaml_path = isolated_test_env / ".stropha" / "config.yaml"
         yaml_path.write_text("""
@@ -177,31 +196,66 @@ retrieval_features:
         assert result is not None
         assert len(result) <= 500
 
+    @pytest.mark.parametrize(
+        ("query", "reason"),
+        [
+            ("UserService.authenticate", "symbol_query"),
+            ("what calls UserService", "structural_query"),
+            ("tests for UserService", "structural_query"),
+            ("what relates to UserService", "structural_query"),
+            ("trace feature user login", "structural_query"),
+            ("how does authentication flow through every service layer", "too_long"),
+        ],
+    )
+    @patch("stropha.inference.generate")
+    def test_rewrite_policy_skips_non_candidates(
+        self,
+        mock_gen: MagicMock,
+        query: str,
+        reason: str,
+    ) -> None:
+        result = rewrite_query(query, force_enabled=True)
+
+        assert result.query is None
+        assert result.reason == reason
+        assert result.generation_calls == 0
+        mock_gen.assert_not_called()
+
+    @patch("stropha.inference.generate", side_effect=RuntimeError("backend down"))
+    def test_rewrite_handles_inference_exception(self, mock_gen: MagicMock) -> None:
+        result = rewrite_query("how does auth work", force_enabled=True)
+
+        assert result.query is None
+        assert result.reason == "backend_error"
+        assert result.generation_calls == 1
+        assert result.estimated_input_tokens > 0
+        assert result.latency_ms >= 0
+
 
 class TestHybridRrfWithQueryIntelligence:
     """Tests for hybrid-rrf integration with HyDE and Query Rewriting."""
 
     def test_config_accepts_hyde_flag(self) -> None:
         from stropha.adapters.retrieval.hybrid_rrf import HybridRrfConfig
-        
+
         config = HybridRrfConfig(hyde_enabled=True)
         assert config.hyde_enabled is True
-        
+
         config = HybridRrfConfig(hyde_enabled=False)
         assert config.hyde_enabled is False
 
     def test_config_accepts_query_rewrite_flag(self) -> None:
         from stropha.adapters.retrieval.hybrid_rrf import HybridRrfConfig
-        
+
         config = HybridRrfConfig(query_rewrite_enabled=True)
         assert config.query_rewrite_enabled is True
-        
+
         config = HybridRrfConfig(query_rewrite_enabled=False)
         assert config.query_rewrite_enabled is False
 
     def test_config_defaults_disabled(self) -> None:
         from stropha.adapters.retrieval.hybrid_rrf import HybridRrfConfig
-        
+
         config = HybridRrfConfig()
         assert config.hyde_enabled is False
         assert config.query_rewrite_enabled is False
@@ -214,7 +268,7 @@ class TestHybridRrfSearchIntegration:
     def recording_storage(self):
         """Storage stub that records search calls and queries."""
         from stropha.models import SearchHit
-        
+
         class _RecordingStorage:
             def __init__(self) -> None:
                 self.dense_calls: list[tuple[list[float], int]] = []
@@ -262,30 +316,48 @@ class TestHybridRrfSearchIntegration:
         from pydantic import BaseModel
 
         from stropha.pipeline.base import StageHealth
-        
+
         class _Config(BaseModel):
             pass
-        
+
         class _RecordingEmbedder:
             def __init__(self) -> None:
                 self.query_texts: list[str] = []
-            
+
             @property
-            def stage_name(self) -> str: return "embedder"
+            def stage_name(self) -> str:
+                return "embedder"
+
             @property
-            def adapter_name(self) -> str: return "stub"
+            def adapter_name(self) -> str:
+                return "stub"
+
             @property
-            def adapter_id(self) -> str: return "stub"
+            def adapter_id(self) -> str:
+                return "stub"
+
             @property
-            def model_name(self) -> str: return "stub"
+            def model_name(self) -> str:
+                return "stub"
+
             @property
-            def dim(self) -> int: return 4
+            def dim(self) -> int:
+                return 4
+
             @property
-            def batch_size(self) -> int: return 16
+            def batch_size(self) -> int:
+                return 16
+
             @property
-            def config_schema(self): return _Config
-            def health(self): return StageHealth(status="ready", message="stub")
-            def embed_documents(self, texts): return [[0.0] * 4 for _ in texts]
+            def config_schema(self):
+                return _Config
+
+            def health(self):
+                return StageHealth(status="ready", message="stub")
+
+            def embed_documents(self, texts):
+                return [[0.0] * 4 for _ in texts]
+
             def embed_query(self, text: str) -> list[float]:
                 self.query_texts.append(text)
                 return [1.0, 0.0, 0.0, 0.0]
@@ -298,14 +370,16 @@ class TestHybridRrfSearchIntegration:
     ) -> None:
         """When hyde_enabled=True, search should use HyDE-rewritten query for embedding."""
         from stropha.adapters.retrieval.hybrid_rrf import HybridRrfConfig, HybridRrfRetrieval
-        
+
         mock_gen.return_value = "def hypothetical_code(): pass"
 
         config = HybridRrfConfig(hyde_enabled=True)
-        retrieval = HybridRrfRetrieval(config, storage=recording_storage, embedder=recording_embedder)
-        
+        retrieval = HybridRrfRetrieval(
+            config, storage=recording_storage, embedder=recording_embedder
+        )
+
         retrieval.search("how does login work")
-        
+
         # Embedder should receive the HyDE-rewritten query (hypothetical code)
         assert len(recording_embedder.query_texts) == 1
         assert "hypothetical_code" in recording_embedder.query_texts[0]
@@ -317,7 +391,7 @@ class TestHybridRrfSearchIntegration:
         """When hyde_enabled in YAML, search should use HyDE."""
         from stropha.adapters.retrieval.hybrid_rrf import HybridRrfConfig, HybridRrfRetrieval
         from stropha.config import reset_config
-        
+
         (isolated_test_env / ".stropha").mkdir(exist_ok=True)
         yaml_path = isolated_test_env / ".stropha" / "config.yaml"
         yaml_path.write_text("""
@@ -325,14 +399,16 @@ retrieval_features:
   hyde_enabled: true
 """)
         reset_config()
-        
+
         mock_gen.return_value = "class AuthService: pass"
 
         config = HybridRrfConfig()  # Will pick up from YAML
-        retrieval = HybridRrfRetrieval(config, storage=recording_storage, embedder=recording_embedder)
-        
+        retrieval = HybridRrfRetrieval(
+            config, storage=recording_storage, embedder=recording_embedder
+        )
+
         retrieval.search("authentication flow")
-        
+
         assert len(recording_embedder.query_texts) == 1
         assert "AuthService" in recording_embedder.query_texts[0]
 
@@ -342,14 +418,16 @@ retrieval_features:
     ) -> None:
         """When query_rewrite_enabled=True, search should use rewritten query for all streams."""
         from stropha.adapters.retrieval.hybrid_rrf import HybridRrfConfig, HybridRrfRetrieval
-        
+
         mock_gen.return_value = "FSRS calculator FsrsCalculator test"
 
         config = HybridRrfConfig(query_rewrite_enabled=True)
-        retrieval = HybridRrfRetrieval(config, storage=recording_storage, embedder=recording_embedder)
-        
+        retrieval = HybridRrfRetrieval(
+            config, storage=recording_storage, embedder=recording_embedder
+        )
+
         retrieval.search("onde tem teste pra fsrs")
-        
+
         # BM25 and symbol streams should receive the rewritten query
         assert len(recording_storage.bm25_calls) == 1
         bm25_query = recording_storage.bm25_calls[0][0]
@@ -364,7 +442,7 @@ retrieval_features:
         """When query_rewrite_enabled in YAML, search should use rewriting."""
         from stropha.adapters.retrieval.hybrid_rrf import HybridRrfConfig, HybridRrfRetrieval
         from stropha.config import reset_config
-        
+
         (isolated_test_env / ".stropha").mkdir(exist_ok=True)
         yaml_path = isolated_test_env / ".stropha" / "config.yaml"
         yaml_path.write_text("""
@@ -372,14 +450,16 @@ retrieval_features:
   query_rewrite_enabled: true
 """)
         reset_config()
-        
+
         mock_gen.return_value = "mastery streak transition"
 
         config = HybridRrfConfig()  # Will pick up from YAML
-        retrieval = HybridRrfRetrieval(config, storage=recording_storage, embedder=recording_embedder)
-        
+        retrieval = HybridRrfRetrieval(
+            config, storage=recording_storage, embedder=recording_embedder
+        )
+
         retrieval.search("como funciona mastery")
-        
+
         assert len(recording_storage.bm25_calls) == 1
         bm25_query = recording_storage.bm25_calls[0][0]
         assert "mastery" in bm25_query.lower()
@@ -390,56 +470,63 @@ retrieval_features:
     ) -> None:
         """When both enabled, HyDE affects dense embedding, query rewrite affects all streams."""
         from stropha.adapters.retrieval.hybrid_rrf import HybridRrfConfig, HybridRrfRetrieval
-        
+
         # Mock both functions directly since they both use the inference backend
-        with patch("stropha.retrieval.query_rewrite.maybe_rewrite_query") as mock_rewrite, \
-             patch("stropha.retrieval.hyde.maybe_hyde_rewrite") as mock_hyde:
-            
+        with (
+            patch("stropha.retrieval.query_rewrite.rewrite_query") as mock_rewrite,
+            patch("stropha.retrieval.hyde.maybe_hyde_rewrite") as mock_hyde,
+        ):
             # Query rewrite returns expanded terms
-            mock_rewrite.return_value = "how does auth work authentication login AuthService"
-            
+            mock_rewrite.return_value = QueryRewriteResult(
+                query="how does auth work authentication login AuthService",
+                reason="success",
+                generation_calls=1,
+            )
+
             # HyDE returns hypothetical code
             mock_hyde.return_value = "class LoginHandler { authenticate() {} }"
 
             config = HybridRrfConfig(hyde_enabled=True, query_rewrite_enabled=True)
-            retrieval = HybridRrfRetrieval(config, storage=recording_storage, embedder=recording_embedder)
-            
+            retrieval = HybridRrfRetrieval(
+                config, storage=recording_storage, embedder=recording_embedder
+            )
+
             retrieval.search("how does auth work")
-            
+
             # Both should have been called with force_enabled=True
             mock_rewrite.assert_called_once()
             mock_hyde.assert_called_once()
-            
+
             # Verify force_enabled was passed
             _, kwargs = mock_rewrite.call_args
             assert kwargs.get("force_enabled") is True
-            
+
             _, kwargs = mock_hyde.call_args
             assert kwargs.get("force_enabled") is True
-            
+
             # Dense embedding should use HyDE output
             assert len(recording_embedder.query_texts) == 1
             assert "LoginHandler" in recording_embedder.query_texts[0]
-            
+
             # BM25/symbol should use query rewrite output
             assert len(recording_storage.bm25_calls) == 1
             bm25_query = recording_storage.bm25_calls[0][0]
             assert "authentication" in bm25_query or "AuthService" in bm25_query
 
-    def test_search_fallback_when_hyde_fails(
-        self, recording_storage, recording_embedder
-    ) -> None:
+    def test_search_fallback_when_hyde_fails(self, recording_storage, recording_embedder) -> None:
         """When HyDE fails, search should fall back to original query."""
         from stropha.adapters.retrieval.hybrid_rrf import HybridRrfConfig, HybridRrfRetrieval
-        
+
         with patch("stropha.inference.generate") as mock_gen:
             mock_gen.return_value = None  # Simulate failure
-            
+
             config = HybridRrfConfig(hyde_enabled=True)
-            retrieval = HybridRrfRetrieval(config, storage=recording_storage, embedder=recording_embedder)
-            
+            retrieval = HybridRrfRetrieval(
+                config, storage=recording_storage, embedder=recording_embedder
+            )
+
             retrieval.search("test query")
-            
+
             # Should still embed something (the original query)
             assert len(recording_embedder.query_texts) == 1
             assert recording_embedder.query_texts[0] == "test query"
@@ -449,15 +536,17 @@ retrieval_features:
     ) -> None:
         """When query rewrite fails, search should fall back to original query."""
         from stropha.adapters.retrieval.hybrid_rrf import HybridRrfConfig, HybridRrfRetrieval
-        
+
         with patch("stropha.inference.generate") as mock_gen:
             mock_gen.return_value = None  # Simulate failure
-            
+
             config = HybridRrfConfig(query_rewrite_enabled=True)
-            retrieval = HybridRrfRetrieval(config, storage=recording_storage, embedder=recording_embedder)
-            
+            retrieval = HybridRrfRetrieval(
+                config, storage=recording_storage, embedder=recording_embedder
+            )
+
             retrieval.search("original query")
-            
+
             # BM25 should receive the original query
             assert len(recording_storage.bm25_calls) == 1
             assert recording_storage.bm25_calls[0][0] == "original query"
@@ -514,3 +603,91 @@ retrieval_features:
             force_enabled=True,
             code_tuned=False,
         )
+
+    def test_query_rewrite_diagnostics_record_success_skip_and_fallback(
+        self, recording_storage, recording_embedder
+    ) -> None:
+        from stropha.adapters.retrieval.hybrid_rrf import HybridRrfConfig, HybridRrfRetrieval
+
+        retrieval = HybridRrfRetrieval(
+            HybridRrfConfig(query_rewrite_enabled=True, inherit_global_features=False),
+            storage=recording_storage,
+            embedder=recording_embedder,
+        )
+        outcomes = [
+            QueryRewriteResult(
+                query="how does auth work AuthService",
+                reason="success",
+                generation_calls=1,
+                estimated_input_tokens=10,
+                estimated_output_tokens=4,
+                latency_ms=5.0,
+            ),
+            QueryRewriteResult(query=None, reason="symbol_query"),
+            QueryRewriteResult(
+                query=None,
+                reason="backend_error",
+                generation_calls=1,
+                estimated_input_tokens=8,
+                latency_ms=7.0,
+            ),
+        ]
+        with patch("stropha.retrieval.query_rewrite.rewrite_query", side_effect=outcomes):
+            retrieval.search("how does auth work")
+            retrieval.search("UserService")
+            retrieval.search("how does login work")
+
+        diagnostics = retrieval.diagnostics()["query_rewrite"]
+        assert diagnostics == {
+            "enabled": True,
+            "policy_id": diagnostics["policy_id"],
+            "max_terms": 6,
+            "generation_calls": 2,
+            "successes": 1,
+            "fallbacks": 1,
+            "fallback_rate": 0.5,
+            "estimated_input_tokens": 18,
+            "estimated_output_tokens": 4,
+            "estimated_total_tokens": 22,
+            "latency_ms": 12.0,
+            "latency_p95_ms": 7.0,
+            "skips": {
+                "empty_query": 0,
+                "symbol_query": 1,
+                "structural_query": 0,
+                "not_natural": 0,
+                "too_long": 0,
+            },
+        }
+
+        retrieval.reset_diagnostics()
+        assert retrieval.diagnostics()["query_rewrite"]["generation_calls"] == 0
+
+    def test_adapter_id_tracks_effective_rewrite_policy_and_backend(
+        self, recording_storage, recording_embedder
+    ) -> None:
+        from stropha.adapters.retrieval.hybrid_rrf import HybridRrfConfig, HybridRrfRetrieval
+
+        with patch("stropha.inference.get_backend") as get_backend:
+            get_backend.return_value.identity = "local:test-model"
+            first = HybridRrfRetrieval(
+                HybridRrfConfig(
+                    query_rewrite_enabled=True,
+                    query_rewrite_max_terms=4,
+                    inherit_global_features=False,
+                ),
+                storage=recording_storage,
+                embedder=recording_embedder,
+            ).adapter_id
+            second = HybridRrfRetrieval(
+                HybridRrfConfig(
+                    query_rewrite_enabled=True,
+                    query_rewrite_max_terms=6,
+                    inherit_global_features=False,
+                ),
+                storage=recording_storage,
+                embedder=recording_embedder,
+            ).adapter_id
+
+        assert "rewrite=short-natural-v1:max=4" in first
+        assert first != second

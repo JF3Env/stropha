@@ -55,6 +55,7 @@ _FEATURE_FIELDS = {
 }
 _RETRIEVAL_CONFIG_FIELDS = {
     "multi_query_count": "multi_query_count",
+    "query_rewrite_max_terms": "query_rewrite_max_terms",
     "recursive": "recursive_enabled",
     "recursive_adjacency": "recursive_adjacency",
     "adaptive_weighting": "adaptive_weighting",

@@ -110,6 +110,7 @@ class TestResolveCandidateConfig:
             "reranker": {"adapter": "code-aware"},
             "hyde_enabled": True,
             "query_rewrite_enabled": True,
+            "query_rewrite_max_terms": 6,
             "multi_query_enabled": True,
             "multi_query_count": 5,
             "recursive_enabled": True,

@@ -281,6 +281,7 @@ def test_feature_snapshot_reports_effective_retrieval_adapter_config() -> None:
     assert snapshot["hyde"]["enabled"] is True
     assert snapshot["multi_query"]["configured_count"] == 4
     assert snapshot["query_rewrite"]["enabled"] is True
+    assert snapshot["query_rewrite"]["max_terms"] == 6
     assert snapshot["recursive_retrieval"] == {
         "enabled": False,
         "adjacency": 9,

@@ -33,6 +33,7 @@ the symbol stream while keeping dense + sparse).
 from __future__ import annotations
 
 import hashlib
+import math
 from pathlib import Path
 from typing import Any
 
@@ -106,8 +107,17 @@ class HybridRrfConfig(BaseModel):
     query_rewrite_enabled: bool = Field(
         default=False,
         description=(
-            "Enable query rewriting. LLM expands natural language into code terms. "
-            "Affects ALL streams (dense, sparse, symbol). Requires Ollama."
+            "Selectively rewrite short natural-language queries into code terms. "
+            "Exact and structural queries bypass generation; rewrites affect all streams."
+        ),
+    )
+    query_rewrite_max_terms: int | None = Field(
+        default=None,
+        ge=1,
+        le=20,
+        description=(
+            "Maximum terms eligible for selective query rewriting. "
+            "Null inherits unified config when global features are enabled."
         ),
     )
     multi_query_enabled: bool = Field(
@@ -193,6 +203,11 @@ class HybridRrfRetrieval(RetrievalStage):
         self._streams = self._build_streams(storage, secondary_embedder)
         self._reranker = self._build_reranker()
         self._learned_weights = self._build_learned_weights()
+        self._rewrite_latencies_ms: list[float] = []
+        self._rewrite_counts: dict[str, int] = {}
+        self._rewrite_input_tokens = 0
+        self._rewrite_output_tokens = 0
+        self.reset_diagnostics()
 
     # ----- Stage contract -------------------------------------------------
 
@@ -212,11 +227,20 @@ class HybridRrfRetrieval(RetrievalStage):
             self._learned_weights.fingerprint() if self._learned_weights is not None else "off"
         )
         digest = hashlib.sha256(repr(canonical).encode("utf-8")).hexdigest()[:8]
+        rewrite_enabled, rewrite_max_terms = self._query_rewrite_settings()
+        if rewrite_enabled:
+            from ...inference import get_backend
+            from ...retrieval.query_rewrite import policy_id
+
+            backend_hash = hashlib.sha256(get_backend().identity.encode("utf-8")).hexdigest()[:8]
+            rewrite_id = f"{policy_id(rewrite_max_terms)}:llm={backend_hash}"
+        else:
+            rewrite_id = "off"
         return (
             f"hybrid-rrf:k={self._config.rrf_k}:streams={digest}:"
             f"reranker={reranker_id}:adaptive={int(self._config.adaptive_weighting)}:"
             f"mq={int(self._config.multi_query_enabled)}:{self._config.multi_query_count}:"
-            f"rewrite={int(self._config.query_rewrite_enabled)}:"
+            f"rewrite={rewrite_id}:"
             f"hyde={int(self._config.hyde_enabled)}:{self._config.hyde_code_tuned}:"
             f"recursive={int(self._config.recursive_enabled)}:"
             f"adjacency={self._config.recursive_adjacency}:"
@@ -245,18 +269,96 @@ class HybridRrfRetrieval(RetrievalStage):
         )
 
     def reset_diagnostics(self) -> None:
+        self._rewrite_counts = {
+            reason: 0
+            for reason in (
+                "success",
+                "empty_query",
+                "symbol_query",
+                "structural_query",
+                "not_natural",
+                "too_long",
+                "empty_response",
+                "backend_error",
+            )
+        }
+        self._rewrite_latencies_ms = []
+        self._rewrite_input_tokens = 0
+        self._rewrite_output_tokens = 0
         reset = getattr(self._reranker, "reset_diagnostics", None)
         if callable(reset):
             reset()
 
     def diagnostics(self) -> dict[str, Any]:
         out: dict[str, Any] = {}
+        rewrite_enabled, rewrite_max_terms = self._query_rewrite_settings()
+        from ...retrieval.query_rewrite import policy_id
+
+        generation_calls = sum(
+            self._rewrite_counts[reason]
+            for reason in ("success", "empty_response", "backend_error")
+        )
+        fallbacks = self._rewrite_counts["empty_response"] + self._rewrite_counts["backend_error"]
+        out["query_rewrite"] = {
+            "enabled": rewrite_enabled,
+            "policy_id": policy_id(rewrite_max_terms),
+            "max_terms": rewrite_max_terms,
+            "generation_calls": generation_calls,
+            "successes": self._rewrite_counts["success"],
+            "fallbacks": fallbacks,
+            "fallback_rate": round(fallbacks / generation_calls, 4) if generation_calls else 0.0,
+            "estimated_input_tokens": self._rewrite_input_tokens,
+            "estimated_output_tokens": self._rewrite_output_tokens,
+            "estimated_total_tokens": self._rewrite_input_tokens + self._rewrite_output_tokens,
+            "latency_ms": round(sum(self._rewrite_latencies_ms), 3),
+            "latency_p95_ms": self._percentile(self._rewrite_latencies_ms, 0.95),
+            "skips": {
+                reason: self._rewrite_counts[reason]
+                for reason in (
+                    "empty_query",
+                    "symbol_query",
+                    "structural_query",
+                    "not_natural",
+                    "too_long",
+                )
+            },
+        }
         get_reranker = getattr(self._reranker, "diagnostics", None)
         if callable(get_reranker):
             out["reranker"] = get_reranker()
         if self._learned_weights is not None:
             out["learned_weights"] = self._learned_weights.report(active=True)
         return out
+
+    @staticmethod
+    def _percentile(values: list[float], percentile: float) -> float:
+        if not values:
+            return 0.0
+        ordered = sorted(values)
+        index = max(0, math.ceil(percentile * len(ordered)) - 1)
+        return round(ordered[index], 3)
+
+    def _query_rewrite_settings(self) -> tuple[bool, int]:
+        from ...retrieval.query_rewrite import DEFAULT_MAX_TERMS
+
+        enabled = self._config.query_rewrite_enabled
+        max_terms = self._config.query_rewrite_max_terms
+        if self._config.inherit_global_features:
+            from ...config import get_config
+
+            features = get_config().retrieval_features
+            enabled = enabled or features.query_rewrite_enabled
+            if max_terms is None:
+                max_terms = features.query_rewrite_max_terms
+        effective_max_terms = max_terms or DEFAULT_MAX_TERMS
+        return enabled, max(1, min(20, effective_max_terms))
+
+    def _record_query_rewrite(self, result: Any) -> None:
+        self._rewrite_counts[result.reason] += 1
+        self._rewrite_input_tokens += result.estimated_input_tokens
+        self._rewrite_output_tokens += result.estimated_output_tokens
+        if result.generation_calls:
+            self._rewrite_latencies_ms.append(result.latency_ms)
 
     def set_reranker(self, reranker: RerankerStage | None) -> None:
         """Inject a trusted reranker implementation after pipeline construction."""
@@ -315,19 +417,18 @@ class HybridRrfRetrieval(RetrievalStage):
         # Query rewriting: expand natural language to code terms (affects ALL streams)
         if search_query is None:
             search_query = query
-            rewrite_enabled = self._config.query_rewrite_enabled
-            if self._config.inherit_global_features:
-                from ...config import get_config
-
-                rewrite_enabled = (
-                    rewrite_enabled or get_config().retrieval_features.query_rewrite_enabled
-                )
+            rewrite_enabled, rewrite_max_terms = self._query_rewrite_settings()
             if rewrite_enabled:
-                from ...retrieval.query_rewrite import maybe_rewrite_query
+                from ...retrieval.query_rewrite import rewrite_query
 
-                rewritten = maybe_rewrite_query(query, force_enabled=True)
-                if rewritten:
-                    search_query = rewritten
+                result = rewrite_query(
+                    query,
+                    force_enabled=True,
+                    max_terms=rewrite_max_terms,
+                )
+                self._record_query_rewrite(result)
+                if result.query:
+                    search_query = result.query
 
         # Single embed for the dense streams (avoids paying twice if the
         # user enables multiple dense backends in the future).

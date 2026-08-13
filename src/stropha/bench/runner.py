@@ -43,6 +43,7 @@ _FEATURE_FIELD: dict[str, str] = {
     "recursive": "recursive_enabled",
     "recursive_adjacency": "recursive_adjacency",
     "query_rewrite": "query_rewrite_enabled",
+    "query_rewrite_max_terms": "query_rewrite_max_terms",
     "query_decomposition": "query_decomposition_enabled",
     "multi_query": "multi_query_enabled",
     "multi_query_count": "multi_query_count",
@@ -58,6 +59,8 @@ _RETRIEVAL_FIELD: dict[str, str] = {
     "recursive_adjacency": "recursive_adjacency",
     "adaptive_weighting": "adaptive_weighting",
     "learned_weights": "learned_weights_enabled",
+    "query_rewrite": "query_rewrite_enabled",
+    "query_rewrite_max_terms": "query_rewrite_max_terms",
 }
 
 
@@ -90,9 +93,7 @@ def _indexing_overrides(cell: Cell) -> dict[str, Any]:
         if axis in ("embedder", "enricher", "chunker", "walker"):
             ov[axis] = _adapter_override(value, axis)
         else:
-            raise MatrixError(
-                f"indexing axis {axis!r} is not supported by the runner yet"
-            )
+            raise MatrixError(f"indexing axis {axis!r} is not supported by the runner yet")
     return ov
 
 
@@ -101,7 +102,9 @@ def _retrieval_overrides(cell: Cell) -> dict[str, Any]:
     cfg: dict[str, Any] = {}
     for axis, value in cell.values.items():
         if axis == "reranker":
-            cfg["reranker"] = None if value in (None, "null", "none") else _adapter_override(value, axis)
+            cfg["reranker"] = (
+                None if value in (None, "null", "none") else _adapter_override(value, axis)
+            )
         elif axis in _RETRIEVAL_FIELD:
             cfg[_RETRIEVAL_FIELD[axis]] = value
     return {"retrieval": {"config": cfg}} if cfg else {}
@@ -123,9 +126,7 @@ def _validate_axes(matrix: Matrix) -> None:
     known = set(INDEXING_AXES) | set(FEATURE_AXES) | {"reranker"} | set(_RETRIEVAL_FIELD)
     unknown = [a for a in matrix.axes if a not in known]
     if unknown:
-        raise MatrixError(
-            f"unsupported axes {unknown}; known axes: {sorted(known)}"
-        )
+        raise MatrixError(f"unsupported axes {unknown}; known axes: {sorted(known)}")
 
 
 @contextlib.contextmanager
@@ -252,9 +253,7 @@ def build_index(matrix: Matrix, cell: Cell, db_path: Path) -> dict[str, Any]:
 
     v = _verify_index(db_path)
     if not v["complete"] or v["chunks"] == 0 or v["vecs"] != v["chunks"]:
-        raise BenchError(
-            f"index incomplete for {cell.indexing_sig}: {v} (db={db_path})"
-        )
+        raise BenchError(f"index incomplete for {cell.indexing_sig}: {v} (db={db_path})")
     enr_axis = cell.values.get("enricher")
     if enr_axis not in (None, "noop") and v["enriched"] == 0:
         raise BenchError(
@@ -287,17 +286,12 @@ def eval_cell(
         built = build_stages(cfg)
         with built.storage:
             get_meta = getattr(built.storage, "get_meta", None)
-            indexed_enricher = (
-                get_meta("active_enricher_id") if callable(get_meta) else None
-            )
-            indexed_embedder = (
-                get_meta("active_embedder_id") if callable(get_meta) else None
-            )
+            indexed_enricher = get_meta("active_enricher_id") if callable(get_meta) else None
+            indexed_embedder = get_meta("active_embedder_id") if callable(get_meta) else None
             active_enricher = built.effective_enricher_id()
             active_embedder = built.embedder.adapter_id
             drifted = bool(
-                indexed_enricher != active_enricher
-                or indexed_embedder != active_embedder
+                indexed_enricher != active_enricher or indexed_embedder != active_embedder
             )
             if drifted:
                 raise BenchError(
@@ -465,13 +459,9 @@ def _runtime_id(matrix: Matrix) -> str:
             "lms_think": config.inference.lms_think,
         },
         "retrieval_features": dataclasses.asdict(config.retrieval_features),
-        "pipeline_defaults": {
-            key: pipeline_defaults.get(key)
-            for key in ("retrieval", "router")
-        },
+        "pipeline_defaults": {key: pipeline_defaults.get(key) for key in ("retrieval", "router")},
         "learned_weights": {
-            str(path): StreamWeightProfiles(path).fingerprint()
-            for path in sorted(learned_dirs)
+            str(path): StreamWeightProfiles(path).fingerprint() for path in sorted(learned_dirs)
         },
     }
     return hashlib.sha256(
@@ -620,10 +610,16 @@ def run_matrix(
         except Exception as exc:
             log.warning("bench.index_failed", indexing_sig=sig, error=str(exc))
             for cell in pending:
-                rec = {"ok": False, "cell_id": cell.cell_id, "indexing_sig": sig,
-                       "label": cell.label(), "values": cell.values,
-                       "provenance": run_provenance,
-                       "error": f"index: {exc}", "ts": datetime.now(tz=UTC).isoformat()}
+                rec = {
+                    "ok": False,
+                    "cell_id": cell.cell_id,
+                    "indexing_sig": sig,
+                    "label": cell.label(),
+                    "values": cell.values,
+                    "provenance": run_provenance,
+                    "error": f"index: {exc}",
+                    "ts": datetime.now(tz=UTC).isoformat(),
+                }
                 _append(out_path, rec)
                 failed += 1
             continue
@@ -646,10 +642,16 @@ def run_matrix(
                 _assert_run_environment(matrix, run_provenance, initial_source_state)
                 evaluated += 1
             except Exception as exc:  # record + continue
-                rec = {"ok": False, "cell_id": cell.cell_id, "indexing_sig": sig,
-                       "label": cell.label(), "values": cell.values,
-                       "provenance": run_provenance,
-                       "error": str(exc), "ts": datetime.now(tz=UTC).isoformat()}
+                rec = {
+                    "ok": False,
+                    "cell_id": cell.cell_id,
+                    "indexing_sig": sig,
+                    "label": cell.label(),
+                    "values": cell.values,
+                    "provenance": run_provenance,
+                    "error": str(exc),
+                    "ts": datetime.now(tz=UTC).isoformat(),
+                }
                 failed += 1
             _append(out_path, rec)
             done.add(cell.cell_id)

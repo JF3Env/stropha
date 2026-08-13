@@ -172,6 +172,7 @@ def test_configuration_catalog_exposes_options_schemas_and_toggle_impacts() -> N
         "retrieval_features.hyde_enabled",
         "retrieval_features.multi_query_enabled",
         "retrieval_features.query_rewrite_enabled",
+        "retrieval_features.query_rewrite_max_terms",
         "retrieval_features.query_router_llm",
     }
     assert retrieval_paths.isdisjoint(

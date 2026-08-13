@@ -329,6 +329,7 @@ def _returned_tokens_from_report(report: EvalReport) -> int:
 _QUERY_CONFIG_FIELDS = {
     "hyde": "hyde_enabled",
     "query_rewrite": "query_rewrite_enabled",
+    "query_rewrite_max_terms": "query_rewrite_max_terms",
     "multi_query": "multi_query_enabled",
     "multi_query_count": "multi_query_count",
     "recursive": "recursive_enabled",
