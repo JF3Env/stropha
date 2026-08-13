@@ -355,6 +355,46 @@ class TestEvalCaseRelevance:
         # No relevance_map, so binary (1.0)
         assert case.get_relevance("a.py", None) == 1.0
 
+    def test_ideal_relevance_counts_paired_path_symbol_once(self):
+        case = EvalCase(
+            id="test",
+            query="foo",
+            expected_paths=("a.py", "b.py"),
+            expected_symbols=("A", "B"),
+            relevance_map={"a.py": 3.0, "A": 3.0, "b.py": 2.0, "B": 2.0},
+        )
+
+        assert case.ideal_relevances == (3.0, 2.0)
+
+    def test_ideal_relevance_defaults_only_unjudged_entities(self):
+        case = EvalCase(
+            id="test",
+            query="foo",
+            expected_paths=("a.py", "b.py"),
+            expected_symbols=("A", "B"),
+            relevance_map={"a.py": 0.0},
+        )
+
+        assert case.ideal_relevances == (1.0, 0.0)
+
+    def test_paired_graded_entities_can_reach_perfect_ndcg(self):
+        case = EvalCase(
+            id="test",
+            query="foo",
+            expected_paths=("a.py", "b.py"),
+            expected_symbols=("A", "B"),
+            relevance_map={"a.py": 3.0, "A": 3.0, "b.py": 2.0, "B": 2.0},
+        )
+        result = EvalResult(
+            case=case,
+            rank_of_first_hit=1,
+            top_k=2,
+            relevances=(3.0, 2.0),
+            relevant_count=2,
+        )
+
+        assert result.ndcg == pytest.approx(1.0)
+
 
 class TestEvalResultNDCG:
     """Tests for NDCG in EvalResult."""

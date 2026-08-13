@@ -478,6 +478,16 @@ remains at `rrf_k=60`, and this exposed cohort must not be rerun. Future batches
 validate that their catalog is excluded through `.strophaignore` before freezing
 or retrieval.
 
+The replacement `phase3-unseen-holdout-v2` cohort was frozen without retrieval,
+then invalidated during pre-commit review because expected paths and symbols were
+not positionally paired. It was never executed. The corrected catalog uses the
+new `phase3-unseen-holdout-v3` name, then pre-commit review found that graded
+IDCG counted paired path and symbol aliases twice. V3 was never executed. The
+evaluator now derives ideal relevance once per positional entity, and the cohort
+uses the new `phase3-unseen-holdout-v4` protocol name. V4 is frozen but
+unexecuted with SHA-256
+`2100642667cce8be364c33c8e1d360ad16a4dbe115d043530a20482ca507ee58`.
+
 ## 9. Phase 3: Representative Graded Golden Dataset
 
 ### Goal
@@ -919,7 +929,7 @@ compatible reindex and must never be hidden by editing metadata.
 ### Phase 3
 
 - [x] Define category quotas and authoring guide.
-- [ ] Freeze a replacement unseen promotion cohort with answer catalogs excluded.
+- [x] Freeze a replacement unseen promotion cohort with answer catalogs excluded.
 - [x] Add reproducible batch gates, verification, and explicit promotion tooling.
 - [ ] Expand to at least 120 reviewed cases.
 - [ ] Make at least half multi-entity or graded.

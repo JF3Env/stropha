@@ -92,6 +92,14 @@ def prepare_batch(spec_path: Path, *, artifact_root: Path | None = None) -> Prep
     exposed_path = _repo_path(repo, spec.get("exposed_golden", "tests/eval/golden.jsonl"))
     cases = _load_catalog(catalog_path)
     exposed = load_golden(exposed_path) if exposed_path.is_file() else []
+    exposed_catalogs = spec.get("exposed_catalogs") or []
+    if not isinstance(exposed_catalogs, list):
+        raise BatchError("exposed_catalogs must be a list")
+    exposed_catalog_paths = [
+        _repo_path(repo, str(exposed_catalog)) for exposed_catalog in exposed_catalogs
+    ]
+    for exposed_catalog_path in exposed_catalog_paths:
+        exposed.extend(_load_catalog(exposed_catalog_path))
     validation = _validate_cases(cases, exposed, repo, spec.get("cohort") or {})
 
     root = (artifact_root or _repo_path(repo, ".stropha/bench/batches")) / str(spec["name"])
@@ -104,7 +112,9 @@ def prepare_batch(spec_path: Path, *, artifact_root: Path | None = None) -> Prep
     )
     cohort_sha = hashlib.sha256(payload.encode()).hexdigest()
     catalog_sha = hashlib.sha256(catalog_path.read_bytes()).hexdigest()
-    protocol_sha = _protocol_sha256(spec, matrix_path, exposed_path)
+    protocol_sha = _protocol_sha256(
+        spec, matrix_path, exposed_path, exposed_catalog_paths
+    )
 
     if manifest_path.is_file():
         existing = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -351,6 +361,10 @@ def _validate_cases(
             raise BatchError(f"case {case.id!r} relevance keys must equal expected entities")
         if any(score < 1 or score > 3 for score in case.relevance_map.values()):
             raise BatchError(f"case {case.id!r} relevance must be in the range 1..3")
+        if len(case.expected_symbols) > len(case.expected_paths):
+            raise BatchError(
+                f"case {case.id!r} must provide a paired path for every expected symbol"
+            )
         if case.relevant_entity_count > 1 or case.relevance_map:
             multi_or_graded += 1
         texts: list[str] = []
@@ -359,12 +373,12 @@ def _validate_cases(
             if not target.is_file():
                 raise BatchError(f"case {case.id!r} expected path does not exist: {rel_path}")
             texts.append(target.read_text(encoding="utf-8", errors="replace"))
-        joined = "\n".join(texts)
-        for symbol in case.expected_symbols:
+        for index, symbol in enumerate(case.expected_symbols):
             leaf = symbol.rsplit(".", 1)[-1]
-            if leaf not in joined:
+            if leaf not in texts[index]:
                 raise BatchError(
-                    f"case {case.id!r} symbol {symbol!r} not found in its expected paths"
+                    f"case {case.id!r} symbol {symbol!r} not found in paired path "
+                    f"{case.expected_paths[index]!r}"
                 )
     minimum = int(cohort.get("min_cases", 1))
     if len(cases) < minimum:
@@ -482,7 +496,12 @@ def _assert_catalog_excluded(repo: Path, catalog: Path) -> None:
         )
 
 
-def _protocol_sha256(spec: dict[str, Any], matrix_path: Path, exposed_path: Path) -> str:
+def _protocol_sha256(
+    spec: dict[str, Any],
+    matrix_path: Path,
+    exposed_path: Path,
+    exposed_catalog_paths: list[Path],
+) -> str:
     payload = {
         "spec": spec,
         "matrix_sha256": hashlib.sha256(matrix_path.read_bytes()).hexdigest(),
@@ -491,6 +510,10 @@ def _protocol_sha256(spec: dict[str, Any], matrix_path: Path, exposed_path: Path
             if exposed_path.is_file()
             else None
         ),
+        "exposed_catalog_sha256": {
+            str(path): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in exposed_catalog_paths
+        },
     }
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(canonical.encode()).hexdigest()

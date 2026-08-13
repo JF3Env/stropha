@@ -121,6 +121,82 @@ def test_prepare_batch_rejects_exposed_query(tmp_path: Path) -> None:
         prepare_batch(spec, artifact_root=tmp_path / "artifacts")
 
 
+def test_prepare_batch_rejects_query_from_prior_yaml_catalog(tmp_path: Path) -> None:
+    spec, catalog = _write_repo(tmp_path)
+    prior = spec.parent / "prior.yaml"
+    prior.write_text(
+        yaml.safe_dump(
+            {
+                "cases": [
+                    {
+                        "id": "prior",
+                        "query": "find target implementation",
+                        "expected_paths": ["src/example.py"],
+                        "tags": ["exact-lookup"],
+                        "split": "holdout",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    raw = yaml.safe_load(spec.read_text(encoding="utf-8"))
+    raw["exposed_catalogs"] = ["prior.yaml"]
+    spec.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    assert catalog.is_file()
+
+    with pytest.raises(BatchError, match="overlaps the exposed golden"):
+        prepare_batch(spec, artifact_root=tmp_path / "artifacts")
+
+
+def test_prepare_batch_rejects_non_list_exposed_catalogs(tmp_path: Path) -> None:
+    spec, _ = _write_repo(tmp_path)
+    raw = yaml.safe_load(spec.read_text(encoding="utf-8"))
+    raw["exposed_catalogs"] = "prior.yaml"
+    spec.write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+    with pytest.raises(BatchError, match="exposed_catalogs must be a list"):
+        prepare_batch(spec, artifact_root=tmp_path / "artifacts")
+
+
+def test_prepare_batch_rejects_symbol_outside_paired_path(tmp_path: Path) -> None:
+    spec, catalog = _write_repo(tmp_path)
+    (spec.parent / "src/other.py").write_text("def other():\n    pass\n", encoding="utf-8")
+    raw = yaml.safe_load(catalog.read_text(encoding="utf-8"))
+    raw["cases"][0]["expected_paths"] = ["src/other.py"]
+    raw["cases"][0]["relevance"] = {"src/other.py": 3, "target": 3}
+    catalog.write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+    with pytest.raises(BatchError, match="not found in paired path"):
+        prepare_batch(spec, artifact_root=tmp_path / "artifacts")
+
+
+def test_prepare_batch_rejects_unpaired_expected_symbol(tmp_path: Path) -> None:
+    spec, catalog = _write_repo(tmp_path)
+    raw = yaml.safe_load(catalog.read_text(encoding="utf-8"))
+    raw["cases"][0]["expected_symbols"].append("other")
+    raw["cases"][0]["relevance"]["other"] = 2
+    catalog.write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+    with pytest.raises(BatchError, match="paired path for every expected symbol"):
+        prepare_batch(spec, artifact_root=tmp_path / "artifacts")
+
+
+def test_prepare_batch_freezes_prior_catalog_content(tmp_path: Path) -> None:
+    spec, _ = _write_repo(tmp_path)
+    prior = spec.parent / "prior.yaml"
+    prior.write_text("cases: []\n", encoding="utf-8")
+    raw = yaml.safe_load(spec.read_text(encoding="utf-8"))
+    raw["exposed_catalogs"] = ["prior.yaml"]
+    spec.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    artifacts = tmp_path / "artifacts"
+    prepare_batch(spec, artifact_root=artifacts)
+    prior.write_text("cases:\n  - id: changed\n    query: changed\n", encoding="utf-8")
+
+    with pytest.raises(BatchError, match="different cohort or protocol"):
+        prepare_batch(spec, artifact_root=artifacts)
+
+
 def test_prepare_batch_rejects_indexable_answer_catalog(tmp_path: Path) -> None:
     spec, _ = _write_repo(tmp_path)
     (spec.parent / ".strophaignore").unlink()
@@ -485,3 +561,20 @@ def test_batch_cli_reports_batch_errors(monkeypatch: pytest.MonkeyPatch) -> None
 
     assert result.exit_code == 1
     assert "Batch failed: unsafe batch" in result.output
+
+
+def test_phase3_v4_catalog_prepares_with_balanced_unseen_cases(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[2]
+    source_spec = root / "src/stropha/bench/phase3_v4_holdout_batch.yaml"
+    raw = yaml.safe_load(source_spec.read_text(encoding="utf-8"))
+    raw["repo"] = str(root)
+    spec = tmp_path / "phase3_v4_holdout_batch.yaml"
+    spec.write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+    prepared = prepare_batch(spec, artifact_root=tmp_path / "artifacts")
+    manifest = json.loads(prepared.manifest_path.read_text(encoding="utf-8"))
+
+    assert prepared.case_count == 30
+    assert manifest["validation"]["exposed_case_count"] == 84
+    assert manifest["validation"]["multi_or_graded_ratio"] == 1.0
+    assert set(manifest["validation"]["category_counts"].values()) == {3}

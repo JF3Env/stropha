@@ -1,0 +1,352 @@
+version: 1
+cases:
+  - id: p3v2-exact-a2a-task-lifecycle
+    query: Where is the A2A task lifecycle dispatcher implemented?
+    expected_paths: [src/stropha/api/a2a.py]
+    expected_symbols: [dispatch_task]
+    relevance:
+      src/stropha/api/a2a.py: 3
+      dispatch_task: 3
+    tags: [phase3-v2, exact-lookup, a2a]
+    split: holdout
+
+  - id: p3v2-exact-context-bus
+    query: Where is publication to the shared context bus implemented?
+    expected_paths: [src/stropha/api/context_bus.py]
+    expected_symbols: [ContextBus.publish]
+    relevance:
+      src/stropha/api/context_bus.py: 3
+      ContextBus.publish: 3
+    tags: [phase3-v2, exact-lookup, context-bus]
+    split: holdout
+
+  - id: p3v2-exact-context-v1-contract
+    query: Where are ContextRequestV1, hit conversion, and response normalization defined for the stable context contract?
+    expected_paths: [src/stropha/api/context_v1.py]
+    expected_symbols: [to_response]
+    relevance:
+      src/stropha/api/context_v1.py: 3
+      to_response: 3
+    tags: [phase3-v2, exact-lookup, context-contract]
+    split: holdout
+
+  - id: p3v2-concept-tenant-whitelist
+    query: How does tenant scoping combine exact repository grants with glob patterns while denying all hits when no grants exist?
+    expected_paths: [src/stropha/api/tenant.py]
+    expected_symbols: [filter_hits]
+    relevance:
+      src/stropha/api/tenant.py: 3
+      filter_hits: 3
+    tags: [phase3-v2, conceptual, tenant-isolation]
+    split: holdout
+
+  - id: p3v2-concept-query-budgeting
+    query: How are compound questions split without an LLM first and then assigned exact integer token shares with weighting and minimum floors?
+    expected_paths: [src/stropha/retrieval/query_decomposition.py, src/stropha/retrieval/budget_allocator.py]
+    expected_symbols: [decompose_query, allocate_budget]
+    relevance:
+      src/stropha/retrieval/query_decomposition.py: 3
+      src/stropha/retrieval/budget_allocator.py: 3
+      decompose_query: 3
+      allocate_budget: 3
+    tags: [phase3-v2, conceptual, query-planning]
+    split: holdout
+
+  - id: p3v2-concept-progressive-context
+    query: How can context be delivered lazily in terminating batches while lower-ranked search hits disclose progressively less source text?
+    expected_paths: [src/stropha/retrieval/streaming.py, src/stropha/retrieval/cards.py]
+    expected_symbols: [stream_batches, apply_relevance_decay]
+    relevance:
+      src/stropha/retrieval/streaming.py: 3
+      src/stropha/retrieval/cards.py: 3
+      stream_batches: 3
+      apply_relevance_decay: 3
+    tags: [phase3-v2, conceptual, progressive-context]
+    split: holdout
+
+  - id: p3v2-callers-query-rewrite
+    query: Which retrieval path calls the optional query rewriter and then uses its expanded terms across all hybrid search streams?
+    expected_paths: [src/stropha/retrieval/query_rewrite.py, src/stropha/adapters/retrieval/hybrid_rrf.py]
+    expected_symbols: [maybe_rewrite_query, HybridRrfRetrieval._search_single_query]
+    relevance:
+      src/stropha/retrieval/query_rewrite.py: 3
+      src/stropha/adapters/retrieval/hybrid_rrf.py: 3
+      maybe_rewrite_query: 3
+      HybridRrfRetrieval._search_single_query: 3
+    tags: [phase3-v2, callers-usage, query-rewrite]
+    split: holdout
+
+  - id: p3v2-callers-speculative-fanout
+    query: What calls the parallel fan-out primitive to prefetch predicted follow-up searches, isolate failures, and optionally populate a cache?
+    expected_paths: [src/stropha/retrieval/parallel_fanout.py, src/stropha/retrieval/speculative.py]
+    expected_symbols: [parallel_fanout, prefetch]
+    relevance:
+      src/stropha/retrieval/parallel_fanout.py: 2
+      src/stropha/retrieval/speculative.py: 3
+      parallel_fanout: 2
+      prefetch: 3
+    tags: [phase3-v2, callers-usage, speculative-prefetch]
+    split: holdout
+
+  - id: p3v2-callers-a2a-context
+    query: Which agent-to-agent dispatcher calls the stable v1 context adapter to turn internal search hits into a completed task response?
+    expected_paths: [src/stropha/api/context_v1.py, src/stropha/api/a2a.py]
+    expected_symbols: [to_response, dispatch_task]
+    relevance:
+      src/stropha/api/context_v1.py: 2
+      src/stropha/api/a2a.py: 3
+      to_response: 2
+      dispatch_task: 3
+    tags: [phase3-v2, callers-usage, a2a]
+    split: holdout
+
+  - id: p3v2-tests-streaming-contract
+    query: Which tests guarantee that streaming consumes generators lazily and always emits a final done batch, including for an empty iterable?
+    expected_paths: [tests/unit/test_streaming.py, src/stropha/retrieval/streaming.py]
+    expected_symbols: [test_generator_consumed_lazily, stream_batches]
+    relevance:
+      tests/unit/test_streaming.py: 3
+      src/stropha/retrieval/streaming.py: 2
+      test_generator_consumed_lazily: 3
+      stream_batches: 2
+    tags: [phase3-v2, tests-contracts, streaming]
+    split: holdout
+
+  - id: p3v2-tests-tenant-whitelist
+    query: Which tests enforce tenant repository whitelisting while preserving allowed hit order and deduplicating rejected repository diagnostics?
+    expected_paths: [tests/unit/test_tenant.py, src/stropha/api/tenant.py]
+    expected_symbols: [test_allow_list_filters, filter_hits]
+    relevance:
+      tests/unit/test_tenant.py: 3
+      src/stropha/api/tenant.py: 2
+      test_allow_list_filters: 3
+      filter_hits: 2
+    tags: [phase3-v2, tests-contracts, tenant-isolation]
+    split: holdout
+
+  - id: p3v2-tests-context-bus
+    query: Which tests guarantee that the shared context bus is thread-safe and uses duplicate publications to refresh LRU position without increasing contribution counts?
+    expected_paths: [tests/unit/test_context_bus.py, src/stropha/api/context_bus.py]
+    expected_symbols: [test_concurrent_publishes_consistent, ContextBus.publish]
+    relevance:
+      tests/unit/test_context_bus.py: 3
+      src/stropha/api/context_bus.py: 2
+      test_concurrent_publishes_consistent: 3
+      ContextBus.publish: 2
+    tags: [phase3-v2, tests-contracts, context-bus]
+    split: holdout
+
+  - id: p3v2-trace-remote-git-url
+    query: How does a CLI search against a remote Git URL clone or refresh the cache, index it, and restrict retrieval to that repository?
+    expected_paths: [src/stropha/cli.py, src/stropha/tools/git_url.py, src/stropha/pipeline/pipeline.py]
+    expected_symbols: [search, search_git_url_scoped, Pipeline.run]
+    relevance:
+      src/stropha/cli.py: 2
+      src/stropha/tools/git_url.py: 3
+      src/stropha/pipeline/pipeline.py: 2
+      search: 2
+      search_git_url_scoped: 3
+      Pipeline.run: 2
+    tags: [phase3-v2, feature-trace, remote-git]
+    split: holdout
+
+  - id: p3v2-trace-session-working-set
+    query: How does the working-set tool load another session's pins and seen chunks, enforce repository scope, hydrate them, and pack recent entries after pins?
+    expected_paths: [src/stropha/server.py, src/stropha/server_runtime.py, src/stropha/retrieval/working_set.py, src/stropha/storage/sqlite.py]
+    expected_symbols: [working_set_tool, chunk_belongs_to_repo, build_working_set, Storage.get_session]
+    relevance:
+      src/stropha/server.py: 3
+      src/stropha/server_runtime.py: 2
+      src/stropha/retrieval/working_set.py: 3
+      src/stropha/storage/sqlite.py: 2
+      working_set_tool: 3
+      chunk_belongs_to_repo: 2
+      build_working_set: 3
+      Storage.get_session: 2
+    tags: [phase3-v2, feature-trace, working-set]
+    split: holdout
+
+  - id: p3v2-trace-a2a-context-task
+    query: Trace an agent-to-agent context request from task creation through legal state transitions and search dispatch to versioned hits in the completed output.
+    expected_paths: [src/stropha/api/a2a.py, src/stropha/api/context_v1.py]
+    expected_symbols: [dispatch_task, to_response]
+    relevance:
+      src/stropha/api/a2a.py: 3
+      src/stropha/api/context_v1.py: 3
+      dispatch_task: 3
+      to_response: 3
+    tags: [phase3-v2, feature-trace, a2a]
+    split: holdout
+
+  - id: p3v2-config-project-init-mcp
+    query: How does project initialization detect MCP clients and write the correct shared HTTP server entry for OpenCode, Claude, Cursor, or Continue?
+    expected_paths: [src/stropha/cli.py, src/stropha/tools/init_project.py]
+    expected_symbols: [init, configure_mcp_client]
+    relevance:
+      src/stropha/cli.py: 2
+      src/stropha/tools/init_project.py: 3
+      init: 2
+      configure_mcp_client: 3
+    tags: [phase3-v2, config-ops, mcp-init]
+    split: holdout
+
+  - id: p3v2-config-cost-dashboard
+    query: How does the cost command discover hook logs, aggregate structured and plaintext events, and choose terminal-table or JSON output?
+    expected_paths: [src/stropha/cli.py, src/stropha/cost.py]
+    expected_symbols: [cost, aggregate]
+    relevance:
+      src/stropha/cli.py: 2
+      src/stropha/cost.py: 3
+      cost: 2
+      aggregate: 3
+    tags: [phase3-v2, config-ops, cost-dashboard]
+    split: holdout
+
+  - id: p3v2-config-runtime-introspection
+    query: How does MCP config inspection combine redacted provenance with active stages, retrieval feature status, and registered adapter alternatives?
+    expected_paths: [src/stropha/config/__init__.py, src/stropha/server.py, src/stropha/pipeline/registry.py]
+    expected_symbols: [get_config_info, get_config_tool, all_adapters]
+    relevance:
+      src/stropha/config/__init__.py: 3
+      src/stropha/server.py: 3
+      src/stropha/pipeline/registry.py: 2
+      get_config_info: 3
+      get_config_tool: 3
+      all_adapters: 2
+    tags: [phase3-v2, config-ops, introspection]
+    split: holdout
+
+  - id: p3v2-docs-confidence-routing
+    query: Why does structural routing start with deterministic patterns and escalate only when confidence is low and the second verdict improves on the first?
+    expected_paths: [src/stropha/adapters/router/pattern.py, src/stropha/adapters/router/escalating.py, docs/architecture/stropha-output-quality-implementation-plan.md]
+    expected_symbols: [PatternRouter.route, EscalatingRouter.route]
+    relevance:
+      docs/architecture/stropha-output-quality-implementation-plan.md: 3
+      src/stropha/adapters/router/pattern.py: 2
+      src/stropha/adapters/router/escalating.py: 3
+      PatternRouter.route: 2
+      EscalatingRouter.route: 3
+    tags: [phase3-v2, docs-rationale, query-routing]
+    split: holdout
+
+  - id: p3v2-docs-selective-expansion
+    query: Why should exact identifiers and graph-shaped questions avoid expansion while vague questions use rewriting and broad questions use paraphrases?
+    expected_paths: [src/stropha/retrieval/query_rewrite.py, src/stropha/retrieval/multi_query.py, docs/architecture/stropha-output-quality-implementation-plan.md]
+    expected_symbols: [maybe_rewrite_query, generate_paraphrases]
+    relevance:
+      docs/architecture/stropha-output-quality-implementation-plan.md: 3
+      src/stropha/retrieval/query_rewrite.py: 3
+      src/stropha/retrieval/multi_query.py: 3
+      maybe_rewrite_query: 3
+      generate_paraphrases: 3
+    tags: [phase3-v2, docs-rationale, query-expansion]
+    split: holdout
+
+  - id: p3v2-docs-graph-vector-opt-in
+    query: Why is graph-node vector retrieval opt-in and implemented as brute-force cosine over node labels instead of another sqlite-vec index?
+    expected_paths: [src/stropha/adapters/retrieval/streams/graph_vec.py, docs/architecture/stropha-graphify-integration.md]
+    expected_symbols: [GraphVecStream.search]
+    relevance:
+      docs/architecture/stropha-graphify-integration.md: 3
+      src/stropha/adapters/retrieval/streams/graph_vec.py: 3
+      GraphVecStream.search: 3
+    tags: [phase3-v2, docs-rationale, graph-vector]
+    split: holdout
+
+  - id: p3v2-ambiguous-markdown-chunk
+    query: Which Markdown chunk implementation performs heading and parent-section splitting, and which similarly named chunk method only wraps the language adapter?
+    expected_paths: [src/stropha/ingest/chunkers/markdown.py, src/stropha/adapters/chunker/languages/heading_split.py]
+    expected_symbols: [MarkdownChunker.chunk, HeadingSplitLanguageChunker.chunk]
+    relevance:
+      src/stropha/ingest/chunkers/markdown.py: 3
+      src/stropha/adapters/chunker/languages/heading_split.py: 3
+      MarkdownChunker.chunk: 3
+      HeadingSplitLanguageChunker.chunk: 2
+    tags: [phase3-v2, ambiguous-symbols, markdown-chunking]
+    split: holdout
+
+  - id: p3v2-ambiguous-inference-generate
+    query: Which generate implementation calls Anthropic Messages, which calls Ollama HTTP, and which runs an in-process MLX model with a chat template?
+    expected_paths: [src/stropha/inference/anthropic_backend.py, src/stropha/inference/ollama_backend.py, src/stropha/inference/mlx_backend.py]
+    expected_symbols: [AnthropicBackend.generate, OllamaBackend.generate, MlxBackend.generate]
+    relevance:
+      src/stropha/inference/anthropic_backend.py: 3
+      src/stropha/inference/ollama_backend.py: 3
+      src/stropha/inference/mlx_backend.py: 3
+      AnthropicBackend.generate: 3
+      OllamaBackend.generate: 3
+      MlxBackend.generate: 3
+    tags: [phase3-v2, ambiguous-symbols, inference-transport]
+    split: holdout
+
+  - id: p3v2-ambiguous-hit-filters
+    query: Which similarly named hit filter enforces a tenant repository allowlist, and which restricts results to files changed in a Git diff?
+    expected_paths: [src/stropha/api/tenant.py, src/stropha/retrieval/diff_scope.py]
+    expected_symbols: [filter_hits, filter_hits_to_diff]
+    relevance:
+      src/stropha/api/tenant.py: 3
+      src/stropha/retrieval/diff_scope.py: 3
+      filter_hits: 3
+      filter_hits_to_diff: 3
+    tags: [phase3-v2, ambiguous-symbols, result-filtering]
+    split: holdout
+
+  - id: p3v2-noise-deprecated-near-misses
+    query: How are deprecated paths and snippet annotations recognized so obsolete hits are separated as near-misses without being discarded?
+    expected_paths: [src/stropha/retrieval/antiretrieval.py]
+    expected_symbols: [partition_hits]
+    relevance:
+      src/stropha/retrieval/antiretrieval.py: 3
+      partition_hits: 3
+    tags: [phase3-v2, noisy-negative, deprecation-near-misses]
+    split: holdout
+
+  - id: p3v2-noise-secret-egress
+    query: How are credential signatures, suspicious assignments, and high-entropy tokens distinguished from placeholders before unsafe snippets are redacted?
+    expected_paths: [src/stropha/secret_egress.py]
+    expected_symbols: [guard_search_results]
+    relevance:
+      src/stropha/secret_egress.py: 3
+      guard_search_results: 3
+    tags: [phase3-v2, noisy-negative, secret-egress]
+    split: holdout
+
+  - id: p3v2-noise-paraphrase-sanitization
+    query: Where are numbered, duplicated, empty, short, or failed generated paraphrases filtered, capped, and reduced to the original query?
+    expected_paths: [src/stropha/retrieval/multi_query.py]
+    expected_symbols: [generate_paraphrases]
+    relevance:
+      src/stropha/retrieval/multi_query.py: 3
+      generate_paraphrases: 3
+    tags: [phase3-v2, noisy-negative, paraphrase-sanitization]
+    split: holdout
+
+  - id: p3v2-multirepo-tenant-whitelist
+    query: How does tenant isolation allow repositories by exact key or glob while rejecting missing identities and denying everything for an empty allow-list?
+    expected_paths: [src/stropha/api/tenant.py]
+    expected_symbols: [filter_hits]
+    relevance:
+      src/stropha/api/tenant.py: 3
+      filter_hits: 3
+    tags: [phase3-v2, multi-repo, tenant-isolation]
+    split: holdout
+
+  - id: p3v2-multirepo-remote-url-scope
+    query: When searching a Git URL, how are remote hits tied to the exact repository row and constrained by repo_id even when scoped search finds zero hits?
+    expected_paths: [src/stropha/tools/git_url.py]
+    expected_symbols: [search_git_url_scoped]
+    relevance:
+      src/stropha/tools/git_url.py: 3
+      search_git_url_scoped: 3
+    tags: [phase3-v2, multi-repo, remote-repo-scope]
+    split: holdout
+
+  - id: p3v2-multirepo-investigation-scope
+    query: How does investigation planning keep semantic and graph steps repository-scoped while explicitly broadening every call for a cross-repository plan?
+    expected_paths: [src/stropha/retrieval/investigation.py]
+    expected_symbols: [plan_investigation]
+    relevance:
+      src/stropha/retrieval/investigation.py: 3
+      plan_investigation: 3
+    tags: [phase3-v2, multi-repo, investigation-planning]
+    split: holdout

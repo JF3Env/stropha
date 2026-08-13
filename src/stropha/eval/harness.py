@@ -205,10 +205,15 @@ class EvalCase:
         """Judged relevance values used to compute IDCG independently of retrieval."""
         if not self.relevance_map:
             return (1.0,) * self.relevant_entity_count
-        values = sorted(self.relevance_map.values(), reverse=True)
-        if len(values) < self.relevant_entity_count:
-            values.extend([1.0] * (self.relevant_entity_count - len(values)))
-        return tuple(values[: self.relevant_entity_count])
+        values = []
+        for path, symbol in self.relevant_entities:
+            scores = [
+                self.relevance_map[alias]
+                for alias in (path, symbol)
+                if alias is not None and alias in self.relevance_map
+            ]
+            values.append(max(scores, default=1.0))
+        return tuple(sorted(values, reverse=True))
 
 
 @dataclass(frozen=True)
