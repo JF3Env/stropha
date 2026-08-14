@@ -814,8 +814,22 @@ Hybrid diagnostics record selection reasons, generation calls, fallbacks, estima
 tokens, and generation latency including p95. The retrieval adapter identity includes
 the effective policy, complete prompt family, prompt style, and inference backend.
 The dedicated `hyde_matrix.yaml` contains one disabled baseline and one code-tuned
-selective HyDE candidate on the reusable search split. Benchmark promotion and
-holdout validation remain pending.
+selective HyDE candidate on the reusable search split.
+
+The corrected HyDE development sweep ran at commit `de17802` with one isolated
+Model2Vec/noop index and run identity `01b2c78fb996dff5`. The baseline reached
+Recall@10 `0.8391`, NDCG@10 `0.5911`, and `25.849 ms` p95. Selective HyDE generated
+on 5 of 87 queries with zero fallbacks and an estimated 2,056 tokens, but reduced
+Recall@10 to `0.8333`, NDCG@10 to `0.5897`, and Success@10 from `0.9195` to
+`0.9080`; p95 increased to `3937.378 ms`. On the intended `feature-trace` tag,
+recall fell from `0.8` to `0.7` and NDCG@10 from `0.5564` to `0.5095`. The only
+positive tag movement was `config-ops` NDCG@10 from `0.7375` to `0.7601`, below
+the 3-point gate and accompanied by a `5713.708 ms` tag p95. Selective HyDE therefore
+failed both quality and latency gates. It remains disabled by default and is not
+eligible for a frozen holdout.
+
+Phase 6 is closed with query rewrite, multi-query, and HyDE all rejected independently.
+No combination experiment is justified; all expansion features remain disabled.
 
 ### Files
 
