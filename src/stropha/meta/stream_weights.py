@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import math
 import os
-import fcntl
 from collections.abc import Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
@@ -14,8 +14,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from ..eval import EvalCase, run_eval
 from ..errors import StrophaError
+from ..eval import EvalCase, run_eval
 from ..logging import get_logger
 from .outcome import TierLabel
 
@@ -161,15 +161,9 @@ def fit_stream_weights(
         stream: score_sums[stream] / (count + prior_observations)
         for stream, count in observations.items()
     }
-    raw_weights = {
-        stream: math.exp(learning_rate * score)
-        for stream, score in mean_scores.items()
-    }
+    raw_weights = {stream: math.exp(learning_rate * score) for stream, score in mean_scores.items()}
     normalizer = sum(raw_weights.values()) / len(raw_weights)
-    weights = {
-        stream: weight / normalizer
-        for stream, weight in raw_weights.items()
-    }
+    weights = {stream: weight / normalizer for stream, weight in raw_weights.items()}
     return StreamWeightProfile(
         repo=repo_key,
         weights=weights,
@@ -277,7 +271,12 @@ def _parse_profile(raw: Any, *, require_active: bool = True) -> StreamWeightProf
         datetime.fromisoformat(generated_at.replace("Z", "+00:00"))
         for stream, value in weights.items():
             weight = float(value)
-            if not isinstance(stream, str) or not stream or not math.isfinite(weight) or weight <= 0:
+            if (
+                not isinstance(stream, str)
+                or not stream
+                or not math.isfinite(weight)
+                or weight <= 0
+            ):
                 return None
             parsed_weights[stream] = weight
         for stream, value in observations.items():
@@ -299,9 +298,11 @@ def _parse_profile(raw: Any, *, require_active: bool = True) -> StreamWeightProf
         return None
     since_sha = commit_range.get("since")
     head_sha = commit_range.get("head")
-    if not parsed_weights or set(parsed_weights) != set(parsed_observations) or set(
-        parsed_weights
-    ) != set(parsed_scores):
+    if (
+        not parsed_weights
+        or set(parsed_weights) != set(parsed_observations)
+        or set(parsed_weights) != set(parsed_scores)
+    ):
         return None
     if not isinstance(since_sha, str) or not since_sha:
         return None
@@ -415,10 +416,7 @@ class StreamWeightProfiles:
 
     def weights(self) -> dict[str, dict[str, float]]:
         self._refresh()
-        return {
-            repo: dict(profile.weights)
-            for repo, profile in self._profiles.items()
-        }
+        return {repo: dict(profile.weights) for repo, profile in self._profiles.items()}
 
     def fingerprint(self) -> str:
         profiles = self.weights()
@@ -449,12 +447,14 @@ class StreamWeightProfiles:
                 )
             if not profile.validated:
                 reasons.append("search/holdout validation has not passed")
-            rows.append({
-                **profile.to_dict(),
-                "path": str(path),
-                "status": ("active" if active else "eligible") if not reasons else "blocked",
-                "blocked_reasons": reasons,
-            })
+            rows.append(
+                {
+                    **profile.to_dict(),
+                    "path": str(path),
+                    "status": ("active" if active else "eligible") if not reasons else "blocked",
+                    "blocked_reasons": reasons,
+                }
+            )
         return rows
 
     def _refresh(self) -> None:

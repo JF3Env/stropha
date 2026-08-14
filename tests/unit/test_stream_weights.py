@@ -12,9 +12,9 @@ from stropha.eval import EvalCase
 from stropha.meta.outcome import Tier, TierLabel
 from stropha.meta.stream_weights import (
     MIN_ACTIVATION_EXAMPLES,
+    StreamWeightBenchmarkLockError,
     StreamWeightProfile,
     StreamWeightProfiles,
-    StreamWeightBenchmarkLockError,
     benchmark_stream_weight_profile,
     fit_stream_weights,
     stream_weight_benchmark_lock,
@@ -34,9 +34,7 @@ class _EvalEngine:
     def __init__(self, paths: dict[str, list[str]]) -> None:
         self.paths = paths
 
-    def search(
-        self, query: str, *, top_k: int = 10, repo_id: int | None = None
-    ) -> list[_EvalHit]:
+    def search(self, query: str, *, top_k: int = 10, repo_id: int | None = None) -> list[_EvalHit]:
         return [_EvalHit(path) for path in self.paths[query]][:top_k]
 
 
@@ -78,11 +76,14 @@ def test_fit_stream_weights_rewards_useful_streams_with_regularization() -> None
 
 
 def test_fit_stream_weights_ignores_other_repos_and_unattributed_hits() -> None:
-    assert fit_stream_weights(
-        [_hit("repo-b", {"dense": 0.02}), _hit("repo-a", None)],
-        [_label(1.0), _label(1.0)],
-        repo_key="repo-a",
-    ) is None
+    assert (
+        fit_stream_weights(
+            [_hit("repo-b", {"dense": 0.02}), _hit("repo-a", None)],
+            [_label(1.0), _label(1.0)],
+            repo_key="repo-a",
+        )
+        is None
+    )
 
 
 def test_fit_stream_weights_rejects_misaligned_inputs() -> None:
@@ -95,14 +96,18 @@ def test_benchmark_compares_search_and_holdout_ndcg() -> None:
         EvalCase(id="s", query="search", expected_paths=("src/right.py",), split="search"),
         EvalCase(id="h", query="holdout", expected_paths=("src/holdout.py",), split="holdout"),
     ]
-    baseline = _EvalEngine({
-        "search": ["src/wrong.py", "src/right.py"],
-        "holdout": ["src/holdout.py"],
-    })
-    candidate = _EvalEngine({
-        "search": ["src/right.py", "src/wrong.py"],
-        "holdout": ["src/holdout.py"],
-    })
+    baseline = _EvalEngine(
+        {
+            "search": ["src/wrong.py", "src/right.py"],
+            "holdout": ["src/holdout.py"],
+        }
+    )
+    candidate = _EvalEngine(
+        {
+            "search": ["src/right.py", "src/wrong.py"],
+            "holdout": ["src/holdout.py"],
+        }
+    )
 
     result = benchmark_stream_weight_profile(
         baseline_engine=baseline,
@@ -131,18 +136,22 @@ def test_benchmark_requires_both_splits() -> None:
 def test_benchmark_lock_rejects_same_repository(tmp_path: Path) -> None:
     locks = tmp_path / "locks"
 
-    with stream_weight_benchmark_lock(locks, "repo-a"):
-        with pytest.raises(StreamWeightBenchmarkLockError, match="already running"):
-            with stream_weight_benchmark_lock(locks, "repo-a"):
-                pass
+    with (
+        stream_weight_benchmark_lock(locks, "repo-a"),
+        pytest.raises(StreamWeightBenchmarkLockError, match="already running"),
+        stream_weight_benchmark_lock(locks, "repo-a"),
+    ):
+        pass
 
 
 def test_benchmark_lock_is_scoped_per_repository(tmp_path: Path) -> None:
     locks = tmp_path / "locks"
 
-    with stream_weight_benchmark_lock(locks, "repo-a"):
-        with stream_weight_benchmark_lock(locks, "repo-b"):
-            pass
+    with (
+        stream_weight_benchmark_lock(locks, "repo-a"),
+        stream_weight_benchmark_lock(locks, "repo-b"),
+    ):
+        pass
 
 
 def test_profile_round_trip_and_hot_reload(tmp_path: Path) -> None:
@@ -347,14 +356,28 @@ def test_rejected_candidate_only_deactivates_matching_repository(tmp_path: Path)
     )
     other = replace(matching, repo="repo-b")
     write_stream_weight_profile(candidates, matching)
-    write_stream_weight_profile(active, replace(matching, validated=True, validation={
-        "search_ndcg_delta": 0.02,
-        "holdout_ndcg_delta": 0.0,
-    }))
-    write_stream_weight_profile(active, replace(other, validated=True, validation={
-        "search_ndcg_delta": 0.02,
-        "holdout_ndcg_delta": 0.0,
-    }))
+    write_stream_weight_profile(
+        active,
+        replace(
+            matching,
+            validated=True,
+            validation={
+                "search_ndcg_delta": 0.02,
+                "holdout_ndcg_delta": 0.0,
+            },
+        ),
+    )
+    write_stream_weight_profile(
+        active,
+        replace(
+            other,
+            validated=True,
+            validation={
+                "search_ndcg_delta": 0.02,
+                "holdout_ndcg_delta": 0.0,
+            },
+        ),
+    )
 
     validate_stream_weight_profile(
         candidates,
