@@ -312,8 +312,9 @@ claims.
 
 ## Detached Benchmark Campaigns
 
-The bundled comprehensive campaign runs every development matrix on the
-`search` split in a detached process:
+The bundled comprehensive campaign runs broad discovery on the development
+`search` split, repeats stochastic quality stages, and finishes with focused
+validation on the frozen `holdout` split in a detached process:
 
 ```bash
 uv run stropha bench campaign start
@@ -322,10 +323,13 @@ uv run stropha bench campaign status
 
 The launcher pins the current commit in a detached worktree, so later edits to
 the main checkout do not invalidate a multi-day run. Results, logs, PID/state,
-per-stage CSV/JSON reports, and the final summary are stored under
-`.stropha/bench/campaigns/comprehensive-search-v1/<commit>-<config>/`. The configured
-experiment policy still controls storage and adapter blacklists; PostgreSQL
-campaigns use canonical index caches plus disposable per-cell clones.
+per-stage CSV/JSON reports, the final summary, and a human-readable `report.md`
+are stored under
+`.stropha/bench/campaigns/comprehensive-quality-v2/<commit>-<config>/`. The report
+includes winner stability, confidence intervals, quality/cost metrics, and the
+strongest and weakest query tags. The configured experiment policy still
+controls storage and adapter blacklists; PostgreSQL campaigns use canonical
+index caches plus disposable per-cell clones.
 
 An interrupted or failed campaign resumes successful cells when `start` is run
 again at the same commit. Stop the worker and its active benchmark with:
@@ -334,5 +338,6 @@ again at the same commit. Stop the worker and its active benchmark with:
 uv run stropha bench campaign stop
 ```
 
-Campaign specs reject the `holdout` split. Frozen candidates must continue to
-use the explicit holdout validation commands.
+Campaign stages may override `split`, declare `axes` to vary only selected
+parameters, and set `repetitions` for independent runs. Holdout stages should be
+last and focused on candidates declared before viewing holdout results.

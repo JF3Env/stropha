@@ -46,8 +46,8 @@ def load_campaign_spec(path: Path) -> dict[str, Any]:
         raise CampaignError("campaign spec version must be 1")
     if not isinstance(raw.get("name"), str) or not _STAGE_ID.fullmatch(raw["name"]):
         raise CampaignError("campaign name must contain only lowercase letters, digits, and dashes")
-    if raw.get("split") != "search":
-        raise CampaignError("campaigns may only use the development 'search' split")
+    if raw.get("split") not in {"search", "holdout"}:
+        raise CampaignError("campaign split must be 'search' or 'holdout'")
     stages = raw.get("stages")
     if not isinstance(stages, list) or not stages:
         raise CampaignError("campaign spec must declare at least one stage")
@@ -62,6 +62,14 @@ def load_campaign_spec(path: Path) -> dict[str, Any]:
             raise CampaignError(f"duplicate campaign stage id: {stage_id!r}")
         if not isinstance(stage.get("matrix"), str) or not stage["matrix"]:
             raise CampaignError(f"campaign stage {stage_id!r} has no matrix")
+        if stage.get("split", raw["split"]) not in {"search", "holdout"}:
+            raise CampaignError(f"invalid split for campaign stage {stage_id!r}")
+        repetitions = stage.get("repetitions", 1)
+        if not isinstance(repetitions, int) or isinstance(repetitions, bool) or repetitions < 1:
+            raise CampaignError(f"campaign stage {stage_id!r} repetitions must be positive")
+        axes = stage.get("axes", [])
+        if not isinstance(axes, list) or not all(isinstance(axis, str) and axis for axis in axes):
+            raise CampaignError(f"campaign stage {stage_id!r} axes must be a list of names")
         seen.add(stage_id)
     return raw
 
@@ -361,30 +369,41 @@ def _prepare_stages(
     policy = ExperimentPolicy.from_config(get_config())
     stages: list[dict[str, Any]] = []
     for declared in spec["stages"]:
-        stage_id = declared["id"]
+        declared_id = declared["id"]
         matrix_path = (snapshot_path / declared["matrix"]).resolve()
         try:
             matrix_path.relative_to(snapshot_path)
         except ValueError as exc:
-            raise CampaignError(f"matrix for stage {stage_id!r} escapes the snapshot") from exc
+            raise CampaignError(f"matrix for stage {declared_id!r} escapes the snapshot") from exc
         matrix = policy.filter_matrix(load_matrix(matrix_path))
-        stage_root = artifact_root / "stages" / stage_id
-        stage_root.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(matrix_path, stage_root / "matrix.yaml")
-        existing = prior.get(stage_id, {})
-        stages.append(
-            {
-                **existing,
-                "id": stage_id,
-                "matrix": str(declared["matrix"]),
-                "matrix_id": matrix.matrix_id,
-                "total_cells": len(matrix.expand()),
-                "results": str(stage_root / "results.jsonl"),
-                "report": str(stage_root / "report.json"),
-                "csv": str(stage_root / "results.csv"),
-                "status": existing.get("status", "pending"),
-            }
-        )
+        axes = declared.get("axes", [])
+        cells = matrix.select_axes(axes).expand() if axes else matrix.expand()
+        repetitions = declared.get("repetitions", 1)
+        for repetition in range(1, repetitions + 1):
+            stage_id = (
+                declared_id if repetitions == 1 else f"{declared_id}-r{repetition:02d}"
+            )
+            stage_root = artifact_root / "stages" / stage_id
+            stage_root.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(matrix_path, stage_root / "matrix.yaml")
+            existing = prior.get(stage_id, {})
+            stages.append(
+                {
+                    **existing,
+                    "id": stage_id,
+                    "group": declared_id,
+                    "repetition": repetition,
+                    "split": declared.get("split", spec["split"]),
+                    "axes": axes,
+                    "matrix": str(declared["matrix"]),
+                    "matrix_id": matrix.matrix_id,
+                    "total_cells": len(cells),
+                    "results": str(stage_root / "results.jsonl"),
+                    "report": str(stage_root / "report.json"),
+                    "csv": str(stage_root / "results.csv"),
+                    "status": existing.get("status", "pending"),
+                }
+            )
     return stages
 
 
@@ -418,9 +437,11 @@ def _run_stage(
         "--index-dir",
         str(artifact_root / "indexes"),
         "--split",
-        "search",
+        stage["split"],
         "--resume",
     ]
+    for axis in stage.get("axes", []):
+        command.extend(["--axis", axis])
     env = os.environ.copy()
     env["STROPHA_BENCH_EXPECTED_CONFIG_SHA256"] = str(state["config_sha256"])
     process = subprocess.Popen(command, cwd=snapshot_path, env=env)
@@ -460,6 +481,8 @@ def _write_stage_report(stage: dict[str, Any], matrix_path: Path) -> dict[str, A
     results_path = Path(stage["results"])
     records = load_results(results_path)
     matrix = ExperimentPolicy.from_config(get_config()).filter_matrix(load_matrix(matrix_path))
+    if stage.get("axes"):
+        matrix = matrix.select_axes(stage["axes"])
     report = BenchReport(records)
     metric = "ndcg@10"
     baseline = matrix.baseline_cell()
@@ -467,6 +490,9 @@ def _write_stage_report(stage: dict[str, Any], matrix_path: Path) -> dict[str, A
     failed = sum(not record.get("ok", True) for record in latest.values())
     payload: dict[str, Any] = {
         "stage": stage["id"],
+        "group": stage.get("group", stage["id"]),
+        "repetition": stage.get("repetition", 1),
+        "split": stage.get("split", "search"),
         "matrix_id": matrix.matrix_id,
         "metric": metric,
         "successful_cells": len(records),
@@ -502,6 +528,126 @@ def _write_campaign_summary(state: dict[str, Any], artifact_root: Path) -> None:
         "stages": state["stages"],
     }
     _atomic_json(artifact_root / "summary.json", payload)
+    (artifact_root / "report.md").write_text(
+        _human_report(payload, artifact_root), encoding="utf-8"
+    )
+
+
+def _human_report(summary: dict[str, Any], artifact_root: Path) -> str:
+    """Render a concise campaign report; CSV files remain the exhaustive appendix."""
+    reports = []
+    for stage in summary["stages"]:
+        report = _read_json(Path(stage["report"]))
+        if report:
+            reports.append(report)
+
+    lines = [
+        f"# Benchmark Campaign: {summary['name']}",
+        "",
+        f"- Status: **{summary['status']}**",
+        f"- Source commit: `{summary['source_commit']}`",
+        f"- Started: {summary.get('started_at') or 'unknown'}",
+        f"- Finished: {summary.get('finished_at') or 'unknown'}",
+        f"- Successful stages: {sum(stage.get('status') == 'completed' for stage in summary['stages'])}/{len(summary['stages'])}",
+        "",
+        "## Stage Results",
+        "",
+        "| Stage | Split | Winner | NDCG@10 | MRR | Success@10 | Recall@10 | Tokens |",
+        "|---|---|---|---:|---:|---:|---:|---:|",
+    ]
+    for report in reports:
+        top = (report.get("top") or [{}])[0]
+        metrics = top.get("metrics") or {}
+        label = str(top.get("label") or "no successful cells").replace("|", "\\|")
+        lines.append(
+            f"| {report['stage']} | {report.get('split', 'search')} | {label} | "
+            f"{_metric(metrics, 'ndcg@10')} | {_metric(metrics, 'mrr')} | "
+            f"{_metric(metrics, 'success@10')} | {_metric(metrics, 'recall@10')} | "
+            f"{_metric(metrics, 'returned_tokens', decimals=0)} |"
+        )
+
+    lines.extend(["", "## Repeatability", ""])
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for report in reports:
+        groups.setdefault(str(report.get("group", report["stage"])), []).append(report)
+    repeated = False
+    for group, group_reports in groups.items():
+        if len(group_reports) < 2:
+            continue
+        repeated = True
+        winners: dict[str, int] = {}
+        ndcgs: list[float] = []
+        for report in group_reports:
+            top = (report.get("top") or [{}])[0]
+            label = str(top.get("label") or "no winner")
+            winners[label] = winners.get(label, 0) + 1
+            value = (top.get("metrics") or {}).get("ndcg@10")
+            if isinstance(value, int | float):
+                ndcgs.append(float(value))
+        winner, wins = max(winners.items(), key=lambda item: item[1])
+        mean = sum(ndcgs) / len(ndcgs) if ndcgs else 0.0
+        lines.append(
+            f"- **{group}:** `{winner}` won {wins}/{len(group_reports)} runs; "
+            f"mean winning NDCG@10 `{mean:.4f}`."
+        )
+    if not repeated:
+        lines.append("- No stages were repeated; winner stability was not measured.")
+
+    lines.extend(["", "## Strengths And Weaknesses", ""])
+    for report in reports:
+        top = (report.get("top") or [{}])[0]
+        tags = top.get("by_tag") or {}
+        ranked = sorted(
+            (
+                (tag, values.get("ndcg@10", 0.0), values.get("cases", 0))
+                for tag, values in tags.items()
+                if isinstance(values, dict)
+            ),
+            key=lambda item: item[1],
+            reverse=True,
+        )
+        if not ranked:
+            continue
+        strong = ", ".join(f"{tag} ({score:.3f}, n={cases})" for tag, score, cases in ranked[:5])
+        weak = ", ".join(f"{tag} ({score:.3f}, n={cases})" for tag, score, cases in ranked[-5:])
+        lines.extend(
+            [
+                f"### {report['stage']} ({report.get('split', 'search')})",
+                "",
+                f"- Strongest tags: {strong}",
+                f"- Weakest tags: {weak}",
+            ]
+        )
+        deltas = report.get("baseline_deltas") or []
+        if deltas:
+            best = max(deltas, key=lambda delta: delta.get("d_mrr", [float("-inf")])[0])
+            interval = best.get("d_mrr") or []
+            if len(interval) >= 4:
+                lines.append(
+                    f"- Best MRR delta vs baseline: `{interval[0]:+.4f}` "
+                    f"(95% CI `{interval[1]:+.4f}` to `{interval[2]:+.4f}`, "
+                    f"P(delta > 0) `{interval[3]:.3f}`)."
+                )
+
+    lines.extend(
+        [
+            "",
+            "## Interpretation",
+            "",
+            "- Prefer configurations that win repeatedly and retain gains on the frozen holdout.",
+            "- A confidence interval crossing zero is inconclusive even when the point estimate is positive.",
+            "- Token counts measure returned context, not all inference cost from enrichment or reranking.",
+            "- Per-stage `results.csv`, `results.jsonl`, and `report.json` contain every tested configuration.",
+            f"- Artifact root: `{artifact_root}`",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _metric(metrics: dict[str, Any], name: str, *, decimals: int = 4) -> str:
+    value = metrics.get(name)
+    return f"{value:.{decimals}f}" if isinstance(value, int | float) else "n/a"
 
 
 def _public_status(state: dict[str, Any], root: Path) -> dict[str, Any]:

@@ -1,9 +1,8 @@
-# Comprehensive development campaign. Every stage uses only the optimisable
-# search split. Frozen holdout batches are deliberately not part of this run.
-# default_matrix.yaml is omitted because its only embedder (Voyage) is excluded
-# by this machine's experiment policy; local_quality_matrix.yaml replaces it.
+# Multi-day quality campaign. Broad search stages discover candidates, repeated
+# stages measure LLM-reranker stability, and focused holdout stages validate only
+# predeclared parameter families. Index artifacts are reused across every stage.
 version: 1
-name: comprehensive-search-v1
+name: comprehensive-quality-v2
 split: search
 
 stages:
@@ -19,5 +18,36 @@ stages:
     matrix: src/stropha/bench/phase2_shortlist_matrix.yaml
   - id: local-quality
     matrix: src/stropha/bench/local_quality_matrix.yaml
+  - id: indexing-confirmation
+    matrix: src/stropha/bench/local_quality_matrix.yaml
+    axes: [embedder, enricher]
+    repetitions: 3
   - id: active-retrieval
     matrix: src/stropha/bench/active_matrix.yaml
+    repetitions: 4
+
+  # Frozen holdout is evaluated last and never feeds candidate discovery.
+  - id: query-rewrite-holdout
+    matrix: src/stropha/bench/query_rewrite_matrix.yaml
+    axes: [query_rewrite]
+    split: holdout
+  - id: hyde-holdout
+    matrix: src/stropha/bench/hyde_matrix.yaml
+    axes: [hyde]
+    split: holdout
+  - id: multi-query-holdout
+    matrix: src/stropha/bench/multi_query_matrix.yaml
+    axes: [multi_query, multi_query_count]
+    split: holdout
+  - id: diversity-holdout
+    matrix: src/stropha/bench/diversity_matrix.yaml
+    axes: [diversity, diversity_max_chunks_per_file]
+    split: holdout
+  - id: indexing-holdout
+    matrix: src/stropha/bench/local_quality_matrix.yaml
+    axes: [embedder, enricher]
+    split: holdout
+  - id: active-retrieval-holdout
+    matrix: src/stropha/bench/active_matrix.yaml
+    axes: [candidate_k, learned_weights, recursive_adjacency, rrf_k]
+    split: holdout
