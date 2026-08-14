@@ -436,6 +436,14 @@ def eval_cell(
             if isinstance(value, (int, float)):
                 s[f"reranker_{key}"] = value
     per_query = {r.case.id: r.rank_of_first_hit for r in report.results}
+    per_query_metrics = {
+        r.case.id: {
+            "success@10": float(r.hit),
+            "mrr": r.reciprocal_rank,
+            "ndcg@10": r.ndcg,
+        }
+        for r in report.results
+    }
     by_tag = {tag: tagged.summary() for tag, tagged in report.by_tag().items()}
     return {
         "ok": True,
@@ -447,6 +455,7 @@ def eval_cell(
         "provenance": provenance,
         "diagnostics": report.diagnostics,
         "per_query": per_query,
+        "per_query_metrics": per_query_metrics,
         "by_tag": by_tag,
         "n_queries": report.n,
         "ts": datetime.now(tz=UTC).isoformat(),

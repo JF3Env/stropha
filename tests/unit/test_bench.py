@@ -355,6 +355,11 @@ def _results() -> list[dict]:
             "metrics": {"recall@10": 0.8, "mrr": 0.5},
             "provenance": provenance,
             "per_query": {"q1": 1, "q2": None, "q3": 2},
+            "per_query_metrics": {
+                "q1": {"ndcg@10": 1.0},
+                "q2": {"ndcg@10": 0.0},
+                "q3": {"ndcg@10": 0.5},
+            },
         },
         {
             "ok": True,
@@ -365,6 +370,11 @@ def _results() -> list[dict]:
             "metrics": {"recall@10": 0.7, "mrr": 0.55},
             "provenance": provenance,
             "per_query": {"q1": 1, "q2": 3, "q3": None},
+            "per_query_metrics": {
+                "q1": {"ndcg@10": 1.0},
+                "q2": {"ndcg@10": 0.25},
+                "q3": {"ndcg@10": 0.0},
+            },
         },
     ]
 
@@ -1118,9 +1128,11 @@ def test_baseline_deltas_shape_and_sign() -> None:
     assert d["cell_id"] == "b"
     # each delta = (point, lo, hi, p_gt_0)
     assert len(d["d_success"]) == 4 and len(d["d_mrr"]) == 4
+    assert len(d["d_ndcg"]) == 4
     # recall identical (2/3 each) → point 0; mrr lower for b → negative point.
     assert d["d_success"][0] == pytest.approx(0.0)
     assert d["d_mrr"][0] < 0
+    assert d["d_ndcg"][0] < 0
     assert d["label"] == "hyde=False reranker=code-aware"
 
 
@@ -1189,7 +1201,15 @@ def test_eval_cell_records_full_metrics_provenance_and_diagnostics(
     }
     report = SimpleNamespace(
         summary=lambda: summary,
-        results=[SimpleNamespace(case=SimpleNamespace(id="q1"), rank_of_first_hit=1)],
+        results=[
+            SimpleNamespace(
+                case=SimpleNamespace(id="q1"),
+                rank_of_first_hit=1,
+                hit=True,
+                reciprocal_rank=1.0,
+                ndcg=1.0,
+            )
+        ],
         diagnostics={"reranker": {"primary_latency_p95_ms": 4.0}},
         by_tag=lambda: {},
         n=1,
@@ -1225,6 +1245,9 @@ def test_eval_cell_records_full_metrics_provenance_and_diagnostics(
     assert record["provenance"]["run_id"] == "run-one"
     assert record["provenance"]["index"]["comparable"] is True
     assert record["provenance"]["pipeline"]["retrieval"] == "retrieval:test"
+    assert record["per_query_metrics"] == {
+        "q1": {"success@10": 1.0, "mrr": 1.0, "ndcg@10": 1.0}
+    }
     assert run_eval.call_args.kwargs["provenance"] == record["provenance"]
     assert run_eval.call_args.kwargs["context_budget"] == 200
     assert run_eval.call_args.kwargs["diversity_enabled"] is True

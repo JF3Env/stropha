@@ -34,7 +34,7 @@ baseline:
   reranker: llm
   candidate_k: 20
   adaptive_weighting: true
-  learned_weights: true
+  learned_weights: false
   recursive: true
   recursive_adjacency: 5
   rrf_k: 60

@@ -88,6 +88,12 @@ def _mrr(ranks: dict[str, Any], ids: list[str]) -> float:
     return sum((1.0 / r if r else 0.0) for r in (ranks.get(i) for i in ids)) / len(ids)
 
 
+def _mean_query_metric(values: dict[str, Any], ids: list[str], metric: str) -> float:
+    if not ids:
+        return 0.0
+    return sum(float((values.get(case_id) or {}).get(metric, 0.0)) for case_id in ids) / len(ids)
+
+
 def _bootstrap_delta(
     base: dict[str, Any], arm: dict[str, Any], metric: Any
 ) -> tuple[float, float, float, float]:
@@ -191,7 +197,7 @@ class BenchReport:
     def baseline_deltas(
         self, baseline_id: str
     ) -> list[dict[str, Any]]:
-        """Per-cell paired bootstrap of success@10 and MRR vs the baseline cell.
+        """Per-cell paired bootstrap of primary quality metrics vs the baseline cell.
 
         Requires ``per_query`` ranks on both the baseline and the arm.
         """
@@ -199,6 +205,7 @@ class BenchReport:
         if base is None:
             raise ReportError(f"baseline cell_id {baseline_id!r} not in results")
         base_ranks = base.get("per_query") or {}
+        base_metrics = base.get("per_query_metrics") or {}
         out: list[dict[str, Any]] = []
         for r in self.results:
             if r.get("cell_id") == baseline_id:
@@ -208,12 +215,20 @@ class BenchReport:
                 continue
             dS = _bootstrap_delta(base_ranks, arm_ranks, _success)
             dM = _bootstrap_delta(base_ranks, arm_ranks, _mrr)
-            out.append({
+            row: dict[str, Any] = {
                 "cell_id": r.get("cell_id"),
                 "label": self.display_label(r),
                 "d_success": dS,
                 "d_mrr": dM,
-            })
+            }
+            arm_metrics = r.get("per_query_metrics") or {}
+            if base_metrics and arm_metrics:
+                row["d_ndcg"] = _bootstrap_delta(
+                    base_metrics,
+                    arm_metrics,
+                    lambda values, ids: _mean_query_metric(values, ids, "ndcg@10"),
+                )
+            out.append(row)
         return out
 
 

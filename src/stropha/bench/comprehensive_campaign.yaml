@@ -2,8 +2,10 @@
 # stages measure LLM-reranker stability, and focused holdout stages validate only
 # predeclared parameter families. Index artifacts are reused across every stage.
 version: 1
-name: comprehensive-quality-v2
+name: comprehensive-quality-v3
 split: search
+holdout_note: Previously exposed holdout; valid for repeatability and regression evidence,
+  but not an unbiased estimate of generalization. Promotion still requires new unseen cases.
 
 stages:
   - id: query-rewrite
@@ -19,35 +21,24 @@ stages:
   - id: local-quality
     matrix: src/stropha/bench/local_quality_matrix.yaml
   - id: indexing-confirmation
-    matrix: src/stropha/bench/local_quality_matrix.yaml
-    axes: [embedder, enricher]
-    repetitions: 3
-  - id: active-retrieval
+    matrix: src/stropha/bench/indexing_quality_shortlist_matrix.yaml
+    repetitions: 10
+    min_repetitions: 4
+  - id: active-discovery
     matrix: src/stropha/bench/active_matrix.yaml
-    repetitions: 4
+  - id: active-confirmation
+    matrix: src/stropha/bench/active_quality_shortlist_matrix.yaml
+    repetitions: 10
+    min_repetitions: 4
 
-  # Frozen holdout is evaluated last and never feeds candidate discovery.
-  - id: query-rewrite-holdout
-    matrix: src/stropha/bench/query_rewrite_matrix.yaml
-    axes: [query_rewrite]
-    split: holdout
-  - id: hyde-holdout
-    matrix: src/stropha/bench/hyde_matrix.yaml
-    axes: [hyde]
-    split: holdout
-  - id: multi-query-holdout
-    matrix: src/stropha/bench/multi_query_matrix.yaml
-    axes: [multi_query, multi_query_count]
-    split: holdout
-  - id: diversity-holdout
-    matrix: src/stropha/bench/diversity_matrix.yaml
-    axes: [diversity, diversity_max_chunks_per_file]
-    split: holdout
+  # Holdout sees only the frozen finalists above, never a discovery matrix.
   - id: indexing-holdout
-    matrix: src/stropha/bench/local_quality_matrix.yaml
-    axes: [embedder, enricher]
+    matrix: src/stropha/bench/indexing_quality_shortlist_matrix.yaml
     split: holdout
+    repetitions: 10
+    min_repetitions: 4
   - id: active-retrieval-holdout
-    matrix: src/stropha/bench/active_matrix.yaml
-    axes: [candidate_k, learned_weights, recursive_adjacency, rrf_k]
+    matrix: src/stropha/bench/active_quality_shortlist_matrix.yaml
     split: holdout
+    repetitions: 10
+    min_repetitions: 4

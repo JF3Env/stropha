@@ -325,7 +325,7 @@ The launcher pins the current commit in a detached worktree, so later edits to
 the main checkout do not invalidate a multi-day run. Results, logs, PID/state,
 per-stage CSV/JSON reports, the final summary, and a human-readable `report.md`
 are stored under
-`.stropha/bench/campaigns/comprehensive-quality-v2/<commit>-<config>/`. The report
+`.stropha/bench/campaigns/comprehensive-quality-v3/<commit>-<config>/`. The report
 includes winner stability, confidence intervals, quality/cost metrics, and the
 strongest and weakest query tags. The configured experiment policy still
 controls storage and adapter blacklists; PostgreSQL campaigns use canonical
@@ -339,5 +339,9 @@ uv run stropha bench campaign stop
 ```
 
 Campaign stages may override `split`, declare `axes` to vary only selected
-parameters, and set `repetitions` for independent runs. Holdout stages should be
-last and focused on candidates declared before viewing holdout results.
+parameters, and set `repetitions` plus `min_repetitions` for confidence-driven
+independent runs. Repeated groups stop early only when the modal winner's 95%
+Wilson interval is above a 50% win probability. Holdout stages must be last and
+use separately frozen shortlist matrices; discovery matrices never run on
+holdout. The report carries a holdout qualification because previously exposed
+cases cannot provide an unbiased estimate of generalization.

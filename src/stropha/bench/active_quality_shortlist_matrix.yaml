@@ -1,0 +1,47 @@
+# Frozen retrieval finalists selected from comprehensive-search-v1 search results.
+# Do not alter this file after inspecting its holdout results.
+repo: .
+golden: tests/eval/golden.jsonl
+top_k: 10
+
+axes:
+  embedder:
+    - adapter: mlx
+      model: mlx-community/Qwen3-Embedding-4B-4bit-DWQ
+      batch_size: 4
+  enricher:
+    - adapter: contextual
+      max_content_chars: 4000
+      temperature: 0
+      max_tokens: 64
+      max_description_chars: 200
+      prompt_template: 'Write a dense 2-3 sentence semantic description of this code
+        chunk for retrieval.Cover:- What this code does (functionality)- Where it
+        fits (layer, module, responsibility)- Related concepts or components it interacts
+        withKeep it concrete. Avoid filler words and meta-commentary.Code:```{language}{content}```File:
+        {rel_path}Symbol: {symbol}Output: ONLY the description, starting with "This...".
+        No code, no preamble, no markdown.'
+  reranker: [llm]
+  candidate_k: [20, 50]
+  adaptive_weighting: [true]
+  learned_weights: [false]
+  recursive: [true]
+  recursive_adjacency: [3, 5, 10]
+  rrf_k: [60, 80]
+
+baseline:
+  reranker: llm
+  candidate_k: 20
+  adaptive_weighting: true
+  learned_weights: false
+  recursive: true
+  recursive_adjacency: 5
+  rrf_k: 60
+
+constraints:
+  - skip_when: {candidate_k: 20, recursive_adjacency: 3}
+  - skip_when: {candidate_k: 20, recursive_adjacency: 5, rrf_k: 80}
+  - skip_when: {candidate_k: 20, recursive_adjacency: 10}
+  - skip_when: {candidate_k: 50, recursive_adjacency: 3, rrf_k: 80}
+  - skip_when: {candidate_k: 50, recursive_adjacency: 5}
+  - skip_when: {candidate_k: 50, recursive_adjacency: 10, rrf_k: 60}

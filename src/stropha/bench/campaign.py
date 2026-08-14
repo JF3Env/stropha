@@ -7,6 +7,7 @@ import contextlib
 import fcntl
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -48,6 +49,8 @@ def load_campaign_spec(path: Path) -> dict[str, Any]:
         raise CampaignError("campaign name must contain only lowercase letters, digits, and dashes")
     if raw.get("split") not in {"search", "holdout"}:
         raise CampaignError("campaign split must be 'search' or 'holdout'")
+    if "holdout_note" in raw and not isinstance(raw["holdout_note"], str):
+        raise CampaignError("campaign holdout_note must be a string")
     stages = raw.get("stages")
     if not isinstance(stages, list) or not stages:
         raise CampaignError("campaign spec must declare at least one stage")
@@ -67,6 +70,15 @@ def load_campaign_spec(path: Path) -> dict[str, Any]:
         repetitions = stage.get("repetitions", 1)
         if not isinstance(repetitions, int) or isinstance(repetitions, bool) or repetitions < 1:
             raise CampaignError(f"campaign stage {stage_id!r} repetitions must be positive")
+        min_repetitions = stage.get("min_repetitions", repetitions)
+        if (
+            not isinstance(min_repetitions, int)
+            or isinstance(min_repetitions, bool)
+            or not 1 <= min_repetitions <= repetitions
+        ):
+            raise CampaignError(
+                f"campaign stage {stage_id!r} min_repetitions must be between 1 and repetitions"
+            )
         axes = stage.get("axes", [])
         if not isinstance(axes, list) or not all(isinstance(axis, str) and axis for axis in axes):
             raise CampaignError(f"campaign stage {stage_id!r} axes must be a list of names")
@@ -150,6 +162,7 @@ def _start_campaign_locked(
             "status": "starting",
             "source_commit": sha,
             "config_sha256": config_sha,
+            "holdout_note": spec.get("holdout_note"),
             "source_repo": str(source_repo),
             "snapshot": str(snapshot.path),
             "spec": str(spec_rel),
@@ -328,12 +341,21 @@ def _run_worker(
         state["stages"] = stages
         _atomic_json(state_path, state)
         for stage in stages:
-            if stage.get("status") == "completed":
+            if stage.get("status") in {"completed", "not_needed"}:
+                continue
+            stability = _completed_group_stability(stages, stage)
+            if stability and stability["confident"]:
+                stage["status"] = "not_needed"
+                stage["reason"] = (
+                    f"winner stability reached after {stability['runs']} repetitions"
+                )
+                state["updated_at"] = _now()
+                _atomic_json(state_path, state)
                 continue
             _assert_config_unchanged(state)
             _run_stage(stage, state, state_path, snapshot_path, artifact_root)
             _assert_config_unchanged(state)
-        failed = any(stage.get("status") != "completed" for stage in stages)
+        failed = any(stage.get("status") not in {"completed", "not_needed"} for stage in stages)
         state["status"] = "completed_with_failures" if failed else "completed"
         _write_campaign_summary(state, artifact_root)
     except KeyboardInterrupt:
@@ -377,7 +399,9 @@ def _prepare_stages(
             raise CampaignError(f"matrix for stage {declared_id!r} escapes the snapshot") from exc
         matrix = policy.filter_matrix(load_matrix(matrix_path))
         axes = declared.get("axes", [])
-        cells = matrix.select_axes(axes).expand() if axes else matrix.expand()
+        if axes:
+            matrix = matrix.select_axes(axes)
+        cells = matrix.expand()
         repetitions = declared.get("repetitions", 1)
         for repetition in range(1, repetitions + 1):
             stage_id = (
@@ -393,6 +417,7 @@ def _prepare_stages(
                     "id": stage_id,
                     "group": declared_id,
                     "repetition": repetition,
+                    "min_repetitions": declared.get("min_repetitions", repetitions),
                     "split": declared.get("split", spec["split"]),
                     "axes": axes,
                     "matrix": str(declared["matrix"]),
@@ -500,7 +525,7 @@ def _write_stage_report(stage: dict[str, Any], matrix_path: Path) -> dict[str, A
         "top": [
             {
                 "cell_id": record.get("cell_id"),
-                "label": report.display_label(record),
+                "label": _configuration_label(record),
                 "values": record.get("values"),
                 "metrics": record.get("metrics"),
                 "by_tag": record.get("by_tag"),
@@ -523,6 +548,7 @@ def _write_campaign_summary(state: dict[str, Any], artifact_root: Path) -> None:
         "status": state["status"],
         "source_commit": state["source_commit"],
         "config_sha256": state["config_sha256"],
+        "holdout_note": state.get("holdout_note"),
         "started_at": state.get("started_at"),
         "finished_at": _now(),
         "stages": state["stages"],
@@ -548,7 +574,11 @@ def _human_report(summary: dict[str, Any], artifact_root: Path) -> str:
         f"- Source commit: `{summary['source_commit']}`",
         f"- Started: {summary.get('started_at') or 'unknown'}",
         f"- Finished: {summary.get('finished_at') or 'unknown'}",
-        f"- Successful stages: {sum(stage.get('status') == 'completed' for stage in summary['stages'])}/{len(summary['stages'])}",
+        f"- Holdout qualification: {summary.get('holdout_note') or 'not specified'}",
+        f"- Successfully executed stages: "
+        f"{sum(stage.get('status') == 'completed' for stage in summary['stages'])}",
+        f"- Confidence-skipped repetitions: "
+        f"{sum(stage.get('status') == 'not_needed' for stage in summary['stages'])}",
         "",
         "## Stage Results",
         "",
@@ -575,20 +605,13 @@ def _human_report(summary: dict[str, Any], artifact_root: Path) -> str:
         if len(group_reports) < 2:
             continue
         repeated = True
-        winners: dict[str, int] = {}
-        ndcgs: list[float] = []
-        for report in group_reports:
-            top = (report.get("top") or [{}])[0]
-            label = str(top.get("label") or "no winner")
-            winners[label] = winners.get(label, 0) + 1
-            value = (top.get("metrics") or {}).get("ndcg@10")
-            if isinstance(value, int | float):
-                ndcgs.append(float(value))
-        winner, wins = max(winners.items(), key=lambda item: item[1])
-        mean = sum(ndcgs) / len(ndcgs) if ndcgs else 0.0
+        stability = _winner_stability(group_reports)
+        verdict = "confident" if stability["confident"] else "inconclusive"
         lines.append(
-            f"- **{group}:** `{winner}` won {wins}/{len(group_reports)} runs; "
-            f"mean winning NDCG@10 `{mean:.4f}`."
+            f"- **{group}:** {verdict}; `{stability['winner_label']}` won "
+            f"{stability['wins']}/{stability['runs']} runs "
+            f"(win rate `{stability['rate']:.3f}`, 95% Wilson CI "
+            f"`{stability['lo']:.3f}` to `{stability['hi']:.3f}`)."
         )
     if not repeated:
         lines.append("- No stages were repeated; winner stability was not measured.")
@@ -618,15 +641,25 @@ def _human_report(summary: dict[str, Any], artifact_root: Path) -> str:
                 f"- Weakest tags: {weak}",
             ]
         )
-        deltas = report.get("baseline_deltas") or []
-        if deltas:
-            best = max(deltas, key=lambda delta: delta.get("d_mrr", [float("-inf")])[0])
-            interval = best.get("d_mrr") or []
+        top_id = top.get("cell_id")
+        if top_id == report.get("baseline_cell_id"):
+            lines.append("- Baseline retained the highest NDCG@10 in this stage.")
+        delta = next(
+            (item for item in report.get("baseline_deltas") or [] if item["cell_id"] == top_id),
+            None,
+        )
+        if delta:
+            interval = delta.get("d_ndcg") or []
             if len(interval) >= 4:
+                comparisons = max(1, len(report.get("baseline_deltas") or []))
+                required = 1.0 - (0.05 / comparisons)
+                verdict = "passes" if interval[1] > 0 and interval[3] >= required else "inconclusive"
                 lines.append(
-                    f"- Best MRR delta vs baseline: `{interval[0]:+.4f}` "
-                    f"(95% CI `{interval[1]:+.4f}` to `{interval[2]:+.4f}`, "
-                    f"P(delta > 0) `{interval[3]:.3f}`)."
+                    f"- Winner NDCG delta vs baseline: `{interval[0]:+.4f}` "
+                    f"(nominal 95% CI `{interval[1]:+.4f}` to `{interval[2]:+.4f}`, "
+                    f"P(delta > 0) `{interval[3]:.3f}`); {verdict} the "
+                    f"Bonferroni-adjusted `{required:.3f}` probability threshold for "
+                    f"{comparisons} comparisons."
                 )
 
     lines.extend(
@@ -648,6 +681,67 @@ def _human_report(summary: dict[str, Any], artifact_root: Path) -> str:
 def _metric(metrics: dict[str, Any], name: str, *, decimals: int = 4) -> str:
     value = metrics.get(name)
     return f"{value:.{decimals}f}" if isinstance(value, int | float) else "n/a"
+
+
+def _configuration_label(record: dict[str, Any]) -> str:
+    """Return a concise label that still uniquely identifies indexing cells."""
+    parts = [f"[{record.get('cell_id', '?')}]"]
+    for name, value in sorted((record.get("values") or {}).items()):
+        if isinstance(value, dict):
+            adapter = value.get("adapter")
+            model = value.get("model")
+            shown = "/".join(str(item) for item in (adapter, model) if item)
+            value = shown or "configured"
+        parts.append(f"{name}={value}")
+    return " ".join(parts)
+
+
+def _winner_stability(reports: list[dict[str, Any]]) -> dict[str, Any]:
+    """Return modal winner frequency with a 95% Wilson binomial interval."""
+    winners: dict[str, tuple[str, int]] = {}
+    for report in reports:
+        top = (report.get("top") or [{}])[0]
+        cell_id = str(top.get("cell_id") or "no-winner")
+        label = str(top.get("label") or "no winner")
+        _, count = winners.get(cell_id, (label, 0))
+        winners[cell_id] = (label, count + 1)
+    winner_id, (winner_label, wins) = max(winners.items(), key=lambda item: item[1][1])
+    runs = len(reports)
+    rate = wins / runs
+    z = 1.959963984540054
+    denominator = 1 + (z * z / runs)
+    centre = (rate + z * z / (2 * runs)) / denominator
+    margin = z * math.sqrt((rate * (1 - rate) / runs) + z * z / (4 * runs * runs))
+    margin /= denominator
+    lo = max(0.0, centre - margin)
+    hi = min(1.0, centre + margin)
+    return {
+        "winner_cell_id": winner_id,
+        "winner_label": winner_label,
+        "wins": wins,
+        "runs": runs,
+        "rate": rate,
+        "lo": lo,
+        "hi": hi,
+        "confident": lo > 0.5,
+    }
+
+
+def _completed_group_stability(
+    stages: list[dict[str, Any]], current: dict[str, Any]
+) -> dict[str, Any] | None:
+    completed = [
+        stage
+        for stage in stages
+        if stage.get("group") == current.get("group")
+        and stage.get("status") == "completed"
+        and stage.get("repetition", 1) < current.get("repetition", 1)
+    ]
+    if len(completed) < current.get("min_repetitions", 1):
+        return None
+    reports = [_read_json(Path(stage["report"])) for stage in completed]
+    available = [report for report in reports if report]
+    return _winner_stability(available) if available else None
 
 
 def _public_status(state: dict[str, Any], root: Path) -> dict[str, Any]:
