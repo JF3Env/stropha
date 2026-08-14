@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import copy
+import csv
 import hashlib
+import io
 import json
 from contextlib import contextmanager
 from pathlib import Path
@@ -24,6 +26,7 @@ from stropha.bench.report import (
 from stropha.bench.runner import (
     BenchError,
     _experiment_provenance,
+    _merge,
     _retrieval_overrides,
     _run_provenance,
     _source_worktree_state,
@@ -208,6 +211,19 @@ def test_retrieval_axes_map_to_runtime_config_fields() -> None:
     }
 
 
+def test_merge_drops_stale_config_when_adapter_changes() -> None:
+    resolved = {
+        "embedder": {
+            "adapter": "mlx",
+            "config": {"model": "mlx-community/Qwen3-Embedding-4B-4bit-DWQ"},
+        }
+    }
+
+    _merge(resolved, {"embedder": {"adapter": "model2vec"}})
+
+    assert resolved == {"embedder": {"adapter": "model2vec"}}
+
+
 def test_query_rewrite_matrix_is_two_isolated_search_arms() -> None:
     path = Path(__file__).resolve().parents[2] / "src/stropha/bench/query_rewrite_matrix.yaml"
     matrix = load_matrix(path)
@@ -295,6 +311,16 @@ def test_phase2_shortlist_is_frozen_to_four_cells() -> None:
     assert shortlist.baseline_cell() is not None
     active_path = Path(__file__).resolve().parents[2] / "src/stropha/bench/active_matrix.yaml"
     assert set(shortlist.groups()) == set(load_matrix(active_path).groups())
+
+
+def test_local_quality_matrix_covers_seven_indexes_and_112_cells() -> None:
+    path = Path(__file__).resolve().parents[2] / "src/stropha/bench/local_quality_matrix.yaml"
+    matrix = load_matrix(path)
+
+    assert len(matrix.groups()) == 7
+    assert len(matrix.expand()) == 112
+    assert matrix.baseline_cell() is not None
+    assert matrix.baseline_cell().values["reranker"] == "llm"
 
 
 def test_empty_axes_raises(tmp_path: Path) -> None:
@@ -390,6 +416,17 @@ def test_resume_rejects_incomparable_output(tmp_path: Path) -> None:
     )
     with pytest.raises(BenchError, match="use a new --out path"):
         _validate_output_identity(p, "new")
+
+
+def test_resume_removes_only_a_torn_final_record(tmp_path: Path) -> None:
+    p = tmp_path / "results.jsonl"
+    valid = json.dumps(
+        {"ok": True, "cell_id": "a", "provenance": {"run_id": "run-one"}}
+    )
+    p.write_text(valid + "\n{\"ok\":true", encoding="utf-8")
+
+    assert _validate_output_identity(p, "run-one") == {"a"}
+    assert p.read_text(encoding="utf-8") == valid + "\n"
 
 
 def _experiment_config(
@@ -1080,9 +1117,9 @@ def test_baseline_deltas_shape_and_sign() -> None:
     d = deltas[0]
     assert d["cell_id"] == "b"
     # each delta = (point, lo, hi, p_gt_0)
-    assert len(d["d_recall"]) == 4 and len(d["d_mrr"]) == 4
+    assert len(d["d_success"]) == 4 and len(d["d_mrr"]) == 4
     # recall identical (2/3 each) → point 0; mrr lower for b → negative point.
-    assert d["d_recall"][0] == pytest.approx(0.0)
+    assert d["d_success"][0] == pytest.approx(0.0)
     assert d["d_mrr"][0] < 0
     assert d["label"] == "hyde=False reranker=code-aware"
 
@@ -1093,6 +1130,21 @@ def test_to_csv_has_header_and_rows() -> None:
     assert lines[0].startswith("cell_id,indexing_sig,")
     assert "recall@10" in lines[0] and "reranker" in lines[0]
     assert len(lines) == 3  # header + 2 rows
+
+
+def test_to_csv_quotes_mapping_values_with_commas_and_newlines() -> None:
+    results = _results()
+    results[0]["values"]["enricher"] = {
+        "adapter": "contextual",
+        "prompt": "first, second\nthird",
+    }
+
+    rows = list(csv.reader(io.StringIO(to_csv(results))))
+
+    assert len(rows) == 3
+    assert all(len(row) == len(rows[0]) for row in rows)
+    enricher = rows[0].index("enricher")
+    assert rows[1][enricher] == "contextual/first, second\nthird"
 
 
 def test_eval_cell_records_full_metrics_provenance_and_diagnostics(

@@ -2061,11 +2061,88 @@ bench_app = typer.Typer(
 )
 app.add_typer(bench_app, name="bench")
 
+bench_campaign_app = typer.Typer(
+    name="campaign",
+    help="Run and inspect detached, resumable multi-matrix campaigns.",
+    no_args_is_help=True,
+)
+bench_app.add_typer(bench_campaign_app, name="campaign")
+
 
 def _default_matrix_path() -> Path:
     from . import bench as _bench
 
     return Path(_bench.__file__).resolve().parent / "default_matrix.yaml"
+
+
+def _default_campaign_path() -> Path:
+    from . import bench as _bench
+
+    return Path(_bench.__file__).resolve().parent / "comprehensive_campaign.yaml"
+
+
+@bench_campaign_app.command("start")
+def bench_campaign_start_cmd(
+    spec: Path = typer.Option(None, "--spec", help="Campaign YAML."),
+    artifact_base: Path | None = typer.Option(
+        None,
+        "--artifact-base",
+        help="Campaign artifact parent (default: .stropha/bench/campaigns).",
+    ),
+) -> None:
+    """Pin HEAD and start the campaign in a detached process."""
+    from .bench.campaign import CampaignError, start_campaign
+
+    try:
+        result = start_campaign(
+            spec or _default_campaign_path(),
+            source_repo=Path.cwd(),
+            artifact_base=artifact_base,
+        )
+    except CampaignError as exc:
+        console.print(f"[red]Campaign start failed:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+    console.print_json(data=result)
+
+
+@bench_campaign_app.command("status")
+def bench_campaign_status_cmd(
+    spec: Path = typer.Option(None, "--spec", help="Campaign YAML."),
+    artifact_base: Path | None = typer.Option(None, "--artifact-base"),
+) -> None:
+    """Show live progress for the latest campaign run."""
+    from .bench.campaign import CampaignError, campaign_status
+
+    try:
+        result = campaign_status(
+            spec or _default_campaign_path(),
+            source_repo=Path.cwd(),
+            artifact_base=artifact_base,
+        )
+    except CampaignError as exc:
+        console.print(f"[red]Campaign status failed:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+    console.print_json(data=result)
+
+
+@bench_campaign_app.command("stop")
+def bench_campaign_stop_cmd(
+    spec: Path = typer.Option(None, "--spec", help="Campaign YAML."),
+    artifact_base: Path | None = typer.Option(None, "--artifact-base"),
+) -> None:
+    """Stop the latest campaign worker and its active benchmark."""
+    from .bench.campaign import CampaignError, stop_campaign
+
+    try:
+        result = stop_campaign(
+            spec or _default_campaign_path(),
+            source_repo=Path.cwd(),
+            artifact_base=artifact_base,
+        )
+    except CampaignError as exc:
+        console.print(f"[red]Campaign stop failed:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+    console.print_json(data=result)
 
 
 @bench_app.command("run")
@@ -2489,14 +2566,14 @@ def bench_report_cmd(
         if deltas:
             dt = Table(title=f"Δ vs baseline {baseline[:8]} (paired bootstrap, 95% CI)")
             dt.add_column("config", overflow="fold")
-            dt.add_column("Δrecall", justify="right")
+            dt.add_column("Δsuccess@10", justify="right")
             dt.add_column("95% CI")
             dt.add_column("P>0", justify="right")
             dt.add_column("Δmrr", justify="right")
             dt.add_column("95% CI")
             dt.add_column("P>0", justify="right")
-            for d in sorted(deltas, key=lambda x: x["d_recall"][0], reverse=True):
-                pr, lor, hir, fpr = cast(tuple[float, float, float, float], d["d_recall"])
+            for d in sorted(deltas, key=lambda x: x["d_success"][0], reverse=True):
+                pr, lor, hir, fpr = cast(tuple[float, float, float, float], d["d_success"])
                 pm, lom, him, fpm = cast(tuple[float, float, float, float], d["d_mrr"])
                 dt.add_row(
                     str(d["label"]),

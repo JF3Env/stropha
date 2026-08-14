@@ -404,6 +404,23 @@ def test_builder_failure_force_drops_marked_staging_without_leaking_error(
     assert any("WITH (FORCE)" in call for call in cluster.composable_ddl)
 
 
+def test_builder_interrupt_force_drops_marked_staging(
+    manager: PostgresEvaluationDatabaseManager,
+    cluster: _FakeCluster,
+) -> None:
+    built: list[DatabaseRef] = []
+
+    def interrupt(ref: DatabaseRef) -> None:
+        built.append(ref)
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        manager.get_or_create_cache("interrupted-cache", interrupt)
+
+    assert built[0].name not in cluster.databases
+    assert built[0].name in cluster.drops
+
+
 def test_builder_postgres_error_preserves_safe_root_cause(
     manager: PostgresEvaluationDatabaseManager,
     cluster: _FakeCluster,

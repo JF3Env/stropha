@@ -693,12 +693,17 @@ def _validate_output_identity(path: Path, run_id: str) -> set[str]:
     done: set[str] = set()
     if not path.is_file():
         return done
-    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    for line_number, line in enumerate(lines, 1):
         if not line.strip():
             continue
         try:
             rec = json.loads(line)
         except json.JSONDecodeError as exc:
+            if line_number == len(lines) and not line.endswith(("\n", "\r")):
+                path.write_text("".join(lines[: line_number - 1]), encoding="utf-8")
+                log.warning("bench.results_torn_tail_removed", path=str(path))
+                break
             raise BenchError(f"invalid result JSON at {path}:{line_number}") from exc
         existing_run_id = (rec.get("provenance") or {}).get("run_id")
         if existing_run_id != run_id:
@@ -714,6 +719,10 @@ def _validate_output_identity(path: Path, run_id: str) -> set[str]:
 def _merge(dst: dict[str, Any], src: dict[str, Any]) -> None:
     for k, v in src.items():
         if isinstance(v, dict) and isinstance(dst.get(k), dict):
+            existing = dst[k]
+            if "adapter" in v and v.get("adapter") != existing.get("adapter"):
+                dst[k] = v
+                continue
             _merge(dst[k], v)
         else:
             dst[k] = v

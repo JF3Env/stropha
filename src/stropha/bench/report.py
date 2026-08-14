@@ -13,6 +13,8 @@ cell) and produces:
 
 from __future__ import annotations
 
+import csv
+import io
 import json
 import random
 from dataclasses import dataclass
@@ -76,7 +78,7 @@ def _hit(rank: Any) -> bool:
     return rank is not None
 
 
-def _recall(ranks: dict[str, Any], ids: list[str]) -> float:
+def _success(ranks: dict[str, Any], ids: list[str]) -> float:
     return sum(_hit(ranks.get(i)) for i in ids) / len(ids) if ids else 0.0
 
 
@@ -189,7 +191,7 @@ class BenchReport:
     def baseline_deltas(
         self, baseline_id: str
     ) -> list[dict[str, Any]]:
-        """Per-cell paired bootstrap of recall@10 and mrr vs the baseline cell.
+        """Per-cell paired bootstrap of success@10 and MRR vs the baseline cell.
 
         Requires ``per_query`` ranks on both the baseline and the arm.
         """
@@ -204,12 +206,12 @@ class BenchReport:
             arm_ranks = r.get("per_query") or {}
             if not arm_ranks or not base_ranks:
                 continue
-            dR = _bootstrap_delta(base_ranks, arm_ranks, _recall)
+            dS = _bootstrap_delta(base_ranks, arm_ranks, _success)
             dM = _bootstrap_delta(base_ranks, arm_ranks, _mrr)
             out.append({
                 "cell_id": r.get("cell_id"),
                 "label": self.display_label(r),
-                "d_recall": dR,
+                "d_success": dS,
                 "d_mrr": dM,
             })
         return out
@@ -226,15 +228,17 @@ def to_csv(results: list[dict[str, Any]]) -> str:
     axes: list[str] = sorted({k for r in results for k in (r.get("values") or {})})
     metrics: list[str] = sorted({k for r in results for k in (r.get("metrics") or {})})
     header = ["cell_id", "indexing_sig", *axes, *metrics]
-    lines = [",".join(header)]
+    output = io.StringIO()
+    writer = csv.writer(output, lineterminator="\n")
+    writer.writerow(header)
     for r in results:
         vals = r.get("values") or {}
         met = r.get("metrics") or {}
         row = [str(r.get("cell_id", "")), str(r.get("indexing_sig", ""))]
         row += [_vlabel(vals.get(a, "")) for a in axes]
         row += [f"{met.get(m, '')}" for m in metrics]
-        lines.append(",".join(row))
-    return "\n".join(lines) + "\n"
+        writer.writerow(row)
+    return output.getvalue()
 
 
 __all__ = ["BenchReport", "ReportError", "load_results", "to_csv", "validate_matrix_id"]

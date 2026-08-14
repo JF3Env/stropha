@@ -309,3 +309,30 @@ uv run stropha cost --json
 Measure indexing and query behavior on the actual repository. Hardware labels
 and model names alone are not enough to support portable latency or memory
 claims.
+
+## Detached Benchmark Campaigns
+
+The bundled comprehensive campaign runs every development matrix on the
+`search` split in a detached process:
+
+```bash
+uv run stropha bench campaign start
+uv run stropha bench campaign status
+```
+
+The launcher pins the current commit in a detached worktree, so later edits to
+the main checkout do not invalidate a multi-day run. Results, logs, PID/state,
+per-stage CSV/JSON reports, and the final summary are stored under
+`.stropha/bench/campaigns/comprehensive-search-v1/<commit>-<config>/`. The configured
+experiment policy still controls storage and adapter blacklists; PostgreSQL
+campaigns use canonical index caches plus disposable per-cell clones.
+
+An interrupted or failed campaign resumes successful cells when `start` is run
+again at the same commit. Stop the worker and its active benchmark with:
+
+```bash
+uv run stropha bench campaign stop
+```
+
+Campaign specs reject the `holdout` split. Frozen candidates must continue to
+use the explicit holdout validation commands.

@@ -1,0 +1,23 @@
+# Comprehensive development campaign. Every stage uses only the optimisable
+# search split. Frozen holdout batches are deliberately not part of this run.
+# default_matrix.yaml is omitted because its only embedder (Voyage) is excluded
+# by this machine's experiment policy; local_quality_matrix.yaml replaces it.
+version: 1
+name: comprehensive-search-v1
+split: search
+
+stages:
+  - id: query-rewrite
+    matrix: src/stropha/bench/query_rewrite_matrix.yaml
+  - id: hyde
+    matrix: src/stropha/bench/hyde_matrix.yaml
+  - id: multi-query
+    matrix: src/stropha/bench/multi_query_matrix.yaml
+  - id: diversity
+    matrix: src/stropha/bench/diversity_matrix.yaml
+  - id: phase2-shortlist
+    matrix: src/stropha/bench/phase2_shortlist_matrix.yaml
+  - id: local-quality
+    matrix: src/stropha/bench/local_quality_matrix.yaml
+  - id: active-retrieval
+    matrix: src/stropha/bench/active_matrix.yaml

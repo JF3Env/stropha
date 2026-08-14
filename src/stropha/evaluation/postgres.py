@@ -543,7 +543,7 @@ class PostgresEvaluationDatabaseManager:
                         )
                     )
                     created = False
-                except Exception:
+                except BaseException:
                     if created:
                         try:
                             self._drop_on_connection(
@@ -598,7 +598,7 @@ class PostgresEvaluationDatabaseManager:
                     work_name,
                     self._marker_comment("work", cache_marker.cache_key),
                 )
-            except Exception:
+            except BaseException:
                 if created:
                     try:
                         self._drop_on_connection(

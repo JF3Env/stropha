@@ -1,0 +1,48 @@
+# Local indexing-quality sweep. The contextual arm is restricted to the
+# deployed Qwen embedder so the campaign covers its incremental value without
+# paying for redundant LLM enrichment across every embedding model.
+repo: .
+golden: tests/eval/golden.jsonl
+top_k: 10
+
+qwen: &qwen
+  adapter: mlx
+  model: mlx-community/Qwen3-Embedding-4B-4bit-DWQ
+  batch_size: 4
+
+contextual: &contextual
+  adapter: contextual
+  max_content_chars: 4000
+  temperature: 0
+  max_tokens: 64
+  max_description_chars: 200
+  prompt_template: 'Write a dense 2-3 sentence semantic description of this code
+    chunk for retrieval.Cover:- What this code does (functionality)- Where it
+    fits (layer, module, responsibility)- Related concepts or components it interacts
+    withKeep it concrete. Avoid filler words and meta-commentary.Code:```{language}{content}```File:
+    {rel_path}Symbol: {symbol}Output: ONLY the description, starting with "This...".
+    No code, no preamble, no markdown.'
+
+axes:
+  embedder:
+    - model2vec
+    - local
+    - *qwen
+  enricher:
+    - noop
+    - hierarchical
+    - *contextual
+  reranker: [null, code-aware, cross-encoder, llm]
+  candidate_k: [20, 50]
+  recursive: [false, true]
+
+baseline:
+  embedder: *qwen
+  enricher: *contextual
+  reranker: llm
+  candidate_k: 20
+  recursive: true
+
+constraints:
+  - skip_when: {embedder: model2vec, enricher: *contextual}
+  - skip_when: {embedder: local, enricher: *contextual}
