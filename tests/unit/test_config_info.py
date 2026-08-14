@@ -13,8 +13,10 @@ from __future__ import annotations
 import textwrap
 
 import pytest
+import yaml
 
 from stropha.config import get_config_info, load_config, reset_config
+from stropha.errors import ConfigError
 
 
 @pytest.fixture(autouse=True)
@@ -170,6 +172,22 @@ def test_paths_from_yaml(tmp_path):
     assert "custom.db" in info["config"]["index_path"]
 
 
+def test_diversity_packing_settings_from_yaml(tmp_path):
+    _write_config(
+        tmp_path,
+        """
+        retrieval_features:
+          diversity_enabled: true
+          diversity_max_chunks_per_file: 3
+    """,
+    )
+
+    features = load_config(force_reload=True).retrieval_features
+
+    assert features.diversity_enabled is True
+    assert features.diversity_max_chunks_per_file == 3
+
+
 def test_git_clone_settings_from_yaml(tmp_path):
     _write_config(
         tmp_path,
@@ -184,6 +202,97 @@ def test_git_clone_settings_from_yaml(tmp_path):
 
     assert cfg.git.clone_depth == 7
     assert cfg.git.clone_timeout == 42
+
+
+def test_experiment_settings_load_from_yaml(tmp_path):
+    _write_config(
+        tmp_path,
+        """
+        experiments:
+          storage: postgres
+          postgres:
+            admin_dsn: postgresql://admin:secret@localhost/stropha_bench
+            database_prefix: local_bench
+          blacklist:
+            adapters:
+              embedder: [voyage]
+              walker: [git-diff]
+        """,
+    )
+
+    experiments = load_config().experiments
+
+    assert experiments.storage == "postgres"
+    assert experiments.postgres.database_prefix == "local_bench"
+    assert experiments.blacklist.adapters == {
+        "embedder": ("voyage",),
+        "walker": ("git-diff",),
+    }
+    experiments.validate_for_run()
+
+
+def test_postgres_experiment_missing_dsn_loads_but_fails_run_validation(tmp_path):
+    _write_config(
+        tmp_path,
+        """
+        experiments:
+          storage: postgres
+        """,
+    )
+
+    experiments = load_config().experiments
+
+    assert experiments.postgres.admin_dsn is None
+    with pytest.raises(ConfigError, match="admin_dsn is required"):
+        experiments.validate_for_run()
+
+
+@pytest.mark.parametrize(
+    "experiments, match",
+    [
+        ({"storage": "memory"}, "storage must be"),
+        ({"postgres": {"database_prefix": "Upper"}}, "database_prefix must match"),
+        ({"postgres": {"database_prefix": "a" * 33}}, "at most 32"),
+        ({"blacklist": {"adapters": []}}, "adapters must be a mapping"),
+        (
+            {"blacklist": {"adapters": {"embedder": ["voyage", "voyage"]}}},
+            "duplicate adapters",
+        ),
+        (
+            {"blacklist": {"adapters": {"embedder": [""]}}},
+            "entries must be non-empty strings",
+        ),
+    ],
+)
+def test_invalid_experiment_settings_are_rejected(tmp_path, experiments, match):
+    _write_config(tmp_path, "experiments:\n" + textwrap.indent(yaml.safe_dump(experiments), "  "))
+
+    with pytest.raises(ConfigError, match=match):
+        load_config()
+
+
+def test_experiment_introspection_redacts_postgres_dsn(tmp_path):
+    dsn = "postgresql://admin:do-not-leak@localhost/stropha_bench"
+    _write_config(
+        tmp_path,
+        f"""
+        experiments:
+          storage: postgres
+          postgres:
+            admin_dsn: {dsn}
+            database_prefix: local_bench
+        """,
+    )
+
+    info = get_config_info()
+
+    assert info["settings"]["experiments"]["postgres"] == {
+        "admin_dsn": "(set)",
+        "database_prefix": "local_bench",
+    }
+    assert info["experiments"] == info["settings"]["experiments"]
+    assert dsn not in repr(info)
+    assert "do-not-leak" not in repr(info)
 
 
 def test_target_repo_env_override(tmp_path, monkeypatch):

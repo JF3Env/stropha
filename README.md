@@ -287,6 +287,49 @@ API keys belong under `secrets:` in this file. Restrict it to the current user:
 chmod 600 ~/.stropha/config.yaml
 ```
 
+Machine-local experiment policy also lives only in `~/.stropha/config.yaml`.
+For native PostgreSQL evaluation with local adapter exclusions:
+
+```yaml
+experiments:
+  storage: postgres
+  postgres:
+    admin_dsn: postgresql://ROLE:PASSWORD@HOST:PORT/stropha_bench_admin
+    database_prefix: stropha_bench
+  blacklist:
+    adapters:
+      embedder: [voyage]
+      walker: [git-diff]
+```
+
+`stropha bench run` and `stropha meta run` both use this storage selection and
+blacklist. SQLite remains the default for backward compatibility. PostgreSQL
+mode instead evaluates the native pgvector and PostgreSQL BM25 paths and avoids
+sqlite-vec KNN candidate limits, making it the appropriate mode when those
+production-backend behaviors are what the experiment must measure.
+
+The PostgreSQL `admin_dsn` must name a database beginning with
+`<database_prefix>_`; the example therefore uses `stropha_bench_admin`. Use a
+dedicated, non-production admin database and role, and grant that role
+`CREATEDB`. The credentials stay only in `~/.stropha/config.yaml`: experiment
+provenance records a policy fingerprint and non-secret cluster identity, never
+the DSN or password. The production DSN and production database are never
+mutated.
+
+PostgreSQL experiments build deterministic, marked canonical cache databases
+and create a disposable template clone for each benchmark cell or Meta-Harness
+candidate. Canonical caches persist for reuse across runs; work clones are
+dropped after use. Destructive cleanup is restricted to an exact generated name
+under the fixed prefix with a valid Stropha marker and the expected owner. There
+is no implicit bulk cleanup.
+
+The blacklist is local policy and does not modify the checked-in search-space
+manifest. In addition, `git-diff` is always excluded from full-snapshot
+experiments because it is an incremental-only walker, even when it is not listed
+in the blacklist. Meta holdout validation fails closed unless the frozen storage
+backend, policy fingerprint, and PostgreSQL cluster identity still match the
+search run.
+
 The no-key default embedder is local. If `secrets.voyage_api_key` is present and
 the pipeline embedder adapter is omitted, auto-selection chooses Voyage. The
 Voyage adapter currently defaults to `voyage-4-large` with 512-dimensional
@@ -405,8 +448,10 @@ Evaluation is split deliberately:
   `--apply`.
 
 Each run pins committed `HEAD`; uncommitted source changes are excluded. It uses
-isolated writable SQLite clones, never the production index, so candidates can
-be evaluated concurrently without corrupting shared retrieval state.
+the machine-local `experiments` storage and blacklist described above, never the
+production index. SQLite uses isolated writable file clones; PostgreSQL uses
+disposable template-cloned databases, so candidates can be evaluated
+concurrently without corrupting shared retrieval state.
 
 First confirm the configured repository and pipeline:
 

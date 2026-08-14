@@ -16,6 +16,7 @@ from typing import Any
 
 from ..config import get_config
 from ..errors import StrophaError
+from ..evaluation.postgres import DatabaseRef, PostgresEvaluationDatabaseManager
 from ..ingest.git_meta import detect
 from ..pipeline.builder import BuiltStages, build_stages
 from ..pipeline.config import pipeline_config_from_dict
@@ -26,11 +27,22 @@ from .search_space import ResolvedCandidateConfig, SearchSpace, load_search_spac
 from .snapshot import Snapshot, create_snapshot, resolve_sha
 
 CANDIDATE_INDEX_CACHE_FORMAT = f"candidate-sqlite-v1-schema-{SCHEMA_VERSION}"
+POSTGRES_CANDIDATE_INDEX_CACHE_FORMAT = f"candidate-postgres-v1-schema-{SCHEMA_VERSION}"
 _GRAPH_DISABLED_IDENTITY = "disabled"
+_POSTGRES_IDENTITY_DSN = "postgresql://managed-evaluation/candidate-index"
 
 
 class CandidateIndexError(StrophaError):
     """Raised when a candidate index cannot be prepared safely."""
+
+
+def candidate_index_cache_format(storage_adapter: str) -> str:
+    """Return the schema-bound candidate cache format for a storage backend."""
+    if storage_adapter == "sqlite-vec":
+        return CANDIDATE_INDEX_CACHE_FORMAT
+    if storage_adapter == "postgres":
+        return POSTGRES_CANDIDATE_INDEX_CACHE_FORMAT
+    raise CandidateIndexError(f"unsupported candidate index storage adapter: {storage_adapter!r}")
 
 
 @dataclass(frozen=True)
@@ -48,14 +60,16 @@ class CandidateIndexIdentity:
 
 @dataclass(frozen=True)
 class CandidateIndex:
-    """Open candidate stages backed by an isolated writable SQLite clone."""
+    """Open candidate stages backed by isolated writable storage."""
 
     built: BuiltStages
     repo_id: int
     identity: CandidateIndexIdentity
-    index_path: Path
+    index_path: Path | None
     cache_hit: bool
     resolved_config: ResolvedCandidateConfig
+    database_name: str | None = None
+    storage_ref: DatabaseRef | None = None
 
 
 class CandidateIndexProvider:
@@ -68,9 +82,10 @@ class CandidateIndexProvider:
         workspace_root: Path | str,
         graphify: bool = False,
         graph_identity: str | None = None,
-        cache_format: str = CANDIDATE_INDEX_CACHE_FORMAT,
+        cache_format: str | None = None,
         base_pipeline_config: Mapping[str, Any] | None = None,
         search_space: SearchSpace | None = None,
+        postgres_manager: PostgresEvaluationDatabaseManager | None = None,
     ) -> None:
         if graphify:
             if not graph_identity:
@@ -78,14 +93,17 @@ class CandidateIndexProvider:
             resolved_graph_identity = graph_identity
         else:
             resolved_graph_identity = _GRAPH_DISABLED_IDENTITY
-        if not cache_format:
+        if cache_format is not None and not cache_format:
             raise CandidateIndexError("cache_format must not be empty")
         self.cache = cache
         self.workspace_root = Path(workspace_root).expanduser().resolve()
-        self.workspace_root.mkdir(parents=True, exist_ok=True)
+        if postgres_manager is None:
+            self.workspace_root.mkdir(parents=True, exist_ok=True)
         self.graphify = graphify
         self.graph_identity = resolved_graph_identity
-        self.cache_format = cache_format
+        self.postgres_manager = postgres_manager
+        storage_adapter = "postgres" if postgres_manager is not None else "sqlite-vec"
+        self.cache_format = cache_format or candidate_index_cache_format(storage_adapter)
         self.base_pipeline_config = copy.deepcopy(dict(base_pipeline_config or {}))
         self.search_space = search_space or load_search_space(strict=True)
         self._build_lock = threading.Lock()
@@ -113,7 +131,13 @@ class CandidateIndexProvider:
         """Resolve the full cache identity without opening candidate storage."""
         self._validate_snapshot(snapshot)
         resolved = self._resolve_candidate(candidate_config)
-        config = self._config_for_index(resolved.pipeline, self.workspace_root / ".identity.db")
+        self._validate_resolved_candidate(resolved)
+        storage_target: Path | str = (
+            _POSTGRES_IDENTITY_DSN
+            if self.postgres_manager is not None
+            else self.workspace_root / ".identity.db"
+        )
+        config = self._config_for_index(resolved.pipeline, storage_target)
         built = build_stages(config, open_storage=False)
         repo_key = detect(snapshot.source_repo).normalized_key
         indexing_hash = built.indexing_hash()
@@ -125,6 +149,10 @@ class CandidateIndexProvider:
             "repo_key": repo_key,
             "snapshot_sha": snapshot.sha,
         }
+        if self.postgres_manager is not None:
+            payload["storage_config"] = json.dumps(
+                config["storage"], sort_keys=True, separators=(",", ":")
+            )
         cache_key = hashlib.sha256(
             json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest()
@@ -150,18 +178,58 @@ class CandidateIndexProvider:
         """Yield open candidate stages and remove their writable clone on exit."""
         resolved = self._resolve_candidate(candidate_config)
         identity = self.identity_for(snapshot=snapshot, candidate_config=candidate_config)
-        cache_hit = self.cache.get(
-            identity.cache_key,
-            source_repo=snapshot.source_repo,
-            sha=snapshot.sha,
-        ) is not None
+        if self.postgres_manager is not None:
+            cache_built = False
+
+            def build_cache(database: DatabaseRef) -> None:
+                nonlocal cache_built
+                cache_built = True
+                self._build_postgres_cache_entry(
+                    snapshot=snapshot,
+                    resolved=resolved,
+                    identity=identity,
+                    database=database,
+                )
+
+            canonical = self.postgres_manager.get_or_create_cache(
+                identity.cache_key,
+                build_cache,
+            )
+            with self.postgres_manager.writable_clone(canonical) as clone:
+                config = self._config_for_index(resolved.pipeline, clone.dsn)
+                built = build_stages(config)
+                with built.storage:
+                    repo_id = self._repo_id(built, snapshot)
+                    yield CandidateIndex(
+                        built=built,
+                        repo_id=repo_id,
+                        identity=identity,
+                        index_path=None,
+                        cache_hit=not cache_built,
+                        resolved_config=resolved,
+                        database_name=clone.name,
+                        storage_ref=clone,
+                    )
+            return
+
+        cache_hit = (
+            self.cache.get(
+                identity.cache_key,
+                source_repo=snapshot.source_repo,
+                sha=snapshot.sha,
+            )
+            is not None
+        )
         if not cache_hit:
             with self._build_lock:
-                cache_hit = self.cache.get(
-                    identity.cache_key,
-                    source_repo=snapshot.source_repo,
-                    sha=snapshot.sha,
-                ) is not None
+                cache_hit = (
+                    self.cache.get(
+                        identity.cache_key,
+                        source_repo=snapshot.source_repo,
+                        sha=snapshot.sha,
+                    )
+                    is not None
+                )
                 if not cache_hit:
                     self._build_cache_entry(
                         snapshot=snapshot,
@@ -182,12 +250,7 @@ class CandidateIndexProvider:
             config = self._config_for_index(resolved.pipeline, clone_path)
             built = build_stages(config)
             with built.storage:
-                indexed_repo = detect(snapshot.path)
-                repo_id = built.storage.lookup_repo_id(indexed_repo.normalized_key)
-                if repo_id is None:
-                    raise CandidateIndexError(
-                        f"snapshot repository is absent from candidate index: {indexed_repo.normalized_key}"
-                    )
+                repo_id = self._repo_id(built, snapshot)
                 yield CandidateIndex(
                     built=built,
                     repo_id=repo_id,
@@ -242,16 +305,65 @@ class CandidateIndexProvider:
                 source_repo=snapshot.source_repo,
             )
 
+    def _build_postgres_cache_entry(
+        self,
+        *,
+        snapshot: Snapshot,
+        resolved: ResolvedCandidateConfig,
+        identity: CandidateIndexIdentity,
+        database: DatabaseRef,
+    ) -> None:
+        config = self._config_for_index(resolved.pipeline, database.dsn)
+        built = build_stages(config, force_rebuild=True)
+        inference = get_config().inference
+        with built.storage as storage:
+            pipeline = Pipeline(
+                storage=storage,
+                embedder=built.embedder,
+                secondary_embedder=built.secondary_embedder,
+                enricher=built.enricher,
+                walker=built.walker,
+                chunker=built.chunker,
+                repos=[snapshot.path],
+                graphify=self.graphify,
+                graph_fts_augment=identity.graph_fts_augment,
+                enricher_concurrency=inference.enricher_concurrency,
+                enricher_batch_size=inference.effective_batch_size(),
+            )
+            stats = pipeline.run(rebuild=True, mode="full")
+            if stats.chunks_enriched_failed:
+                raise CandidateIndexError(
+                    "PostgreSQL candidate index enrichment failed for "
+                    f"{stats.chunks_enriched_failed} chunks"
+                )
+            storage_stats = storage.stats()
+            chunks = int(storage_stats.get("chunks", 0))
+            models = storage_stats.get("models") or []
+            vectors = sum(int(model.get("n", 0)) for model in models if isinstance(model, Mapping))
+            if chunks == 0 or vectors != chunks:
+                raise CandidateIndexError(
+                    f"PostgreSQL candidate index is incomplete: chunks={chunks}, vectors={vectors}"
+                )
+            self._repo_id(built, snapshot)
+            storage.set_meta("candidate_index_complete", identity.cache_key)
+            storage.commit()
+
     def _config_for_index(
         self,
         candidate_config: Mapping[str, Any],
-        index_path: Path,
+        storage_target: Path | str,
     ) -> dict[str, Any]:
         config = pipeline_config_from_dict(dict(candidate_config), resolve_storage_path=False)
-        config["storage"] = {
-            "adapter": "sqlite-vec",
-            "config": {"path": str(index_path)},
-        }
+        if self.postgres_manager is not None:
+            config["storage"] = {
+                "adapter": "postgres",
+                "config": {"dsn": str(storage_target)},
+            }
+        else:
+            config["storage"] = {
+                "adapter": "sqlite-vec",
+                "config": {"path": str(storage_target)},
+            }
         return config
 
     def _resolve_candidate(
@@ -273,15 +385,31 @@ class CandidateIndexProvider:
             )
             retrieval_config["inherit_global_features"] = False
             if "hyde_code_tuned" in resolved.retrieval_features:
-                retrieval_config["hyde_code_tuned"] = resolved.retrieval_features[
-                    "hyde_code_tuned"
-                ]
+                retrieval_config["hyde_code_tuned"] = resolved.retrieval_features["hyde_code_tuned"]
             return resolved
         return ResolvedCandidateConfig(
             pipeline=copy.deepcopy(dict(candidate_config)),
             retrieval_features={},
             graph={},
         )
+
+    @staticmethod
+    def _validate_resolved_candidate(resolved: ResolvedCandidateConfig) -> None:
+        walker = resolved.pipeline.get("walker") or {}
+        if walker.get("adapter") == "git-diff":
+            raise CandidateIndexError(
+                "git-diff walker cannot build a full snapshot candidate index"
+            )
+
+    @staticmethod
+    def _repo_id(built: BuiltStages, snapshot: Snapshot) -> int:
+        indexed_repo = detect(snapshot.path)
+        repo_id = built.storage.lookup_repo_id(indexed_repo.normalized_key)
+        if repo_id is None:
+            raise CandidateIndexError(
+                f"snapshot repository is absent from candidate index: {indexed_repo.normalized_key}"
+            )
+        return repo_id
 
     @staticmethod
     def _validate_snapshot(snapshot: Snapshot) -> None:
@@ -301,9 +429,7 @@ def _indexing_adapter_ids(built: BuiltStages) -> dict[str, str]:
         "enricher": built.effective_enricher_id(),
         "embedder": built.embedder.adapter_id,
         "secondary_embedder": (
-            built.secondary_embedder.adapter_id
-            if built.secondary_embedder is not None
-            else "none"
+            built.secondary_embedder.adapter_id if built.secondary_embedder is not None else "none"
         ),
     }
 
@@ -315,8 +441,10 @@ def _workspace_prefix(*, run_id: str, candidate_id: str) -> str:
 
 __all__ = [
     "CANDIDATE_INDEX_CACHE_FORMAT",
+    "POSTGRES_CANDIDATE_INDEX_CACHE_FORMAT",
     "CandidateIndex",
     "CandidateIndexError",
     "CandidateIndexIdentity",
     "CandidateIndexProvider",
+    "candidate_index_cache_format",
 ]

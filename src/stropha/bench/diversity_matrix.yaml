@@ -1,0 +1,23 @@
+# Phase 7 diversity-aware context packing development matrix.
+# Reuse the search split while tuning; no frozen holdout is opened here.
+
+repo: .
+golden: tests/eval/golden.jsonl
+top_k: 10
+
+axes:
+  embedder: [model2vec]
+  enricher: [noop]
+  context_budget: [200]
+  diversity: [false, true]
+  diversity_max_chunks_per_file: [1, 2]
+
+baseline:
+  embedder: model2vec
+  enricher: noop
+  context_budget: 200
+  diversity: false
+  diversity_max_chunks_per_file: 2
+
+constraints:
+  - skip_when: {diversity: false, diversity_max_chunks_per_file: 1}

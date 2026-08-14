@@ -732,9 +732,10 @@ def search_code(
             to the current target repository. Ignored when repo_url is provided.
         refresh: If True with repo_url, re-clone and re-index the remote repository.
         context_budget: Optional token budget for result packing (WIN-208). When
-            set, results are greedily packed in score order up to this many
-            estimated tokens. May return fewer than top_k hits; the truncated
-            tail is reported via the ``spilled_count`` field. Pass when your
+            set, results are greedily packed in policy order up to this many
+            estimated tokens. Score order is the default; opt-in diversity uses
+            a stable second pass. Remaining hits are reported via
+            ``spilled_count``. Pass when your
             context window is tight; omit for the classic top_k behaviour.
         compress: Extractive compression (WIN-210). When True, each hit's
             snippet is rewritten to keep only the signature, lines matching
@@ -2406,6 +2407,11 @@ def _features_snapshot(app: AppContext) -> dict:
             "enabled": _retrieval_value("recursive_enabled", rf.recursive_enabled),
             "adjacency": _retrieval_value("recursive_adjacency", rf.recursive_adjacency),
             "purpose": "Auto-merge adjacent chunks + promote parent when siblings hit.",
+        },
+        "diversity_packing": {
+            "enabled": rf.diversity_enabled,
+            "max_chunks_per_file": rf.diversity_max_chunks_per_file,
+            "purpose": "Prefer distinct file/parent-symbol evidence within result budgets.",
         },
         "query_cache": {
             "configured": rf.cache_enabled,

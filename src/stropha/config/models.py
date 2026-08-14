@@ -24,8 +24,14 @@ nested sections.
 
 from __future__ import annotations
 
+import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from types import MappingProxyType
+from typing import Literal
+
+from ..errors import ConfigError
 
 # ---------------------------------------------------------------------------
 # Section: retrieval features (query-time toggles, no re-index required)
@@ -59,6 +65,11 @@ class RetrievalFeatures:
     # Recursive retrieval — parent promotion + adjacency merge.
     recursive_enabled: bool = False
     recursive_adjacency: int = 5
+
+    # Diversity-aware budget packing — prefer distinct evidence before
+    # filling from deferred same-file/parent-symbol hits.
+    diversity_enabled: bool = False
+    diversity_max_chunks_per_file: int = 2
 
     # Semantic query cache (LRU, in-memory).
     cache_enabled: bool = False
@@ -353,6 +364,97 @@ class HookConfig:
 
 
 # ---------------------------------------------------------------------------
+# Section: machine-local experiment policy
+# ---------------------------------------------------------------------------
+
+
+ExperimentStorage = Literal["sqlite-vec", "postgres"]
+_DATABASE_PREFIX_RE = re.compile(r"[a-z][a-z0-9_]*")
+_MAX_DATABASE_PREFIX_LENGTH = 32
+
+
+@dataclass(frozen=True)
+class ExperimentPostgresConfig:
+    """PostgreSQL database provisioning settings for isolated experiments."""
+
+    admin_dsn: str | None = None
+    database_prefix: str = "stropha_bench"
+
+    def __post_init__(self) -> None:
+        if self.admin_dsn is not None:
+            if not isinstance(self.admin_dsn, str):
+                raise ConfigError("experiments.postgres.admin_dsn must be a string")
+            if not self.admin_dsn.strip():
+                object.__setattr__(self, "admin_dsn", None)
+        prefix = self.database_prefix
+        if not isinstance(prefix, str) or not prefix:
+            raise ConfigError("experiments.postgres.database_prefix must be a non-empty string")
+        if len(prefix) > _MAX_DATABASE_PREFIX_LENGTH or not _DATABASE_PREFIX_RE.fullmatch(prefix):
+            raise ConfigError(
+                "experiments.postgres.database_prefix must match [a-z][a-z0-9_]* "
+                f"and be at most {_MAX_DATABASE_PREFIX_LENGTH} characters"
+            )
+
+
+@dataclass(frozen=True)
+class ExperimentBlacklistConfig:
+    """Machine-local adapter exclusions grouped by pipeline stage."""
+
+    adapters: Mapping[str, tuple[str, ...]] = field(default_factory=lambda: MappingProxyType({}))
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.adapters, Mapping):
+            raise ConfigError("experiments.blacklist.adapters must be a mapping")
+        normalized: dict[str, tuple[str, ...]] = {}
+        for raw_stage, raw_adapters in self.adapters.items():
+            if not isinstance(raw_stage, str) or not raw_stage.strip():
+                raise ConfigError(
+                    "experiments.blacklist.adapters stage names must be non-empty strings"
+                )
+            if not isinstance(raw_adapters, (list, tuple)):
+                raise ConfigError(f"experiments.blacklist.adapters.{raw_stage} must be a list")
+            adapters: list[str] = []
+            for raw_adapter in raw_adapters:
+                if not isinstance(raw_adapter, str) or not raw_adapter.strip():
+                    raise ConfigError(
+                        f"experiments.blacklist.adapters.{raw_stage} entries must be "
+                        "non-empty strings"
+                    )
+                adapters.append(raw_adapter.strip())
+            if len(set(adapters)) != len(adapters):
+                raise ConfigError(
+                    f"experiments.blacklist.adapters.{raw_stage} contains duplicate adapters"
+                )
+            stage = raw_stage.strip()
+            if stage in normalized:
+                raise ConfigError(
+                    f"experiments.blacklist.adapters contains duplicate stage {stage!r}"
+                )
+            normalized[stage] = tuple(adapters)
+        object.__setattr__(self, "adapters", MappingProxyType(normalized))
+
+
+@dataclass(frozen=True)
+class ExperimentsConfig:
+    """Machine-local experiment storage and adapter eligibility policy."""
+
+    storage: ExperimentStorage = "sqlite-vec"
+    postgres: ExperimentPostgresConfig = field(default_factory=ExperimentPostgresConfig)
+    blacklist: ExperimentBlacklistConfig = field(default_factory=ExperimentBlacklistConfig)
+
+    def __post_init__(self) -> None:
+        if self.storage not in ("sqlite-vec", "postgres"):
+            raise ConfigError("experiments.storage must be 'sqlite-vec' or 'postgres'")
+
+    def validate_for_run(self) -> None:
+        """Validate requirements needed only when an experiment is about to run."""
+        if self.storage == "postgres" and not self.postgres.admin_dsn:
+            raise ConfigError(
+                "experiments.postgres.admin_dsn is required when experiments.storage=postgres"
+            )
+
+
+# ---------------------------------------------------------------------------
 # Top-level unified Config
 # ---------------------------------------------------------------------------
 
@@ -381,6 +483,7 @@ class Config:
     mcp: McpConfig = field(default_factory=McpConfig)
     git: GitConfig = field(default_factory=GitConfig)
     hook: HookConfig = field(default_factory=HookConfig)
+    experiments: ExperimentsConfig = field(default_factory=ExperimentsConfig)
 
     # -----------------------------------------------------------------
     # Backwards-compatibility flat accessors. Keep these stable —

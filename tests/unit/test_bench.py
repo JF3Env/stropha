@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Literal
 from unittest.mock import MagicMock
 
 import pytest
 
-from stropha.bench.matrix import Cell, MatrixError, load_matrix
+from stropha.bench.matrix import Cell, Matrix, MatrixError, load_matrix
 from stropha.bench.report import (
     BenchReport,
     ReportError,
@@ -20,6 +23,7 @@ from stropha.bench.report import (
 )
 from stropha.bench.runner import (
     BenchError,
+    _experiment_provenance,
     _retrieval_overrides,
     _run_provenance,
     _source_worktree_state,
@@ -27,6 +31,13 @@ from stropha.bench.runner import (
     eval_cell,
     run_matrix,
 )
+from stropha.config import (
+    Config,
+    ExperimentBlacklistConfig,
+    ExperimentPostgresConfig,
+    ExperimentsConfig,
+)
+from stropha.evaluation.postgres import DatabaseRef
 
 # --------------------------------------------------------------------------- matrix
 
@@ -211,10 +222,11 @@ def test_multi_query_matrix_is_two_selective_candidate_arms() -> None:
     matrix = load_matrix(path)
     cells = matrix.expand()
 
-    assert [
-        (cell.values["multi_query"], cell.values["multi_query_count"])
-        for cell in cells
-    ] == [(False, 2), (True, 2), (True, 3)]
+    assert [(cell.values["multi_query"], cell.values["multi_query_count"]) for cell in cells] == [
+        (False, 2),
+        (True, 2),
+        (True, 3),
+    ]
     assert {cell.values["multi_query_min_terms"] for cell in cells} == {7}
     assert matrix.baseline_cell() == cells[0]
 
@@ -227,6 +239,24 @@ def test_hyde_matrix_is_one_selective_candidate_arm() -> None:
     assert [cell.values["hyde"] for cell in cells] == [False, True]
     assert {cell.values["hyde_code_tuned"] for cell in cells} == {True}
     assert matrix.baseline_cell() == cells[0]
+
+
+def test_diversity_matrix_compares_fixed_budget_arms() -> None:
+    path = Path(__file__).resolve().parents[2] / "src/stropha/bench/diversity_matrix.yaml"
+    matrix = load_matrix(path)
+    cells = matrix.expand()
+
+    assert len(cells) == 3
+    assert {cell.values["context_budget"] for cell in cells} == {200}
+    assert {cell.values["diversity"] for cell in cells} == {False, True}
+    assert {cell.values["diversity_max_chunks_per_file"] for cell in cells} == {1, 2}
+    assert all(
+        cell.values["diversity"] or cell.values["diversity_max_chunks_per_file"] == 2
+        for cell in cells
+    )
+    assert {cell.indexing_sig for cell in cells} == {cells[0].indexing_sig}
+    assert matrix.baseline_cell() is not None
+    assert matrix.baseline_cell().values["context_budget"] == 200
 
 
 def test_active_matrix_parses_and_has_declared_baseline() -> None:
@@ -362,9 +392,64 @@ def test_resume_rejects_incomparable_output(tmp_path: Path) -> None:
         _validate_output_identity(p, "new")
 
 
-def test_no_resume_rejects_existing_output(matrix, tmp_path: Path) -> None:
+def _experiment_config(
+    *,
+    storage: Literal["sqlite-vec", "postgres"] = "sqlite-vec",
+    blacklist: dict[str, tuple[str, ...]] | None = None,
+) -> Config:
+    return Config(
+        experiments=ExperimentsConfig(
+            storage=storage,
+            postgres=ExperimentPostgresConfig(
+                admin_dsn="postgresql://eval_user:top-secret@db.internal:5544/eval_admin"
+            ),
+            blacklist=ExperimentBlacklistConfig(adapters=blacklist or {}),
+        )
+    )
+
+
+def test_run_matrix_filters_policy_before_dry_run_totals_without_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source = Matrix(
+        axes={"enricher": ["noop", "hierarchical"], "hyde": [False, True]},
+        repo=str(tmp_path),
+        golden=str(tmp_path / "golden.jsonl"),
+    )
+    original = copy.deepcopy(source)
+    monkeypatch.setattr(
+        "stropha.bench.runner.get_config",
+        lambda: _experiment_config(blacklist={"enricher": ("hierarchical",)}),
+    )
+    monkeypatch.setattr(
+        "stropha.bench.runner._run_provenance",
+        lambda _matrix, _split, **_kwargs: {
+            "run_id": "run-one",
+            "source_diff_sha256": None,
+        },
+    )
+    monkeypatch.setattr("stropha.bench.runner._resolved_indexing_hash", lambda _cell: "index-hash")
+    monkeypatch.setattr("stropha.bench.runner._source_worktree_state", lambda _repo: b"")
+    monkeypatch.setattr("stropha.bench.runner._assert_run_environment", lambda *_args: None)
+
+    plan = run_matrix(source, tmp_path / "results.jsonl", dry_run=True)
+
+    assert plan["total_cells"] == 2
+    assert all(
+        "hierarchical" not in label for labels in plan["groups"].values() for label in labels
+    )
+    assert plan["storage"] == "sqlite-vec"
+    assert plan["policy_fingerprint"]
+    assert source == original
+
+
+def test_no_resume_rejects_existing_output(
+    matrix, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     output = tmp_path / "results.jsonl"
     output.write_text("existing\n", encoding="utf-8")
+    monkeypatch.setattr("stropha.bench.runner.get_config", lambda: _experiment_config())
     with pytest.raises(BenchError, match="requires a new --out path"):
         run_matrix(matrix, output, resume=False)
 
@@ -459,10 +544,11 @@ def test_run_matrix_filters_cases_to_selected_split(
         SimpleNamespace(id="holdout-case", split="holdout"),
     ]
     seen: list[str] = []
+    monkeypatch.setattr("stropha.bench.runner.get_config", lambda: _experiment_config())
     monkeypatch.setattr("stropha.eval.load_golden", lambda _path: cases)
     monkeypatch.setattr(
         "stropha.bench.runner._run_provenance",
-        lambda _matrix, split: {
+        lambda _matrix, split, **_kwargs: {
             "run_id": split,
             "split": split,
             "source_state_id": "source-one",
@@ -472,6 +558,7 @@ def test_run_matrix_filters_cases_to_selected_split(
             "index_runtime_id": "index-runtime-one",
         },
     )
+    monkeypatch.setattr("stropha.bench.runner._resolved_indexing_hash", lambda _cell: "index-hash")
     monkeypatch.setattr("stropha.bench.runner._source_worktree_state", lambda _repo: b"")
     monkeypatch.setattr("stropha.bench.runner._assert_run_environment", lambda *_args: None)
     index_paths: list[Path] = []
@@ -497,7 +584,415 @@ def test_run_matrix_filters_cases_to_selected_split(
     assert summary["evaluated"] == 1
     assert seen == ["search-case"]
     first_sig = next(iter(matrix.groups()))
-    assert index_paths == [tmp_path / f"indexes/index_{first_sig}_source-one_index-runtime-one.db"]
+    assert index_paths == [
+        tmp_path / f"indexes/index_{first_sig}_source-one_index-runtime-one_index-hash.db"
+    ]
+
+
+def test_postgres_dry_run_reports_storage_without_connecting(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source = Matrix(
+        axes={"enricher": ["noop"]},
+        repo=str(tmp_path),
+        golden=str(tmp_path / "golden.jsonl"),
+    )
+    manager_inits: list[dict[str, object]] = []
+
+    class Manager:
+        def __init__(self, **kwargs: object) -> None:
+            manager_inits.append(kwargs)
+
+        @staticmethod
+        def preflight() -> None:
+            pytest.fail("dry-run must not connect to PostgreSQL")
+
+    monkeypatch.setattr(
+        "stropha.bench.runner.get_config", lambda: _experiment_config(storage="postgres")
+    )
+    monkeypatch.setattr(
+        "stropha.evaluation.postgres.PostgresEvaluationDatabaseManager",
+        Manager,
+    )
+    monkeypatch.setattr("stropha.bench.runner._production_database_for_admin", lambda _dsn: None)
+    monkeypatch.setattr(
+        "stropha.bench.runner._run_provenance",
+        lambda _matrix, _split, **_kwargs: {
+            "run_id": "run-one",
+            "source_diff_sha256": None,
+            "experiment": {"postgres_cluster": {"host": "db.internal", "port": 5544}},
+        },
+    )
+    monkeypatch.setattr("stropha.bench.runner._resolved_indexing_hash", lambda _cell: "index-hash")
+    monkeypatch.setattr("stropha.bench.runner._source_worktree_state", lambda _repo: b"")
+    monkeypatch.setattr("stropha.bench.runner._assert_run_environment", lambda *_args: None)
+    ignored_index_dir = tmp_path / "must-not-exist"
+
+    plan = run_matrix(
+        source,
+        tmp_path / "results.jsonl",
+        index_dir=ignored_index_dir,
+        dry_run=True,
+    )
+
+    assert len(manager_inits) == 1
+    assert plan["storage"] == "postgres"
+    assert plan["postgres_cluster"] == {"host": "db.internal", "port": 5544}
+    assert plan["index_dir"].startswith("ignored")
+    assert not ignored_index_dir.exists()
+
+
+def test_postgres_run_reuses_cache_and_clones_each_cell(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source = Matrix(
+        axes={"enricher": ["noop"], "hyde": [False, True]},
+        repo=str(tmp_path),
+        golden=str(tmp_path / "golden.jsonl"),
+    )
+    events: list[str] = []
+    cache_keys: list[str] = []
+    manager_kwargs: list[dict[str, object]] = []
+    build_dsns: list[str] = []
+    eval_dsns: list[str] = []
+
+    class Manager:
+        def __init__(self, **kwargs: object) -> None:
+            manager_kwargs.append(kwargs)
+
+        @staticmethod
+        def preflight() -> SimpleNamespace:
+            events.append("preflight")
+            return SimpleNamespace(
+                host="db.internal",
+                port=5544,
+                database="eval_admin",
+                user="eval_user",
+                server_version="17.2",
+            )
+
+        @staticmethod
+        def get_or_create_cache(cache_key: str, builder) -> DatabaseRef:
+            cache_keys.append(cache_key)
+            builder(
+                DatabaseRef(
+                    name="eval_staging_0123456789abcdef",
+                    dsn="postgresql://eval_user:secret@db.internal:5544/eval_staging",
+                )
+            )
+            return DatabaseRef(
+                name="eval_cache_0123456789abcdef01234567",
+                dsn="postgresql://eval_user:secret@db.internal:5544/eval_cache",
+            )
+
+        @staticmethod
+        @contextmanager
+        def writable_clone(_cache: DatabaseRef):
+            clone_number = len(eval_dsns) + 1
+            events.append(f"clone-{clone_number}")
+            yield DatabaseRef(
+                name=f"eval_work_{clone_number:016x}",
+                dsn=f"postgresql://eval_user:secret@db.internal:5544/eval_work_{clone_number}",
+            )
+            events.append(f"cleanup-{clone_number}")
+
+    config = _experiment_config(storage="postgres")
+    monkeypatch.setattr("stropha.bench.runner.get_config", lambda: config)
+    monkeypatch.setattr(
+        "stropha.evaluation.postgres.PostgresEvaluationDatabaseManager",
+        Manager,
+    )
+    monkeypatch.setattr(
+        "stropha.pipeline.config.load_pipeline_config",
+        lambda: {
+            "storage": {
+                "adapter": "postgres",
+                "config": {"dsn": "postgresql://prod:password@db.internal:5544/stropha_production"},
+            }
+        },
+    )
+    monkeypatch.setattr(
+        "stropha.bench.runner._run_provenance",
+        lambda _matrix, _split, **_kwargs: {
+            "run_id": "run-one",
+            "source_diff_sha256": None,
+            "source_commit": "abc",
+            "source_state_id": "source-one",
+            "runtime_id": "runtime-one",
+            "index_runtime_id": "index-runtime-one",
+            "repo_key": "repo-one",
+            "experiment": {"policy_fingerprint": "policy-one"},
+            "indexing_identities": {source.expand()[0].indexing_sig: "index-hash"},
+        },
+    )
+    monkeypatch.setattr("stropha.bench.runner._resolved_indexing_hash", lambda _cell: "index-hash")
+    monkeypatch.setattr("stropha.bench.runner._source_worktree_state", lambda _repo: b"")
+    monkeypatch.setattr("stropha.bench.runner._assert_run_environment", lambda *_args: None)
+
+    def load_golden(_path: Path) -> list[SimpleNamespace]:
+        events.append("golden")
+        return [SimpleNamespace(id="search-case", split="search")]
+
+    monkeypatch.setattr("stropha.eval.load_golden", load_golden)
+
+    def fake_build_index(
+        _matrix: Matrix,
+        _cell: Cell,
+        db_path: Path | None = None,
+        *,
+        storage_dsn: str | None = None,
+    ) -> None:
+        assert db_path is None
+        assert storage_dsn is not None
+        build_dsns.append(storage_dsn)
+
+    def fake_eval_cell(
+        _matrix: Matrix,
+        cell: Cell,
+        db_path: Path | None,
+        _cases: object,
+        *,
+        storage_dsn: str | None = None,
+        **_kwargs: object,
+    ) -> dict[str, object]:
+        assert db_path is None
+        assert storage_dsn is not None
+        eval_dsns.append(storage_dsn)
+        events.append(f"storage-closed-{len(eval_dsns)}")
+        return {"ok": True, "cell_id": cell.cell_id}
+
+    monkeypatch.setattr("stropha.bench.runner.build_index", fake_build_index)
+    monkeypatch.setattr("stropha.bench.runner.eval_cell", fake_eval_cell)
+    monkeypatch.setattr(
+        "stropha.bench.runner._verify_index",
+        lambda _path: pytest.fail("PostgreSQL run must not use SQLite verification"),
+    )
+
+    summary = run_matrix(source, tmp_path / "results.jsonl")
+
+    assert summary["evaluated"] == 2
+    assert len(cache_keys) == 1
+    assert json.loads(cache_keys[0]) == {
+        "index_runtime_id": "index-runtime-one",
+        "indexing_hash": "index-hash",
+        "indexing_sig": source.expand()[0].indexing_sig,
+        "policy_fingerprint": "policy-one",
+        "repo_key": "repo-one",
+        "source_state_id": "source-one",
+        "version": 2,
+    }
+    assert len(build_dsns) == 1
+    assert len(eval_dsns) == 2
+    assert events.index("preflight") < events.index("golden")
+    assert events.index("storage-closed-1") < events.index("cleanup-1")
+    assert events.index("storage-closed-2") < events.index("cleanup-2")
+    assert manager_kwargs[0]["production_database"] == "stropha_production"
+
+
+def test_build_index_postgres_uses_storage_protocol_not_sqlite(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from stropha.bench.runner import build_index
+
+    class Storage:
+        adapter_id = "postgres:test"
+
+        def __init__(self) -> None:
+            self.meta = {
+                "active_enricher_id": "noop",
+                "active_embedder_id": "embedder:test",
+            }
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def set_meta(self, key: str, value: str) -> None:
+            self.meta[key] = value
+
+        def get_meta(self, key: str) -> str | None:
+            return self.meta.get(key)
+
+        @staticmethod
+        def commit() -> None:
+            return None
+
+        @staticmethod
+        def stats() -> dict[str, object]:
+            return {
+                "chunks": 2,
+                "models": [{"embedding_model": "test", "n": 2}],
+                "enrichers": [{"enricher_id": "noop", "n": 2}],
+            }
+
+    storage = Storage()
+    built = SimpleNamespace(
+        storage=storage,
+        embedder=SimpleNamespace(adapter_id="embedder:test"),
+        secondary_embedder=None,
+        enricher=object(),
+        walker=object(),
+        chunker=object(),
+    )
+    resolved: list[dict[str, object]] = []
+
+    def pipeline_config(overrides: dict[str, object], *, resolve_storage_path: bool = True):
+        assert resolve_storage_path is False
+        resolved.append(overrides)
+        return overrides
+
+    class Pipeline:
+        def __init__(self, **_kwargs: object) -> None:
+            return None
+
+        @staticmethod
+        def run(*, rebuild: bool, mode: str) -> SimpleNamespace:
+            assert rebuild is True
+            assert mode == "full"
+            return SimpleNamespace(chunks_enriched_failed=0)
+
+    monkeypatch.setattr("stropha.bench.runner._patch_graphify_off", lambda: None)
+    monkeypatch.setattr(
+        "stropha.pipeline.config.load_pipeline_config",
+        lambda: {
+            "walker": {"adapter": "git-ls-files"},
+            "chunker": {"adapter": "tree-sitter-dispatch"},
+            "enricher": {"adapter": "hierarchical"},
+            "embedder": {"adapter": "local"},
+            "storage": {"adapter": "sqlite-vec"},
+            "retrieval": {"adapter": "hybrid-rrf"},
+        },
+    )
+    monkeypatch.setattr("stropha.pipeline.config.pipeline_config_from_dict", pipeline_config)
+    monkeypatch.setattr(
+        "stropha.pipeline.builder.build_stages",
+        lambda _cfg, *, force_rebuild: built,
+    )
+    monkeypatch.setattr("stropha.pipeline.pipeline.Pipeline", Pipeline)
+    monkeypatch.setattr(
+        "stropha.bench.runner._verify_index",
+        lambda _path: pytest.fail("PostgreSQL build must not use SQLite verification"),
+    )
+    monkeypatch.setattr("stropha.bench.runner.get_config", lambda: Config())
+    dsn = "postgresql://eval_user:secret@db.internal:5544/eval_staging"
+
+    result = build_index(
+        Matrix(axes={"enricher": ["noop"]}, repo=str(tmp_path)),
+        Cell(values={"enricher": "noop"}),
+        storage_dsn=dsn,
+    )
+
+    assert result["complete"] is True
+    assert result["chunks"] == result["vecs"] == 2
+    assert resolved[0]["storage"] == {"adapter": "postgres", "config": {"dsn": dsn}}
+
+
+def test_query_only_benchmark_inherits_active_indexing_stages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from stropha.bench.runner import _pipeline_config_for_bench
+
+    active = {
+        "walker": {"adapter": "git-ls-files"},
+        "chunker": {"adapter": "tree-sitter-dispatch"},
+        "enricher": {"adapter": "contextual", "config": {"max_tokens": 64}},
+        "embedder": {"adapter": "mlx", "config": {"model": "qwen"}},
+        "storage": {"adapter": "postgres", "config": {"dsn": "production"}},
+        "retrieval": {"adapter": "hybrid-rrf", "config": {"candidate_k": 20}},
+    }
+    monkeypatch.setattr(
+        "stropha.pipeline.config.load_pipeline_config", lambda: copy.deepcopy(active)
+    )
+
+    resolved = _pipeline_config_for_bench(
+        {
+            "storage": {"adapter": "postgres", "config": {"dsn": "evaluation"}},
+            "retrieval": {"config": {"query_rewrite_enabled": True}},
+        },
+        resolve_storage_path=False,
+    )
+
+    assert resolved["embedder"] == active["embedder"]
+    assert resolved["enricher"] == active["enricher"]
+    assert resolved["storage"]["config"]["dsn"] == "evaluation"
+    assert resolved["retrieval"]["config"]["candidate_k"] == 20
+    assert resolved["retrieval"]["config"]["query_rewrite_enabled"] is True
+
+
+def test_postgres_provenance_is_secret_free_and_changes_run_identity(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    golden = tmp_path / "golden.jsonl"
+    golden.write_text("{}\n", encoding="utf-8")
+    source = Matrix(
+        axes={"enricher": ["noop"]},
+        repo=str(tmp_path),
+        golden=str(golden),
+    )
+    monkeypatch.setattr(
+        "stropha.bench.runner.get_config", lambda: _experiment_config(storage="postgres")
+    )
+    monkeypatch.setattr(
+        "stropha.ingest.git_meta.detect",
+        lambda _repo: SimpleNamespace(head_commit="abc", normalized_key="repo"),
+    )
+    monkeypatch.setattr("stropha.bench.runner._source_worktree_state", lambda _repo: b"")
+
+    postgres = _run_provenance(source, "search", runtime_id="runtime-one")
+    monkeypatch.setattr("stropha.bench.runner.get_config", lambda: _experiment_config())
+    sqlite = _run_provenance(source, "search", runtime_id="runtime-one")
+    monkeypatch.setattr(
+        "stropha.bench.runner.get_config",
+        lambda: _experiment_config(blacklist={"embedder": ("voyage",)}),
+    )
+    blacklisted = _run_provenance(source, "search", runtime_id="runtime-one")
+    encoded = json.dumps(postgres, sort_keys=True)
+
+    assert postgres["experiment"]["storage"] == "postgres"
+    assert postgres["experiment"]["policy_fingerprint"]
+    assert postgres["experiment"]["postgres_cluster"] == {
+        "host": "db.internal",
+        "port": 5544,
+        "database": "eval_admin",
+        "user": "eval_user",
+    }
+    assert "top-secret" not in encoded
+    assert "postgresql://" not in encoded
+    assert postgres["run_id"] != sqlite["run_id"]
+    assert sqlite["run_id"] != blacklisted["run_id"]
+
+
+def test_postgres_runtime_provenance_uses_preflighted_cluster_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "stropha.bench.runner.get_config",
+        lambda: _experiment_config(storage="postgres"),
+    )
+
+    provenance = _experiment_provenance(
+        cluster_identity=SimpleNamespace(
+            host="resolved.internal",
+            port=6432,
+            database="eval_admin",
+            user="eval_user",
+            server_version="17.2",
+        )
+    )
+
+    assert provenance["postgres_cluster"] == {
+        "host": "resolved.internal",
+        "port": 6432,
+        "database": "eval_admin",
+        "user": "eval_user",
+        "server_version": "17.2",
+    }
 
 
 def test_rank_table_sorts_desc() -> None:
@@ -644,11 +1139,21 @@ def test_eval_cell_records_full_metrics_provenance_and_diagnostics(
     run_eval = MagicMock(return_value=report)
     monkeypatch.setattr("stropha.pipeline.builder.build_stages", lambda _cfg: built)
     monkeypatch.setattr("stropha.eval.run_eval", run_eval)
-    monkeypatch.setattr("stropha.pipeline.config.pipeline_config_from_dict", lambda _overrides: {})
+    monkeypatch.setattr(
+        "stropha.pipeline.config.pipeline_config_from_dict",
+        lambda _overrides, **_kwargs: {},
+    )
 
     record = eval_cell(
         SimpleNamespace(top_k=10),
-        Cell(values={"reranker": None}),
+        Cell(
+            values={
+                "reranker": None,
+                "context_budget": 200,
+                "diversity": True,
+                "diversity_max_chunks_per_file": 1,
+            }
+        ),
         tmp_path / "index.db",
         [object()],
         run_provenance={"run_id": "run-one"},
@@ -663,6 +1168,9 @@ def test_eval_cell_records_full_metrics_provenance_and_diagnostics(
     assert record["provenance"]["index"]["comparable"] is True
     assert record["provenance"]["pipeline"]["retrieval"] == "retrieval:test"
     assert run_eval.call_args.kwargs["provenance"] == record["provenance"]
+    assert run_eval.call_args.kwargs["context_budget"] == 200
+    assert run_eval.call_args.kwargs["diversity_enabled"] is True
+    assert run_eval.call_args.kwargs["diversity_max_chunks_per_file"] == 1
 
 
 def test_eval_cell_rejects_index_identity_drift(
@@ -681,7 +1189,10 @@ def test_eval_cell_rejects_index_identity_drift(
         effective_enricher_id=lambda: "enricher:test",
     )
     monkeypatch.setattr("stropha.pipeline.builder.build_stages", lambda _cfg: built)
-    monkeypatch.setattr("stropha.pipeline.config.pipeline_config_from_dict", lambda _overrides: {})
+    monkeypatch.setattr(
+        "stropha.pipeline.config.pipeline_config_from_dict",
+        lambda _overrides, **_kwargs: {},
+    )
 
     with pytest.raises(BenchError, match="index identity drift"):
         eval_cell(

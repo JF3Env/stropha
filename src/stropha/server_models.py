@@ -93,7 +93,7 @@ class SearchResponse(BaseModel):
     spilled_count: int = Field(
         default=0,
         description=(
-            "WIN-208: number of hits that fell off the tail because "
+            "WIN-208: number of hits remaining after policy-ordered packing because "
             "context_budget was tight. 0 when no packing was requested."
         ),
     )
@@ -102,6 +102,13 @@ class SearchResponse(BaseModel):
         description=(
             "WIN-208: True when the single top hit exceeds context_budget "
             "and was returned anyway (escape hatch to avoid empty result)."
+        ),
+    )
+    diversity_deferred_chunk_ids: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Chunk ids moved to the stable second pass by diversity-aware packing. "
+            "Empty when diversification or budget packing was not applied."
         ),
     )
     redacted_count: int = Field(

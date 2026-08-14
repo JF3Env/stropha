@@ -698,9 +698,9 @@ def search(
         "--context-budget",
         help=(
             "Token budget for result packing (WIN-208). When set, "
-            "results are greedy-packed in score order up to this "
+            "results are greedy-packed in policy order up to this "
             "many estimated tokens. May return fewer than --top-k "
-            "hits; surfaces the dropped tail count for visibility."
+            "hits; surfaces the remaining hit count for visibility."
         ),
     ),
     compress: bool = typer.Option(
@@ -800,7 +800,13 @@ def search(
         if context_budget is not None and context_budget > 0:
             from .retrieval.packing import pack_to_budget
 
-            pack = pack_to_budget(hits, context_budget)
+            features = get_config().retrieval_features
+            pack = pack_to_budget(
+                hits,
+                context_budget,
+                diversify=features.diversity_enabled,
+                max_chunks_per_file=features.diversity_max_chunks_per_file,
+            )
             hits = pack.packed
             spilled_count = len(pack.spilled)
             truncated_oversize = pack.truncated
@@ -2079,7 +2085,10 @@ def bench_run_cmd(
     index_dir: Path = typer.Option(
         None,
         "--index-dir",
-        help="Where per-index sqlite DBs live (default: <out dir>/indexes).",
+        help=(
+            "Directory for local index artifacts (SQLite default: <out dir>/indexes; "
+            "PostgreSQL databases are manager-owned)."
+        ),
     ),
     limit: int | None = typer.Option(
         None,
@@ -2126,7 +2135,8 @@ def bench_run_cmd(
         console.print(
             f"[bold]Plan:[/bold] {plan['total_cells']} cells · "
             f"{plan['unique_indexes']} unique indexes · "
-            f"{plan['already_done']} already done"
+            f"{plan['already_done']} already done · "
+            f"storage={plan['storage']} · index={plan['index_dir']}"
         )
         for sig, labels in plan["groups"].items():
             console.print(f"  [cyan]{sig}[/cyan] — {len(labels)} query variants")
@@ -2486,12 +2496,8 @@ def bench_report_cmd(
             dt.add_column("95% CI")
             dt.add_column("P>0", justify="right")
             for d in sorted(deltas, key=lambda x: x["d_recall"][0], reverse=True):
-                pr, lor, hir, fpr = cast(
-                    tuple[float, float, float, float], d["d_recall"]
-                )
-                pm, lom, him, fpm = cast(
-                    tuple[float, float, float, float], d["d_mrr"]
-                )
+                pr, lor, hir, fpr = cast(tuple[float, float, float, float], d["d_recall"])
+                pm, lom, him, fpm = cast(tuple[float, float, float, float], d["d_mrr"])
                 dt.add_row(
                     str(d["label"]),
                     f"{pr:+.3f}",
@@ -2672,7 +2678,8 @@ def stream_weights_report_cmd(
             ", ".join(
                 f"{source}={count}"
                 for source, count in sorted((row.get("source_counts") or {}).items())
-            ) or "—",
+            )
+            or "—",
             "; ".join(row.get("blocked_reasons") or ()) or "—",
         )
     console.print(table)
@@ -2883,8 +2890,12 @@ def _stream_weights_benchmark(
                 current_identity = {
                     "working_head": current_head,
                     "indexed_head": current_repo.head_commit if current_repo else None,
-                    "indexed_enricher": get_meta("active_enricher_id") if callable(get_meta) else None,
-                    "indexed_embedder": get_meta("active_embedder_id") if callable(get_meta) else None,
+                    "indexed_enricher": get_meta("active_enricher_id")
+                    if callable(get_meta)
+                    else None,
+                    "indexed_embedder": get_meta("active_embedder_id")
+                    if callable(get_meta)
+                    else None,
                 }
         except StrophaError as exc:
             console.print(f"[red]Benchmark failed:[/red] {exc}")
@@ -3073,11 +3084,13 @@ def _meta_source_tree_sha256(repo: Path) -> str:
     import subprocess
 
     digest = hashlib.sha256()
-    digest.update(subprocess.run(
-        ["git", "-C", str(repo), "diff", "--binary", "HEAD"],
-        check=True,
-        capture_output=True,
-    ).stdout)
+    digest.update(
+        subprocess.run(
+            ["git", "-C", str(repo), "diff", "--binary", "HEAD"],
+            check=True,
+            capture_output=True,
+        ).stdout
+    )
     untracked = subprocess.run(
         ["git", "-C", str(repo), "ls-files", "--others", "--exclude-standard", "-z"],
         check=True,
@@ -3111,12 +3124,13 @@ def _meta_runtime_identity(
     registry_sha256: str,
     graph_identity: str = "disabled",
     cache_format: str | None = None,
+    experiment: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if cache_format is None:
         from .meta.candidate_index import CANDIDATE_INDEX_CACHE_FORMAT
 
         cache_format = CANDIDATE_INDEX_CACHE_FORMAT
-    return {
+    identity: dict[str, Any] = {
         "source_head": _meta_head(target_repo),
         "source_tree_sha256": _meta_source_tree_sha256(target_repo),
         "snapshot_sha": snapshot_sha,
@@ -3127,6 +3141,9 @@ def _meta_runtime_identity(
         "graph_identity": graph_identity,
         "cache_format": cache_format,
     }
+    if experiment is not None:
+        identity["experiment"] = dict(experiment)
+    return identity
 
 
 def _meta_candidate_hash(record: Any) -> str:
@@ -3189,8 +3206,7 @@ def _meta_cost_sample_from_breakdown(
         retrieval_tokens=measurement("retrieval_tokens"),
         retrieval_duration_ms=measurement("retrieval_duration_ms"),
         candidate_states={
-            str(state): int(count)
-            for state, count in (value.get("candidate_states") or {}).items()
+            str(state): int(count) for state, count in (value.get("candidate_states") or {}).items()
         },
         verification_duration_ms=measurement("verification_duration_ms"),
     )
@@ -3221,12 +3237,146 @@ def _meta_graph_identity() -> tuple[bool, str]:
         return False, "disabled"
     path = Path(binary).resolve()
     stat = path.stat()
-    return True, _meta_hash(
-        {"path": str(path), "size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+    return True, _meta_hash({"path": str(path), "size": stat.st_size, "mtime_ns": stat.st_mtime_ns})
+
+
+def _meta_stage_adapter(base_config: dict[str, Any], binding: str | None) -> str | None:
+    """Return the active adapter named by a pipeline stage binding."""
+    if binding is None or not binding.startswith("pipeline."):
+        return None
+    current: Any = base_config
+    parts = binding.removeprefix("pipeline.").split(".")
+    for part in parts:
+        if part == "adapter" and isinstance(current, str):
+            return current
+        if not isinstance(current, dict) or part not in current:
+            return None
+        current = current[part]
+    return current if isinstance(current, str) else None
+
+
+def _meta_validate_active_baseline(space: Any, base_config: dict[str, Any]) -> None:
+    """Reject active stage adapters that policy removed instead of substituting defaults."""
+    for dimension in space.enumerate_dimensions(kind="stage"):
+        if dimension.name == "storage":
+            continue
+        adapter = _meta_stage_adapter(base_config, dimension.binding)
+        if adapter is None or adapter in dimension.choices:
+            continue
+        reason = space.excluded_adapters.get(dimension.name, {}).get(
+            adapter,
+            "incompatible with the restricted experiment search space",
+        )
+        raise ValueError(
+            f"active baseline stage {dimension.name}={adapter!r} is excluded: {reason}"
+        )
+
+
+def _meta_production_database(
+    admin_dsn: str,
+    base_config: dict[str, Any],
+) -> str | None:
+    """Return the active PostgreSQL database when it shares the admin cluster."""
+    import psycopg
+    from psycopg.conninfo import conninfo_to_dict
+
+    active_storage = base_config.get("storage") or {}
+    if active_storage.get("adapter") != "postgres":
+        return None
+    production_dsn = (active_storage.get("config") or {}).get("dsn")
+    if not isinstance(production_dsn, str) or not production_dsn:
+        return None
+    try:
+        admin = conninfo_to_dict(admin_dsn)
+        production = conninfo_to_dict(production_dsn)
+    except psycopg.Error:
+        raise ValueError("invalid active pipeline PostgreSQL DSN") from None
+    admin_cluster = (str(admin.get("host") or "local"), int(admin.get("port") or 5432))
+    production_cluster = (
+        str(production.get("host") or "local"),
+        int(production.get("port") or 5432),
     )
+    if admin_cluster != production_cluster:
+        return None
+    database = production.get("dbname")
+    return str(database) if database else None
 
 
-def _meta_active_candidate(space: Any, base_config: dict[str, Any], runtime_cfg: Config) -> dict[str, Any]:
+def _meta_experiment_backend(
+    policy: Any,
+    base_config: dict[str, Any],
+) -> tuple[Any | None, str, dict[str, Any]]:
+    """Preflight and describe the configured experiment storage without secrets."""
+    from .meta.candidate_index import candidate_index_cache_format
+
+    storage = policy.config.storage
+    cache_format = candidate_index_cache_format(storage)
+    manager = None
+    cluster_identity = None
+    if storage == "postgres":
+        from .evaluation.postgres import PostgresEvaluationDatabaseManager
+
+        admin_dsn = policy.config.postgres.admin_dsn
+        assert admin_dsn is not None
+        manager = PostgresEvaluationDatabaseManager(
+            admin_dsn=admin_dsn,
+            database_prefix=policy.config.postgres.database_prefix,
+            production_database=_meta_production_database(admin_dsn, base_config),
+        )
+        cluster = manager.preflight()
+        cluster_identity = {
+            "host": cluster.host,
+            "port": cluster.port,
+            "database": cluster.database,
+            "user": cluster.user,
+            "server_version": cluster.server_version,
+        }
+    experiment = {
+        "storage": storage,
+        "policy_fingerprint": policy.fingerprint,
+        "cluster_identity": cluster_identity,
+        "cache_format": cache_format,
+    }
+    return manager, cache_format, experiment
+
+
+def _meta_check_frozen_experiment(
+    provenance: dict[str, Any],
+    current: dict[str, Any],
+    *,
+    context: str,
+    allow_legacy_sqlite: bool = False,
+) -> bool:
+    """Verify frozen experiment policy/backend identity and report legacy SQLite runs."""
+    frozen = provenance.get("experiment")
+    if not isinstance(frozen, dict):
+        frozen_cache_format = str((provenance.get("identity") or {}).get("cache_format") or "")
+        if (
+            allow_legacy_sqlite
+            and current["storage"] == "sqlite-vec"
+            and "postgres" not in frozen_cache_format
+        ):
+            return True
+        raise ValueError(f"{context} frozen run has no experiment provenance")
+    labels = {
+        "storage": "storage",
+        "policy_fingerprint": "policy",
+        "cluster_identity": "cluster",
+        "cache_format": "cache format",
+    }
+    mismatched = [label for key, label in labels.items() if frozen.get(key) != current.get(key)]
+    if set(frozen) != set(current):
+        mismatched.append("provenance shape")
+    if mismatched:
+        raise ValueError(
+            f"{context} experiment {'/'.join(mismatched)} differs from frozen provenance"
+        )
+    return False
+
+
+def _meta_active_candidate(
+    space: Any, base_config: dict[str, Any], runtime_cfg: Config
+) -> dict[str, Any]:
     """Project the active runtime onto the flat, isolated evaluation space."""
 
     def nested(source: Any, path: list[str]) -> Any:
@@ -3304,8 +3454,7 @@ def meta_run_cmd(
         "bandit",
         "--proposer",
         help=(
-            "Proposer strategy: bandit | local-agentic | cloud-agentic | "
-            "local-code | cloud-code."
+            "Proposer strategy: bandit | local-agentic | cloud-agentic | local-code | cloud-code."
         ),
     ),
     seed: int | None = typer.Option(
@@ -3368,10 +3517,7 @@ def meta_run_cmd(
         run_loop,
         validate_code_candidate_directory,
     )
-    from .meta.candidate_index import (
-        CANDIDATE_INDEX_CACHE_FORMAT,
-        CandidateIndexProvider,
-    )
+    from .meta.candidate_index import CandidateIndexProvider
     from .meta.proposer import (
         make_bandit_proposer,
         make_cloud_agentic_proposer,
@@ -3409,8 +3555,19 @@ def meta_run_cmd(
         )
         raise typer.Exit(code=1)
     try:
+        static_space, registry, manifest_sha256, registry_sha256 = _meta_preflight()
+        runtime_cfg = _load_config()
+        from .experiment_policy import ExperimentPolicy
+
+        policy = ExperimentPolicy.from_config(runtime_cfg)
+        space = policy.restrict_search_space(static_space)
+        base_config = load_pipeline_config()
+        _meta_validate_active_baseline(space, base_config)
+        postgres_manager, cache_format, experiment = _meta_experiment_backend(
+            policy,
+            base_config,
+        )
         golden = _meta_golden_path(golden)
-        space, registry, manifest_sha256, registry_sha256 = _meta_preflight()
     except Exception as exc:
         console.print(f"[red]Meta preflight failed:[/red] {exc}")
         raise typer.Exit(code=1) from exc
@@ -3418,9 +3575,7 @@ def meta_run_cmd(
 
     cases = load_golden(golden)
     golden_sha256 = hashlib.sha256(golden.read_bytes()).hexdigest()
-    runtime_cfg = _load_config()
     target_repo = (runtime_cfg.target_repo or Path.cwd()).expanduser().resolve()
-    base_config = load_pipeline_config()
     graphify, graph_identity = _meta_graph_identity()
     store = ArtifactStore(meta_dir)
     run_id = resume or uuid.uuid4().hex[:12]
@@ -3432,6 +3587,15 @@ def meta_run_cmd(
                 store.read_run_artifact(run_id, "checkpoint.json")
             )
         except Exception as exc:
+            console.print(f"[red]Cannot resume run {run_id}:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+        try:
+            _meta_check_frozen_experiment(
+                provenance,
+                experiment,
+                context="Resume",
+            )
+        except ValueError as exc:
             console.print(f"[red]Cannot resume run {run_id}:[/red] {exc}")
             raise typer.Exit(code=1) from exc
         if provenance.get("proposer") != proposer:
@@ -3453,8 +3617,7 @@ def meta_run_cmd(
         )
         if mismatched:
             console.print(
-                "[red]Resume options differ from frozen provenance:[/red] "
-                + ", ".join(mismatched)
+                "[red]Resume options differ from frozen provenance:[/red] " + ", ".join(mismatched)
             )
             raise typer.Exit(code=1)
         if seed is not None and provenance.get("seed") != seed:
@@ -3462,6 +3625,7 @@ def meta_run_cmd(
             raise typer.Exit(code=1)
         seed = provenance.get("seed")
 
+    baseline_candidate = _meta_active_candidate(space, base_config, runtime_cfg)
     prop: Any
     if proposer == "bandit":
         prop = make_bandit_proposer(space, seed=seed)
@@ -3475,7 +3639,9 @@ def meta_run_cmd(
         prop = make_cloud_code_proposer(space, fallback_seed=seed)
     if resume is not None and checkpoint is not None:
         if not checkpoint.proposer_state:
-            console.print("[red]Checkpoint has no proposer RNG state; exact resume is unavailable.[/red]")
+            console.print(
+                "[red]Checkpoint has no proposer RNG state; exact resume is unavailable.[/red]"
+            )
             raise typer.Exit(code=1)
         prop.load_state(checkpoint.proposer_state)
 
@@ -3486,6 +3652,8 @@ def meta_run_cmd(
         search_space=space,
         graphify=graphify,
         graph_identity=graph_identity if graphify else None,
+        cache_format=cache_format,
+        postgres_manager=postgres_manager,
     )
     try:
         if resume is None:
@@ -3512,9 +3680,7 @@ def meta_run_cmd(
         if path.is_file() and ".git" not in path.relative_to(snapshot.path).parts
     )
     started_at = (
-        str(provenance["started_at"])
-        if resume is not None
-        else datetime.now(UTC).isoformat()
+        str(provenance["started_at"]) if resume is not None else datetime.now(UTC).isoformat()
     )
     identity = _meta_runtime_identity(
         target_repo=target_repo,
@@ -3524,7 +3690,8 @@ def meta_run_cmd(
         manifest_sha256=manifest_sha256,
         registry_sha256=registry_sha256,
         graph_identity=graph_identity,
-        cache_format=CANDIDATE_INDEX_CACHE_FORMAT,
+        cache_format=cache_format,
+        experiment=experiment,
     )
     if resume is not None and provenance.get("identity") != identity:
         console.print("[red]Resume source/runtime identity differs from frozen provenance.[/red]")
@@ -3545,6 +3712,7 @@ def meta_run_cmd(
         "manifest_sha256": manifest_sha256,
         "registry_sha256": registry_sha256,
         "registry": registry,
+        "experiment": experiment,
         "snapshot": {"sha": snapshot.sha, "path": str(snapshot.path)},
         "repository": {"path": str(target_repo)},
         "identity": identity,
@@ -3555,7 +3723,6 @@ def meta_run_cmd(
     }
     store.write_run_artifact(run_id, "provenance.json", provenance)
 
-    baseline_candidate = _meta_active_candidate(space, base_config, runtime_cfg)
     evidence: dict[str, EvaluationMetrics] = {}
     cost_samples: list[RunCostSample] = []
     if resume is not None:
@@ -3624,16 +3791,18 @@ def meta_run_cmd(
             temporary.replace(metrics_path)
             with evidence_lock:
                 evidence[record.id] = metrics
-                cost_samples.append(RunCostSample(
-                    scope="search",
-                    cache_hits=int(opened.cache_hit),
-                    cache_misses=int(not opened.cache_hit),
-                    retrieval_queries=result.report.n,
-                    retrieval_tokens=CostMeasurement(exact=float(metrics.returned_tokens)),
-                    retrieval_duration_ms=CostMeasurement(
-                        exact=sum(item.latency_ms for item in result.report.results)
-                    ),
-                ))
+                cost_samples.append(
+                    RunCostSample(
+                        scope="search",
+                        cache_hits=int(opened.cache_hit),
+                        cache_misses=int(not opened.cache_hit),
+                        retrieval_queries=result.report.n,
+                        retrieval_tokens=CostMeasurement(exact=float(metrics.returned_tokens)),
+                        retrieval_duration_ms=CostMeasurement(
+                            exact=sum(item.latency_ms for item in result.report.results)
+                        ),
+                    )
+                )
             return result.scorecard
 
     def persist_checkpoint(value: LoopCheckpoint) -> None:
@@ -3667,13 +3836,15 @@ def meta_run_cmd(
             metrics_path = record.base_dir / "search-metrics.json"
             if metrics_path.is_file():
                 metrics = EvaluationMetrics.model_validate_json(metrics_path.read_text())
-        frontier_rows.append({
-            "candidate_id": record.id,
-            "baseline": record.id == baseline_id,
-            "config_sha256": _meta_candidate_hash(record),
-            "scores": card.to_dict(),
-            "search_metrics": metrics.model_dump(mode="json") if metrics else None,
-        })
+        frontier_rows.append(
+            {
+                "candidate_id": record.id,
+                "baseline": record.id == baseline_id,
+                "config_sha256": _meta_candidate_hash(record),
+                "scores": card.to_dict(),
+                "search_metrics": metrics.model_dump(mode="json") if metrics else None,
+            }
+        )
     shortlist = {
         "schema_version": 2,
         "run_id": run_id,
@@ -3683,17 +3854,21 @@ def meta_run_cmd(
         "entries": frontier_rows,
     }
     store.write_run_artifact(run_id, "shortlist.json", shortlist)
-    store.write_run_artifact(run_id, "report.json", {
-        "schema_version": 2,
-        "run_id": run_id,
-        "started_at": started_at,
-        "finished_at": datetime.now(UTC).isoformat(),
-        "evaluation_scope": "search_only",
-        "loop": result.to_dict(),
-        "baseline_id": baseline_id,
-        "shortlist_size": len(frontier_rows),
-        "identity": identity,
-    })
+    store.write_run_artifact(
+        run_id,
+        "report.json",
+        {
+            "schema_version": 2,
+            "run_id": run_id,
+            "started_at": started_at,
+            "finished_at": datetime.now(UTC).isoformat(),
+            "evaluation_scope": "search_only",
+            "loop": result.to_dict(),
+            "baseline_id": baseline_id,
+            "shortlist_size": len(frontier_rows),
+            "identity": identity,
+        },
+    )
     candidate_states: dict[str, int] = {}
     if result.checkpoint is not None:
         for candidate_state in result.checkpoint.candidates:
@@ -3705,15 +3880,17 @@ def meta_run_cmd(
         for state, count in candidate_states.items()
         if state in {"deduplicated", "failed", "registered", "scored", "timed_out"}
     )
-    cost_samples.append(RunCostSample(
-        scope="search",
-        proposer_calls=max(0, proposer_calls - int(baseline_id is not None)),
-        proposer_tokens=(
-            CostMeasurement(exact=0.0) if proposer == "bandit" else CostMeasurement()
-        ),
-        candidate_states=candidate_states,
-        artifact_bytes=_meta_run_artifact_bytes(store, run_id),
-    ))
+    cost_samples.append(
+        RunCostSample(
+            scope="search",
+            proposer_calls=max(0, proposer_calls - int(baseline_id is not None)),
+            proposer_tokens=(
+                CostMeasurement(exact=0.0) if proposer == "bandit" else CostMeasurement()
+            ),
+            candidate_states=candidate_states,
+            artifact_bytes=_meta_run_artifact_bytes(store, run_id),
+        )
+    )
     store.write_run_artifact(run_id, "cost.json", aggregate_run_cost(run_id, cost_samples))
     table = Table(title=f"stropha meta run — {result.stopped_reason}")
     table.add_column("Metric", style="cyan")
@@ -3764,10 +3941,7 @@ def meta_validate_cmd(
         evaluate_candidate,
         validate_code_candidate_directory,
     )
-    from .meta.candidate_index import (
-        CANDIDATE_INDEX_CACHE_FORMAT,
-        CandidateIndexProvider,
-    )
+    from .meta.candidate_index import CandidateIndexProvider
 
     if meta_dir is None:
         meta_dir = _meta_dir_default()
@@ -3792,6 +3966,28 @@ def meta_validate_cmd(
         raise typer.Exit(code=1)
 
     try:
+        static_space, _registry, manifest_sha256, registry_sha256 = _meta_preflight()
+        if manifest_sha256 != provenance["manifest_sha256"]:
+            raise ValueError("search-space manifest differs from frozen provenance")
+        if registry_sha256 != provenance["registry_sha256"]:
+            raise ValueError("adapter registry differs from frozen provenance")
+        runtime_cfg = _load_config()
+        from .experiment_policy import ExperimentPolicy
+
+        policy = ExperimentPolicy.from_config(runtime_cfg)
+        space = policy.restrict_search_space(static_space)
+        base_config = load_pipeline_config()
+        _meta_validate_active_baseline(space, base_config)
+        postgres_manager, cache_format, experiment = _meta_experiment_backend(
+            policy,
+            base_config,
+        )
+        legacy_sqlite = _meta_check_frozen_experiment(
+            provenance,
+            experiment,
+            context="Validation",
+            allow_legacy_sqlite=True,
+        )
         golden = Path(str(provenance["golden"])).resolve()
         if hashlib.sha256(golden.read_bytes()).hexdigest() != provenance["golden_sha256"]:
             raise ValueError("golden set hash differs from frozen provenance")
@@ -3803,16 +3999,10 @@ def meta_validate_cmd(
             path=Path(str(snapshot_data["path"])).resolve(),
             source_repo=target_repo,
         )
-        space, _registry, manifest_sha256, registry_sha256 = _meta_preflight()
-        if manifest_sha256 != provenance["manifest_sha256"]:
-            raise ValueError("search-space manifest differs from frozen provenance")
-        if registry_sha256 != provenance["registry_sha256"]:
-            raise ValueError("adapter registry differs from frozen provenance")
     except Exception as exc:
         console.print(f"[red]Frozen provenance cannot be reopened:[/red] {exc}")
         raise typer.Exit(code=1) from exc
 
-    base_config = load_pipeline_config()
     graphify, graph_identity = _meta_graph_identity()
     current_identity = _meta_runtime_identity(
         target_repo=target_repo,
@@ -3822,7 +4012,8 @@ def meta_validate_cmd(
         manifest_sha256=manifest_sha256,
         registry_sha256=registry_sha256,
         graph_identity=graph_identity,
-        cache_format=CANDIDATE_INDEX_CACHE_FORMAT,
+        cache_format=cache_format,
+        experiment=None if legacy_sqlite else experiment,
     )
     if current_identity != provenance.get("identity"):
         console.print("[red]Current source/runtime identity differs from the frozen run.[/red]")
@@ -3834,6 +4025,8 @@ def meta_validate_cmd(
         search_space=space,
         graphify=graphify,
         graph_identity=graph_identity if graphify else None,
+        cache_format=cache_format,
+        postgres_manager=postgres_manager,
     )
     effective_top_k = int(top_k or provenance.get("top_k") or 10)
     if effective_top_k != int(provenance.get("top_k") or 10):
@@ -3893,9 +4086,7 @@ def meta_validate_cmd(
                 set_reranker = getattr(opened.built.retrieval, "set_reranker", None)
                 if not callable(set_reranker):
                     raise RuntimeError("candidate retrieval does not support reranker injection")
-                set_reranker(
-                    SandboxedRerankerProxy(record.base_dir, adapter_name=code_spec.name)
-                )
+                set_reranker(SandboxedRerankerProxy(record.base_dir, adapter_name=code_spec.name))
             health = opened.built.retrieval.health()
             candidate_checks["pipeline_health"] = health.status != "error"
             if health.status == "error":
@@ -3917,17 +4108,19 @@ def meta_validate_cmd(
             assert isinstance(result, CandidateEvaluationResult)
             metrics = EvaluationMetrics.from_eval_report(result.report)
             holdout[candidate_id] = metrics
-            cost_samples.append(RunCostSample(
-                scope="holdout_validation",
-                cache_hits=int(opened.cache_hit),
-                cache_misses=int(not opened.cache_hit),
-                retrieval_queries=result.report.n,
-                retrieval_tokens=CostMeasurement(exact=float(metrics.returned_tokens)),
-                retrieval_duration_ms=CostMeasurement(
-                    exact=sum(item.latency_ms for item in result.report.results)
-                ),
-                verification_duration_ms=CostMeasurement(exact=gate_result.duration_s * 1000.0),
-            ))
+            cost_samples.append(
+                RunCostSample(
+                    scope="holdout_validation",
+                    cache_hits=int(opened.cache_hit),
+                    cache_misses=int(not opened.cache_hit),
+                    retrieval_queries=result.report.n,
+                    retrieval_tokens=CostMeasurement(exact=float(metrics.returned_tokens)),
+                    retrieval_duration_ms=CostMeasurement(
+                        exact=sum(item.latency_ms for item in result.report.results)
+                    ),
+                    verification_duration_ms=CostMeasurement(exact=gate_result.duration_s * 1000.0),
+                )
+            )
 
     baseline_search = next(
         EvaluationMetrics.model_validate(entry["search_metrics"])
@@ -4016,10 +4209,12 @@ def meta_validate_cmd(
                 )
     except Exception:
         pass
-    cost_samples.append(RunCostSample(
-        scope="holdout_validation",
-        artifact_bytes=_meta_run_artifact_bytes(store, run_id),
-    ))
+    cost_samples.append(
+        RunCostSample(
+            scope="holdout_validation",
+            artifact_bytes=_meta_run_artifact_bytes(store, run_id),
+        )
+    )
     store.write_run_artifact(
         run_id,
         "cost.json",

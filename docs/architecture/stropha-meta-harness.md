@@ -30,7 +30,7 @@ actually wired at the audited commit.
 |---|---|---|---|
 | 0 — traces/store/outcomes | **Delivered** | `meta/{trace,store,outcome,backfill,feedback}.py`; traced MCP calls, explicit bad-result feedback, and auditable per-hit outcome evidence | Label quality still depends on post-hoc signals and calibration. |
 | 1 — evaluator/fitness | **Delivered and wired** | `meta/{fitness,evaluator,gate,frontier,validation}.py`; candidate-specific outcome scoring, signed scalar reporting, search-only optimization, and explicit shortlist holdout validation | End-to-end task success remains a future fitness dimension. |
-| 2 — reproducibility | **Delivered** | `meta/{snapshot,index_cache,candidate_index}.py`; every run pins a source snapshot, builds normal-pipeline cache entries, and evaluates writable SQLite clones | Cache reuse still depends on exact indexing, graph, and cache-format identity. |
+| 2 — reproducibility | **Delivered** | `meta/{snapshot,index_cache,candidate_index}.py`; every run pins a source snapshot, builds normal-pipeline cache entries, and evaluates isolated writable SQLite clones or native PostgreSQL template clones | Cache reuse still depends on exact indexing, graph, backend, policy, cluster, and cache-format identity. |
 | 3 — search space | **Delivered** | bundled manifest + `meta/search_space.py` validation/sampling | The manifest remains curated; registry metadata cannot infer every constraint. |
 | 4 — outer loop | **Delivered** | batched loop, Pareto frontier, bandit and agentic proposers, bounded parallel evaluation, durable checkpoints, exact bandit resume, candidate traces, shortlist, and cost artifacts | Agentic proposer resume is intentionally unsupported because exact model state cannot be restored. |
 | 5 — code search | **Delivered with a bounded scope** | `local-code`/`cloud-code` proposers, static validation, pytest gate, and sandboxed reranker proxy | v1 accepts one generated reranker file per candidate; code candidates remain review-only. |
@@ -176,17 +176,52 @@ slot ordered. Failed proposals, gates, timeouts, and evaluations consume budget.
 
 - A run pins `HEAD` into one detached worktree. Dirty source changes are not
   included. Every candidate in the run uses that same snapshot SHA.
-- Evaluation uses an isolated SQLite workspace even when production storage is
-  PostgreSQL. This is an evaluation artifact, never the production index.
+- `stropha meta run` and `stropha bench run` both apply the machine-local
+  `experiments.storage` selection and `experiments.blacklist.adapters` policy
+  from `~/.stropha/config.yaml`. SQLite remains the backward-compatible default;
+  selecting PostgreSQL measures native pgvector and PostgreSQL BM25 behavior and
+  avoids sqlite-vec KNN candidate limits.
+- Evaluation storage is always isolated and is never the production index.
+  SQLite uses writable file clones. PostgreSQL uses deterministic, marked
+  canonical cache databases and a disposable `CREATE DATABASE ... TEMPLATE ...`
+  work clone for each Meta candidate or benchmark cell.
 - The immutable cache identity is
-  `(repo_key, snapshot_sha, indexing_hash, graph_identity, cache_format)`.
+  `(repo_key, snapshot_sha, indexing_hash, graph_identity, storage_backend,
+  experiment_policy, postgres_cluster, cache_format)`.
 - A cache miss runs the normal `Pipeline.run()` against the snapshot; that method
   remains the sole owner of graphify loading and FTS augmentation order.
-- Candidate databases are reflink/full-copy clones of a closed cache database.
-  Writable hardlinks and symlinks are forbidden.
+- SQLite candidates are reflink/full-copy clones of a closed cache database;
+  writable hardlinks and symlinks are forbidden. PostgreSQL candidates are
+  template clones of a canonical cache database whose connections are closed
+  before publication.
 - Retrieval-only candidates share one cache entry. Indexing-stage candidates
   produce one entry per distinct indexing identity.
 - Canonical cache publication is atomic and metadata is verified on every read.
+- PostgreSQL canonical cache databases persist across runs for reuse. Disposable
+  staging/work databases are cleaned up by exact generated name only after
+  fixed-prefix, Stropha-marker, and owner checks. The admin and production
+  databases are protected, and no command performs implicit bulk cleanup.
+
+For PostgreSQL, configure a dedicated non-production admin database and role:
+
+```yaml
+experiments:
+  storage: postgres
+  postgres:
+    admin_dsn: postgresql://ROLE:PASSWORD@HOST:PORT/stropha_bench_admin
+    database_prefix: stropha_bench
+  blacklist:
+    adapters:
+      embedder: [voyage]
+      walker: [git-diff]
+```
+
+The admin database name must begin with `<database_prefix>_`, and the role must
+have `CREATEDB`. Credentials remain only in `~/.stropha/config.yaml`; persisted
+provenance contains the policy fingerprint and non-secret cluster coordinates,
+not the DSN or password. The production DSN and production database are never
+mutated. Holdout validation fails closed unless the frozen storage backend,
+policy fingerprint, and PostgreSQL cluster identity still match the search run.
 
 ### Code-search boundary
 
@@ -239,14 +274,19 @@ Every registered stage/adapter must be eligible or explicitly excluded with a
 reason. Every feature has one runtime config binding. Invalid ranges, steps,
 defaults, duplicate names, dangling constraints, active adapters absent from the
 manifest, and CLI/evaluator dimension disagreement fail before any candidate is
-registered. The manifest and registry hashes are persisted in provenance.
+registered. The manifest and registry hashes are persisted in provenance. The
+machine-local blacklist filters the preflighted space without changing the
+checked-in `search_space.yaml`. Independently of that blacklist, `git-diff` is
+always excluded because an incremental-only walker cannot build a full-snapshot
+experiment index.
 
 ### Artifacts and resume
 
 ```text
 meta/
   snapshots/worktrees/<sha>/
-  index-cache/<cache-key>/{index.db,meta.json}
+  index-cache/<cache-key>/{index.db,meta.json}  # SQLite backend
+  # PostgreSQL caches are canonical marked databases under database_prefix.
   candidates/<candidate-id>/
     config.yaml
     meta.json                 # run/round/slot/hypothesis/status
@@ -268,8 +308,10 @@ meta/
 `checkpoint.json` is atomically replaced after the seed and every batch. It records
 archive/frontier IDs, registered candidate states, next round/slot, proposer RNG
 state, budgets, and identity. `--resume` requires exact repository, snapshot,
-golden, manifest, registry, options, and index-format compatibility. Scored
-candidates are never rerun; registered/evaluating candidates are recovered once.
+golden, manifest, registry, options, storage backend, experiment policy,
+PostgreSQL cluster identity when applicable, and index-format compatibility.
+Scored candidates are never rerun; registered/evaluating candidates are
+recovered once.
 
 ### Budgets and costs
 
@@ -291,7 +333,9 @@ and holdout identities. Promotion requires a schema-v2 validation artifact with:
 - no material holdout regression in Success, Recall, MRR, NDCG, latency,
   returned tokens, per-tag metrics, or per-case rank under configured thresholds;
 - all named verification checks passing;
-- current config/source/index/runtime identity matching validation.
+- current config/source/index/runtime identity matching validation;
+- the storage backend, experiment-policy fingerprint, and PostgreSQL cluster
+  identity matching the frozen search run.
 
 Legacy scalar-only baselines are retained as `legacy_unverified`; they never
 authorize promotion and are replaced only after same-identity revalidation.
@@ -384,10 +428,18 @@ Candidates must be compared under identical conditions, and re-indexing per cand
 
 **Deliverables**
 - `meta/snapshot.py`: `stropha meta snapshot` creates a pinned git worktree at a chosen SHA under `.stropha/meta/snapshot/src/`. All candidate evaluations run against this frozen tree (option #118).
-- **Index cache** — the key efficiency lever. An index is keyed by a hash of only the *indexing-relevant* `adapter_id`s (walker + chunker + enricher + embedder + storage). Candidates differing only in retrieval/reranker config **share** a cached index; candidates that change indexing trigger one rebuild against the snapshot, cached at `.stropha/meta/snapshot/indexes/<index_hash>/index.db`. Without this, every candidate pays a full re-embed.
-- Per-candidate isolation: each evaluation receives an in-memory `paths.index`
-  override pointing at a copy-on-write clone of the cached index, so concurrent
-  candidates never corrupt each other (option #12).
+- **Index cache** — the key efficiency lever. An index is keyed by the
+  indexing-relevant adapter identities plus the frozen source, graph, storage,
+  experiment-policy, cluster, and cache-format identity. Candidates differing
+  only in retrieval/reranker config **share** a canonical cache; candidates that
+  change indexing trigger one rebuild against the snapshot. SQLite caches live
+  under the Meta artifact tree, while PostgreSQL caches are marked canonical
+  databases that persist for reuse. Without this, every candidate pays a full
+  re-embed.
+- Per-candidate isolation: SQLite evaluations receive a writable copy-on-write
+  file clone; PostgreSQL evaluations receive a disposable database cloned from
+  the canonical cache template. Concurrent candidates never mutate each other or
+  production storage (option #12).
 
 **Files** new `meta/snapshot.py`; edits to `evaluator.py` (consume the cache), `cli.py` (`meta snapshot`).
 **Schema** none.

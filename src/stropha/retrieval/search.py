@@ -54,9 +54,10 @@ class SearchEngine:
         into atomic sub-queries, searched separately, and fused via RRF.
 
         Token-budget packing (WIN-208):
-        When ``context_budget`` is set, the score-ranked output is greedy-
-        packed up to that result-token budget (using ``estimate_content_tokens``)
-        and the truncated tail is dropped. The returned list never exceeds
+        When ``context_budget`` is set, results are greedy-packed in policy
+        order up to that token budget (using ``estimate_content_tokens``).
+        Score order is the default; opt-in diversity moves redundant evidence
+        to a stable second pass. The returned list never exceeds
         the budget — except in the single-first-hit-oversize escape path,
         where the top hit is returned alone even if oversize so the caller
         sees something rather than nothing. ``top_k`` still bounds the
@@ -164,7 +165,13 @@ class SearchEngine:
             return hits
         from .packing import pack_to_budget
 
-        result = pack_to_budget(hits, context_budget)
+        features = get_config().retrieval_features
+        result = pack_to_budget(
+            hits,
+            context_budget,
+            diversify=features.diversity_enabled,
+            max_chunks_per_file=features.diversity_max_chunks_per_file,
+        )
         log.info(
             "search.packed",
             budget=result.budget_tokens,
@@ -172,6 +179,7 @@ class SearchEngine:
             packed=len(result.packed),
             spilled=len(result.spilled),
             truncated=result.truncated,
+            diversity_deferred=len(result.deferred),
         )
         return result.packed
 

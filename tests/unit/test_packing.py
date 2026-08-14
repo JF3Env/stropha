@@ -9,25 +9,37 @@ from __future__ import annotations
 
 import pytest
 
-from stropha.models import SearchHit
+from stropha.models import RepoRef, SearchHit
 from stropha.retrieval.packing import (
+    diversify_hits,
+    measure_diversity,
     pack_to_budget,
 )
 
 
-def _hit(content: str, rank: int = 0, score: float = 1.0) -> SearchHit:
+def _hit(
+    content: str,
+    rank: int = 0,
+    score: float = 1.0,
+    *,
+    rel_path: str | None = None,
+    symbol: str | None = None,
+    kind: str = "function",
+    repo_key: str | None = None,
+) -> SearchHit:
     """Build a minimal SearchHit whose snippet drives the token cost."""
     return SearchHit(
         chunk_id=f"chunk-{rank}",
-        rel_path=f"file_{rank}.py",
+        rel_path=rel_path or f"file_{rank}.py",
         start_line=1,
         end_line=10,
         score=score,
         rank=rank,
         snippet=content,
         language="python",
-        kind="function",
-        symbol=None,
+        kind=kind,
+        symbol=symbol,
+        repo=RepoRef(normalized_key=repo_key) if repo_key else None,
     )
 
 
@@ -84,6 +96,101 @@ class TestPackToBudgetHappyPath:
         assert [h.rank for h in result.packed] == [0]
         # Spilled retains the rest, including the never-attempted tail.
         assert [h.rank for h in result.spilled] == [1, 2]
+
+
+class TestDiversityAwarePacking:
+    def test_preserves_top_hit_and_prefers_distinct_file(self) -> None:
+        hits = [
+            _hit("a", rank=0, rel_path="a.py", symbol="Foo"),
+            _hit("b", rank=1, rel_path="a.py", symbol="Foo"),
+            _hit("c", rank=2, rel_path="b.py", symbol="Bar"),
+        ]
+
+        ordered, deferred = diversify_hits(hits)
+
+        assert [hit.rank for hit in ordered] == [0, 2, 1]
+        assert [hit.rank for hit in deferred] == [1]
+
+    def test_preserves_multiple_symbols_from_one_file(self) -> None:
+        hits = [
+            _hit("a", rank=0, rel_path="a.py", symbol="first"),
+            _hit("b", rank=1, rel_path="a.py", symbol="second"),
+            _hit("c", rank=2, rel_path="a.py", symbol="third"),
+            _hit("d", rank=3, rel_path="b.py", symbol="other"),
+        ]
+
+        ordered, deferred = diversify_hits(hits, max_chunks_per_file=2)
+
+        assert [hit.symbol for hit in ordered] == ["first", "second", "other", "third"]
+        assert [hit.symbol for hit in deferred] == ["third"]
+
+    def test_parent_and_method_share_one_diversity_entity(self) -> None:
+        hits = [
+            _hit("a", rank=0, rel_path="a.py", symbol="Foo", kind="class"),
+            _hit("b", rank=1, rel_path="a.py", symbol="Foo.run", kind="method"),
+            _hit("c", rank=2, rel_path="b.py", symbol="Bar", kind="class"),
+        ]
+
+        ordered, deferred = diversify_hits(hits)
+
+        assert [hit.rank for hit in ordered] == [0, 2, 1]
+        assert [hit.rank for hit in deferred] == [1]
+
+    def test_repository_identity_is_part_of_grouping(self) -> None:
+        hits = [
+            _hit("a", rank=0, rel_path="same.py", symbol="Foo", repo_key="repo-a"),
+            _hit("b", rank=1, rel_path="same.py", symbol="Foo", repo_key="repo-b"),
+        ]
+
+        ordered, deferred = diversify_hits(hits, max_chunks_per_file=1)
+
+        assert ordered == hits
+        assert deferred == []
+
+    def test_second_pass_is_deterministic(self) -> None:
+        hits = [
+            _hit("a", rank=0, rel_path="a.py", symbol="Foo"),
+            _hit("b", rank=1, rel_path="a.py", symbol="Foo"),
+            _hit("c", rank=2, rel_path="a.py", symbol="Bar"),
+            _hit("d", rank=3, rel_path="b.py", symbol="Baz"),
+        ]
+
+        first = diversify_hits(hits, max_chunks_per_file=1)
+        second = diversify_hits(hits, max_chunks_per_file=1)
+
+        assert first == second
+
+    def test_budget_packs_preferred_evidence_before_duplicate(self) -> None:
+        hits = [
+            _hit("a b", rank=0, rel_path="a.py", symbol="Foo"),
+            _hit("c d", rank=1, rel_path="a.py", symbol="Foo"),
+            _hit("e f", rank=2, rel_path="b.py", symbol="Bar"),
+        ]
+
+        result = pack_to_budget(
+            hits,
+            4,
+            estimator=_fixed_estimator(),
+            diversify=True,
+        )
+
+        assert [hit.rank for hit in result.packed] == [0, 2]
+        assert [hit.rank for hit in result.spilled] == [1]
+        assert [hit.rank for hit in result.deferred] == [1]
+
+    def test_measurement_reports_redundancy(self) -> None:
+        hits = [
+            _hit("a", rank=0, rel_path="a.py", symbol="Foo"),
+            _hit("b", rank=1, rel_path="a.py", symbol="Foo.run", kind="method"),
+            _hit("c", rank=2, rel_path="b.py", symbol="Bar"),
+        ]
+
+        stats = measure_diversity(hits)
+
+        assert stats.unique_files == 2
+        assert stats.unique_symbols == 3
+        assert stats.duplicate_entities == 1
+        assert stats.max_chunks_per_file == 2
 
 
 # ---------------------------------------------------------------------------
@@ -225,6 +332,27 @@ class TestPackingResultDataclass:
         assert isinstance(result.total_tokens, int)
         assert isinstance(result.budget_tokens, int)
         assert isinstance(result.truncated, bool)
+        assert isinstance(result.deferred, list)
+
+
+def test_diversity_preserves_protected_prefix() -> None:
+    hits = [
+        _hit("a", rank=0, rel_path="a.py", symbol="Foo"),
+        _hit("b", rank=1, rel_path="a.py", symbol="Foo.bar"),
+        _hit("c", rank=2, rel_path="b.py", symbol="Bar"),
+    ]
+
+    result = pack_to_budget(
+        hits,
+        2,
+        estimator=_fixed_estimator(),
+        diversify=True,
+        max_chunks_per_file=1,
+        protected_prefix=2,
+    )
+
+    assert [hit.rank for hit in result.packed] == [0, 1]
+    assert [hit.rank for hit in result.spilled] == [2]
 
 
 # ---------------------------------------------------------------------------
@@ -281,3 +409,29 @@ class TestSearchEngineContextBudget:
         eng = self._make_engine(["a b c"] * 5)
         results = eng.search("foo", top_k=5, context_budget=0)
         assert len(results) == 5
+
+    def test_search_uses_configured_diversity_policy(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from types import SimpleNamespace
+
+        eng = self._make_engine([])
+        eng._storage.search_dense.return_value = [
+            _hit("a b", rank=0, rel_path="a.py", symbol="Foo"),
+            _hit("c d", rank=1, rel_path="a.py", symbol="Foo"),
+            _hit("e f", rank=2, rel_path="b.py", symbol="Bar"),
+        ]
+        features = SimpleNamespace(
+            query_decomposition_enabled=False,
+            diversity_enabled=True,
+            diversity_max_chunks_per_file=2,
+        )
+        monkeypatch.setattr(
+            "stropha.retrieval.search.get_config",
+            lambda: SimpleNamespace(retrieval_features=features),
+        )
+
+        results = eng.search("foo", top_k=3, context_budget=4)
+
+        assert [hit.rank for hit in results] == [0, 2]

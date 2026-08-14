@@ -146,6 +146,7 @@ def search_code_impl(
         ]
         dedup_filtered = before - len(hits)
 
+    pinned_prefix_count = 0
     if app.pinned_chunk_ids:
         from .retrieval.pinning import prepend_pins, resolve_pins
 
@@ -163,6 +164,7 @@ def search_code_impl(
         pinned_hits = [resolved_pin.hit for resolved_pin in resolved if resolved_pin.found and resolved_pin.hit is not None]
         if pinned_hits:
             hits = prepend_pins(pinned_hits, hits)
+            pinned_prefix_count = len(pinned_hits)
 
     if repo_id is not None:
         hits = [hit for hit in hits if _hit_belongs_to_repo(app.storage, hit, repo_id)]
@@ -202,13 +204,23 @@ def search_code_impl(
 
     spilled_count = 0
     truncated_oversize = False
+    diversity_deferred_chunk_ids: list[str] = []
     if context_budget is not None and context_budget > 0:
+        from .config import get_config
         from .retrieval.packing import pack_to_budget
 
-        pack = pack_to_budget(hits, context_budget)
+        features = get_config().retrieval_features
+        pack = pack_to_budget(
+            hits,
+            context_budget,
+            diversify=features.diversity_enabled,
+            max_chunks_per_file=features.diversity_max_chunks_per_file,
+            protected_prefix=max(1, pinned_prefix_count),
+        )
         hits = pack.packed
         spilled_count = len(pack.spilled)
         truncated_oversize = pack.truncated
+        diversity_deferred_chunk_ids = [hit.chunk_id for hit in pack.deferred]
         log.info(
             "mcp.search_code.packed",
             budget=context_budget,
@@ -216,6 +228,7 @@ def search_code_impl(
             packed=len(hits),
             spilled=spilled_count,
             truncated=truncated_oversize,
+            diversity_deferred=len(diversity_deferred_chunk_ids),
         )
 
     try:
@@ -268,6 +281,7 @@ def search_code_impl(
         facets=facets,
         spilled_count=spilled_count,
         truncated_oversize=truncated_oversize,
+        diversity_deferred_chunk_ids=diversity_deferred_chunk_ids,
         redacted_count=redacted_count,
         index_watermark=watermark,
     )

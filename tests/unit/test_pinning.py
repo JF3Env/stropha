@@ -14,6 +14,8 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
+
 from stropha.models import SearchHit
 from stropha.retrieval.pinning import (
     prepend_pins,
@@ -378,6 +380,59 @@ class TestSearchCodePinning:
         # Pin set is empty by default.
         search_code("q", ctx=_make_ctx(app))
         app.storage.lookup_by_chunk_id.assert_not_called()
+
+    def test_diversity_budget_does_not_displace_pins(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from types import SimpleNamespace
+
+        from stropha.server import search_code
+
+        app = _make_app([_hit("search", rel_path="src/other.py")])
+        app.pinned_chunk_ids = {"p1", "p2"}
+        app.storage.lookup_by_chunk_id.side_effect = lambda cid: _hit(cid)
+        features = SimpleNamespace(
+            diversity_enabled=True,
+            diversity_max_chunks_per_file=1,
+        )
+        monkeypatch.setattr(
+            "stropha.config.get_config",
+            lambda: SimpleNamespace(retrieval_features=features),
+        )
+
+        result = search_code("q", context_budget=6, ctx=_make_ctx(app))
+
+        assert {item.chunk_id for item in result.results} == {"p1", "p2"}
+
+    def test_search_reports_diversity_deferred_ids(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from types import SimpleNamespace
+
+        from stropha.server import search_code
+
+        app = _make_app(
+            [
+                _hit("top"),
+                _hit("duplicate"),
+                _hit("other", rel_path="src/other.py"),
+            ]
+        )
+        features = SimpleNamespace(
+            diversity_enabled=True,
+            diversity_max_chunks_per_file=1,
+        )
+        monkeypatch.setattr(
+            "stropha.config.get_config",
+            lambda: SimpleNamespace(retrieval_features=features),
+        )
+
+        result = search_code("q", context_budget=6, ctx=_make_ctx(app))
+
+        assert [item.chunk_id for item in result.results] == ["top", "other"]
+        assert result.diversity_deferred_chunk_ids == ["duplicate"]
 
 
 # ---------------------------------------------------------------------------

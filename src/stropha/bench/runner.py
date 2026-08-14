@@ -3,16 +3,16 @@
 Flow per matrix:
 
 1. Group cells by ``indexing_sig`` (shared embedder/enricher/chunker).
-2. For each group, build ONE isolated sqlite-vec index of ``matrix.repo``
-   (guarded: vecs == chunks, and non-noop enrichers actually enriched).
+2. For each group, build ONE isolated index of ``matrix.repo`` in the
+   machine-selected experiment storage (guarded: vecs == chunks, and non-noop
+   enrichers actually enriched).
 3. For each cell in the group, build retrieval with the cell's query-time
    overrides (reranker / candidate_k / k) and global feature overrides
    (HyDE / recursive / …), run the golden eval, append a result line.
 
 Resumable: cells whose ``cell_id`` already appears in the output JSONL are
-skipped. Isolated sqlite-vec indexes keep cells independent and trivially
-disposable; retrieval logic is storage-agnostic so the rankings transfer to
-the Postgres backend.
+skipped. sqlite-vec uses isolated files; PostgreSQL uses one canonical cache
+database per indexing group and a disposable writable clone per cell.
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ from typing import Any, Literal
 from ..config import get_config
 from ..errors import StrophaError
 from ..logging import get_logger
-from .matrix import FEATURE_AXES, INDEXING_AXES, Cell, Matrix, MatrixError
+from .matrix import EVAL_AXES, FEATURE_AXES, INDEXING_AXES, Cell, Matrix, MatrixError
 
 log = get_logger(__name__)
 
@@ -127,7 +127,13 @@ def _feature_overrides(cell: Cell) -> dict[str, Any]:
 
 
 def _validate_axes(matrix: Matrix) -> None:
-    known = set(INDEXING_AXES) | set(FEATURE_AXES) | {"reranker"} | set(_RETRIEVAL_FIELD)
+    known = (
+        set(INDEXING_AXES)
+        | set(FEATURE_AXES)
+        | set(EVAL_AXES)
+        | {"reranker"}
+        | set(_RETRIEVAL_FIELD)
+    )
     unknown = [a for a in matrix.axes if a not in known]
     if unknown:
         raise MatrixError(f"unsupported axes {unknown}; known axes: {sorted(known)}")
@@ -200,34 +206,106 @@ def _verify_index(db_path: Path) -> dict[str, int | bool]:
         c.close()
 
 
-def build_index(matrix: Matrix, cell: Cell, db_path: Path) -> dict[str, Any]:
-    """Build the isolated sqlite-vec index for ``cell``'s indexing axes.
+def _verify_storage(storage: Any) -> dict[str, int | bool]:
+    """Verify an open index through the storage protocol only."""
+    stats = storage.stats()
+    chunks = int(stats.get("chunks", 0))
+    models = stats.get("models") or []
+    vecs = sum(int(model.get("n", 0)) for model in models if isinstance(model, dict))
+    active_enricher = storage.get_meta("active_enricher_id")
+    enrichers = stats.get("enrichers") or []
+    enriched = sum(
+        int(enricher.get("n", 0))
+        for enricher in enrichers
+        if isinstance(enricher, dict) and enricher.get("enricher_id") == active_enricher
+    )
+    return {
+        "chunks": chunks,
+        "vecs": vecs,
+        "enriched": enriched,
+        "complete": storage.get_meta("bench_index_complete") == "1",
+    }
 
-    Idempotent: if ``db_path`` already exists and passes the completeness
-    guard, the build is skipped. Returns the verify summary.
+
+def _assert_index_complete(cell: Cell, verified: dict[str, int | bool], target: str) -> None:
+    if (
+        not verified["complete"]
+        or verified["chunks"] == 0
+        or verified["vecs"] != verified["chunks"]
+    ):
+        raise BenchError(f"index incomplete for {cell.indexing_sig}: {verified} ({target})")
+    enricher = cell.values.get("enricher")
+    enricher_name = enricher.get("adapter") if isinstance(enricher, dict) else enricher
+    if enricher_name not in (None, "noop") and verified["enriched"] == 0:
+        raise BenchError(
+            f"enricher={enricher!r} applied to 0 chunks (no-op) for {cell.indexing_sig}"
+        )
+
+
+def _storage_override(db_path: Path | None, storage_dsn: str | None) -> dict[str, Any]:
+    if storage_dsn is not None:
+        if db_path is not None:
+            raise BenchError("PostgreSQL benchmark storage does not accept a SQLite db_path")
+        return {"adapter": "postgres", "config": {"dsn": storage_dsn}}
+    if db_path is None:
+        raise BenchError("sqlite-vec benchmark storage requires db_path")
+    return {"adapter": "sqlite-vec", "config": {"path": str(db_path)}}
+
+
+def _pipeline_config_for_bench(
+    overrides: dict[str, Any],
+    *,
+    resolve_storage_path: bool,
+) -> dict[str, Any]:
+    """Apply matrix overrides on top of the active pipeline configuration."""
+    from ..pipeline.config import load_pipeline_config, pipeline_config_from_dict
+
+    resolved = load_pipeline_config()
+    _merge(resolved, overrides)
+    return pipeline_config_from_dict(
+        resolved,
+        resolve_storage_path=resolve_storage_path,
+    )
+
+
+def build_index(
+    matrix: Matrix,
+    cell: Cell,
+    db_path: Path | None = None,
+    *,
+    storage_dsn: str | None = None,
+) -> dict[str, Any]:
+    """Build the isolated index for ``cell``'s indexing axes.
+
+    The existing sqlite-vec signature remains supported and reuses complete
+    files. A PostgreSQL target is always a fresh manager-provided staging
+    database and is built in full.
     """
     from ..pipeline.builder import build_stages
-    from ..pipeline.config import pipeline_config_from_dict
     from ..pipeline.pipeline import Pipeline
 
     _patch_graphify_off()
 
-    if db_path.is_file():
+    if storage_dsn is None and db_path is not None and db_path.is_file():
         with contextlib.suppress(Exception):
             v = _verify_index(db_path)
             if v["complete"] and v["chunks"] > 0 and v["vecs"] == v["chunks"]:
                 log.info("bench.index_reuse", db=str(db_path), **v)
                 return v
-    resume_partial = db_path.is_file()
+    resume_partial = storage_dsn is None and db_path is not None and db_path.is_file()
 
     overrides = _indexing_overrides(cell)
-    overrides["storage"] = {"adapter": "sqlite-vec", "config": {"path": str(db_path)}}
-    cfg = pipeline_config_from_dict(overrides)
+    overrides["storage"] = _storage_override(db_path, storage_dsn)
+    cfg = _pipeline_config_for_bench(
+        overrides,
+        resolve_storage_path=storage_dsn is None,
+    )
     built = build_stages(cfg, force_rebuild=not resume_partial)
     inference = get_config().inference
     repo = Path(matrix.repo).resolve()
     t0 = time.perf_counter()
     enrichment_failures = 0
+    verified: dict[str, int | bool] | None = None
     with built.storage as storage:
         pipe = Pipeline(
             storage=storage,
@@ -249,46 +327,59 @@ def build_index(matrix: Matrix, cell: Cell, db_path: Path) -> dict[str, Any]:
         if not enrichment_failures:
             storage.set_meta("bench_index_complete", "1")
             storage.commit()
+            if storage_dsn is not None:
+                verified = _verify_storage(storage)
+                _assert_index_complete(cell, verified, "PostgreSQL evaluation database")
     if enrichment_failures:
-        for suffix in ("", "-wal", "-shm"):
-            Path(f"{db_path}{suffix}").unlink(missing_ok=True)
+        if storage_dsn is None and db_path is not None:
+            for suffix in ("", "-wal", "-shm"):
+                Path(f"{db_path}{suffix}").unlink(missing_ok=True)
         raise BenchError(f"index enrichment failed for {enrichment_failures} chunks")
     dt = time.perf_counter() - t0
 
-    v = _verify_index(db_path)
-    if not v["complete"] or v["chunks"] == 0 or v["vecs"] != v["chunks"]:
-        raise BenchError(f"index incomplete for {cell.indexing_sig}: {v} (db={db_path})")
-    enr_axis = cell.values.get("enricher")
-    if enr_axis not in (None, "noop") and v["enriched"] == 0:
-        raise BenchError(
-            f"enricher={enr_axis!r} applied to 0 chunks (no-op) for {cell.indexing_sig}"
-        )
-    log.info("bench.index_built", db=str(db_path), seconds=round(dt, 1), **v)
-    return {**v, "index_seconds": round(dt, 1)}
+    if storage_dsn is None:
+        assert db_path is not None
+        verified = _verify_index(db_path)
+        _assert_index_complete(cell, verified, f"db={db_path}")
+    assert verified is not None
+    log.info(
+        "bench.index_built",
+        storage="postgres" if storage_dsn is not None else "sqlite-vec",
+        db=str(db_path) if db_path is not None else None,
+        seconds=round(dt, 1),
+        **verified,
+    )
+    return {**verified, "index_seconds": round(dt, 1)}
 
 
 # ---------------------------------------------------------------- evaluation
 def eval_cell(
     matrix: Matrix,
     cell: Cell,
-    db_path: Path,
+    db_path: Path | None,
     cases: Any,
     *,
     run_provenance: dict[str, Any] | None = None,
+    storage_dsn: str | None = None,
 ) -> dict[str, Any]:
-    """Score one cell against ``cases`` using the index at ``db_path``."""
+    """Score one cell against ``cases`` using the selected storage target."""
     from ..eval import run_eval
     from ..pipeline.builder import build_stages
-    from ..pipeline.config import pipeline_config_from_dict
 
     overrides = _indexing_overrides(cell)  # embedder must match the index dim
-    overrides["storage"] = {"adapter": "sqlite-vec", "config": {"path": str(db_path)}}
+    overrides["storage"] = _storage_override(db_path, storage_dsn)
     _merge(overrides, _retrieval_overrides(cell))
 
-    cfg = pipeline_config_from_dict(overrides)
+    cfg = _pipeline_config_for_bench(
+        overrides,
+        resolve_storage_path=storage_dsn is None,
+    )
     with _override_features(_feature_overrides(cell)):
         built = build_stages(cfg)
         with built.storage:
+            if storage_dsn is not None:
+                verified = _verify_storage(built.storage)
+                _assert_index_complete(cell, verified, "PostgreSQL work database")
             get_meta = getattr(built.storage, "get_meta", None)
             indexed_enricher = get_meta("active_enricher_id") if callable(get_meta) else None
             indexed_embedder = get_meta("active_embedder_id") if callable(get_meta) else None
@@ -326,6 +417,11 @@ def eval_cell(
                 built.retrieval,
                 top_k=matrix.top_k,
                 provenance=provenance,
+                context_budget=cell.values.get("context_budget"),
+                diversity_enabled=bool(cell.values.get("diversity", False)),
+                diversity_max_chunks_per_file=int(
+                    cell.values.get("diversity_max_chunks_per_file", 2)
+                ),
             )
 
     s = report.summary()
@@ -357,10 +453,87 @@ def eval_cell(
     }
 
 
+def _postgres_cluster_identity(dsn: str) -> dict[str, Any]:
+    """Return stable non-secret connection coordinates from a PostgreSQL DSN."""
+    import psycopg
+    from psycopg.conninfo import conninfo_to_dict
+
+    try:
+        params = conninfo_to_dict(dsn)
+    except psycopg.Error:
+        raise BenchError("invalid experiments.postgres.admin_dsn") from None
+    return {
+        "host": str(params.get("host") or "local"),
+        "port": int(params.get("port") or 5432),
+        "database": str(params.get("dbname") or ""),
+        "user": str(params.get("user") or ""),
+    }
+
+
+def _production_database_for_admin(admin_dsn: str) -> str | None:
+    """Return the active production DB when its DSN names the same cluster."""
+    import psycopg
+    from psycopg.conninfo import conninfo_to_dict
+
+    from ..pipeline.config import load_pipeline_config
+
+    try:
+        active = load_pipeline_config().get("storage") or {}
+        if active.get("adapter") != "postgres":
+            return None
+        production_dsn = (active.get("config") or {}).get("dsn")
+        if not isinstance(production_dsn, str) or not production_dsn:
+            return None
+        admin = conninfo_to_dict(admin_dsn)
+        production = conninfo_to_dict(production_dsn)
+    except (StrophaError, psycopg.Error):
+        return None
+    admin_cluster = (str(admin.get("host") or "local"), int(admin.get("port") or 5432))
+    production_cluster = (
+        str(production.get("host") or "local"),
+        int(production.get("port") or 5432),
+    )
+    if admin_cluster != production_cluster:
+        return None
+    database = production.get("dbname")
+    return str(database) if database else None
+
+
+def _experiment_provenance(*, cluster_identity: Any | None = None) -> dict[str, Any]:
+    from ..experiment_policy import ExperimentPolicy
+
+    policy = ExperimentPolicy.from_config(get_config())
+    storage = policy.config.storage
+    postgres_cluster = None
+    index_dir = "supported"
+    if storage == "postgres":
+        assert policy.config.postgres.admin_dsn is not None
+        if cluster_identity is None:
+            postgres_cluster = _postgres_cluster_identity(policy.config.postgres.admin_dsn)
+        else:
+            postgres_cluster = {
+                "host": cluster_identity.host,
+                "port": cluster_identity.port,
+                "database": cluster_identity.database,
+                "user": cluster_identity.user,
+                "server_version": cluster_identity.server_version,
+            }
+        index_dir = "ignored; PostgreSQL evaluation databases are manager-owned"
+    return {
+        "storage": storage,
+        "policy_fingerprint": policy.fingerprint,
+        "postgres_cluster": postgres_cluster,
+        "index_dir": index_dir,
+    }
+
+
 def _run_provenance(
     matrix: Matrix,
     split: BenchSplit,
     runtime_id: str | None = None,
+    *,
+    experiment: dict[str, Any] | None = None,
+    indexing_identities: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Build the immutable identity shared by every result in one matrix run."""
     from ..ingest.git_meta import detect
@@ -391,6 +564,8 @@ def _run_provenance(
         "split": split,
         "runtime_id": resolved_runtime_id,
         "index_runtime_id": runtime_id or _index_runtime_id(),
+        "experiment": experiment or _experiment_provenance(),
+        "indexing_identities": indexing_identities or {},
     }
     fields["run_id"] = hashlib.sha256(
         json.dumps(fields, sort_keys=True, separators=(",", ":")).encode()
@@ -542,6 +717,30 @@ def _merge(dst: dict[str, Any], src: dict[str, Any]) -> None:
             dst[k] = v
 
 
+def _postgres_cache_key(indexing_sig: str, provenance: dict[str, Any]) -> str:
+    fields = {
+        "version": 2,
+        "repo_key": provenance["repo_key"],
+        "source_state_id": provenance["source_state_id"],
+        "indexing_sig": indexing_sig,
+        "indexing_hash": provenance["indexing_identities"][indexing_sig],
+        "index_runtime_id": provenance["index_runtime_id"],
+        "policy_fingerprint": provenance["experiment"]["policy_fingerprint"],
+    }
+    return json.dumps(fields, sort_keys=True, separators=(",", ":"))
+
+
+def _resolved_indexing_hash(cell: Cell) -> str:
+    """Resolve the adapter identity behind one matrix indexing group."""
+    from ..pipeline.builder import build_stages
+
+    config = _pipeline_config_for_bench(
+        _indexing_overrides(cell),
+        resolve_storage_path=False,
+    )
+    return build_stages(config, open_storage=False).indexing_hash()
+
+
 # ------------------------------------------------------------------- driver
 def run_matrix(
     matrix: Matrix,
@@ -558,23 +757,52 @@ def run_matrix(
 
     Returns a summary dict ``{total, done, evaluated, failed, skipped}``.
     """
-    _validate_axes(matrix)
-    cells = matrix.expand()
-    groups = matrix.groups()
+    from ..experiment_policy import ExperimentPolicy
+
+    config = get_config()
+    policy = ExperimentPolicy.from_config(config)
+    selected_matrix = policy.filter_matrix(matrix)
+    experiment_storage = policy.config.storage
+
+    postgres_manager: Any = None
+    cluster_identity: Any = None
+    if experiment_storage == "postgres":
+        from ..evaluation.postgres import PostgresEvaluationDatabaseManager
+
+        admin_dsn = policy.config.postgres.admin_dsn
+        assert admin_dsn is not None
+        postgres_manager = PostgresEvaluationDatabaseManager(
+            admin_dsn=admin_dsn,
+            database_prefix=policy.config.postgres.database_prefix,
+            production_database=_production_database_for_admin(admin_dsn),
+        )
+        if not dry_run:
+            cluster_identity = postgres_manager.preflight()
+
+    _validate_axes(selected_matrix)
+    cells = selected_matrix.expand()
+    groups = selected_matrix.groups()
     index_dir = index_dir or (out_path.parent / "indexes")
-    index_dir.mkdir(parents=True, exist_ok=True)
+    if experiment_storage == "sqlite-vec":
+        index_dir.mkdir(parents=True, exist_ok=True)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     if not resume and out_path.is_file():
         raise BenchError("--no-resume requires a new --out path")
-    run_provenance = _run_provenance(matrix, split)
-    repo = Path(matrix.repo).expanduser().resolve()
+    indexing_identities = {sig: _resolved_indexing_hash(group[0]) for sig, group in groups.items()}
+    run_provenance = _run_provenance(
+        selected_matrix,
+        split,
+        experiment=_experiment_provenance(cluster_identity=cluster_identity),
+        indexing_identities=indexing_identities,
+    )
+    repo = Path(selected_matrix.repo).expanduser().resolve()
     initial_source_state = _source_worktree_state(repo)
     initial_source_sha = (
         hashlib.sha256(initial_source_state).hexdigest() if initial_source_state else None
     )
     if initial_source_sha != run_provenance["source_diff_sha256"]:
         raise BenchError("benchmark source changed while preparing the run")
-    _assert_run_environment(matrix, run_provenance, initial_source_state)
+    _assert_run_environment(selected_matrix, run_provenance, initial_source_state)
 
     completed = _validate_output_identity(out_path, run_provenance["run_id"])
     done = completed if resume else set()
@@ -586,16 +814,24 @@ def run_matrix(
             "unique_indexes": len(groups),
             "already_done": len(done & {c.cell_id for c in cells}),
             "run_id": run_provenance["run_id"],
-            "matrix_id": matrix.matrix_id,
+            "matrix_id": selected_matrix.matrix_id,
+            "storage": experiment_storage,
+            "policy_fingerprint": policy.fingerprint,
+            "postgres_cluster": (run_provenance.get("experiment") or {}).get("postgres_cluster"),
+            "index_dir": (
+                str(index_dir)
+                if experiment_storage == "sqlite-vec"
+                else "ignored; PostgreSQL evaluation databases are manager-owned"
+            ),
             "groups": {sig: [c.label() for c in cs] for sig, cs in groups.items()},
         }
         return plan
 
     from ..eval import filter_by_split, load_golden
 
-    cases = filter_by_split(load_golden(Path(matrix.golden)), split)
+    cases = filter_by_split(load_golden(Path(selected_matrix.golden)), split)
     if not cases:
-        raise BenchError(f"golden file contains no {split!r} cases: {matrix.golden}")
+        raise BenchError(f"golden file contains no {split!r} cases: {selected_matrix.golden}")
 
     evaluated = failed = skipped = 0
     seen = 0
@@ -604,13 +840,31 @@ def run_matrix(
         if not pending:
             skipped += len(group)
             continue
-        db_path = index_dir / (
-            f"index_{sig}_{run_provenance['source_state_id']}_"
-            f"{run_provenance['index_runtime_id']}.db"
-        )
+        db_path: Path | None = None
+        cache_ref: Any = None
         try:
-            build_index(matrix, pending[0], db_path)
-            _assert_run_environment(matrix, run_provenance, initial_source_state)
+            if experiment_storage == "postgres":
+                cache_key = _postgres_cache_key(sig, run_provenance)
+
+                def build_postgres_cache(ref: Any, index_cell: Cell = pending[0]) -> None:
+                    build_index(
+                        selected_matrix,
+                        index_cell,
+                        storage_dsn=ref.dsn,
+                    )
+
+                cache_ref = postgres_manager.get_or_create_cache(
+                    cache_key,
+                    build_postgres_cache,
+                )
+            else:
+                db_path = index_dir / (
+                    f"index_{sig}_{run_provenance['source_state_id']}_"
+                    f"{run_provenance['index_runtime_id']}_"
+                    f"{indexing_identities[sig]}.db"
+                )
+                build_index(selected_matrix, pending[0], db_path)
+            _assert_run_environment(selected_matrix, run_provenance, initial_source_state)
         except Exception as exc:
             log.warning("bench.index_failed", indexing_sig=sig, error=str(exc))
             for cell in pending:
@@ -635,15 +889,26 @@ def run_matrix(
                 break
             seen += 1
             try:
-                _assert_run_environment(matrix, run_provenance, initial_source_state)
-                rec = eval_cell(
-                    matrix,
-                    cell,
-                    db_path,
-                    cases,
-                    run_provenance=run_provenance,
-                )
-                _assert_run_environment(matrix, run_provenance, initial_source_state)
+                _assert_run_environment(selected_matrix, run_provenance, initial_source_state)
+                if experiment_storage == "postgres":
+                    with postgres_manager.writable_clone(cache_ref) as work_ref:
+                        rec = eval_cell(
+                            selected_matrix,
+                            cell,
+                            None,
+                            cases,
+                            run_provenance=run_provenance,
+                            storage_dsn=work_ref.dsn,
+                        )
+                else:
+                    rec = eval_cell(
+                        selected_matrix,
+                        cell,
+                        db_path,
+                        cases,
+                        run_provenance=run_provenance,
+                    )
+                _assert_run_environment(selected_matrix, run_provenance, initial_source_state)
                 evaluated += 1
             except Exception as exc:  # record + continue
                 rec = {

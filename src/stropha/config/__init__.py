@@ -27,10 +27,15 @@ from typing import Any
 
 import yaml  # type: ignore[import-untyped]
 
+from ..errors import ConfigError
 from ..logging import get_logger
 from .models import (
     Config,
     EmbedderConfig,
+    ExperimentBlacklistConfig,
+    ExperimentPostgresConfig,
+    ExperimentsConfig,
+    ExperimentStorage,
     GitConfig,
     GraphConfig,
     HookConfig,
@@ -51,6 +56,10 @@ __all__ = [
     # Models (re-exported)
     "Config",
     "EmbedderConfig",
+    "ExperimentBlacklistConfig",
+    "ExperimentPostgresConfig",
+    "ExperimentStorage",
+    "ExperimentsConfig",
     "GitConfig",
     "GraphConfig",
     "HookConfig",
@@ -240,6 +249,8 @@ def _parse_retrieval_features(raw: dict[str, Any]) -> RetrievalFeatures:
         multi_query_min_terms=_int(raw.get("multi_query_min_terms"), 7),
         recursive_enabled=_bool(raw.get("recursive_enabled"), False),
         recursive_adjacency=_int(raw.get("recursive_adjacency"), 5),
+        diversity_enabled=_bool(raw.get("diversity_enabled"), False),
+        diversity_max_chunks_per_file=_int(raw.get("diversity_max_chunks_per_file"), 2),
         cache_enabled=_bool(raw.get("cache_enabled"), False),
         cache_size=_int(raw.get("cache_size"), 500),
         cache_ttl=_float(raw.get("cache_ttl"), 3600.0),
@@ -354,6 +365,37 @@ def _parse_git(raw: dict[str, Any]) -> GitConfig:
     )
 
 
+def _parse_experiments(raw: Any) -> ExperimentsConfig:
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        raise ConfigError("experiments must be a mapping")
+
+    postgres_raw = raw.get("postgres")
+    if postgres_raw is None:
+        postgres_raw = {}
+    if not isinstance(postgres_raw, dict):
+        raise ConfigError("experiments.postgres must be a mapping")
+
+    blacklist_raw = raw.get("blacklist")
+    if blacklist_raw is None:
+        blacklist_raw = {}
+    if not isinstance(blacklist_raw, dict):
+        raise ConfigError("experiments.blacklist must be a mapping")
+    adapters_raw = blacklist_raw.get("adapters")
+    if adapters_raw is None:
+        adapters_raw = {}
+
+    return ExperimentsConfig(
+        storage=raw.get("storage", "sqlite-vec"),
+        postgres=ExperimentPostgresConfig(
+            admin_dsn=postgres_raw.get("admin_dsn"),
+            database_prefix=postgres_raw.get("database_prefix", "stropha_bench"),
+        ),
+        blacklist=ExperimentBlacklistConfig(adapters=adapters_raw),
+    )
+
+
 def _parse_hook() -> HookConfig:
     """Hook config is read from env only — the hook is a detached subprocess."""
     log_env = os.environ.get("STROPHA_HOOK_LOG")
@@ -409,6 +451,7 @@ def load_config(project_root: Path | None = None, force_reload: bool = False) ->
         mcp=_parse_mcp(raw.get("mcp", {})),
         git=_parse_git(raw.get("git", {})),
         hook=_parse_hook(),
+        experiments=_parse_experiments(raw.get("experiments", {})),
     )
 
     log.debug(
@@ -477,6 +520,20 @@ def get_config_info() -> dict[str, Any]:
     lms_set = bool(cfg.secrets.lms_api_key)
     moa_set = bool(cfg.secrets.moa_api_key)
 
+    experiment_summary = {
+        "storage": cfg.experiments.storage,
+        "postgres": {
+            "admin_dsn": "(set)" if cfg.experiments.postgres.admin_dsn else None,
+            "database_prefix": cfg.experiments.postgres.database_prefix,
+        },
+        "blacklist": {
+            "adapters": {
+                stage: list(adapters)
+                for stage, adapters in cfg.experiments.blacklist.adapters.items()
+            }
+        },
+    }
+
     settings_dump: dict[str, Any] = {
         "voyage_api_key": "(set)" if voyage_set else None,
         "anthropic_api_key": "(set)" if anthropic_set else None,
@@ -494,6 +551,7 @@ def get_config_info() -> dict[str, Any]:
         "mcp_watch_interval": cfg.mcp_watch_interval,
         "mcp_watch_debounce": cfg.mcp_watch_debounce,
         "use_voyage": cfg.use_voyage,
+        "experiments": experiment_summary,
     }
 
     return {
@@ -509,6 +567,7 @@ def get_config_info() -> dict[str, Any]:
             "voyage_embed_dim": cfg.voyage_embed_dim,
         },
         "settings": settings_dump,
+        "experiments": experiment_summary,
         "sources": sources,
         "env_values": env_values,
         "env_groups": env_groups,

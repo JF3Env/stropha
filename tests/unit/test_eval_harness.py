@@ -24,6 +24,13 @@ class _FakeHit:
     symbol: str | None
     score: float = 1.0
     chunk_id: str | None = None
+    snippet: str = "x"
+    kind: str = "function"
+    repo: object | None = None
+
+    @property
+    def rel_path(self) -> str:
+        return self.path
 
 
 class _FakeEngine:
@@ -749,6 +756,47 @@ class TestSummaryAndBySplit:
         s = report.summary()
         for key in ("map@5", "latency_p50_ms", "latency_p95_ms", "latency_p99_ms"):
             assert key in s
+
+    def test_budget_report_includes_diversity_efficiency_metrics(self):
+        case = EvalCase(
+            id="c1",
+            query="q1",
+            expected_paths=("a.py", "b.py"),
+            expected_symbols=("Foo", "Bar"),
+        )
+        hits = [
+            _FakeHit("a.py", "Foo", chunk_id="a1", snippet="one two"),
+            _FakeHit("a.py", "Foo", chunk_id="a2", snippet="three four"),
+            _FakeHit("b.py", "Bar", chunk_id="b1", snippet="five six"),
+        ]
+        engine = _FakeEngine({"q1": hits})
+
+        baseline = run_eval(
+            [case],
+            engine,  # type: ignore[arg-type]
+            top_k=3,
+            context_budget=4,
+        )
+        diverse = run_eval(
+            [case],
+            engine,  # type: ignore[arg-type]
+            top_k=3,
+            context_budget=4,
+            diversity_enabled=True,
+        )
+
+        baseline_summary = baseline.summary()
+        diverse_summary = diverse.summary()
+        assert baseline_summary["packed_relevant_entities"] == 1
+        assert baseline_summary["spilled_relevant_entities"] == 1
+        assert baseline_summary["duplicate_entity_count"] == 1
+        assert diverse_summary["packed_relevant_entities"] == 2
+        assert diverse_summary["spilled_relevant_entities"] == 0
+        assert diverse_summary["duplicate_entity_count"] == 0
+        assert diverse_summary["unique_files_returned"] == 2
+        assert diverse_summary["diversity_deferred_count"] == 1
+        assert diverse_summary["relevant_entities_per_1000_tokens"] > 0
+        assert diverse_summary["returned_tokens"] == 4
 
     def test_by_split_groups_results(self):
         from stropha.eval import EvalReport

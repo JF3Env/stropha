@@ -25,6 +25,10 @@ from ..logging import get_logger
 
 log = get_logger(__name__)
 
+_SECRET_CONFIG_KEYS = frozenset(
+    {"access_token", "api_key", "auth_token", "dsn", "password", "secret"}
+)
+
 # Top-level config skeleton. Adapter sections that omit ``adapter`` fall back
 # to these defaults. Adding a stage here in a future phase is the only place
 # the framework needs touching.
@@ -119,7 +123,7 @@ def pipeline_config_from_dict(
 
             storage_cfg["path"] = str(_default_index_path())
 
-    log.debug("pipeline.config.from_dict", resolved=cfg)
+    log.debug("pipeline.config.from_dict", resolved=_redact_for_log(cfg))
     return cfg
 
 
@@ -231,8 +235,26 @@ def load_pipeline_config(
         storage_cfg["path"] = str(unified_index)
         sources.append("default(paths.index)")
 
-    log.debug("pipeline.config.load", sources=sources, resolved=cfg)
+    log.debug("pipeline.config.load", sources=sources, resolved=_redact_for_log(cfg))
     return cfg
+
+
+def _redact_for_log(value: Any, *, key: str | None = None) -> Any:
+    """Copy configuration values while replacing credential-bearing fields."""
+    if key is not None:
+        normalized = key.lower()
+        if normalized in _SECRET_CONFIG_KEYS or normalized.endswith(
+            ("_api_key", "_password", "_secret")
+        ):
+            return "(set)" if value else None
+    if isinstance(value, dict):
+        return {
+            item_key: _redact_for_log(item_value, key=str(item_key))
+            for item_key, item_value in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_for_log(item) for item in value]
+    return value
 
 
 def _read_raw_yaml(path: Path) -> dict[str, Any]:

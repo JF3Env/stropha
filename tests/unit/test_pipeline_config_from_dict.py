@@ -13,18 +13,15 @@ from pathlib import Path
 import pytest
 
 from stropha.pipeline import pipeline_config_from_dict
+from stropha.pipeline.config import _redact_for_log
 
 
 class TestIsolation:
-    def test_ignores_user_yaml(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_ignores_user_yaml(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Even when ~/.stropha/config.yaml exists, the helper ignores it."""
         fake_home = tmp_path / "home"
         (fake_home / ".stropha").mkdir(parents=True)
-        (fake_home / ".stropha" / "config.yaml").write_text(
-            "embedder:\n  adapter: voyage\n"
-        )
+        (fake_home / ".stropha" / "config.yaml").write_text("embedder:\n  adapter: voyage\n")
         monkeypatch.setenv("HOME", str(fake_home))
         cfg = pipeline_config_from_dict({})
         # Default embedder is 'local', not the 'voyage' the user YAML
@@ -34,9 +31,7 @@ class TestIsolation:
     def test_ignores_project_yaml(self, tmp_path: Path) -> None:
         # Even when called from a cwd containing stropha.yaml, the
         # project file is not read.
-        (tmp_path / "stropha.yaml").write_text(
-            "enricher:\n  adapter: contextual\n"
-        )
+        (tmp_path / "stropha.yaml").write_text("enricher:\n  adapter: contextual\n")
         old_cwd = Path.cwd()
         os.chdir(tmp_path)
         try:
@@ -46,9 +41,7 @@ class TestIsolation:
         # Default enricher is 'hierarchical', not the 'contextual' the project YAML asks for.
         assert cfg["enricher"]["adapter"] == "hierarchical"
 
-    def test_ignores_voyage_api_key_env(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_ignores_voyage_api_key_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """VOYAGE_API_KEY set in env must NOT push the embedder to voyage."""
         monkeypatch.setenv("VOYAGE_API_KEY", "sk-fake")
         cfg = pipeline_config_from_dict({})
@@ -57,16 +50,20 @@ class TestIsolation:
 
 class TestOverridesApplied:
     def test_explicit_adapter_overrides_default(self) -> None:
-        cfg = pipeline_config_from_dict({
-            "embedder": {"adapter": "voyage", "config": {"model": "voyage-code-3"}},
-        })
+        cfg = pipeline_config_from_dict(
+            {
+                "embedder": {"adapter": "voyage", "config": {"model": "voyage-code-3"}},
+            }
+        )
         assert cfg["embedder"]["adapter"] == "voyage"
         assert cfg["embedder"]["config"]["model"] == "voyage-code-3"
 
     def test_deep_merge_preserves_defaults(self) -> None:
-        cfg = pipeline_config_from_dict({
-            "enricher": {"config": {"flag": True}},
-        })
+        cfg = pipeline_config_from_dict(
+            {
+                "enricher": {"config": {"flag": True}},
+            }
+        )
         # enricher.adapter wasn't set so it stays default ('hierarchical').
         assert cfg["enricher"]["adapter"] == "hierarchical"
         assert cfg["enricher"]["config"] == {"flag": True}
@@ -80,9 +77,11 @@ class TestOverridesApplied:
         assert cfg["storage"]["config"] == {}
 
     def test_explicit_storage_path_kept(self) -> None:
-        cfg = pipeline_config_from_dict({
-            "storage": {"config": {"path": "/tmp/explicit.db"}},
-        })
+        cfg = pipeline_config_from_dict(
+            {
+                "storage": {"config": {"path": "/tmp/explicit.db"}},
+            }
+        )
         assert cfg["storage"]["config"]["path"] == "/tmp/explicit.db"
 
     def test_empty_overrides_returns_pure_defaults(self) -> None:
@@ -109,7 +108,20 @@ class TestDeterminism:
         assert overrides == original
 
 
+def test_log_redaction_hides_credentials_without_hiding_tuning_values() -> None:
+    redacted = _redact_for_log(
+        {
+            "storage": {"config": {"dsn": "postgresql://user:secret@host/database"}},
+            "reranker": {"config": {"api_key": "secret", "max_tokens": 256}},
+        }
+    )
+
+    assert redacted["storage"]["config"]["dsn"] == "(set)"
+    assert redacted["reranker"]["config"] == {"api_key": "(set)", "max_tokens": 256}
+
+
 class TestPackageExports:
     def test_pipeline_re_exports(self) -> None:
         from stropha import pipeline
+
         assert hasattr(pipeline, "pipeline_config_from_dict")

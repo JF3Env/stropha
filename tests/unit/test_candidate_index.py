@@ -2,17 +2,24 @@
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, ClassVar
 
 import pytest
 
+from stropha.evaluation import DatabaseRef
 from stropha.meta import (
     CandidateIndexError,
     CandidateIndexProvider,
     IndexCache,
     Snapshot,
+)
+from stropha.meta.candidate_index import (
+    CANDIDATE_INDEX_CACHE_FORMAT,
+    POSTGRES_CANDIDATE_INDEX_CACHE_FORMAT,
+    candidate_index_cache_format,
 )
 
 
@@ -22,10 +29,15 @@ class _Stage:
 
 
 class _Storage(_Stage):
-    def __init__(self, path: Path) -> None:
-        super().__init__("sqlite-vec:dim=1")
-        self.path = path
+    instances: ClassVar[list[_Storage]] = []
+
+    def __init__(self, target: Path | str, *, adapter: str) -> None:
+        super().__init__(f"{adapter}:dim=1")
+        self.path = target if isinstance(target, Path) else None
+        self.dsn = target if isinstance(target, str) else None
         self.closed = False
+        self.meta: dict[str, str] = {}
+        type(self).instances.append(self)
 
     def __enter__(self) -> _Storage:
         return self
@@ -37,14 +49,27 @@ class _Storage(_Stage):
         return 17
 
     def backup_to(self, destination: Path) -> None:
+        assert self.path is not None
         destination.write_bytes(self.path.read_bytes())
+
+    def stats(self) -> dict[str, object]:
+        return {"chunks": 1, "models": [{"n": 1}]}
+
+    def set_meta(self, key: str, value: str) -> None:
+        self.meta[key] = value
+
+    def commit(self) -> None:
+        return None
 
 
 class _Built:
+    configs: ClassVar[list[dict[str, Any]]] = []
+
     def __init__(
         self,
         *,
-        path: Path,
+        target: Path | str,
+        storage_adapter: str,
         indexing_hash: str,
         storage: bool,
         resolved: dict[str, Any],
@@ -54,9 +79,10 @@ class _Built:
         self.enricher = _Stage("enricher:v1")
         self.embedder = _Stage(indexing_hash)
         self.secondary_embedder = None
-        self.storage = _Storage(path) if storage else None
+        self.storage = _Storage(target, adapter=storage_adapter) if storage else None
         self.retrieval = _Stage("retrieval:v1") if storage else None
         self.resolved = resolved
+        type(self).configs.append(resolved)
 
     def indexing_hash(self) -> str:
         return self.embedder.adapter_id
@@ -79,11 +105,61 @@ class _Pipeline:
         self.storage = storage
         type(self).graph_fts_augment.append(graph_fts_augment)
 
-    def run(self, *, rebuild: bool, mode: str) -> None:
+    def run(self, *, rebuild: bool, mode: str) -> SimpleNamespace:
         assert rebuild is True
         assert mode == "full"
         type(self).builds += 1
-        self.storage.path.write_bytes(f"index-{type(self).builds}".encode())
+        if self.storage.path is not None:
+            self.storage.path.write_bytes(f"index-{type(self).builds}".encode())
+        return SimpleNamespace(chunks_enriched_failed=0)
+
+
+class _FailingCache:
+    def __getattr__(self, name: str) -> Any:
+        pytest.fail(f"PostgreSQL mode called IndexCache.{name}")
+
+
+class _PostgresManager:
+    def __init__(self) -> None:
+        self.caches: dict[str, DatabaseRef] = {}
+        self.builder_calls: list[DatabaseRef] = []
+        self.cache_keys: list[str] = []
+        self.clones: list[DatabaseRef] = []
+        self.dropped: list[str] = []
+
+    def get_or_create_cache(self, cache_key: str, builder: Any) -> DatabaseRef:
+        self.cache_keys.append(cache_key)
+        existing = self.caches.get(cache_key)
+        if existing is not None:
+            return existing
+        staging = DatabaseRef(
+            name=f"eval_staging_{len(self.caches)}",
+            dsn=f"postgresql://eval/staging_{len(self.caches)}",
+        )
+        self.builder_calls.append(staging)
+        builder(staging)
+        storage = next(item for item in _Storage.instances if item.dsn == staging.dsn)
+        assert storage.closed is True
+        canonical = DatabaseRef(
+            name=f"eval_cache_{len(self.caches)}",
+            dsn=f"postgresql://eval/cache_{len(self.caches)}",
+        )
+        self.caches[cache_key] = canonical
+        return canonical
+
+    @contextlib.contextmanager
+    def writable_clone(self, _cache: DatabaseRef) -> Any:
+        clone = DatabaseRef(
+            name=f"eval_work_{len(self.clones)}",
+            dsn=f"postgresql://eval/work_{len(self.clones)}",
+        )
+        self.clones.append(clone)
+        try:
+            yield clone
+        finally:
+            storage = next(item for item in _Storage.instances if item.dsn == clone.dsn)
+            assert storage.closed is True
+            self.dropped.append(clone.name)
 
 
 @pytest.fixture
@@ -101,11 +177,18 @@ def provider_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         config: dict[str, Any], *, open_storage: bool = True, force_rebuild: bool = False
     ) -> _Built:
         del force_rebuild
-        path = Path(config["storage"]["config"]["path"])
+        storage_config = config["storage"]
+        storage_adapter = storage_config["adapter"]
+        target: Path | str
+        if storage_adapter == "postgres":
+            target = storage_config["config"]["dsn"]
+        else:
+            target = Path(storage_config["config"]["path"])
         embedder = config["embedder"]
         indexing_hash = f"{embedder['adapter']}:{embedder.get('config', {}).get('model', '')}"
         return _Built(
-            path=path,
+            target=target,
+            storage_adapter=storage_adapter,
             indexing_hash=indexing_hash,
             storage=open_storage,
             resolved=config,
@@ -131,6 +214,8 @@ def provider_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     )
     _Pipeline.builds = 0
     _Pipeline.graph_fts_augment = []
+    _Built.configs = []
+    _Storage.instances = []
     provider = CandidateIndexProvider(
         cache=IndexCache(tmp_path / "cache"),
         workspace_root=tmp_path / "workspaces",
@@ -138,9 +223,7 @@ def provider_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     return provider, snapshot
 
 
-def test_pin_snapshot_delegates_caller_ref(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_pin_snapshot_delegates_caller_ref(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import stropha.meta.candidate_index as mod
 
     expected = Snapshot("b" * 40, tmp_path / "snapshot", tmp_path / "source")
@@ -216,9 +299,7 @@ def test_every_identity_dimension_changes_cache_key(provider_env, tmp_path: Path
         provider.identity_for(snapshot=sha_snapshot, candidate_config={}),
         provider.identity_for(
             snapshot=snapshot,
-            candidate_config={
-                "embedder": {"adapter": "local", "config": {"model": "other"}}
-            },
+            candidate_config={"embedder": {"adapter": "local", "config": {"model": "other"}}},
         ),
         graph_provider.identity_for(snapshot=snapshot, candidate_config={}),
         format_provider.identity_for(snapshot=snapshot, candidate_config={}),
@@ -267,12 +348,11 @@ def test_full_flat_candidate_is_resolved_for_index_and_evaluation(provider_env) 
         assert retrieval["rrf_k"] == 100
         assert retrieval["reranker"] == {"adapter": "code-aware"}
         assert opened.resolved_config.retrieval_features == {"hyde_code_tuned": False}
-        assert opened.resolved_config.pipeline["retrieval"]["config"][
-            "inherit_global_features"
-        ] is False
-        assert opened.resolved_config.pipeline["retrieval"]["config"][
-            "hyde_code_tuned"
-        ] is False
+        assert (
+            opened.resolved_config.pipeline["retrieval"]["config"]["inherit_global_features"]
+            is False
+        )
+        assert opened.resolved_config.pipeline["retrieval"]["config"]["hyde_code_tuned"] is False
         assert opened.resolved_config.graph == {"fts_augment": False}
         assert opened.identity.graph_fts_augment is False
 
@@ -300,8 +380,11 @@ def test_retrieval_only_configs_reuse_cache_and_clones_are_cleaned(provider_env)
         candidate_id="candidate-a",
     ) as first:
         first_path = first.index_path
+        assert isinstance(first_path, Path)
         assert first.cache_hit is False
         assert first.repo_id == 17
+        assert first.database_name is None
+        assert first.storage_ref is None
         assert first.built.retrieval.adapter_id == "retrieval:v1"
         first_path.write_bytes(b"candidate mutation")
     assert not first_path.exists()
@@ -313,6 +396,7 @@ def test_retrieval_only_configs_reuse_cache_and_clones_are_cleaned(provider_env)
         candidate_id="candidate-b",
     ) as second:
         second_path = second.index_path
+        assert isinstance(second_path, Path)
         assert second.cache_hit is True
         assert second_path.read_bytes() == b"index-1"
     assert not second_path.exists()
@@ -349,6 +433,7 @@ def test_candidate_clone_is_cleaned_when_caller_raises(provider_env) -> None:
         ) as candidate,
     ):
         clone_path = candidate.index_path
+        assert isinstance(clone_path, Path)
         raise RuntimeError("evaluation failed")
 
     assert clone_path is not None
@@ -363,3 +448,155 @@ def test_snapshot_head_drift_is_rejected(provider_env, monkeypatch: pytest.Monke
 
     with pytest.raises(CandidateIndexError, match="HEAD drifted"):
         provider.identity_for(snapshot=snapshot, candidate_config={})
+
+
+def test_postgres_identity_uses_distinct_schema_cache_format(provider_env, tmp_path: Path) -> None:
+    sqlite_provider, snapshot = provider_env
+    manager = _PostgresManager()
+    workspace = tmp_path / "postgres-workspaces"
+    provider = CandidateIndexProvider(
+        cache=_FailingCache(),  # type: ignore[arg-type]
+        workspace_root=workspace,
+        postgres_manager=manager,  # type: ignore[arg-type]
+        base_pipeline_config={
+            "storage": {
+                "adapter": "postgres",
+                "config": {"dsn": "postgresql://production/never-use"},
+            }
+        },
+        search_space=sqlite_provider.search_space,
+    )
+
+    sqlite_identity = sqlite_provider.identity_for(snapshot=snapshot, candidate_config={})
+    postgres_identity = provider.identity_for(snapshot=snapshot, candidate_config={})
+
+    assert candidate_index_cache_format("sqlite-vec") == CANDIDATE_INDEX_CACHE_FORMAT
+    assert candidate_index_cache_format("postgres") == POSTGRES_CANDIDATE_INDEX_CACHE_FORMAT
+    assert postgres_identity.cache_format == POSTGRES_CANDIDATE_INDEX_CACHE_FORMAT
+    assert postgres_identity.cache_key != sqlite_identity.cache_key
+    assert _Built.configs[-1]["storage"] == {
+        "adapter": "postgres",
+        "config": {"dsn": "postgresql://managed-evaluation/candidate-index"},
+    }
+    assert not workspace.exists()
+
+
+def test_postgres_reuses_canonical_cache_and_uses_disposable_clone(
+    provider_env,
+    tmp_path: Path,
+) -> None:
+    sqlite_provider, snapshot = provider_env
+    manager = _PostgresManager()
+    workspace = tmp_path / "postgres-workspaces"
+    provider = CandidateIndexProvider(
+        cache=_FailingCache(),  # type: ignore[arg-type]
+        workspace_root=workspace,
+        postgres_manager=manager,  # type: ignore[arg-type]
+        base_pipeline_config={
+            "storage": {
+                "adapter": "postgres",
+                "config": {"dsn": "postgresql://production/never-use"},
+            }
+        },
+        search_space=sqlite_provider.search_space,
+    )
+
+    with provider.open_candidate(
+        snapshot=snapshot,
+        candidate_config={
+            "storage": {
+                "adapter": "postgres",
+                "config": {"dsn": "postgresql://production/candidate-a"},
+            },
+            "retrieval": {"config": {"candidate_k": 20}},
+        },
+        run_id="run-pg",
+        candidate_id="candidate-a",
+    ) as first:
+        assert first.cache_hit is False
+        assert first.index_path is None
+        assert first.database_name == "eval_work_0"
+        assert first.storage_ref is manager.clones[0]
+        assert first.built.resolved["storage"]["config"]["dsn"] == manager.clones[0].dsn
+
+    with provider.open_candidate(
+        snapshot=snapshot,
+        candidate_config={
+            "storage": {
+                "adapter": "postgres",
+                "config": {"dsn": "postgresql://production/candidate-b"},
+            },
+            "retrieval": {"config": {"candidate_k": 80}},
+        },
+        run_id="run-pg",
+        candidate_id="candidate-b",
+    ) as second:
+        assert second.cache_hit is True
+        assert second.database_name == "eval_work_1"
+        assert second.identity.cache_key == manager.cache_keys[0]
+
+    assert len(manager.builder_calls) == 1
+    assert len(manager.caches) == 1
+    assert manager.cache_keys == [manager.cache_keys[0], manager.cache_keys[0]]
+    assert [clone.name for clone in manager.clones] == ["eval_work_0", "eval_work_1"]
+    assert manager.dropped == ["eval_work_0", "eval_work_1"]
+    assert _Pipeline.builds == 1
+    assert all("production" not in str(config["storage"]) for config in _Built.configs)
+    assert not workspace.exists()
+
+
+def test_postgres_clone_closes_storage_before_drop_when_caller_raises(
+    provider_env,
+    tmp_path: Path,
+) -> None:
+    sqlite_provider, snapshot = provider_env
+    manager = _PostgresManager()
+    provider = CandidateIndexProvider(
+        cache=_FailingCache(),  # type: ignore[arg-type]
+        workspace_root=tmp_path / "postgres-workspaces",
+        postgres_manager=manager,  # type: ignore[arg-type]
+        search_space=sqlite_provider.search_space,
+    )
+
+    with (
+        pytest.raises(RuntimeError, match="evaluation failed"),
+        provider.open_candidate(
+            snapshot=snapshot,
+            candidate_config={},
+            run_id="run-pg",
+            candidate_id="candidate-a",
+        ),
+    ):
+        raise RuntimeError("evaluation failed")
+
+    assert manager.dropped == ["eval_work_0"]
+
+
+def test_git_diff_candidate_is_rejected_before_postgres_build(
+    provider_env,
+    tmp_path: Path,
+) -> None:
+    sqlite_provider, snapshot = provider_env
+    manager = _PostgresManager()
+    provider = CandidateIndexProvider(
+        cache=_FailingCache(),  # type: ignore[arg-type]
+        workspace_root=tmp_path / "postgres-workspaces",
+        postgres_manager=manager,  # type: ignore[arg-type]
+        search_space=sqlite_provider.search_space,
+    )
+    built_configs = len(_Built.configs)
+
+    with (
+        pytest.raises(CandidateIndexError, match="git-diff"),
+        provider.open_candidate(
+            snapshot=snapshot,
+            candidate_config={"walker": {"adapter": "git-diff", "config": {}}},
+            run_id="run-pg",
+            candidate_id="candidate-a",
+        ),
+    ):
+        pytest.fail("git-diff candidate must not open")
+
+    assert len(_Built.configs) == built_configs
+    assert manager.cache_keys == []
+    assert _Pipeline.builds == 0

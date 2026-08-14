@@ -933,6 +933,32 @@ starve primary evidence.
 - Entity Recall@10 and NDCG@10 stay within promotion gates.
 - No increase in broken or incomplete code snippets without a measured benefit.
 
+The Phase 7 measurement and bounded-diversification slice completed on 2026-08-14.
+Evaluation now reports unique files and symbols, policy-level duplicate entities,
+maximum chunks from one file, packed and spilled relevant entities, and relevant
+entities per 1,000 returned tokens. The opt-in `stable-file-parent-v1` policy keeps
+the protected leading evidence (including every pinned hit), prefers unseen
+repository/file/parent-symbol entities under a first-pass file cap, and appends every
+deferred hit in original order. Repository identity is part of all grouping keys.
+Search responses expose deferred chunk IDs, while the existing monotonic overflow
+behavior and first-hit escape remain unchanged. Evaluation uses the same token
+estimator as admission. The feature is controlled by
+`retrieval_features.diversity_enabled` and `diversity_max_chunks_per_file`; it is
+disabled by default.
+
+The final comparable matrix evaluated the reusable 87-case `search` split with one
+isolated Model2Vec/noop index and one fixed 200-token budget. The strongest arm used
+a one-chunk first-pass file cap. Against the same-run disabled baseline, duplicate
+rate fell from `0.1070` to `0.0297` (72.2%), Recall@10 rose from `0.5862` to
+`0.6475`, and NDCG@10 rose from `0.4982` to `0.5392`. Relevant entities per 1,000
+admission-estimated tokens improved from `5.3407` to `5.9888` (12.1%), below the 15%
+exit gate; p95 moved from `29.272` to `26.373 ms`. The two-chunk cap was weaker. All
+three cells completed under one source state, and the checked-in matrix declares the
+same 200-token disabled arm used by automatic delta reporting. No candidate met every
+exit criterion, so diversity packing remains disabled and no holdout was opened.
+Further tuning on this reusable split is not justified; second-pass overflow filling
+remains a separate experiment.
+
 ## 14. Phase 8: Optional and Long-Term Experiments
 
 Run these only after the preceding measurement loop is stable.

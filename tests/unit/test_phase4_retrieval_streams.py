@@ -273,6 +273,8 @@ def test_feature_snapshot_reports_effective_retrieval_adapter_config() -> None:
             adaptive_weighting=True,
             recursive_enabled=True,
             recursive_adjacency=2,
+            diversity_enabled=True,
+            diversity_max_chunks_per_file=3,
         )
     )
     app = SimpleNamespace(
@@ -291,6 +293,11 @@ def test_feature_snapshot_reports_effective_retrieval_adapter_config() -> None:
         "enabled": False,
         "adjacency": 9,
         "purpose": "Auto-merge adjacent chunks + promote parent when siblings hit.",
+    }
+    assert snapshot["diversity_packing"] == {
+        "enabled": True,
+        "max_chunks_per_file": 3,
+        "purpose": "Prefer distinct file/parent-symbol evidence within result budgets.",
     }
 
 

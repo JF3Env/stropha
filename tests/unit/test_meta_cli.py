@@ -4,6 +4,7 @@ end-to-end loop integration (WIN-194)."""
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import json
 import subprocess
 from pathlib import Path
@@ -14,6 +15,14 @@ import pytest
 from typer.testing import CliRunner
 
 from stropha.cli import app
+from stropha.config import (
+    Config,
+    ExperimentBlacklistConfig,
+    ExperimentPostgresConfig,
+    ExperimentsConfig,
+    ExperimentStorage,
+    get_config,
+)
 from stropha.eval import EvalCase, EvalReport, EvalResult
 from stropha.meta import (
     ArtifactStore,
@@ -50,18 +59,42 @@ def _make_meta(tmp_path: Path) -> Path:
             {"embedder": {"adapter": "local", "config": {"model": f"model-{i}"}}},
             label=f"v{i}",
         )
-        store.write_scores(rec.id, {
-            "quality": q,
-            "context_efficiency": 0.5,
-            "outcome_score": 0.2,
-            "latency_ms": 20.0 * (i + 1),
-        })
+        store.write_scores(
+            rec.id,
+            {
+                "quality": q,
+                "context_efficiency": 0.5,
+                "outcome_score": 0.2,
+                "latency_ms": 20.0 * (i + 1),
+            },
+        )
     return meta
 
 
 def _runner_invoke(tmp_path: Path, args: list[str]) -> Any:
     """Run the CLI with a fake config so _meta_dir_default works."""
     return CliRunner().invoke(app, args)
+
+
+def _meta_runtime_config(
+    *,
+    storage: ExperimentStorage = "sqlite-vec",
+    blacklist: dict[str, tuple[str, ...]] | None = None,
+    admin_dsn: str | None = None,
+) -> Config:
+    base = get_config()
+    return dataclasses.replace(
+        base,
+        paths=dataclasses.replace(
+            base.paths,
+            target_repo=Path(__file__).resolve().parents[2],
+        ),
+        experiments=ExperimentsConfig(
+            storage=storage,
+            postgres=ExperimentPostgresConfig(admin_dsn=admin_dsn),
+            blacklist=ExperimentBlacklistConfig(adapters=blacklist or {}),
+        ),
+    )
 
 
 def _stream_weight_profile(*, examples: int) -> StreamWeightProfile:
@@ -127,21 +160,31 @@ def _install_eligible_run(meta: Path, candidate: Any) -> str:
         gate=ValidationGate(eligible=True),
     )
     store = ArtifactStore(meta)
-    store.write_run_artifact(run_id, "provenance.json", {
-        "run_id": run_id,
-        "golden_sha256": golden_hash,
-        "manifest_sha256": manifest_hash,
-        "registry_sha256": registry_hash,
-        "repository": {"path": str(repo)},
-        "snapshot": {"sha": snapshot_sha, "path": str(repo)},
-    })
-    store.write_run_artifact(run_id, "shortlist.json", {
-        "run_id": run_id,
-        "entries": [{
-            "candidate_id": candidate.id,
-            "config_sha256": cli._meta_candidate_hash(candidate),
-        }],
-    })
+    store.write_run_artifact(
+        run_id,
+        "provenance.json",
+        {
+            "run_id": run_id,
+            "golden_sha256": golden_hash,
+            "manifest_sha256": manifest_hash,
+            "registry_sha256": registry_hash,
+            "repository": {"path": str(repo)},
+            "snapshot": {"sha": snapshot_sha, "path": str(repo)},
+        },
+    )
+    store.write_run_artifact(
+        run_id,
+        "shortlist.json",
+        {
+            "run_id": run_id,
+            "entries": [
+                {
+                    "candidate_id": candidate.id,
+                    "config_sha256": cli._meta_candidate_hash(candidate),
+                }
+            ],
+        },
+    )
     store.write_run_artifact(
         run_id,
         "validation.json",
@@ -164,17 +207,22 @@ def _install_eligible_run(meta: Path, candidate: Any) -> str:
 
 
 class TestMetaRun:
-    def test_runs_bandit_loop(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_runs_bandit_loop(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         self._install_live_eval_stubs(monkeypatch)
         result = CliRunner().invoke(
             app,
-            ["meta", "run",
-             "--iterations", "3",
-             "--proposer", "bandit",
-             "--seed", "42",
-             "--meta-dir", str(tmp_path / "meta")],
+            [
+                "meta",
+                "run",
+                "--iterations",
+                "3",
+                "--proposer",
+                "bandit",
+                "--seed",
+                "42",
+                "--meta-dir",
+                str(tmp_path / "meta"),
+            ],
         )
         assert result.exit_code == 0, result.output
         # The output mentions the loop result.
@@ -208,13 +256,20 @@ class TestMetaRun:
         first = CliRunner().invoke(
             app,
             [
-                "meta", "run",
-                "--iterations", "2",
-                "--seed", "42",
-                "--candidates", "2",
-                "--parallel", "2",
-                "--evaluation-timeout", "30",
-                "--meta-dir", str(tmp_path / "meta"),
+                "meta",
+                "run",
+                "--iterations",
+                "2",
+                "--seed",
+                "42",
+                "--candidates",
+                "2",
+                "--parallel",
+                "2",
+                "--evaluation-timeout",
+                "30",
+                "--meta-dir",
+                str(tmp_path / "meta"),
             ],
         )
         assert first.exit_code == 0, first.output
@@ -225,14 +280,22 @@ class TestMetaRun:
         resumed = CliRunner().invoke(
             app,
             [
-                "meta", "run",
-                "--iterations", "2",
-                "--seed", "42",
-                "--candidates", "2",
-                "--parallel", "2",
-                "--evaluation-timeout", "30",
-                "--resume", run_id,
-                "--meta-dir", str(tmp_path / "meta"),
+                "meta",
+                "run",
+                "--iterations",
+                "2",
+                "--seed",
+                "42",
+                "--candidates",
+                "2",
+                "--parallel",
+                "2",
+                "--evaluation-timeout",
+                "30",
+                "--resume",
+                run_id,
+                "--meta-dir",
+                str(tmp_path / "meta"),
             ],
         )
 
@@ -258,13 +321,254 @@ class TestMetaRun:
         resumed = CliRunner().invoke(
             app,
             [
-                "meta", "run", "--iterations", "3", "--seed", "42",
-                "--resume", run_id, "--meta-dir", str(meta),
+                "meta",
+                "run",
+                "--iterations",
+                "3",
+                "--seed",
+                "42",
+                "--resume",
+                run_id,
+                "--meta-dir",
+                str(meta),
             ],
         )
 
         assert resumed.exit_code == 1
         assert "Resume options differ" in resumed.output
+
+    def test_policy_restricts_proposer_provider_and_baseline_before_work(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._install_live_eval_stubs(monkeypatch)
+        monkeypatch.setattr(
+            "stropha.cli._load_config",
+            lambda: _meta_runtime_config(blacklist={"embedder": ("voyage",)}),
+        )
+        observed: dict[str, Any] = {}
+        from stropha.meta.proposer import make_bandit_proposer as real_make_bandit
+
+        def make_bandit(space: Any, *, seed: int | None = None):
+            observed["proposer_space"] = space
+            return real_make_bandit(space, seed=seed)
+
+        monkeypatch.setattr("stropha.meta.proposer.make_bandit_proposer", make_bandit)
+        import stropha.meta.candidate_index as candidate_index
+
+        base_provider = candidate_index.CandidateIndexProvider
+
+        class Provider(base_provider):
+            def __init__(self, **kwargs: Any) -> None:
+                observed["provider_space"] = kwargs["search_space"]
+                super().__init__(**kwargs)
+
+        monkeypatch.setattr(candidate_index, "CandidateIndexProvider", Provider)
+        meta = tmp_path / "meta"
+
+        result = CliRunner().invoke(
+            app,
+            ["meta", "run", "--iterations", "1", "--seed", "42", "--meta-dir", str(meta)],
+        )
+
+        assert result.exit_code == 0, result.output
+        proposer_space = observed["proposer_space"]
+        assert proposer_space is observed["provider_space"]
+        assert "voyage" not in proposer_space.by_name["embedder"].choices
+        assert "git-diff" not in proposer_space.by_name["walker"].choices
+        assert proposer_space.by_name["storage"].choices == ("sqlite-vec",)
+        for record in ArtifactStore(meta).list_candidates():
+            assert record.config["embedder"] != "voyage"
+            assert record.config["walker"] != "git-diff"
+
+    def test_blacklisted_active_baseline_fails_before_proposer_or_candidate(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._install_live_eval_stubs(monkeypatch)
+        monkeypatch.setattr(
+            "stropha.cli._load_config",
+            lambda: _meta_runtime_config(blacklist={"embedder": ("local",)}),
+        )
+        monkeypatch.setattr(
+            "stropha.cli.load_pipeline_config",
+            lambda: {"embedder": {"adapter": "local", "config": {}}},
+        )
+        proposer_called = False
+
+        def unexpected_proposer(*_args: object, **_kwargs: object) -> None:
+            nonlocal proposer_called
+            proposer_called = True
+
+        monkeypatch.setattr("stropha.meta.proposer.make_bandit_proposer", unexpected_proposer)
+        meta = tmp_path / "meta"
+
+        result = CliRunner().invoke(
+            app,
+            ["meta", "run", "--iterations", "1", "--meta-dir", str(meta)],
+        )
+
+        assert result.exit_code == 1
+        assert "active baseline stage embedder='local' is excluded" in result.output
+        assert proposer_called is False
+        assert not (meta / "candidates").exists()
+
+    def test_postgres_backend_is_preflighted_frozen_and_reused_for_validate(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        evaluations = self._install_live_eval_stubs(monkeypatch)
+        admin_dsn = "postgresql://eval_user:super-secret@db.internal:5544/stropha_meta_admin"
+        monkeypatch.setattr(
+            "stropha.cli._load_config",
+            lambda: _meta_runtime_config(storage="postgres", admin_dsn=admin_dsn),
+        )
+        monkeypatch.setattr(
+            "stropha.cli.load_pipeline_config",
+            lambda: {
+                "storage": {
+                    "adapter": "postgres",
+                    "config": {
+                        "dsn": (
+                            "postgresql://prod:production-secret@db.internal:5544/"
+                            "stropha_production"
+                        )
+                    },
+                }
+            },
+        )
+        events: list[str] = []
+        manager_kwargs: list[dict[str, Any]] = []
+
+        class Manager:
+            cluster = SimpleNamespace(
+                host="db.internal",
+                port=5544,
+                database="stropha_meta_admin",
+                user="eval_user",
+                server_version="17.2",
+            )
+
+            def __init__(self, **kwargs: Any) -> None:
+                manager_kwargs.append(kwargs)
+
+            def preflight(self) -> Any:
+                events.append("preflight")
+                return self.cluster
+
+        monkeypatch.setattr(
+            "stropha.evaluation.postgres.PostgresEvaluationDatabaseManager",
+            Manager,
+        )
+        import stropha.meta.candidate_index as candidate_index
+
+        provider_kwargs: list[dict[str, Any]] = []
+        base_provider = candidate_index.CandidateIndexProvider
+
+        class Provider(base_provider):
+            def __init__(self, **kwargs: Any) -> None:
+                events.append("provider")
+                provider_kwargs.append(kwargs)
+                super().__init__(**kwargs)
+
+        monkeypatch.setattr(candidate_index, "CandidateIndexProvider", Provider)
+        from stropha.meta.proposer import make_bandit_proposer as real_make_bandit
+
+        def make_bandit(space: Any, *, seed: int | None = None):
+            events.append("proposer")
+            return real_make_bandit(space, seed=seed)
+
+        monkeypatch.setattr("stropha.meta.proposer.make_bandit_proposer", make_bandit)
+        meta = tmp_path / "meta"
+
+        run = CliRunner().invoke(
+            app,
+            ["meta", "run", "--iterations", "3", "--seed", "42", "--meta-dir", str(meta)],
+        )
+
+        assert run.exit_code == 0, run.output
+        assert events.index("preflight") < events.index("proposer")
+        assert manager_kwargs[0]["production_database"] == "stropha_production"
+        assert provider_kwargs[0]["postgres_manager"].__class__ is Manager
+        assert "postgres" in provider_kwargs[0]["cache_format"]
+        run_dir = next((meta / "runs").iterdir())
+        provenance = json.loads((run_dir / "provenance.json").read_text())
+        encoded = json.dumps(provenance, sort_keys=True)
+        assert provenance["experiment"] == provenance["identity"]["experiment"]
+        assert provenance["experiment"]["cluster_identity"]["server_version"] == "17.2"
+        assert provenance["experiment"]["storage"] == "postgres"
+        assert "super-secret" not in encoded
+        assert "production-secret" not in encoded
+        assert "postgresql://" not in encoded
+
+        validation = CliRunner().invoke(
+            app,
+            ["meta", "validate", run_dir.name, "--meta-dir", str(meta)],
+        )
+
+        assert validation.exit_code == 0, validation.output
+        assert provider_kwargs[-1]["postgres_manager"].__class__ is Manager
+        assert provider_kwargs[-1]["cache_format"] == provenance["experiment"]["cache_format"]
+        assert len(evaluations) > 1
+
+        Manager.cluster = SimpleNamespace(
+            **{**vars(Manager.cluster), "host": "replacement.internal"}
+        )
+        evaluations_before_resume = dict(evaluations)
+        resumed = CliRunner().invoke(
+            app,
+            [
+                "meta",
+                "run",
+                "--iterations",
+                "3",
+                "--seed",
+                "42",
+                "--resume",
+                run_dir.name,
+                "--meta-dir",
+                str(meta),
+            ],
+        )
+
+        assert resumed.exit_code == 1
+        assert "experiment cluster differs" in resumed.output
+        assert evaluations == evaluations_before_resume
+
+    def test_resume_rejects_policy_drift_before_candidate_work(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        evaluations = self._install_live_eval_stubs(monkeypatch)
+        monkeypatch.setattr("stropha.cli._load_config", lambda: _meta_runtime_config())
+        meta = tmp_path / "meta"
+        run = CliRunner().invoke(
+            app,
+            ["meta", "run", "--iterations", "1", "--seed", "42", "--meta-dir", str(meta)],
+        )
+        assert run.exit_code == 0, run.output
+        run_id = next((meta / "runs").iterdir()).name
+        monkeypatch.setattr(
+            "stropha.cli._load_config",
+            lambda: _meta_runtime_config(blacklist={"embedder": ("voyage",)}),
+        )
+        evaluations_before_resume = dict(evaluations)
+
+        resumed = CliRunner().invoke(
+            app,
+            [
+                "meta",
+                "run",
+                "--iterations",
+                "1",
+                "--seed",
+                "42",
+                "--resume",
+                run_id,
+                "--meta-dir",
+                str(meta),
+            ],
+        )
+
+        assert resumed.exit_code == 1
+        assert "experiment policy differs" in resumed.output
+        assert evaluations == evaluations_before_resume
 
     def test_validate_uses_frozen_shortlist_and_adds_holdout_scope(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -274,10 +578,14 @@ class TestMetaRun:
         run = CliRunner().invoke(
             app,
             [
-                "meta", "run",
-                "--iterations", "3",
-                "--seed", "42",
-                "--meta-dir", str(meta),
+                "meta",
+                "run",
+                "--iterations",
+                "3",
+                "--seed",
+                "42",
+                "--meta-dir",
+                str(meta),
             ],
         )
         assert run.exit_code == 0, run.output
@@ -296,8 +604,7 @@ class TestMetaRun:
         assert artifact["baseline"]["evidence"]["holdout"] is not None
         assert artifact["candidates"]
         assert all(
-            item["candidate"]["holdout"] is not None
-            for item in artifact["candidates"].values()
+            item["candidate"]["holdout"] is not None for item in artifact["candidates"].values()
         )
         assert "holdout_validation" in cost["by_scope"]
         assert cost["candidate_states"]
@@ -325,10 +632,16 @@ class TestMetaRun:
     def test_unknown_proposer_exits_nonzero(self, tmp_path: Path) -> None:
         result = CliRunner().invoke(
             app,
-            ["meta", "run",
-             "--iterations", "1",
-             "--proposer", "unknown",
-             "--meta-dir", str(tmp_path / "meta")],
+            [
+                "meta",
+                "run",
+                "--iterations",
+                "1",
+                "--proposer",
+                "unknown",
+                "--meta-dir",
+                str(tmp_path / "meta"),
+            ],
         )
         assert result.exit_code == 1
         assert "Unknown proposer" in result.output
@@ -367,11 +680,18 @@ class TestMetaRun:
         self._install_live_eval_stubs(monkeypatch)
         result = CliRunner().invoke(
             app,
-            ["meta", "run",
-             "--iterations", "2",
-             "--proposer", "local-agentic",
-             "--seed", "42",
-             "--meta-dir", str(tmp_path / "meta")],
+            [
+                "meta",
+                "run",
+                "--iterations",
+                "2",
+                "--proposer",
+                "local-agentic",
+                "--seed",
+                "42",
+                "--meta-dir",
+                str(tmp_path / "meta"),
+            ],
         )
         assert result.exit_code == 0, result.output
 
@@ -385,11 +705,18 @@ class TestMetaRun:
         self._install_live_eval_stubs(monkeypatch)
         result = CliRunner().invoke(
             app,
-            ["meta", "run",
-             "--iterations", "2",
-             "--proposer", "cloud-agentic",
-             "--seed", "42",
-             "--meta-dir", str(tmp_path / "meta")],
+            [
+                "meta",
+                "run",
+                "--iterations",
+                "2",
+                "--proposer",
+                "cloud-agentic",
+                "--seed",
+                "42",
+                "--meta-dir",
+                str(tmp_path / "meta"),
+            ],
         )
         assert result.exit_code == 0, result.output
 
@@ -413,11 +740,16 @@ class TestMetaRun:
         result = CliRunner().invoke(
             app,
             [
-                "meta", "run",
-                "--iterations", "2",
-                "--proposer", mode,
-                "--seed", "42",
-                "--meta-dir", str(tmp_path / "meta"),
+                "meta",
+                "run",
+                "--iterations",
+                "2",
+                "--proposer",
+                mode,
+                "--seed",
+                "42",
+                "--meta-dir",
+                str(tmp_path / "meta"),
             ],
         )
         assert result.exit_code == 0, result.output
@@ -448,9 +780,7 @@ class TestMetaRun:
         base = get_config()
         config = dataclasses.replace(
             base,
-            paths=dataclasses.replace(
-                base.paths, target_repo=Path(__file__).resolve().parents[2]
-            ),
+            paths=dataclasses.replace(base.paths, target_repo=Path(__file__).resolve().parents[2]),
         )
         monkeypatch.setattr("stropha.cli._load_config", lambda: config)
         monkeypatch.setattr("stropha.cli.load_pipeline_config", lambda: {})
@@ -489,29 +819,33 @@ class TestMetaRun:
             )
             report = EvalReport(
                 top_k=10,
-                results=[EvalResult(
-                    case=case,
-                    rank_of_first_hit=1,
-                    top_k=10,
-                    relevances=(1.0,),
-                    relevant_count=1,
-                    total_relevant=1,
-                    latency_ms=10.0,
-                    returned_tokens=20,
-                )],
+                results=[
+                    EvalResult(
+                        case=case,
+                        rank_of_first_hit=1,
+                        top_k=10,
+                        relevances=(1.0,),
+                        relevant_count=1,
+                        total_relevant=1,
+                        latency_ms=10.0,
+                        returned_tokens=20,
+                    )
+                ],
             )
             context = kwargs.get("evaluation_context")
             if context is not None:
                 recorder = context.open_recorder()
-                recorder.record({
-                    "tool": "search_code",
-                    "candidate_id": context.candidate_id,
-                    "run_id": context.run_id,
-                    "query": split,
-                    "results": [],
-                    "latency_ms": 10.0,
-                    "returned_tokens": 20,
-                })
+                recorder.record(
+                    {
+                        "tool": "search_code",
+                        "candidate_id": context.candidate_id,
+                        "run_id": context.run_id,
+                        "query": split,
+                        "results": [],
+                        "latency_ms": 10.0,
+                        "returned_tokens": 20,
+                    }
+                )
                 recorder.close()
             return CandidateEvaluationResult(
                 scorecard=ScoreCard(
@@ -538,26 +872,20 @@ class TestMetaRun:
 
 class TestMetaStatus:
     def test_no_candidates_returns_yellow(self, tmp_path: Path) -> None:
-        result = CliRunner().invoke(
-            app, ["meta", "status", "--meta-dir", str(tmp_path / "empty")]
-        )
+        result = CliRunner().invoke(app, ["meta", "status", "--meta-dir", str(tmp_path / "empty")])
         assert result.exit_code == 0
         assert "No candidates" in result.output
 
     def test_reports_archive_and_frontier(self, tmp_path: Path) -> None:
         meta = _make_meta(tmp_path)
-        result = CliRunner().invoke(
-            app, ["meta", "status", "--meta-dir", str(meta)]
-        )
+        result = CliRunner().invoke(app, ["meta", "status", "--meta-dir", str(meta)])
         assert result.exit_code == 0
         assert "archive" in result.output
         assert "frontier" in result.output
 
     def test_json_output(self, tmp_path: Path) -> None:
         meta = _make_meta(tmp_path)
-        result = CliRunner().invoke(
-            app, ["meta", "status", "--meta-dir", str(meta), "--json"]
-        )
+        result = CliRunner().invoke(app, ["meta", "status", "--meta-dir", str(meta), "--json"])
         assert result.exit_code == 0
         payload = json.loads(result.output)
         assert payload["archive_size"] == 4
@@ -570,9 +898,7 @@ class TestMetaStatus:
 
 class TestMetaReport:
     def test_no_candidates(self, tmp_path: Path) -> None:
-        result = CliRunner().invoke(
-            app, ["meta", "report", "--meta-dir", str(tmp_path / "x")]
-        )
+        result = CliRunner().invoke(app, ["meta", "report", "--meta-dir", str(tmp_path / "x")])
         assert result.exit_code == 0
         assert "No candidates" in result.output
 
@@ -590,9 +916,7 @@ class TestMetaReport:
         alerts (WIN-204). The legacy list-only schema was replaced when
         regression-alert tracking landed."""
         meta = _make_meta(tmp_path)
-        result = CliRunner().invoke(
-            app, ["meta", "report", "--meta-dir", str(meta), "--json"]
-        )
+        result = CliRunner().invoke(app, ["meta", "report", "--meta-dir", str(meta), "--json"])
         assert result.exit_code == 0
         payload = json.loads(result.output)
         assert isinstance(payload, dict)
@@ -609,9 +933,7 @@ class TestMetaReport:
         """When the operator has never promoted, the report nudges
         them toward `meta promote` to start tracking regressions."""
         meta = _make_meta(tmp_path)
-        result = CliRunner().invoke(
-            app, ["meta", "report", "--meta-dir", str(meta)]
-        )
+        result = CliRunner().invoke(app, ["meta", "report", "--meta-dir", str(meta)])
         assert result.exit_code == 0
         assert "No baseline recorded" in result.output
 
@@ -630,9 +952,7 @@ class TestMetaReportBaseline:
     operator can decide whether to promote again.
     """
 
-    def _promote(
-        self, meta: Path, cwd: Path, candidate_id: str
-    ) -> None:
+    def _promote(self, meta: Path, cwd: Path, candidate_id: str) -> None:
         """Convenience: promote to an explicit temporary config."""
         import os
 
@@ -643,10 +963,18 @@ class TestMetaReportBaseline:
             run_id = _install_eligible_run(meta, candidate)
             result = CliRunner().invoke(
                 app,
-                ["meta", "promote", candidate_id,
-                 "--meta-dir", str(meta),
-                 "--target", str(cwd / "config.yaml"), "--apply",
-                 "--run-id", run_id],
+                [
+                    "meta",
+                    "promote",
+                    candidate_id,
+                    "--meta-dir",
+                    str(meta),
+                    "--target",
+                    str(cwd / "config.yaml"),
+                    "--apply",
+                    "--run-id",
+                    run_id,
+                ],
             )
             assert result.exit_code == 0, result.output
         finally:
@@ -665,9 +993,7 @@ class TestMetaReportBaseline:
         self._promote(meta, target_cwd, target.id)
         assert (meta / "baseline.json").is_file()
 
-    def test_report_flags_candidates_above_baseline(
-        self, tmp_path: Path
-    ) -> None:
+    def test_report_flags_candidates_above_baseline(self, tmp_path: Path) -> None:
         """Promote the worst candidate → every better candidate in the
         archive should appear in the regression alerts section."""
         meta = _make_meta(tmp_path)
@@ -677,17 +1003,13 @@ class TestMetaReportBaseline:
         worst = next(r for r in recs if r.label == "v0")
         self._promote(meta, target_cwd, worst.id)
 
-        result = CliRunner().invoke(
-            app, ["meta", "report", "--meta-dir", str(meta)]
-        )
+        result = CliRunner().invoke(app, ["meta", "report", "--meta-dir", str(meta)])
         assert result.exit_code == 0, result.output
         assert "Regression alerts" in result.output
         # The top candidates v1/v2/v3 all have higher fitness than v0.
         assert "v2" in result.output
 
-    def test_report_no_regressions_when_baseline_is_best(
-        self, tmp_path: Path
-    ) -> None:
+    def test_report_no_regressions_when_baseline_is_best(self, tmp_path: Path) -> None:
         """Promote the BEST candidate → no candidates beat it → the
         report shows the all-clear message. We pick the highest-fitness
         record via list_candidates(sort_by='fitness') so the assertion
@@ -700,15 +1022,11 @@ class TestMetaReportBaseline:
         best = ArtifactStore(meta).list_candidates(sort_by="fitness")[0]
         self._promote(meta, target_cwd, best.id)
 
-        result = CliRunner().invoke(
-            app, ["meta", "report", "--meta-dir", str(meta)]
-        )
+        result = CliRunner().invoke(app, ["meta", "report", "--meta-dir", str(meta)])
         assert result.exit_code == 0
         assert "No regressions" in result.output
 
-    def test_report_json_includes_baseline_and_alerts(
-        self, tmp_path: Path
-    ) -> None:
+    def test_report_json_includes_baseline_and_alerts(self, tmp_path: Path) -> None:
         meta = _make_meta(tmp_path)
         target_cwd = tmp_path / "cwd"
         target_cwd.mkdir()
@@ -730,9 +1048,7 @@ class TestMetaReportBaseline:
         assert "id" in sample and "delta" in sample
         assert sample["delta"] > 0
 
-    def test_regression_threshold_suppresses_small_deltas(
-        self, tmp_path: Path
-    ) -> None:
+    def test_regression_threshold_suppresses_small_deltas(self, tmp_path: Path) -> None:
         """A high ``--regression-threshold`` should filter out
         slight-improvement candidates so the alert section stays
         focused on meaningful gains."""
@@ -748,25 +1064,18 @@ class TestMetaReportBaseline:
 
         result = CliRunner().invoke(
             app,
-            ["meta", "report", "--meta-dir", str(meta),
-             "--regression-threshold", "1000.0"],
+            ["meta", "report", "--meta-dir", str(meta), "--regression-threshold", "1000.0"],
         )
         assert result.exit_code == 0
         assert "No regressions" in result.output
 
-    def test_malformed_baseline_surfaces_error_does_not_crash(
-        self, tmp_path: Path
-    ) -> None:
+    def test_malformed_baseline_surfaces_error_does_not_crash(self, tmp_path: Path) -> None:
         """A hand-edited baseline.json with invalid JSON must surface
         the error in red but still print the candidate table — never
         crash the operator's report run."""
         meta = _make_meta(tmp_path)
-        (meta / "baseline.json").write_text(
-            "{{{ not valid json", encoding="utf-8"
-        )
-        result = CliRunner().invoke(
-            app, ["meta", "report", "--meta-dir", str(meta)]
-        )
+        (meta / "baseline.json").write_text("{{{ not valid json", encoding="utf-8")
+        result = CliRunner().invoke(app, ["meta", "report", "--meta-dir", str(meta)])
         # Exits 0 — the report is still useful.
         assert result.exit_code == 0
         assert "Baseline read failed" in result.output
@@ -789,8 +1098,7 @@ class TestMetaPromote:
         meta = _make_meta(tmp_path)
         result = CliRunner().invoke(
             app,
-            ["meta", "promote", "no-such-id",
-             "--meta-dir", str(meta)],
+            ["meta", "promote", "no-such-id", "--meta-dir", str(meta)],
         )
         assert result.exit_code == 1
 
@@ -834,8 +1142,7 @@ class TestMetaPromote:
         monkeypatch.setenv("HOME", str(tmp_path))
         result = CliRunner().invoke(
             app,
-            ["meta", "promote", rec.id,
-             "--meta-dir", str(meta), "--dry-run"],
+            ["meta", "promote", rec.id, "--meta-dir", str(meta), "--dry-run"],
         )
         assert result.exit_code == 0
         assert "--dry-run is deprecated" in result.output
@@ -855,8 +1162,7 @@ class TestMetaPromote:
         monkeypatch.setenv("HOME", str(tmp_path))
         result = CliRunner().invoke(
             app,
-            ["meta", "promote", rec.id, "--meta-dir", str(meta),
-             "--apply", "--run-id", run_id],
+            ["meta", "promote", rec.id, "--meta-dir", str(meta), "--apply", "--run-id", run_id],
         )
         assert result.exit_code == 0
         assert (tmp_path / ".stropha" / "config.yaml").is_file()
@@ -880,9 +1186,7 @@ class TestMetaPromote:
         import yaml as _yaml
 
         target.write_text(
-            _yaml.safe_dump(
-                {"pipeline": rec.config}, sort_keys=True, default_flow_style=False
-            ),
+            _yaml.safe_dump({"pipeline": rec.config}, sort_keys=True, default_flow_style=False),
             encoding="utf-8",
         )
         result = CliRunner().invoke(
@@ -892,9 +1196,7 @@ class TestMetaPromote:
         assert result.exit_code == 0
         assert "No changes" in result.output
 
-    def test_validated_noop_apply_records_verified_baseline(
-        self, tmp_path: Path
-    ) -> None:
+    def test_validated_noop_apply_records_verified_baseline(self, tmp_path: Path) -> None:
         import yaml as _yaml
 
         meta = _make_meta(tmp_path)
@@ -909,8 +1211,16 @@ class TestMetaPromote:
         result = CliRunner().invoke(
             app,
             [
-                "meta", "promote", rec.id, "--meta-dir", str(meta),
-                "--target", str(target), "--apply", "--run-id", run_id,
+                "meta",
+                "promote",
+                rec.id,
+                "--meta-dir",
+                str(meta),
+                "--target",
+                str(target),
+                "--apply",
+                "--run-id",
+                run_id,
             ],
         )
 
@@ -918,9 +1228,7 @@ class TestMetaPromote:
         baseline = json.loads((meta / "baseline.json").read_text())
         assert baseline["verification_status"] == "verified"
 
-    def test_apply_to_explicit_target_path(
-        self, tmp_path: Path
-    ) -> None:
+    def test_apply_to_explicit_target_path(self, tmp_path: Path) -> None:
         """``--target`` uses the same merge semantics as the default path."""
         meta = _make_meta(tmp_path)
         rec = ArtifactStore(meta).list_candidates()[0]
@@ -933,8 +1241,18 @@ class TestMetaPromote:
         )
         result = CliRunner().invoke(
             app,
-            ["meta", "promote", rec.id, "--meta-dir", str(meta),
-             "--target", str(elsewhere), "--apply", "--run-id", run_id],
+            [
+                "meta",
+                "promote",
+                rec.id,
+                "--meta-dir",
+                str(meta),
+                "--target",
+                str(elsewhere),
+                "--apply",
+                "--run-id",
+                run_id,
+            ],
         )
         assert result.exit_code == 0
         assert elsewhere.is_file()
@@ -953,9 +1271,13 @@ class TestMetaPromote:
         result = CliRunner().invoke(
             app,
             [
-                "meta", "promote", rec.id,
-                "--meta-dir", str(meta),
-                "--target", str(target),
+                "meta",
+                "promote",
+                rec.id,
+                "--meta-dir",
+                str(meta),
+                "--target",
+                str(target),
                 "--apply",
             ],
         )
@@ -978,9 +1300,7 @@ class TestMetaPromote:
         target = tmp_path / ".stropha" / "config.yaml"
         target.parent.mkdir()
         # Plant invalid YAML (mismatched braces).
-        target.write_text(
-            "this is: { not valid: ]]]", encoding="utf-8"
-        )
+        target.write_text("this is: { not valid: ]]]", encoding="utf-8")
         result = CliRunner().invoke(
             app,
             ["meta", "promote", rec.id, "--meta-dir", str(meta)],
@@ -1007,9 +1327,7 @@ class TestMetaPromote:
 class TestMetaTrace:
     def test_unknown_candidate_exits_nonzero(self, tmp_path: Path) -> None:
         meta = _make_meta(tmp_path)
-        result = CliRunner().invoke(
-            app, ["meta", "trace", "nope", "--meta-dir", str(meta)]
-        )
+        result = CliRunner().invoke(app, ["meta", "trace", "nope", "--meta-dir", str(meta)])
         assert result.exit_code == 1
 
     def test_lists_traces(self, tmp_path: Path) -> None:
@@ -1018,9 +1336,7 @@ class TestMetaTrace:
         # Manually drop a trace file.
         assert rec.base_dir is not None
         (rec.base_dir / "traces" / "t.jsonl").write_text('{"x": 1}\n')
-        result = CliRunner().invoke(
-            app, ["meta", "trace", rec.id, "--meta-dir", str(meta)]
-        )
+        result = CliRunner().invoke(app, ["meta", "trace", rec.id, "--meta-dir", str(meta)])
         assert result.exit_code == 0
         assert "t.jsonl" in result.output
 
@@ -1029,10 +1345,9 @@ class TestMetaTrace:
         rec = ArtifactStore(meta).list_candidates()[0]
         assert rec.base_dir is not None
         import shutil
+
         shutil.rmtree(rec.base_dir / "traces")
-        result = CliRunner().invoke(
-            app, ["meta", "trace", rec.id, "--meta-dir", str(meta)]
-        )
+        result = CliRunner().invoke(app, ["meta", "trace", rec.id, "--meta-dir", str(meta)])
         assert result.exit_code == 0
         assert "No traces" in result.output
 
@@ -1045,22 +1360,21 @@ class TestMetaTrace:
 class TestMetaSnapshot:
     def _init_repo(self, repo: Path) -> None:
         import subprocess
+
         repo.mkdir(parents=True, exist_ok=True)
         subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
         (repo / "a.py").write_text("x = 1\n")
         subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
         subprocess.run(
-            ["git", "-c", "user.name=t", "-c", "user.email=t@t",
-             "commit", "-q", "-m", "init"],
-            cwd=repo, check=True,
+            ["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init"],
+            cwd=repo,
+            check=True,
         )
 
     def test_create_snapshot(self, tmp_path: Path) -> None:
         repo = tmp_path / "repo"
         self._init_repo(repo)
-        result = CliRunner().invoke(
-            app, ["meta", "snapshot", "--repo", str(repo)]
-        )
+        result = CliRunner().invoke(app, ["meta", "snapshot", "--repo", str(repo)])
         assert result.exit_code == 0, result.output
         assert "Snapshot:" in result.output
 
@@ -1070,9 +1384,7 @@ class TestMetaSnapshot:
         # First create one.
         CliRunner().invoke(app, ["meta", "snapshot", "--repo", str(repo)])
         # Then list.
-        result = CliRunner().invoke(
-            app, ["meta", "snapshot", "--repo", str(repo), "--list"]
-        )
+        result = CliRunner().invoke(app, ["meta", "snapshot", "--repo", str(repo), "--list"])
         assert result.exit_code == 0
         # Output has at least one SHA.
         lines = [line.strip() for line in result.output.splitlines() if line.strip()]
@@ -1090,14 +1402,26 @@ class TestLoopWithBanditEnd2End:
         budget is deterministic regardless of which env vars are set
         in the test environment."""
         from stropha.meta import Dimension, SearchSpace
+
         return SearchSpace(
             dimensions=[
-                Dimension(name="walker", kind="stage", indexing=True,
-                          type="choice", choices=("git-ls-files", "filesystem")),
-                Dimension(name="enricher", kind="stage", indexing=True,
-                          type="choice", choices=("noop", "hierarchical")),
-                Dimension(name="embedder", kind="stage", indexing=True,
-                          type="choice", choices=("local",)),
+                Dimension(
+                    name="walker",
+                    kind="stage",
+                    indexing=True,
+                    type="choice",
+                    choices=("git-ls-files", "filesystem"),
+                ),
+                Dimension(
+                    name="enricher",
+                    kind="stage",
+                    indexing=True,
+                    type="choice",
+                    choices=("noop", "hierarchical"),
+                ),
+                Dimension(
+                    name="embedder", kind="stage", indexing=True, type="choice", choices=("local",)
+                ),
             ],
         )
 
@@ -1111,7 +1435,9 @@ class TestLoopWithBanditEnd2End:
             return ScoreCard(quality=0.5, latency_ms=50)
 
         result = run_loop(
-            proposer=prop, evaluator=eval_, store=store,
+            proposer=prop,
+            evaluator=eval_,
+            store=store,
             max_iterations=5,
         )
         # Loop completed.
@@ -1132,8 +1458,11 @@ class TestLoopWithBanditEnd2End:
             return ScoreCard(quality=0.7)
 
         result = run_loop(
-            proposer=prop, evaluator=eval_, store=store,
-            seeds=seeds, max_iterations=4,
+            proposer=prop,
+            evaluator=eval_,
+            store=store,
+            seeds=seeds,
+            max_iterations=4,
         )
         assert result.iterations == 4
         labels = {c.label for c in store.list_candidates()}
@@ -1159,7 +1488,9 @@ class TestLoopWithBanditEnd2End:
             )
 
         result = run_loop(
-            proposer=prop, evaluator=eval_, store=store,
+            proposer=prop,
+            evaluator=eval_,
+            store=store,
             max_iterations=10,
         )
         # The frontier computed by the loop matches the standalone Pareto.
@@ -1225,19 +1556,23 @@ class TestStreamWeightsCli:
         write_stream_weight_profile(meta / "stream-weight-candidates", profile)
         golden = tmp_path / "golden.jsonl"
         golden.write_text(
-            json.dumps({
-                "id": "s",
-                "query": "search",
-                "expected_paths": ["src/a.py"],
-                "split": "search",
-            })
+            json.dumps(
+                {
+                    "id": "s",
+                    "query": "search",
+                    "expected_paths": ["src/a.py"],
+                    "split": "search",
+                }
+            )
             + "\n"
-            + json.dumps({
-                "id": "h",
-                "query": "holdout",
-                "expected_paths": ["src/b.py"],
-                "split": "holdout",
-            })
+            + json.dumps(
+                {
+                    "id": "h",
+                    "query": "holdout",
+                    "expected_paths": ["src/b.py"],
+                    "split": "holdout",
+                }
+            )
             + "\n",
             encoding="utf-8",
         )
@@ -1259,10 +1594,16 @@ class TestStreamWeightsCli:
                 }[key]
 
             def list_repos(self) -> list[Any]:
-                return [type("Repo", (), {
-                    "normalized_key": profile.repo,
-                    "head_commit": "head",
-                })()]
+                return [
+                    type(
+                        "Repo",
+                        (),
+                        {
+                            "normalized_key": profile.repo,
+                            "head_commit": "head",
+                        },
+                    )()
+                ]
 
         class _Built:
             def __init__(self, adapter_id: str) -> None:
@@ -1280,9 +1621,12 @@ class TestStreamWeightsCli:
             enabled = config["retrieval"]["config"]["learned_weights_enabled"]
             return _Built("candidate" if enabled else "baseline")
 
-        monkeypatch.setattr("stropha.cli.load_pipeline_config", lambda: {
-            "retrieval": {"config": {"learned_weights_enabled": True}},
-        })
+        monkeypatch.setattr(
+            "stropha.cli.load_pipeline_config",
+            lambda: {
+                "retrieval": {"config": {"learned_weights_enabled": True}},
+            },
+        )
         monkeypatch.setattr("stropha.cli.build_stages", build)
         monkeypatch.setattr(
             "stropha.ingest.git_meta.detect",
@@ -1350,7 +1694,13 @@ class TestCliWiring:
         commands = {cmd.name for cmd in meta_app.registered_commands}
         # WIN-166 prune + WIN-193 run/status/report/promote/trace/snapshot.
         for name in (
-            "run", "validate", "status", "report", "promote", "trace", "snapshot",
+            "run",
+            "validate",
+            "status",
+            "report",
+            "promote",
+            "trace",
+            "snapshot",
             "prune",
         ):
             assert name in commands, f"missing command: {name}"

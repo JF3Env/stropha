@@ -63,6 +63,11 @@ FEATURE_AXES: frozenset[str] = frozenset(
     }
 )
 
+# Axes consumed directly by the evaluation harness after retrieval.
+EVAL_AXES: frozenset[str] = frozenset(
+    {"context_budget", "diversity", "diversity_max_chunks_per_file"}
+)
+
 
 class MatrixError(StrophaError):
     """Raised when a matrix spec is malformed."""
@@ -270,6 +275,7 @@ def load_matrix(path: Path | str) -> Matrix:
 
 
 __all__ = [
+    "EVAL_AXES",
     "FEATURE_AXES",
     "INDEXING_AXES",
     "Cell",

@@ -239,6 +239,12 @@ class EvalResult:
     returned_tokens: int = 0
     returned_hits: int = 0
     returned_chunk_ids: tuple[str, ...] = ()
+    unique_files_returned: int = 0
+    unique_symbols_returned: int = 0
+    duplicate_entity_count: int = 0
+    max_chunks_from_one_file: int = 0
+    spilled_relevant_entities: int = 0
+    diversity_deferred_count: int = 0
 
     @property
     def hit(self) -> bool:
@@ -397,6 +403,10 @@ class EvalReport:
         return buckets
 
     def summary(self) -> dict[str, Any]:
+        returned_hits = sum(r.returned_hits for r in self.results)
+        returned_tokens = sum(r.returned_tokens for r in self.results)
+        duplicate_entities = sum(r.duplicate_entity_count for r in self.results)
+        packed_relevant = sum(r.relevant_count for r in self.results)
         summary = {
             "cases": self.n,
             "hits": self.n_hits,
@@ -409,7 +419,30 @@ class EvalReport:
             "latency_p50_ms": round(self.latency_p50_ms, 3),
             "latency_p95_ms": round(self.latency_p95_ms, 3),
             "latency_p99_ms": round(self.latency_p99_ms, 3),
-            "returned_tokens": sum(r.returned_tokens for r in self.results),
+            "returned_tokens": returned_tokens,
+            "returned_hits": returned_hits,
+            "unique_files_returned": sum(r.unique_files_returned for r in self.results),
+            "unique_symbols_returned": sum(r.unique_symbols_returned for r in self.results),
+            "duplicate_entity_count": duplicate_entities,
+            "duplicate_entity_rate": round(
+                duplicate_entities / returned_hits if returned_hits else 0.0,
+                4,
+            ),
+            "max_chunks_from_one_file": max(
+                (r.max_chunks_from_one_file for r in self.results),
+                default=0,
+            ),
+            "packed_relevant_entities": packed_relevant,
+            "spilled_relevant_entities": sum(
+                r.spilled_relevant_entities for r in self.results
+            ),
+            "relevant_entities_per_1000_tokens": round(
+                packed_relevant * 1000 / returned_tokens if returned_tokens else 0.0,
+                4,
+            ),
+            "diversity_deferred_count": sum(
+                r.diversity_deferred_count for r in self.results
+            ),
         }
         reranker = self.diagnostics.get("reranker")
         if isinstance(reranker, dict):
@@ -510,6 +543,27 @@ def _symbol_matches(actual: str | None, expected: Iterable[str]) -> str | None:
     return None
 
 
+def _match_entity(
+    case: EvalCase,
+    hit: Any,
+    matched_entities: set[int],
+) -> tuple[int | None, str | None, str | None]:
+    actual_path: str = getattr(hit, "rel_path", None) or getattr(hit, "path", "") or ""
+    actual_symbol = getattr(hit, "symbol", None)
+    for entity_index, (expected_path, expected_symbol) in enumerate(case.relevant_entities):
+        if entity_index in matched_entities:
+            continue
+        matched_path = _path_matches(
+            actual_path, (expected_path,) if expected_path else ()
+        )
+        matched_symbol = _symbol_matches(
+            actual_symbol, (expected_symbol,) if expected_symbol else ()
+        )
+        if matched_path or matched_symbol:
+            return entity_index, matched_path, matched_symbol
+    return None, None, None
+
+
 def run_eval(
     cases: Iterable[EvalCase],
     engine: SearchEngine | RetrievalStage,
@@ -517,6 +571,9 @@ def run_eval(
     top_k: int = 10,
     repo_id: int | None = None,
     provenance: dict[str, Any] | None = None,
+    context_budget: int | None = None,
+    diversity_enabled: bool = False,
+    diversity_max_chunks_per_file: int = 2,
 ) -> EvalReport:
     """Execute every case against ``engine`` and aggregate metrics.
 
@@ -539,6 +596,20 @@ def run_eval(
             hits = engine.search(case.query, top_k=top_k)
         else:
             hits = engine.search(case.query, top_k=top_k, repo_id=repo_id)
+        spilled: list[Any] = []
+        diversity_deferred_count = 0
+        if context_budget is not None and context_budget > 0:
+            from ..retrieval.packing import pack_to_budget
+
+            pack = pack_to_budget(
+                hits,
+                context_budget,
+                diversify=diversity_enabled,
+                max_chunks_per_file=diversity_max_chunks_per_file,
+            )
+            hits = pack.packed
+            spilled = pack.spilled
+            diversity_deferred_count = len(pack.deferred)
         latency_ms = (_time.perf_counter() - start) * 1000.0
 
         # Track relevance at each rank for NDCG
@@ -558,25 +629,7 @@ def run_eval(
             )
             actual_symbol = getattr(h, "symbol", None)
 
-            matched_entity: int | None = None
-            mp: str | None = None
-            ms: str | None = None
-            for entity_index, (expected_path, expected_symbol) in enumerate(
-                case.relevant_entities
-            ):
-                if entity_index in matched_entities:
-                    continue
-                candidate_path = _path_matches(
-                    actual_path, (expected_path,) if expected_path else ()
-                )
-                candidate_symbol = _symbol_matches(
-                    actual_symbol, (expected_symbol,) if expected_symbol else ()
-                )
-                if candidate_path or candidate_symbol:
-                    matched_entity = entity_index
-                    mp = candidate_path
-                    ms = candidate_symbol
-                    break
+            matched_entity, mp, ms = _match_entity(case, h, matched_entities)
 
             if matched_entity is not None:
                 # This hit is relevant
@@ -597,6 +650,21 @@ def run_eval(
         while len(relevances) < top_k:
             relevances.append(0.0)
 
+        spilled_matches: set[int] = set()
+        matched_or_spilled = set(matched_entities)
+        for hit in spilled:
+            matched_entity, _, _ = _match_entity(case, hit, matched_or_spilled)
+            if matched_entity is not None:
+                spilled_matches.add(matched_entity)
+                matched_or_spilled.add(matched_entity)
+
+        from ..retrieval.packing import measure_diversity
+        from ..retrieval.savings import estimate_content_tokens
+
+        # Keep the redundancy definition fixed across candidate policies so a
+        # cap-1 arm cannot change the metric it is being compared against.
+        diversity = measure_diversity(hits, max_chunks_per_file=2)
+
         result = EvalResult(
             case=case,
             rank_of_first_hit=first_hit_rank,
@@ -609,7 +677,8 @@ def run_eval(
             ideal_relevances=case.ideal_relevances,
             latency_ms=latency_ms,
             returned_tokens=sum(
-                max(1, len(str(getattr(hit, "snippet", ""))) // 4) for hit in hits
+                estimate_content_tokens(str(getattr(hit, "snippet", "") or ""))
+                for hit in hits
             ),
             returned_hits=len(hits),
             returned_chunk_ids=tuple(
@@ -617,6 +686,12 @@ def run_eval(
                 for hit in hits
                 if (chunk_id := getattr(hit, "chunk_id", None))
             ),
+            unique_files_returned=diversity.unique_files,
+            unique_symbols_returned=diversity.unique_symbols,
+            duplicate_entity_count=diversity.duplicate_entities,
+            max_chunks_from_one_file=diversity.max_chunks_per_file,
+            spilled_relevant_entities=len(spilled_matches),
+            diversity_deferred_count=diversity_deferred_count,
         )
         report.results.append(result)
         log.info(

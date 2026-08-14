@@ -158,6 +158,7 @@ class TestFacetCounts:
         # Without facets
         resp = SearchResponse(results=[], total_candidates=0, query="test")
         assert resp.facets is None
+        assert resp.diversity_deferred_chunk_ids == []
 
         # With facets
         from stropha.server import FacetCounts
@@ -168,3 +169,15 @@ class TestFacetCounts:
         )
         assert resp_with.facets is not None
         assert resp_with.facets.language == {"python": 5}
+
+    def test_search_response_exposes_diversity_deferred_ids(self) -> None:
+        from stropha.server import SearchResponse
+
+        response = SearchResponse(
+            results=[],
+            total_candidates=0,
+            query="test",
+            diversity_deferred_chunk_ids=["chunk-2", "chunk-4"],
+        )
+
+        assert response.diversity_deferred_chunk_ids == ["chunk-2", "chunk-4"]
