@@ -16,6 +16,7 @@ from stropha.retrieval.multi_query import (
     MultiQueryExpander,
     _cache_key,
     clear_cache,
+    expand_query,
     generate_paraphrases,
 )
 
@@ -103,6 +104,52 @@ def test_multi_query_empty_response_fallback(monkeypatch) -> None:
     assert result == ["test query"]
 
 
+def test_selective_policy_expands_only_broad_conceptual_queries() -> None:
+    clear_cache()
+    query = "how do retrieval streams interact across the search architecture lifecycle"
+
+    with patch("stropha.inference.generate", return_value="fusion ranking flow\nsearch pipeline design"):
+        expanded = expand_query(
+            query,
+            force_enabled=True,
+            num_paraphrases=2,
+            min_terms=7,
+        )
+
+    assert expanded.reason == "success"
+    assert expanded.queries == (query, "fusion ranking flow", "search pipeline design")
+    assert expanded.generation_calls == 1
+    assert expanded.estimated_input_tokens > 0
+    assert expanded.estimated_output_tokens > 0
+
+    with patch("stropha.inference.generate") as generate:
+        symbol = expand_query("UserService", force_enabled=True, min_terms=1)
+        structural = expand_query(
+            "who calls the authentication request handler middleware",
+            force_enabled=True,
+            min_terms=1,
+        )
+        short = expand_query("how does authentication work", force_enabled=True)
+
+    assert symbol.reason == "symbol_query"
+    assert structural.reason == "structural_query"
+    assert short.reason == "too_short"
+    generate.assert_not_called()
+
+
+def test_structured_expansion_handles_backend_exception() -> None:
+    clear_cache()
+    query = "how do retrieval streams interact across the search architecture lifecycle"
+
+    with patch("stropha.inference.generate", side_effect=RuntimeError("offline")):
+        result = expand_query(query, force_enabled=True, min_terms=7)
+
+    assert result.queries == (query,)
+    assert result.reason == "backend_error"
+    assert result.generation_calls == 1
+    assert result.estimated_input_tokens > 0
+
+
 # --------------------------------------------------------------------------- Cache
 
 
@@ -136,6 +183,16 @@ def test_multi_query_cache_key_normalization() -> None:
     # All should produce same key (lowercase + strip)
     assert key1 == key2
     assert key1 == key3
+
+
+def test_multi_query_cache_separates_paraphrase_counts() -> None:
+    clear_cache()
+
+    with patch("stropha.inference.generate", return_value="one query\ntwo query\nthree query") as generate:
+        generate_paraphrases("test query", force_enabled=True, num_paraphrases=2)
+        generate_paraphrases("test query", force_enabled=True, num_paraphrases=3)
+
+    assert generate.call_count == 2
 
 
 def test_cache_clear() -> None:
@@ -216,9 +273,14 @@ def test_yaml_config_count(isolated_test_env) -> None:
 retrieval_features:
   multi_query_enabled: true
   multi_query_count: 5
+  multi_query_min_terms: 9
 """)
     reset_config()
     clear_cache()
+
+    from stropha.config import get_config
+
+    assert get_config().retrieval_features.multi_query_min_terms == 9
     
     with patch("stropha.inference.generate") as mock_gen:
         mock_gen.return_value = "p1\np2\np3\np4\np5"

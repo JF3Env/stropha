@@ -134,6 +134,15 @@ class HybridRrfConfig(BaseModel):
         le=5,
         description="Number of paraphrases to generate for multi-query expansion.",
     )
+    multi_query_min_terms: int | None = Field(
+        default=None,
+        ge=1,
+        le=30,
+        description=(
+            "Minimum terms eligible for broad-concept multi-query expansion. "
+            "Null inherits unified config when global features are enabled."
+        ),
+    )
     recursive_enabled: bool = Field(
         default=False,
         description=(
@@ -207,6 +216,19 @@ class HybridRrfRetrieval(RetrievalStage):
         self._rewrite_counts: dict[str, int] = {}
         self._rewrite_input_tokens = 0
         self._rewrite_output_tokens = 0
+        self._multi_query_latencies_ms: list[float] = []
+        self._multi_query_counts: dict[str, int] = {}
+        self._multi_query_input_tokens = 0
+        self._multi_query_output_tokens = 0
+        self._multi_query_requested = 0
+        self._multi_query_generated = 0
+        self._multi_query_raw = 0
+        self._multi_query_duplicate_paraphrases = 0
+        self._multi_query_searches = 0
+        self._multi_query_candidates_before = 0
+        self._multi_query_unique_before = 0
+        self._multi_query_candidates_after = 0
+        self._multi_query_unique_after = 0
         self.reset_diagnostics()
 
     # ----- Stage contract -------------------------------------------------
@@ -227,6 +249,20 @@ class HybridRrfRetrieval(RetrievalStage):
             self._learned_weights.fingerprint() if self._learned_weights is not None else "off"
         )
         digest = hashlib.sha256(repr(canonical).encode("utf-8")).hexdigest()[:8]
+        multi_query_enabled, multi_query_count, multi_query_min_terms = (
+            self._multi_query_settings()
+        )
+        if multi_query_enabled:
+            from ...inference import get_backend
+            from ...retrieval.multi_query import policy_id as multi_query_policy_id
+
+            backend_hash = hashlib.sha256(get_backend().identity.encode("utf-8")).hexdigest()[:8]
+            multi_query_id = (
+                f"{multi_query_policy_id(multi_query_min_terms)}:"
+                f"count={multi_query_count}:llm={backend_hash}"
+            )
+        else:
+            multi_query_id = "off"
         rewrite_enabled, rewrite_max_terms = self._query_rewrite_settings()
         if rewrite_enabled:
             from ...inference import get_backend
@@ -239,7 +275,7 @@ class HybridRrfRetrieval(RetrievalStage):
         return (
             f"hybrid-rrf:k={self._config.rrf_k}:streams={digest}:"
             f"reranker={reranker_id}:adaptive={int(self._config.adaptive_weighting)}:"
-            f"mq={int(self._config.multi_query_enabled)}:{self._config.multi_query_count}:"
+            f"mq={multi_query_id}:"
             f"rewrite={rewrite_id}:"
             f"hyde={int(self._config.hyde_enabled)}:{self._config.hyde_code_tuned}:"
             f"recursive={int(self._config.recursive_enabled)}:"
@@ -285,6 +321,34 @@ class HybridRrfRetrieval(RetrievalStage):
         self._rewrite_latencies_ms = []
         self._rewrite_input_tokens = 0
         self._rewrite_output_tokens = 0
+        self._multi_query_counts = {
+            reason: 0
+            for reason in (
+                "success",
+                "cache_hit",
+                "empty_query",
+                "symbol_query",
+                "structural_query",
+                "not_natural",
+                "too_short",
+                "not_conceptual",
+                "empty_response",
+                "no_valid_paraphrases",
+                "backend_error",
+            )
+        }
+        self._multi_query_latencies_ms = []
+        self._multi_query_input_tokens = 0
+        self._multi_query_output_tokens = 0
+        self._multi_query_requested = 0
+        self._multi_query_generated = 0
+        self._multi_query_raw = 0
+        self._multi_query_duplicate_paraphrases = 0
+        self._multi_query_searches = 0
+        self._multi_query_candidates_before = 0
+        self._multi_query_unique_before = 0
+        self._multi_query_candidates_after = 0
+        self._multi_query_unique_after = 0
         reset = getattr(self._reranker, "reset_diagnostics", None)
         if callable(reset):
             reset()
@@ -320,6 +384,80 @@ class HybridRrfRetrieval(RetrievalStage):
                     "structural_query",
                     "not_natural",
                     "too_long",
+                )
+            },
+        }
+        multi_query_enabled, multi_query_count, multi_query_min_terms = (
+            self._multi_query_settings()
+        )
+        from ...retrieval.multi_query import policy_id as multi_query_policy_id
+
+        multi_query_calls = sum(
+            self._multi_query_counts[reason]
+            for reason in (
+                "success",
+                "empty_response",
+                "no_valid_paraphrases",
+                "backend_error",
+            )
+        )
+        multi_query_fallbacks = sum(
+            self._multi_query_counts[reason]
+            for reason in ("empty_response", "no_valid_paraphrases", "backend_error")
+        )
+        duplicate_candidates_before = (
+            self._multi_query_candidates_before - self._multi_query_unique_before
+        )
+        duplicate_candidates_after = (
+            self._multi_query_candidates_after - self._multi_query_unique_after
+        )
+        out["multi_query"] = {
+            "enabled": multi_query_enabled,
+            "policy_id": multi_query_policy_id(multi_query_min_terms),
+            "count": multi_query_count,
+            "min_terms": multi_query_min_terms,
+            "generation_calls": multi_query_calls,
+            "successes": self._multi_query_counts["success"],
+            "cache_hits": self._multi_query_counts["cache_hit"],
+            "fallbacks": multi_query_fallbacks,
+            "fallback_rate": (
+                round(multi_query_fallbacks / multi_query_calls, 4)
+                if multi_query_calls
+                else 0.0
+            ),
+            "requested_paraphrases": self._multi_query_requested,
+            "generated_paraphrases": self._multi_query_generated,
+            "raw_paraphrases": self._multi_query_raw,
+            "duplicate_paraphrases": self._multi_query_duplicate_paraphrases,
+            "searches": self._multi_query_searches,
+            "estimated_input_tokens": self._multi_query_input_tokens,
+            "estimated_output_tokens": self._multi_query_output_tokens,
+            "estimated_total_tokens": (
+                self._multi_query_input_tokens + self._multi_query_output_tokens
+            ),
+            "latency_ms": round(sum(self._multi_query_latencies_ms), 3),
+            "latency_p95_ms": self._percentile(self._multi_query_latencies_ms, 0.95),
+            "candidate_duplicates_before_fusion": duplicate_candidates_before,
+            "candidate_duplicate_rate_before_fusion": (
+                round(duplicate_candidates_before / self._multi_query_candidates_before, 4)
+                if self._multi_query_candidates_before
+                else 0.0
+            ),
+            "candidate_duplicates_after_fusion": duplicate_candidates_after,
+            "candidate_duplicate_rate_after_fusion": (
+                round(duplicate_candidates_after / self._multi_query_candidates_after, 4)
+                if self._multi_query_candidates_after
+                else 0.0
+            ),
+            "skips": {
+                reason: self._multi_query_counts[reason]
+                for reason in (
+                    "empty_query",
+                    "symbol_query",
+                    "structural_query",
+                    "not_natural",
+                    "too_short",
+                    "not_conceptual",
                 )
             },
         }
@@ -360,6 +498,51 @@ class HybridRrfRetrieval(RetrievalStage):
         if result.generation_calls:
             self._rewrite_latencies_ms.append(result.latency_ms)
 
+    def _multi_query_settings(self) -> tuple[bool, int, int]:
+        from ...retrieval.multi_query import DEFAULT_MIN_TERMS
+
+        local_enabled = self._config.multi_query_enabled
+        enabled = local_enabled
+        count = self._config.multi_query_count
+        min_terms = self._config.multi_query_min_terms
+        if self._config.inherit_global_features:
+            from ...config import get_config
+
+            features = get_config().retrieval_features
+            enabled = enabled or features.multi_query_enabled
+            if not local_enabled and features.multi_query_enabled:
+                count = features.multi_query_count
+            if min_terms is None:
+                min_terms = features.multi_query_min_terms
+        return (
+            enabled,
+            max(1, min(5, count)),
+            max(1, min(30, min_terms or DEFAULT_MIN_TERMS)),
+        )
+
+    def _record_multi_query(self, result: Any) -> None:
+        self._multi_query_counts[result.reason] += 1
+        self._multi_query_requested += result.requested_paraphrases
+        self._multi_query_generated += max(0, len(result.queries) - 1)
+        self._multi_query_raw += result.raw_paraphrases
+        self._multi_query_duplicate_paraphrases += result.duplicate_paraphrases
+        self._multi_query_input_tokens += result.estimated_input_tokens
+        self._multi_query_output_tokens += result.estimated_output_tokens
+        if result.generation_calls:
+            self._multi_query_latencies_ms.append(result.latency_ms)
+
+    def _record_multi_query_candidates(
+        self,
+        result_lists: list[list[SearchHit]],
+        fused: list[SearchHit],
+    ) -> None:
+        before_ids = [hit.chunk_id for hits in result_lists for hit in hits]
+        after_ids = [hit.chunk_id for hit in fused]
+        self._multi_query_candidates_before += len(before_ids)
+        self._multi_query_unique_before += len(set(before_ids))
+        self._multi_query_candidates_after += len(after_ids)
+        self._multi_query_unique_after += len(set(after_ids))
+
     def set_reranker(self, reranker: RerankerStage | None) -> None:
         """Inject a trusted reranker implementation after pipeline construction."""
         if reranker is not None and not isinstance(reranker, RerankerStage):
@@ -380,19 +563,16 @@ class HybridRrfRetrieval(RetrievalStage):
             return []
         k = top_k or self._config.top_k
 
-        # Check if multi-query expansion is enabled
-        multi_query_enabled = self._config.multi_query_enabled
-        if self._config.inherit_global_features:
-            from ...config import get_config
-
-            multi_query_enabled = (
-                multi_query_enabled or get_config().retrieval_features.multi_query_enabled
-            )
+        multi_query_enabled, multi_query_count, multi_query_min_terms = (
+            self._multi_query_settings()
+        )
 
         if multi_query_enabled:
             return self._search_multi_query(
                 query,
                 k,
+                count=multi_query_count,
+                min_terms=multi_query_min_terms,
                 conversation_context=conversation_context,
                 repo_id=repo_id,
             )
@@ -541,6 +721,8 @@ class HybridRrfRetrieval(RetrievalStage):
         query: str,
         k: int,
         *,
+        count: int,
+        min_terms: int,
         conversation_context: str | None = None,
         repo_id: int | None = None,
     ) -> list[SearchHit]:
@@ -549,14 +731,16 @@ class HybridRrfRetrieval(RetrievalStage):
         Multi-query expansion generates N paraphrases of the query,
         searches with each, and fuses all results via RRF for better recall.
         """
-        from ...retrieval.multi_query import generate_paraphrases
+        from ...retrieval.multi_query import expand_query
 
-        # Generate paraphrases (includes original query as first element)
-        paraphrases = generate_paraphrases(
+        expansion = expand_query(
             query,
             force_enabled=True,
-            num_paraphrases=self._config.multi_query_count,
+            num_paraphrases=count,
+            min_terms=min_terms,
         )
+        self._record_multi_query(expansion)
+        paraphrases = expansion.queries
 
         if len(paraphrases) <= 1:
             # Fallback to single query if paraphrase generation failed
@@ -581,6 +765,7 @@ class HybridRrfRetrieval(RetrievalStage):
             )
             if hits:
                 all_results.append(hits)
+        self._multi_query_searches += len(paraphrases)
 
         if not all_results:
             return []
@@ -592,6 +777,7 @@ class HybridRrfRetrieval(RetrievalStage):
             # Use more candidates since we're combining multiple searches
             fusion_k = self._config.candidate_k if self._reranker else k
             fused = rrf_fuse(*all_results, k=self._config.rrf_k, top_k=fusion_k)
+        self._record_multi_query_candidates(all_results, fused)
 
         # Optional reranking on the fused results
         if self._reranker and fused:

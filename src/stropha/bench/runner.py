@@ -47,6 +47,7 @@ _FEATURE_FIELD: dict[str, str] = {
     "query_decomposition": "query_decomposition_enabled",
     "multi_query": "multi_query_enabled",
     "multi_query_count": "multi_query_count",
+    "multi_query_min_terms": "multi_query_min_terms",
     "cache_enabled": "cache_enabled",
     "adaptive_weighting": "adaptive_weighting",
 }
@@ -61,6 +62,9 @@ _RETRIEVAL_FIELD: dict[str, str] = {
     "learned_weights": "learned_weights_enabled",
     "query_rewrite": "query_rewrite_enabled",
     "query_rewrite_max_terms": "query_rewrite_max_terms",
+    "multi_query": "multi_query_enabled",
+    "multi_query_count": "multi_query_count",
+    "multi_query_min_terms": "multi_query_min_terms",
 }
 
 

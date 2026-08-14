@@ -1,0 +1,25 @@
+# Phase 6 selective multi-query development matrix.
+# Reuse the search split while tuning; holdout requires a separately frozen batch.
+
+repo: .
+golden: tests/eval/golden.jsonl
+top_k: 10
+
+axes:
+  embedder: [model2vec]
+  enricher: [noop]
+  multi_query: [false, true]
+  multi_query_count: [2, 3]
+  multi_query_min_terms: [7]
+
+baseline:
+  embedder: model2vec
+  enricher: noop
+  multi_query: false
+  multi_query_count: 2
+  multi_query_min_terms: 7
+
+constraints:
+  - skip_when:
+      multi_query: false
+      multi_query_count: 3

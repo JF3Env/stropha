@@ -54,6 +54,7 @@ class RetrievalFeatures:
     # Multi-query — N paraphrases of the query, RRF-fused.
     multi_query_enabled: bool = False
     multi_query_count: int = 3
+    multi_query_min_terms: int = 7
 
     # Recursive retrieval — parent promotion + adjacency merge.
     recursive_enabled: bool = False

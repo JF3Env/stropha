@@ -98,6 +98,13 @@ features:
     default: 3
     binding: pipeline.retrieval.config.multi_query_count
 
+  multi_query_min_terms:
+    indexing: false
+    type: int
+    range: [5, 12]
+    default: 7
+    binding: pipeline.retrieval.config.multi_query_min_terms
+
   recursive:
     indexing: false
     type: bool
@@ -180,6 +187,7 @@ constraints:
       multi_query: false
     set:
       multi_query_count: 3
+      multi_query_min_terms: 7
 
   # recursive_adjacency follows the same gating pattern.
   - kind: gated_by

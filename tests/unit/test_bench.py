@@ -175,6 +175,9 @@ def test_retrieval_axes_map_to_runtime_config_fields() -> None:
                 "learned_weights": True,
                 "query_rewrite": True,
                 "query_rewrite_max_terms": 6,
+                "multi_query": True,
+                "multi_query_count": 2,
+                "multi_query_min_terms": 7,
             }
         )
     )
@@ -188,6 +191,9 @@ def test_retrieval_axes_map_to_runtime_config_fields() -> None:
         "learned_weights_enabled": True,
         "query_rewrite_enabled": True,
         "query_rewrite_max_terms": 6,
+        "multi_query_enabled": True,
+        "multi_query_count": 2,
+        "multi_query_min_terms": 7,
     }
 
 
@@ -198,6 +204,19 @@ def test_query_rewrite_matrix_is_two_isolated_search_arms() -> None:
     assert [cell.values["query_rewrite"] for cell in matrix.expand()] == [False, True]
     assert matrix.baseline_cell() is not None
     assert matrix.baseline_cell().values["query_rewrite"] is False
+
+
+def test_multi_query_matrix_is_two_selective_candidate_arms() -> None:
+    path = Path(__file__).resolve().parents[2] / "src/stropha/bench/multi_query_matrix.yaml"
+    matrix = load_matrix(path)
+    cells = matrix.expand()
+
+    assert [
+        (cell.values["multi_query"], cell.values["multi_query_count"])
+        for cell in cells
+    ] == [(False, 2), (True, 2), (True, 3)]
+    assert {cell.values["multi_query_min_terms"] for cell in cells} == {7}
+    assert matrix.baseline_cell() == cells[0]
 
 
 def test_active_matrix_parses_and_has_declared_baseline() -> None:

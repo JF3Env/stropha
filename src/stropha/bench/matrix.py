@@ -58,6 +58,7 @@ FEATURE_AXES: frozenset[str] = frozenset(
         "query_decomposition",
         "multi_query",
         "multi_query_count",
+        "multi_query_min_terms",
         "cache_enabled",
     }
 )

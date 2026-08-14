@@ -113,6 +113,7 @@ class TestResolveCandidateConfig:
             "query_rewrite_max_terms": 6,
             "multi_query_enabled": True,
             "multi_query_count": 5,
+            "multi_query_min_terms": 7,
             "recursive_enabled": True,
             "recursive_adjacency": 20,
             "adaptive_weighting": False,

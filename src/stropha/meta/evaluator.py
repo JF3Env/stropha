@@ -332,6 +332,7 @@ _QUERY_CONFIG_FIELDS = {
     "query_rewrite_max_terms": "query_rewrite_max_terms",
     "multi_query": "multi_query_enabled",
     "multi_query_count": "multi_query_count",
+    "multi_query_min_terms": "multi_query_min_terms",
     "recursive": "recursive_enabled",
     "recursive_adjacency": "recursive_adjacency",
     "adaptive_weighting": "adaptive_weighting",

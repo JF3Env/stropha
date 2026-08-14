@@ -450,6 +450,9 @@ class TestQueryCandidateConfig:
             "candidate_k": 40,
             "rrf_k": 80,
             "recursive": True,
+            "multi_query": True,
+            "multi_query_count": 2,
+            "multi_query_min_terms": 7,
         })
         assert resolved["embedder"] == base["embedder"]
         assert resolved["enricher"] == base["enricher"]
@@ -457,6 +460,9 @@ class TestQueryCandidateConfig:
         assert resolved["retrieval"]["config"]["candidate_k"] == 40
         assert resolved["retrieval"]["config"]["rrf_k"] == 80
         assert resolved["retrieval"]["config"]["recursive_enabled"] is True
+        assert resolved["retrieval"]["config"]["multi_query_enabled"] is True
+        assert resolved["retrieval"]["config"]["multi_query_count"] == 2
+        assert resolved["retrieval"]["config"]["multi_query_min_terms"] == 7
 
     def test_rejects_indexing_dimension(self) -> None:
         with pytest.raises(EvaluatorError, match="indexing or unsupported"):

@@ -31,6 +31,7 @@ from stropha.errors import ConfigError
 from stropha.meta.stream_weights import StreamWeightProfile, write_stream_weight_profile
 from stropha.models import RepoRef, SearchHit
 from stropha.pipeline.registry import all_adapters
+from stropha.retrieval.multi_query import MultiQueryResult
 from stropha.server import _features_snapshot
 
 # ---------------------------------------------------------------------------
@@ -214,8 +215,12 @@ def test_hybrid_rrf_propagates_repo_id_through_multi_query() -> None:
     )
 
     with patch(
-        "stropha.retrieval.multi_query.generate_paraphrases",
-        return_value=["original", "alternative"],
+        "stropha.retrieval.multi_query.expand_query",
+        return_value=MultiQueryResult(
+            ("original", "alternative"),
+            "success",
+            requested_paraphrases=1,
+        ),
     ):
         retrieval.search("original", repo_id=42)
 

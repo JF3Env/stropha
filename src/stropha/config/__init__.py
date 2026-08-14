@@ -237,6 +237,7 @@ def _parse_retrieval_features(raw: dict[str, Any]) -> RetrievalFeatures:
         query_rewrite_max_terms=_int(raw.get("query_rewrite_max_terms"), 6),
         multi_query_enabled=_bool(raw.get("multi_query_enabled"), False),
         multi_query_count=_int(raw.get("multi_query_count"), 3),
+        multi_query_min_terms=_int(raw.get("multi_query_min_terms"), 7),
         recursive_enabled=_bool(raw.get("recursive_enabled"), False),
         recursive_adjacency=_int(raw.get("recursive_adjacency"), 5),
         cache_enabled=_bool(raw.get("cache_enabled"), False),

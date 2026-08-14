@@ -51,10 +51,11 @@ _FEATURE_FIELDS = {
     "hyde": "hyde_enabled",
     "hyde_code_tuned": "hyde_code_tuned",
     "query_rewrite": "query_rewrite_enabled",
-    "multi_query": "multi_query_enabled",
 }
 _RETRIEVAL_CONFIG_FIELDS = {
+    "multi_query": "multi_query_enabled",
     "multi_query_count": "multi_query_count",
+    "multi_query_min_terms": "multi_query_min_terms",
     "query_rewrite_max_terms": "query_rewrite_max_terms",
     "recursive": "recursive_enabled",
     "recursive_adjacency": "recursive_adjacency",

@@ -8,6 +8,7 @@ import pytest
 
 from stropha.retrieval.hyde import _enabled as hyde_enabled
 from stropha.retrieval.hyde import maybe_hyde_rewrite
+from stropha.retrieval.multi_query import MultiQueryResult
 from stropha.retrieval.query_rewrite import (
     QueryRewriteResult,
     _enabled,
@@ -259,6 +260,18 @@ class TestHybridRrfWithQueryIntelligence:
         config = HybridRrfConfig()
         assert config.hyde_enabled is False
         assert config.query_rewrite_enabled is False
+
+    def test_config_accepts_selective_multi_query_policy(self) -> None:
+        from stropha.adapters.retrieval.hybrid_rrf import HybridRrfConfig
+
+        config = HybridRrfConfig(
+            multi_query_enabled=True,
+            multi_query_count=2,
+            multi_query_min_terms=8,
+        )
+        assert config.multi_query_enabled
+        assert config.multi_query_count == 2
+        assert config.multi_query_min_terms == 8
 
 
 class TestHybridRrfSearchIntegration:
@@ -691,3 +704,101 @@ retrieval_features:
 
         assert "rewrite=short-natural-v1:max=4" in first
         assert first != second
+
+    def test_multi_query_diagnostics_record_policy_cost_and_duplicates(
+        self, recording_storage, recording_embedder
+    ) -> None:
+        from stropha.adapters.retrieval.hybrid_rrf import HybridRrfConfig, HybridRrfRetrieval
+
+        retrieval = HybridRrfRetrieval(
+            HybridRrfConfig(
+                multi_query_enabled=True,
+                multi_query_count=2,
+                multi_query_min_terms=7,
+                inherit_global_features=False,
+            ),
+            storage=recording_storage,
+            embedder=recording_embedder,
+        )
+        outcomes = [
+            MultiQueryResult(
+                ("broad query", "alternate query"),
+                "success",
+                requested_paraphrases=2,
+                raw_paraphrases=3,
+                duplicate_paraphrases=1,
+                generation_calls=1,
+                estimated_input_tokens=10,
+                estimated_output_tokens=4,
+                latency_ms=5.0,
+            ),
+            MultiQueryResult(("short query",), "too_short", requested_paraphrases=2),
+            MultiQueryResult(
+                ("failed query",),
+                "backend_error",
+                requested_paraphrases=2,
+                generation_calls=1,
+                estimated_input_tokens=8,
+                latency_ms=7.0,
+            ),
+        ]
+        with patch("stropha.retrieval.multi_query.expand_query", side_effect=outcomes):
+            retrieval.search("broad query")
+            retrieval.search("short query")
+            retrieval.search("failed query")
+
+        diagnostics = retrieval.diagnostics()["multi_query"]
+        assert diagnostics["enabled"] is True
+        assert diagnostics["count"] == 2
+        assert diagnostics["min_terms"] == 7
+        assert diagnostics["generation_calls"] == 2
+        assert diagnostics["successes"] == 1
+        assert diagnostics["fallbacks"] == 1
+        assert diagnostics["fallback_rate"] == 0.5
+        assert diagnostics["requested_paraphrases"] == 6
+        assert diagnostics["generated_paraphrases"] == 1
+        assert diagnostics["raw_paraphrases"] == 3
+        assert diagnostics["duplicate_paraphrases"] == 1
+        assert diagnostics["searches"] == 2
+        assert diagnostics["estimated_total_tokens"] == 22
+        assert diagnostics["latency_ms"] == 12.0
+        assert diagnostics["latency_p95_ms"] == 7.0
+        assert diagnostics["candidate_duplicates_before_fusion"] > 0
+        assert diagnostics["candidate_duplicate_rate_before_fusion"] == 0.5
+        assert diagnostics["candidate_duplicates_after_fusion"] == 0
+        assert diagnostics["skips"]["too_short"] == 1
+
+        retrieval.reset_diagnostics()
+        assert retrieval.diagnostics()["multi_query"]["generation_calls"] == 0
+
+    def test_adapter_id_tracks_effective_multi_query_policy_and_backend(
+        self, recording_storage, recording_embedder
+    ) -> None:
+        from stropha.adapters.retrieval.hybrid_rrf import HybridRrfConfig, HybridRrfRetrieval
+
+        with patch("stropha.inference.get_backend") as get_backend:
+            get_backend.return_value.identity = "local:test-model"
+            count_two = HybridRrfRetrieval(
+                HybridRrfConfig(
+                    multi_query_enabled=True,
+                    multi_query_count=2,
+                    multi_query_min_terms=7,
+                    inherit_global_features=False,
+                ),
+                storage=recording_storage,
+                embedder=recording_embedder,
+            ).adapter_id
+            count_three = HybridRrfRetrieval(
+                HybridRrfConfig(
+                    multi_query_enabled=True,
+                    multi_query_count=3,
+                    multi_query_min_terms=7,
+                    inherit_global_features=False,
+                ),
+                storage=recording_storage,
+                embedder=recording_embedder,
+            ).adapter_id
+
+        assert "mq=broad-conceptual-v1:min=7" in count_two
+        assert "count=2" in count_two
+        assert count_two != count_three

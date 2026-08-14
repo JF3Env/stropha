@@ -766,7 +766,43 @@ generation, mixed queries skip generation, and natural-language queries longer t
 selection reasons, generation calls, successes, fallbacks, estimated input/output
 tokens, and generation latency including p95. The retrieval adapter identity includes
 the effective policy, prompt, term limit, and inference backend when rewriting is
-enabled. Benchmark promotion and holdout validation remain pending.
+enabled.
+
+The rewrite-only development sweep ran on the reusable 87-case search split at
+commit `c792038` with one isolated Model2Vec/noop index. The no-rewrite baseline
+reached Recall@10 `0.8276`, NDCG@10 `0.5851`, and `24.857 ms` p95. A term limit of
+2 activated no cases; 3 activated one case but changed no quality metric. Limits
+4, 5, and 6 activated 5, 9, and 15 cases, respectively, without improving recall;
+NDCG@10 fell to `0.5819`, `0.5704`, and `0.5712`, while end-to-end p95 rose to
+`1618.142`, `2041.938`, and `2142.819 ms`. The limit-6 arm used an estimated 2,808
+generation tokens with no fallbacks. Query rewrite therefore did not meet the
+target-tag improvement or latency criteria and is not eligible for a frozen holdout.
+It remains disabled by default; Phase 6 proceeds to an isolated multi-query experiment.
+
+The selective multi-query implementation uses deterministic `broad-conceptual-v1`
+selection with a configurable minimum of seven terms. Symbol-shaped, mixed-symbol,
+structural, non-natural, short, and non-conceptual queries bypass generation. Generated
+queries are cached by normalized query and paraphrase count, backend exceptions fail
+closed to the original query, and the retrieval adapter identity includes the effective
+policy, count, prompt, and inference backend. Diagnostics record selection reasons,
+cache hits, generation calls, fallbacks, estimated tokens, latency, paraphrase
+deduplication, and candidate duplication before and after RRF. The dedicated
+`multi_query_matrix.yaml` contains one disabled baseline and isolated count-2 and
+count-3 candidates on the reusable search split.
+
+The multi-query development sweep ran against source state `79596b6340e1` based on
+commit `c792038`, using one isolated Model2Vec/noop index and run identity
+`549212a456664c1c`. The baseline reached Recall@10 `0.8276`, NDCG@10 `0.5838`, and
+`25.345 ms` p95. Count 2 reduced Recall@10 to `0.8103` and NDCG@10 to `0.5751`
+while increasing p95 to `778.720 ms`; it generated on 10 of 87 queries, consumed an
+estimated 1,911 tokens, and produced a `43.47%` pre-fusion candidate duplicate rate.
+Count 3 reached Recall@10 `0.8295` and NDCG@10 `0.5813` with `1125.267 ms` p95,
+2,259 estimated generation tokens, and a `46.95%` pre-fusion duplicate rate. Both
+arms had zero generation fallbacks and zero duplicates after RRF. On the target
+`conceptual` tag, NDCG improved only 0.71 and 0.38 percentage points for counts 2
+and 3; `docs-rationale` recall regressed from `0.7` to `0.6` in both arms.
+Selective multi-query therefore failed the 3-point target-tag and latency gates. It
+remains disabled by default and is not eligible for a frozen holdout.
 
 ### Files
 

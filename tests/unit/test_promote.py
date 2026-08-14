@@ -114,7 +114,9 @@ class TestBuildPlan:
         cand = _make_candidate(
             {
                 "adaptive_weighting": False,
+                "multi_query": True,
                 "multi_query_count": 4,
+                "multi_query_min_terms": 8,
                 "recursive": True,
                 "recursive_adjacency": 9,
             }
@@ -127,7 +129,9 @@ class TestBuildPlan:
                 "retrieval": {
                     "config": {
                         "adaptive_weighting": False,
+                        "multi_query_enabled": True,
                         "multi_query_count": 4,
+                        "multi_query_min_terms": 8,
                         "recursive_adjacency": 9,
                         "recursive_enabled": True,
                     }
