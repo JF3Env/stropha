@@ -879,6 +879,6 @@ retrieval_features:
                 embedder=recording_embedder,
             ).adapter_id
 
-        assert "hyde=behavior-description-v1:code=1" in code_tuned
+        assert "hyde=behavior-description-v2:code=1" in code_tuned
         assert "llm=" in code_tuned
         assert code_tuned != generic

@@ -44,7 +44,7 @@ from typing import Literal
 
 from ..config import get_config
 from ..logging import get_logger
-from .query_classify import classify_query
+from .query_classify import QueryClassification, classify_query
 
 log = get_logger(__name__)
 
@@ -130,7 +130,7 @@ _DEFAULT_PROMPT = (
     "QUESTION: {query}\n\n"
     "Reply with just the snippet/paragraph — no preamble, no \"sure here is\"."
 )
-_POLICY_VERSION = "behavior-description-v1"
+_POLICY_VERSION = "behavior-description-v2"
 _BEHAVIOR_PREFIXES = ("when ", "after ", "before ", "given ", "once ")
 _STRUCTURAL_PREFIXES = (
     "find callers",
@@ -188,13 +188,26 @@ def _estimate_tokens(text: str) -> int:
     return max(1, math.ceil(len(text) / 4)) if text else 0
 
 
+def _has_obvious_identifier(classification: QueryClassification) -> bool:
+    first = classification.tokens[0] if classification.tokens else ""
+    for token in classification.symbol_tokens:
+        if "-" in token:
+            continue
+        if token.isupper() or (token.endswith("s") and token[:-1].isupper()):
+            continue
+        if token == first and token.istitle():
+            continue
+        return True
+    return False
+
+
 def _policy_reason(query: str) -> HydeReason | None:
     stripped = query.strip()
     if not stripped:
         return "empty_query"
 
     classification = classify_query(stripped)
-    if classification.symbol_tokens:
+    if _has_obvious_identifier(classification):
         return "symbol_query"
     if not classification.is_natural:
         return "not_natural"

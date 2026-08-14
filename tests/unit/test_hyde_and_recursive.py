@@ -130,6 +130,10 @@ def test_selective_hyde_targets_behavior_descriptions_only() -> None:
     query = "When an agent submits prose the citation auditor resolves every reference"
     with patch("stropha.inference.generate", return_value="def audit_claims(): pass") as generate:
         result = generate_hypothetical(query, force_enabled=True)
+        prose_with_domain_terms = generate_hypothetical(
+            "Given changed symbols the test-impact flow selects direct tests and callers",
+            force_enabled=True,
+        )
 
     assert result.reason == "success"
     assert result.text == "def audit_claims(): pass"
@@ -137,7 +141,10 @@ def test_selective_hyde_targets_behavior_descriptions_only() -> None:
     assert result.estimated_input_tokens > 0
     assert result.estimated_output_tokens > 0
 
-    with patch("stropha.inference.generate") as generate:
+    assert prose_with_domain_terms.reason == "success"
+    assert generate.call_count == 2
+
+    with patch("stropha.inference.generate") as skipped_generate:
         symbol = generate_hypothetical(
             "When UserService receives a login request from the client",
             force_enabled=True,
@@ -156,7 +163,7 @@ def test_selective_hyde_targets_behavior_descriptions_only() -> None:
     assert structural.reason == "structural_query"
     assert conceptual.reason == "not_behavior"
     assert short.reason == "too_short"
-    generate.assert_not_called()
+    skipped_generate.assert_not_called()
 
 
 def test_selective_hyde_handles_backend_exception() -> None:
