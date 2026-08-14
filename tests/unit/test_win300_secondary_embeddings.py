@@ -13,6 +13,7 @@ from stropha.errors import ConfigError
 from stropha.ingest.secondary_embedding_loader import SecondaryEmbeddingLoader
 from stropha.models import SearchHit
 from stropha.pipeline.builder import build_stages
+from stropha.retrieval.hyde import HydeResult
 from stropha.retrieval.query_rewrite import QueryRewriteResult
 
 
@@ -247,7 +248,10 @@ def test_model2vec_stream_embeds_rewritten_literal_not_primary_hyde() -> None:
             "stropha.retrieval.query_rewrite.rewrite_query",
             return_value=QueryRewriteResult(query="rewritten literal", reason="success"),
         ),
-        patch("stropha.retrieval.hyde.maybe_hyde_rewrite", return_value="hyde vector text"),
+        patch(
+            "stropha.retrieval.hyde.generate_hypothetical",
+            return_value=HydeResult("hyde vector text", "success", generation_calls=1),
+        ),
     ):
         hits = retrieval.search("original")
 

@@ -804,6 +804,19 @@ and 3; `docs-rationale` recall regressed from `0.7` to `0.6` in both arms.
 Selective multi-query therefore failed the 3-point target-tag and latency gates. It
 remains disabled by default and is not eligible for a frozen holdout.
 
+The selective HyDE implementation uses deterministic `behavior-description-v1`
+selection for natural descriptions beginning with temporal/action framing such as
+`when`, `after`, `before`, `given`, and `once`, plus explicit "what happens"
+questions. Empty, short, symbol-shaped, non-natural, conceptual, and explicit graph
+commands bypass generation. The legacy helper retains its non-selective API for
+existing callers, while production search paths use the structured policy result.
+Hybrid diagnostics record selection reasons, generation calls, fallbacks, estimated
+tokens, and generation latency including p95. The retrieval adapter identity includes
+the effective policy, complete prompt family, prompt style, and inference backend.
+The dedicated `hyde_matrix.yaml` contains one disabled baseline and one code-tuned
+selective HyDE candidate on the reusable search split. Benchmark promotion and
+holdout validation remain pending.
+
 ### Files
 
 - `src/stropha/adapters/retrieval/hybrid_rrf.py`

@@ -212,6 +212,10 @@ class HybridRrfRetrieval(RetrievalStage):
         self._streams = self._build_streams(storage, secondary_embedder)
         self._reranker = self._build_reranker()
         self._learned_weights = self._build_learned_weights()
+        self._hyde_latencies_ms: list[float] = []
+        self._hyde_counts: dict[str, int] = {}
+        self._hyde_input_tokens = 0
+        self._hyde_output_tokens = 0
         self._rewrite_latencies_ms: list[float] = []
         self._rewrite_counts: dict[str, int] = {}
         self._rewrite_input_tokens = 0
@@ -249,6 +253,15 @@ class HybridRrfRetrieval(RetrievalStage):
             self._learned_weights.fingerprint() if self._learned_weights is not None else "off"
         )
         digest = hashlib.sha256(repr(canonical).encode("utf-8")).hexdigest()[:8]
+        hyde_enabled, hyde_code_tuned = self._hyde_settings()
+        if hyde_enabled:
+            from ...inference import get_backend
+            from ...retrieval.hyde import policy_id as hyde_policy_id
+
+            backend_hash = hashlib.sha256(get_backend().identity.encode("utf-8")).hexdigest()[:8]
+            hyde_id = f"{hyde_policy_id(code_tuned=hyde_code_tuned)}:llm={backend_hash}"
+        else:
+            hyde_id = "off"
         multi_query_enabled, multi_query_count, multi_query_min_terms = (
             self._multi_query_settings()
         )
@@ -277,7 +290,7 @@ class HybridRrfRetrieval(RetrievalStage):
             f"reranker={reranker_id}:adaptive={int(self._config.adaptive_weighting)}:"
             f"mq={multi_query_id}:"
             f"rewrite={rewrite_id}:"
-            f"hyde={int(self._config.hyde_enabled)}:{self._config.hyde_code_tuned}:"
+            f"hyde={hyde_id}:"
             f"recursive={int(self._config.recursive_enabled)}:"
             f"adjacency={self._config.recursive_adjacency}:"
             f"inherit={int(self._config.inherit_global_features)}:"
@@ -305,6 +318,23 @@ class HybridRrfRetrieval(RetrievalStage):
         )
 
     def reset_diagnostics(self) -> None:
+        self._hyde_counts = {
+            reason: 0
+            for reason in (
+                "success",
+                "empty_query",
+                "symbol_query",
+                "structural_query",
+                "not_natural",
+                "too_short",
+                "not_behavior",
+                "empty_response",
+                "backend_error",
+            )
+        }
+        self._hyde_latencies_ms = []
+        self._hyde_input_tokens = 0
+        self._hyde_output_tokens = 0
         self._rewrite_counts = {
             reason: 0
             for reason in (
@@ -355,6 +385,39 @@ class HybridRrfRetrieval(RetrievalStage):
 
     def diagnostics(self) -> dict[str, Any]:
         out: dict[str, Any] = {}
+        hyde_enabled, hyde_code_tuned = self._hyde_settings()
+        from ...retrieval.hyde import policy_id as hyde_policy_id
+
+        hyde_calls = sum(
+            self._hyde_counts[reason]
+            for reason in ("success", "empty_response", "backend_error")
+        )
+        hyde_fallbacks = self._hyde_counts["empty_response"] + self._hyde_counts["backend_error"]
+        out["hyde"] = {
+            "enabled": hyde_enabled,
+            "policy_id": hyde_policy_id(code_tuned=hyde_code_tuned),
+            "code_tuned": hyde_code_tuned,
+            "generation_calls": hyde_calls,
+            "successes": self._hyde_counts["success"],
+            "fallbacks": hyde_fallbacks,
+            "fallback_rate": round(hyde_fallbacks / hyde_calls, 4) if hyde_calls else 0.0,
+            "estimated_input_tokens": self._hyde_input_tokens,
+            "estimated_output_tokens": self._hyde_output_tokens,
+            "estimated_total_tokens": self._hyde_input_tokens + self._hyde_output_tokens,
+            "latency_ms": round(sum(self._hyde_latencies_ms), 3),
+            "latency_p95_ms": self._percentile(self._hyde_latencies_ms, 0.95),
+            "skips": {
+                reason: self._hyde_counts[reason]
+                for reason in (
+                    "empty_query",
+                    "symbol_query",
+                    "structural_query",
+                    "not_natural",
+                    "too_short",
+                    "not_behavior",
+                )
+            },
+        }
         rewrite_enabled, rewrite_max_terms = self._query_rewrite_settings()
         from ...retrieval.query_rewrite import policy_id
 
@@ -491,6 +554,25 @@ class HybridRrfRetrieval(RetrievalStage):
         effective_max_terms = max_terms or DEFAULT_MAX_TERMS
         return enabled, max(1, min(20, effective_max_terms))
 
+    def _hyde_settings(self) -> tuple[bool, bool]:
+        enabled = self._config.hyde_enabled
+        code_tuned = self._config.hyde_code_tuned
+        if self._config.inherit_global_features:
+            from ...config import get_config
+
+            features = get_config().retrieval_features
+            enabled = enabled or features.hyde_enabled
+            if code_tuned is None:
+                code_tuned = features.hyde_code_tuned
+        return enabled, True if code_tuned is None else code_tuned
+
+    def _record_hyde(self, result: Any) -> None:
+        self._hyde_counts[result.reason] += 1
+        self._hyde_input_tokens += result.estimated_input_tokens
+        self._hyde_output_tokens += result.estimated_output_tokens
+        if result.generation_calls:
+            self._hyde_latencies_ms.append(result.latency_ms)
+
     def _record_query_rewrite(self, result: Any) -> None:
         self._rewrite_counts[result.reason] += 1
         self._rewrite_input_tokens += result.estimated_input_tokens
@@ -618,21 +700,18 @@ class HybridRrfRetrieval(RetrievalStage):
         # Enabled via config.hyde_enabled OR retrieval_features.hyde_enabled in YAML
         dense_query = search_query
         if needs_vec:
-            hyde_enabled = self._config.hyde_enabled
-            if self._config.inherit_global_features:
-                from ...config import get_config
-
-                hyde_enabled = hyde_enabled or get_config().retrieval_features.hyde_enabled
+            hyde_enabled, hyde_code_tuned = self._hyde_settings()
             if hyde_enabled:
-                from ...retrieval.hyde import maybe_hyde_rewrite
+                from ...retrieval.hyde import generate_hypothetical
 
-                rewritten = maybe_hyde_rewrite(
+                hyde_result = generate_hypothetical(
                     query,
                     force_enabled=True,
-                    code_tuned=self._config.hyde_code_tuned,
-                )  # Use original query for HyDE
-                if rewritten:
-                    dense_query = rewritten
+                    code_tuned=hyde_code_tuned,
+                )
+                self._record_hyde(hyde_result)
+                if hyde_result.text:
+                    dense_query = hyde_result.text
 
             if conversation_context and conversation_context.strip():
                 dense_query = (

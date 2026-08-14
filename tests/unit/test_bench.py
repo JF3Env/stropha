@@ -219,6 +219,16 @@ def test_multi_query_matrix_is_two_selective_candidate_arms() -> None:
     assert matrix.baseline_cell() == cells[0]
 
 
+def test_hyde_matrix_is_one_selective_candidate_arm() -> None:
+    path = Path(__file__).resolve().parents[2] / "src/stropha/bench/hyde_matrix.yaml"
+    matrix = load_matrix(path)
+    cells = matrix.expand()
+
+    assert [cell.values["hyde"] for cell in cells] == [False, True]
+    assert {cell.values["hyde_code_tuned"] for cell in cells} == {True}
+    assert matrix.baseline_cell() == cells[0]
+
+
 def test_active_matrix_parses_and_has_declared_baseline() -> None:
     path = Path(__file__).resolve().parents[2] / "src/stropha/bench/active_matrix.yaml"
     active = load_matrix(path)

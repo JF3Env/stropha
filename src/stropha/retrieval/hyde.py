@@ -35,10 +35,16 @@ Usage:
 
 from __future__ import annotations
 
+import hashlib
+import math
 import re
+import time
+from dataclasses import dataclass
+from typing import Literal
 
 from ..config import get_config
 from ..logging import get_logger
+from .query_classify import classify_query
 
 log = get_logger(__name__)
 
@@ -124,6 +130,84 @@ _DEFAULT_PROMPT = (
     "QUESTION: {query}\n\n"
     "Reply with just the snippet/paragraph — no preamble, no \"sure here is\"."
 )
+_POLICY_VERSION = "behavior-description-v1"
+_BEHAVIOR_PREFIXES = ("when ", "after ", "before ", "given ", "once ")
+_STRUCTURAL_PREFIXES = (
+    "find callers",
+    "find tests",
+    "tests for",
+    "trace ",
+    "what calls",
+    "what relates",
+    "what uses",
+    "who calls",
+)
+
+HydeReason = Literal[
+    "success",
+    "disabled",
+    "empty_query",
+    "symbol_query",
+    "structural_query",
+    "not_natural",
+    "too_short",
+    "not_behavior",
+    "empty_response",
+    "backend_error",
+]
+
+
+@dataclass(frozen=True)
+class HydeResult:
+    """Hypothetical document plus selection and generation measurements."""
+
+    text: str | None
+    reason: HydeReason
+    generation_calls: int = 0
+    estimated_input_tokens: int = 0
+    estimated_output_tokens: int = 0
+    latency_ms: float = 0.0
+
+
+def policy_id(*, code_tuned: bool = True) -> str:
+    """Stable identity for selection and every possible prompt template."""
+    prompts = (
+        _PROMPT_CODE_FUNCTION,
+        _PROMPT_CODE_CLASS,
+        _PROMPT_CODE_HOW,
+        _PROMPT_CODE_WHERE,
+        _PROMPT_CODE_TEST,
+        _PROMPT_CODE_ERROR,
+        _PROMPT_CODE_DEFAULT,
+    ) if code_tuned else (_DEFAULT_PROMPT,)
+    prompt_hash = hashlib.sha256("\0".join(prompts).encode("utf-8")).hexdigest()[:8]
+    return f"{_POLICY_VERSION}:code={int(code_tuned)}:p={prompt_hash}"
+
+
+def _estimate_tokens(text: str) -> int:
+    return max(1, math.ceil(len(text) / 4)) if text else 0
+
+
+def _policy_reason(query: str) -> HydeReason | None:
+    stripped = query.strip()
+    if not stripped:
+        return "empty_query"
+
+    classification = classify_query(stripped)
+    if classification.symbol_tokens:
+        return "symbol_query"
+    if not classification.is_natural:
+        return "not_natural"
+    if len(classification.tokens) < 5:
+        return "too_short"
+
+    lowered = stripped.lower()
+    if lowered.startswith(_STRUCTURAL_PREFIXES):
+        return "structural_query"
+    is_behavior = lowered.startswith(_BEHAVIOR_PREFIXES) or "what happens" in lowered
+    if not is_behavior:
+        return "not_behavior"
+    return None
 
 
 def _select_prompt(query: str) -> str:
@@ -153,13 +237,14 @@ def _prompt_template(query: str, *, code_tuned: bool | None = None) -> str:
     return _DEFAULT_PROMPT
 
 
-def maybe_hyde_rewrite(
+def generate_hypothetical(
     query: str,
     *,
     force_enabled: bool = False,
     code_tuned: bool | None = None,
-) -> str | None:
-    """Return a hypothetical document for ``query`` or ``None`` on fail/skip.
+    apply_policy: bool = True,
+) -> HydeResult:
+    """Selectively generate a hypothetical document and never raise.
 
     Uses MLX on Apple Silicon, falls back to Ollama on other platforms.
 
@@ -174,32 +259,54 @@ def maybe_hyde_rewrite(
         code_tuned: Explicit prompt selection. ``None`` inherits the unified
             runtime setting; candidate evaluation passes a bool to stay isolated.
 
-    Never raises. Worst case it returns None and the caller falls back
-    to the raw query — same behaviour as if the feature were off.
+    The returned result always explains whether generation ran or was skipped.
     """
     if not force_enabled and not _enabled():
-        return None
-    if not query or not query.strip():
-        return None
+        return HydeResult(None, "disabled")
+    reason = _policy_reason(query) if apply_policy else None
+    if not query.strip():
+        reason = "empty_query"
+    if reason is not None:
+        return HydeResult(None, reason)
 
-    prompt = _prompt_template(query, code_tuned=code_tuned).format(query=query)
+    effective_code_tuned = _use_code_tuned() if code_tuned is None else code_tuned
+    prompt = _prompt_template(query, code_tuned=effective_code_tuned).format(query=query)
     
     log.debug("hyde.prompt_selected", query=query[:50], prompt_start=prompt[:30])
 
-    # Use unified inference backend (MLX preferred, Ollama fallback)
-    from ..inference import generate
+    started = time.perf_counter()
+    try:
+        from ..inference import generate
 
-    text = generate(
-        prompt,
-        max_tokens=512,
-        temperature=0.0,
-    )
+        text = generate(
+            prompt,
+            max_tokens=512,
+            temperature=0.0,
+        )
+    except Exception as exc:
+        latency_ms = (time.perf_counter() - started) * 1000.0
+        log.warning("hyde.generation_failed", error=str(exc))
+        return HydeResult(
+            None,
+            "backend_error",
+            generation_calls=1,
+            estimated_input_tokens=_estimate_tokens(prompt),
+            latency_ms=latency_ms,
+        )
 
-    if not text:
+    latency_ms = (time.perf_counter() - started) * 1000.0
+    if not text or not text.strip():
         log.info("hyde.skip_generation_failed")
-        return None
+        return HydeResult(
+            None,
+            "empty_response",
+            generation_calls=1,
+            estimated_input_tokens=_estimate_tokens(prompt),
+            latency_ms=latency_ms,
+        )
 
     # Clean up the response - remove markdown code fences if present
+    raw_text = text
     text = text.strip()
     if text.startswith("```"):
         # Remove opening fence
@@ -212,7 +319,39 @@ def maybe_hyde_rewrite(
         text = "\n".join(lines)
     
     # Cap to keep dense embedding time bounded.
-    return text[:2000]
+    text = text[:2000]
+    if not text.strip():
+        return HydeResult(
+            None,
+            "empty_response",
+            generation_calls=1,
+            estimated_input_tokens=_estimate_tokens(prompt),
+            estimated_output_tokens=_estimate_tokens(raw_text),
+            latency_ms=latency_ms,
+        )
+    return HydeResult(
+        text,
+        "success",
+        generation_calls=1,
+        estimated_input_tokens=_estimate_tokens(prompt),
+        estimated_output_tokens=_estimate_tokens(raw_text),
+        latency_ms=latency_ms,
+    )
+
+
+def maybe_hyde_rewrite(
+    query: str,
+    *,
+    force_enabled: bool = False,
+    code_tuned: bool | None = None,
+) -> str | None:
+    """Return hypothetical text while preserving the legacy non-selective API."""
+    return generate_hypothetical(
+        query,
+        force_enabled=force_enabled,
+        code_tuned=code_tuned,
+        apply_policy=False,
+    ).text
 
 
 def get_prompt_type(query: str) -> str:

@@ -189,9 +189,9 @@ class SearchEngine:
         # HyDE — only the dense embedding sees the hypothetical doc; BM25
         # and the symbol-token lane keep the literal query. Falls back
         # to the raw query if disabled or the LLM call fails.
-        from .hyde import maybe_hyde_rewrite
+        from .hyde import generate_hypothetical
 
-        dense_query = maybe_hyde_rewrite(query) or query
+        dense_query = generate_hypothetical(query).text or query
         if dense_query is not query:
             log.info("search.hyde_rewrite", original_len=len(query),
                      rewritten_len=len(dense_query))

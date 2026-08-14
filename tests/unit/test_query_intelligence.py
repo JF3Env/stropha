@@ -6,8 +6,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from stropha.retrieval.hyde import HydeResult, maybe_hyde_rewrite
 from stropha.retrieval.hyde import _enabled as hyde_enabled
-from stropha.retrieval.hyde import maybe_hyde_rewrite
 from stropha.retrieval.multi_query import MultiQueryResult
 from stropha.retrieval.query_rewrite import (
     QueryRewriteResult,
@@ -391,7 +391,7 @@ class TestHybridRrfSearchIntegration:
             config, storage=recording_storage, embedder=recording_embedder
         )
 
-        retrieval.search("how does login work")
+        retrieval.search("When a user submits login credentials to the server")
 
         # Embedder should receive the HyDE-rewritten query (hypothetical code)
         assert len(recording_embedder.query_texts) == 1
@@ -420,7 +420,7 @@ retrieval_features:
             config, storage=recording_storage, embedder=recording_embedder
         )
 
-        retrieval.search("authentication flow")
+        retrieval.search("When a user starts the authentication flow")
 
         assert len(recording_embedder.query_texts) == 1
         assert "AuthService" in recording_embedder.query_texts[0]
@@ -481,13 +481,13 @@ retrieval_features:
     def test_search_uses_both_hyde_and_query_rewrite(
         self, recording_storage, recording_embedder
     ) -> None:
-        """When both enabled, HyDE affects dense embedding, query rewrite affects all streams."""
+        """Explicitly enabled expansions retain their independent stream effects."""
         from stropha.adapters.retrieval.hybrid_rrf import HybridRrfConfig, HybridRrfRetrieval
 
         # Mock both functions directly since they both use the inference backend
         with (
             patch("stropha.retrieval.query_rewrite.rewrite_query") as mock_rewrite,
-            patch("stropha.retrieval.hyde.maybe_hyde_rewrite") as mock_hyde,
+            patch("stropha.retrieval.hyde.generate_hypothetical") as mock_hyde,
         ):
             # Query rewrite returns expanded terms
             mock_rewrite.return_value = QueryRewriteResult(
@@ -495,9 +495,11 @@ retrieval_features:
                 reason="success",
                 generation_calls=1,
             )
-
-            # HyDE returns hypothetical code
-            mock_hyde.return_value = "class LoginHandler { authenticate() {} }"
+            mock_hyde.return_value = HydeResult(
+                "class LoginHandler { authenticate() {} }",
+                "success",
+                generation_calls=1,
+            )
 
             config = HybridRrfConfig(hyde_enabled=True, query_rewrite_enabled=True)
             retrieval = HybridRrfRetrieval(
@@ -506,7 +508,6 @@ retrieval_features:
 
             retrieval.search("how does auth work")
 
-            # Both should have been called with force_enabled=True
             mock_rewrite.assert_called_once()
             mock_hyde.assert_called_once()
 
@@ -517,7 +518,7 @@ retrieval_features:
             _, kwargs = mock_hyde.call_args
             assert kwargs.get("force_enabled") is True
 
-            # Dense embedding should use HyDE output
+            # Dense embedding should use HyDE output.
             assert len(recording_embedder.query_texts) == 1
             assert "LoginHandler" in recording_embedder.query_texts[0]
 
@@ -538,11 +539,12 @@ retrieval_features:
                 config, storage=recording_storage, embedder=recording_embedder
             )
 
-            retrieval.search("test query")
+            query = "When a user submits credentials the server validates them"
+            retrieval.search(query)
 
             # Should still embed something (the original query)
             assert len(recording_embedder.query_texts) == 1
-            assert recording_embedder.query_texts[0] == "test query"
+            assert recording_embedder.query_texts[0] == query
 
     def test_search_fallback_when_query_rewrite_fails(
         self, recording_storage, recording_embedder
@@ -606,13 +608,13 @@ retrieval_features:
             embedder=recording_embedder,
         )
         with patch(
-            "stropha.retrieval.hyde.maybe_hyde_rewrite",
-            return_value="hypothetical",
+            "stropha.retrieval.hyde.generate_hypothetical",
+            return_value=HydeResult("hypothetical", "success", generation_calls=1),
         ) as rewrite:
-            retrieval.search("query")
+            retrieval.search("When a request arrives the service validates its payload")
 
         rewrite.assert_called_once_with(
-            "query",
+            "When a request arrives the service validates its payload",
             force_enabled=True,
             code_tuned=False,
         )
@@ -802,3 +804,81 @@ retrieval_features:
         assert "mq=broad-conceptual-v1:min=7" in count_two
         assert "count=2" in count_two
         assert count_two != count_three
+
+    def test_hyde_diagnostics_record_policy_cost_and_fallback(
+        self, recording_storage, recording_embedder
+    ) -> None:
+        from stropha.adapters.retrieval.hybrid_rrf import HybridRrfConfig, HybridRrfRetrieval
+
+        retrieval = HybridRrfRetrieval(
+            HybridRrfConfig(hyde_enabled=True, inherit_global_features=False),
+            storage=recording_storage,
+            embedder=recording_embedder,
+        )
+        outcomes = [
+            HydeResult(
+                "hypothetical code",
+                "success",
+                generation_calls=1,
+                estimated_input_tokens=10,
+                estimated_output_tokens=4,
+                latency_ms=5.0,
+            ),
+            HydeResult(None, "not_behavior"),
+            HydeResult(
+                None,
+                "backend_error",
+                generation_calls=1,
+                estimated_input_tokens=8,
+                latency_ms=7.0,
+            ),
+        ]
+        with patch("stropha.retrieval.hyde.generate_hypothetical", side_effect=outcomes):
+            retrieval.search("When an agent submits prose the auditor checks citations")
+            retrieval.search("How does citation auditing work across repositories")
+            retrieval.search("After citations are parsed the auditor resolves references")
+
+        diagnostics = retrieval.diagnostics()["hyde"]
+        assert diagnostics["enabled"] is True
+        assert diagnostics["code_tuned"] is True
+        assert diagnostics["generation_calls"] == 2
+        assert diagnostics["successes"] == 1
+        assert diagnostics["fallbacks"] == 1
+        assert diagnostics["fallback_rate"] == 0.5
+        assert diagnostics["estimated_total_tokens"] == 22
+        assert diagnostics["latency_ms"] == 12.0
+        assert diagnostics["latency_p95_ms"] == 7.0
+        assert diagnostics["skips"]["not_behavior"] == 1
+
+        retrieval.reset_diagnostics()
+        assert retrieval.diagnostics()["hyde"]["generation_calls"] == 0
+
+    def test_adapter_id_tracks_effective_hyde_policy_and_backend(
+        self, recording_storage, recording_embedder
+    ) -> None:
+        from stropha.adapters.retrieval.hybrid_rrf import HybridRrfConfig, HybridRrfRetrieval
+
+        with patch("stropha.inference.get_backend") as get_backend:
+            get_backend.return_value.identity = "local:test-model"
+            code_tuned = HybridRrfRetrieval(
+                HybridRrfConfig(
+                    hyde_enabled=True,
+                    hyde_code_tuned=True,
+                    inherit_global_features=False,
+                ),
+                storage=recording_storage,
+                embedder=recording_embedder,
+            ).adapter_id
+            generic = HybridRrfRetrieval(
+                HybridRrfConfig(
+                    hyde_enabled=True,
+                    hyde_code_tuned=False,
+                    inherit_global_features=False,
+                ),
+                storage=recording_storage,
+                embedder=recording_embedder,
+            ).adapter_id
+
+        assert "hyde=behavior-description-v1:code=1" in code_tuned
+        assert "llm=" in code_tuned
+        assert code_tuned != generic

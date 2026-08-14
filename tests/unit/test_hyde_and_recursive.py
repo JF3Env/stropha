@@ -13,7 +13,7 @@ from unittest.mock import patch
 import pytest
 
 from stropha.models import Chunk, RepoRef, SearchHit
-from stropha.retrieval.hyde import maybe_hyde_rewrite
+from stropha.retrieval.hyde import generate_hypothetical, maybe_hyde_rewrite
 from stropha.retrieval.recursive import (
     DEFAULT_ADJACENCY_LINES,
     _adjacent_or_overlap,
@@ -124,6 +124,50 @@ retrieval_features:
     assert out is not None
     assert "```" not in out
     assert "public void login" in out
+
+
+def test_selective_hyde_targets_behavior_descriptions_only() -> None:
+    query = "When an agent submits prose the citation auditor resolves every reference"
+    with patch("stropha.inference.generate", return_value="def audit_claims(): pass") as generate:
+        result = generate_hypothetical(query, force_enabled=True)
+
+    assert result.reason == "success"
+    assert result.text == "def audit_claims(): pass"
+    assert result.generation_calls == 1
+    assert result.estimated_input_tokens > 0
+    assert result.estimated_output_tokens > 0
+
+    with patch("stropha.inference.generate") as generate:
+        symbol = generate_hypothetical(
+            "When UserService receives a login request from the client",
+            force_enabled=True,
+        )
+        structural = generate_hypothetical(
+            "Who calls the authentication request handler middleware",
+            force_enabled=True,
+        )
+        conceptual = generate_hypothetical(
+            "How does the authentication architecture process requests",
+            force_enabled=True,
+        )
+        short = generate_hypothetical("When users log in", force_enabled=True)
+
+    assert symbol.reason == "symbol_query"
+    assert structural.reason == "structural_query"
+    assert conceptual.reason == "not_behavior"
+    assert short.reason == "too_short"
+    generate.assert_not_called()
+
+
+def test_selective_hyde_handles_backend_exception() -> None:
+    query = "After a user submits an answer the scheduler updates the card"
+    with patch("stropha.inference.generate", side_effect=RuntimeError("offline")):
+        result = generate_hypothetical(query, force_enabled=True)
+
+    assert result.text is None
+    assert result.reason == "backend_error"
+    assert result.generation_calls == 1
+    assert result.estimated_input_tokens > 0
 
 
 # --------------------------------------------------------------------------- code-tuned prompts
