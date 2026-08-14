@@ -50,6 +50,7 @@ class ExperimentPolicy:
             "postgres": {
                 "admin_dsn_configured": bool(self.config.postgres.admin_dsn),
                 "database_prefix": self.config.postgres.database_prefix,
+                "template_database": self.config.postgres.template_database,
             },
             "blacklist": {
                 stage: sorted(adapters)

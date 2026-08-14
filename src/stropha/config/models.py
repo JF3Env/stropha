@@ -379,6 +379,7 @@ class ExperimentPostgresConfig:
 
     admin_dsn: str | None = None
     database_prefix: str = "stropha_bench"
+    template_database: str = "template1"
 
     def __post_init__(self) -> None:
         if self.admin_dsn is not None:
@@ -393,6 +394,17 @@ class ExperimentPostgresConfig:
             raise ConfigError(
                 "experiments.postgres.database_prefix must match [a-z][a-z0-9_]* "
                 f"and be at most {_MAX_DATABASE_PREFIX_LENGTH} characters"
+            )
+        template = self.template_database
+        if (
+            not isinstance(template, str)
+            or not template
+            or len(template.encode()) > 63
+            or not _DATABASE_PREFIX_RE.fullmatch(template)
+        ):
+            raise ConfigError(
+                "experiments.postgres.template_database must be a lowercase PostgreSQL "
+                "identifier of at most 63 bytes"
             )
 
 

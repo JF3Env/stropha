@@ -517,6 +517,8 @@ def _experiment_provenance(*, cluster_identity: Any | None = None) -> dict[str, 
                 "database": cluster_identity.database,
                 "user": cluster_identity.user,
                 "server_version": cluster_identity.server_version,
+                "template_database": cluster_identity.template_database,
+                "template_extensions": list(cluster_identity.template_extensions),
             }
         index_dir = "ignored; PostgreSQL evaluation databases are manager-owned"
     return {
@@ -725,7 +727,7 @@ def _postgres_cache_key(indexing_sig: str, provenance: dict[str, Any]) -> str:
         "indexing_sig": indexing_sig,
         "indexing_hash": provenance["indexing_identities"][indexing_sig],
         "index_runtime_id": provenance["index_runtime_id"],
-        "policy_fingerprint": provenance["experiment"]["policy_fingerprint"],
+        "experiment": provenance["experiment"],
     }
     return json.dumps(fields, sort_keys=True, separators=(",", ":"))
 
@@ -774,6 +776,7 @@ def run_matrix(
         postgres_manager = PostgresEvaluationDatabaseManager(
             admin_dsn=admin_dsn,
             database_prefix=policy.config.postgres.database_prefix,
+            template_database=policy.config.postgres.template_database,
             production_database=_production_database_for_admin(admin_dsn),
         )
         if not dry_run:

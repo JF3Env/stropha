@@ -127,6 +127,18 @@ class _PostgresManager:
         self.clones: list[DatabaseRef] = []
         self.dropped: list[str] = []
 
+    @property
+    def cluster_identity(self) -> Any:
+        return SimpleNamespace(
+            host="db.internal",
+            port=5544,
+            database="eval_admin",
+            user="eval_user",
+            server_version="17.2",
+            template_database="eval_template",
+            template_extensions=("plpgsql=1.0", "vector=0.8.1"),
+        )
+
     def get_or_create_cache(self, cache_key: str, builder: Any) -> DatabaseRef:
         self.cache_keys.append(cache_key)
         existing = self.caches.get(cache_key)

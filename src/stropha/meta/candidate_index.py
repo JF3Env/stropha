@@ -153,6 +153,20 @@ class CandidateIndexProvider:
             payload["storage_config"] = json.dumps(
                 config["storage"], sort_keys=True, separators=(",", ":")
             )
+            cluster = self.postgres_manager.cluster_identity
+            payload["storage_runtime"] = json.dumps(
+                {
+                    "database": cluster.database,
+                    "host": cluster.host,
+                    "port": cluster.port,
+                    "server_version": cluster.server_version,
+                    "template_database": cluster.template_database,
+                    "template_extensions": list(cluster.template_extensions),
+                    "user": cluster.user,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
         cache_key = hashlib.sha256(
             json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest()

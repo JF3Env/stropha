@@ -210,6 +210,7 @@ experiments:
   postgres:
     admin_dsn: postgresql://ROLE:PASSWORD@HOST:PORT/stropha_bench_admin
     database_prefix: stropha_bench
+    template_database: stropha_bench_template
   blacklist:
     adapters:
       embedder: [voyage]
@@ -222,6 +223,9 @@ provenance contains the policy fingerprint and non-secret cluster coordinates,
 not the DSN or password. The production DSN and production database are never
 mutated. Holdout validation fails closed unless the frozen storage backend,
 policy fingerprint, and PostgreSQL cluster identity still match the search run.
+The dedicated template database is owned by the evaluation role and has
+`vector` installed by an administrator; derived databases clone it without
+granting the evaluation role superuser privileges.
 
 ### Code-search boundary
 

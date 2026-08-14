@@ -28,6 +28,8 @@ class _FakeDatabase:
     owner: str
     comment: str | None = None
     allow_connections: bool = True
+    is_template: bool = False
+    extensions: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass
@@ -39,7 +41,14 @@ class _FakeInfo:
 class _FakeCluster:
     def __init__(self, *, can_create_database: bool = True) -> None:
         self.can_create_database = can_create_database
-        self.databases = {"eval_admin": _FakeDatabase(owner=OWNER)}
+        self.databases = {
+            "eval_admin": _FakeDatabase(owner=OWNER),
+            "template1": _FakeDatabase(
+                owner="postgres",
+                is_template=True,
+                extensions=(("plpgsql", "1.0"), ("vector", "0.8.1")),
+            ),
+        }
         self.active_connections: dict[str, int] = {}
         self.calls: list[tuple[str, object]] = []
         self.connect_calls: list[tuple[str, bool]] = []
@@ -48,8 +57,8 @@ class _FakeCluster:
 
     def connect(self, dsn: str, *, autocommit: bool = False) -> _FakeConnection:
         self.connect_calls.append((dsn, autocommit))
-        assert autocommit is True
-        return _FakeConnection(self)
+        database = str(conninfo_to_dict(dsn).get("dbname") or "eval_admin")
+        return _FakeConnection(self, database)
 
     def marker(self, kind: str, cache_key: str) -> str:
         return json.dumps(
@@ -66,22 +75,36 @@ class _FakeCluster:
 
 
 class _FakeConnection:
-    def __init__(self, cluster: _FakeCluster) -> None:
+    def __init__(self, cluster: _FakeCluster, database: str) -> None:
         self.cluster = cluster
+        self.database = database
         self.info = _FakeInfo()
         self.closed = False
 
+    def __enter__(self) -> _FakeConnection:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        self.close()
+
     def cursor(self) -> _FakeCursor:
-        return _FakeCursor(self.cluster)
+        return _FakeCursor(self.cluster, self.database)
+
+    def execute(self, query: object, params: object = None) -> _FakeCursor:
+        cursor = self.cursor()
+        cursor.execute(query, params)
+        return cursor
 
     def close(self) -> None:
         self.closed = True
 
 
 class _FakeCursor:
-    def __init__(self, cluster: _FakeCluster) -> None:
+    def __init__(self, cluster: _FakeCluster, database: str) -> None:
         self.cluster = cluster
+        self.database = database
         self._result: tuple[object, ...] | None = None
+        self._results: list[tuple[object, ...]] = []
 
     def __enter__(self) -> _FakeCursor:
         return self
@@ -98,14 +121,24 @@ class _FakeCursor:
         statement = " ".join(statement.split())
         self.cluster.calls.append((statement, params))
         self._result = None
+        self._results = []
 
         if statement.startswith("SELECT current_database()"):
             self._result = (
-                "eval_admin",
+                self.database,
                 OWNER,
                 "17.2",
                 self.cluster.can_create_database,
             )
+            return
+        if statement.startswith("SELECT pg_get_userbyid(datdba), datistemplate"):
+            assert isinstance(params, tuple)
+            database = self.cluster.databases.get(str(params[0]))
+            if database is not None:
+                self._result = (database.owner, database.is_template)
+            return
+        if statement.startswith("SELECT extname, extversion FROM pg_extension"):
+            self._results = list(self.cluster.databases[self.database].extensions)
             return
         if "FROM pg_database AS d" in statement:
             assert isinstance(params, tuple)
@@ -165,6 +198,9 @@ class _FakeCursor:
 
     def fetchone(self) -> tuple[object, ...] | None:
         return self._result
+
+    def fetchall(self) -> list[tuple[object, ...]]:
+        return self._results
 
 
 @pytest.fixture
@@ -232,9 +268,17 @@ def test_preflight_records_non_secret_identity(
     assert identity.database == "eval_admin"
     assert identity.user == OWNER
     assert identity.server_version == "17.2"
+    assert identity.template_database == "template1"
+    assert identity.template_extensions == ("plpgsql=1.0", "vector=0.8.1")
     assert "top-secret" not in repr(identity)
     assert manager.cluster_identity is identity
-    assert len(cluster.connect_calls) == 1
+    assert cluster.connect_calls == [
+        (ADMIN_DSN, True),
+        (
+            "user=eval_user password=top-secret dbname=template1 host=db.internal port=5544",
+            False,
+        ),
+    ]
 
 
 def test_preflight_requires_createdb(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -246,6 +290,19 @@ def test_preflight_requires_createdb(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
     with pytest.raises(PostgresEvaluationSafetyError, match="CREATEDB"):
+        manager.preflight()
+
+
+def test_preflight_requires_vector_in_template(monkeypatch: pytest.MonkeyPatch) -> None:
+    cluster = _FakeCluster()
+    cluster.databases["template1"].extensions = (("plpgsql", "1.0"),)
+    monkeypatch.setattr(postgres_module.psycopg, "connect", cluster.connect)
+    manager = PostgresEvaluationDatabaseManager(
+        admin_dsn=ADMIN_DSN,
+        database_prefix=PREFIX,
+    )
+
+    with pytest.raises(PostgresEvaluationSafetyError, match="vector extension"):
         manager.preflight()
 
 
@@ -324,7 +381,7 @@ def test_builds_staging_cache_and_atomically_publishes_it(
     assert any(call.startswith("SELECT pg_advisory_lock") for call, _ in cluster.calls)
     assert any(call.startswith("SELECT pg_advisory_unlock") for call, _ in cluster.calls)
     staging_create = next(call for call, _ in cluster.calls if call.startswith("CREATE DATABASE"))
-    assert "TEMPLATE" not in staging_create
+    assert 'TEMPLATE "template1"' in staging_create
     assert any(call.startswith("ALTER DATABASE") for call in cluster.composable_ddl)
 
 
@@ -345,6 +402,20 @@ def test_builder_failure_force_drops_marked_staging_without_leaking_error(
     assert built[0].name not in cluster.databases
     assert built[0].name in cluster.drops
     assert any("WITH (FORCE)" in call for call in cluster.composable_ddl)
+
+
+def test_builder_postgres_error_preserves_safe_root_cause(
+    manager: PostgresEvaluationDatabaseManager,
+    cluster: _FakeCluster,
+) -> None:
+    def fail(_ref: DatabaseRef) -> None:
+        raise psycopg.errors.InsufficientPrivilege("permission denied to create extension vector")
+
+    with pytest.raises(PostgresEvaluationError, match="permission denied") as caught:
+        manager.get_or_create_cache("postgres-error", fail)
+
+    assert "top-secret" not in str(caught.value)
+    assert any(name.startswith("eval_staging_") for name in cluster.drops)
 
 
 def test_cache_builder_must_close_database_connections(

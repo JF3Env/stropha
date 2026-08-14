@@ -296,6 +296,7 @@ experiments:
   postgres:
     admin_dsn: postgresql://ROLE:PASSWORD@HOST:PORT/stropha_bench_admin
     database_prefix: stropha_bench
+    template_database: stropha_bench_template
   blacklist:
     adapters:
       embedder: [voyage]
@@ -315,6 +316,10 @@ dedicated, non-production admin database and role, and grant that role
 provenance records a policy fingerprint and non-secret cluster identity, never
 the DSN or password. The production DSN and production database are never
 mutated.
+
+The template database must be owned by the evaluation role and have the
+`vector` extension installed by a PostgreSQL administrator. Stropha clones it
+before opening storage, so the evaluation role does not need superuser rights.
 
 PostgreSQL experiments build deterministic, marked canonical cache databases
 and create a disposable template clone for each benchmark cell or Meta-Harness

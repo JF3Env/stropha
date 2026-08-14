@@ -671,6 +671,8 @@ def test_postgres_run_reuses_cache_and_clones_each_cell(
                 database="eval_admin",
                 user="eval_user",
                 server_version="17.2",
+                template_database="eval_template",
+                template_extensions=("plpgsql=1.0", "vector=0.8.1"),
             )
 
         @staticmethod
@@ -775,10 +777,10 @@ def test_postgres_run_reuses_cache_and_clones_each_cell(
     assert summary["evaluated"] == 2
     assert len(cache_keys) == 1
     assert json.loads(cache_keys[0]) == {
+        "experiment": {"policy_fingerprint": "policy-one"},
         "index_runtime_id": "index-runtime-one",
         "indexing_hash": "index-hash",
         "indexing_sig": source.expand()[0].indexing_sig,
-        "policy_fingerprint": "policy-one",
         "repo_key": "repo-one",
         "source_state_id": "source-one",
         "version": 2,
@@ -983,6 +985,8 @@ def test_postgres_runtime_provenance_uses_preflighted_cluster_identity(
             database="eval_admin",
             user="eval_user",
             server_version="17.2",
+            template_database="eval_template",
+            template_extensions=("plpgsql=1.0", "vector=0.8.1"),
         )
     )
 
@@ -992,6 +996,8 @@ def test_postgres_runtime_provenance_uses_preflighted_cluster_identity(
         "database": "eval_admin",
         "user": "eval_user",
         "server_version": "17.2",
+        "template_database": "eval_template",
+        "template_extensions": ["plpgsql=1.0", "vector=0.8.1"],
     }
 
 

@@ -73,6 +73,8 @@ class ClusterIdentity:
     database: str
     user: str
     server_version: str
+    template_database: str
+    template_extensions: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -102,6 +104,7 @@ class PostgresEvaluationDatabaseManager:
         *,
         admin_dsn: str,
         database_prefix: str,
+        template_database: str = "template1",
         production_database: str | None = None,
     ) -> None:
         self._validate_prefix(database_prefix)
@@ -123,10 +126,25 @@ class PostgresEvaluationDatabaseManager:
             raise PostgresEvaluationSafetyError(
                 "The admin database must not be the production database"
             )
+        if not _PREFIX_RE.fullmatch(template_database) or len(template_database.encode()) > 63:
+            raise PostgresEvaluationSafetyError(
+                "Template database must be a lowercase PostgreSQL identifier"
+            )
+        if template_database in {admin_database, production_database}:
+            raise PostgresEvaluationSafetyError(
+                "The template database must not be the admin or production database"
+            )
+        if template_database not in {"template0", "template1"} and not template_database.startswith(
+            f"{database_prefix}_"
+        ):
+            raise PostgresEvaluationSafetyError(
+                f"Custom template database must begin with {database_prefix + '_'!r}"
+            )
 
         self._admin_dsn = admin_dsn
         self._admin_database = admin_database
         self._database_prefix = database_prefix
+        self._template_database = template_database
         self._production_database = production_database
         self._identity: ClusterIdentity | None = None
         escaped_prefix = re.escape(database_prefix)
@@ -140,6 +158,7 @@ class PostgresEvaluationDatabaseManager:
         return (
             f"{type(self).__name__}(admin_dsn={redact_dsn(self._admin_dsn)!r}, "
             f"database_prefix={self._database_prefix!r}, "
+            f"template_database={self._template_database!r}, "
             f"production_database={self._production_database!r})"
         )
 
@@ -208,17 +227,56 @@ class PostgresEvaluationDatabaseManager:
             if not bool(can_create_database):
                 raise PostgresEvaluationSafetyError("The PostgreSQL admin role must have CREATEDB")
 
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT pg_get_userbyid(datdba), datistemplate
+                    FROM pg_database
+                    WHERE datname = %s
+                    """,
+                    (self._template_database,),
+                )
+                template_row = cursor.fetchone()
+            if template_row is None:
+                raise PostgresEvaluationSafetyError(
+                    f"PostgreSQL evaluation template database {self._template_database!r} "
+                    "does not exist"
+                )
+            template_owner, is_template = template_row
+            if str(template_owner) != str(user) and not bool(is_template):
+                raise PostgresEvaluationSafetyError(
+                    "The PostgreSQL admin role must own the evaluation template database"
+                )
+
             info = connection.info
             host = str(info.host or "local")
             port = int(info.port or 5432)
-            self._identity = ClusterIdentity(
-                host=host,
-                port=port,
-                database=database,
-                user=str(user),
-                server_version=str(server_version),
+
+        template_dsn = self._database_dsn(self._template_database)
+        try:
+            with psycopg.connect(template_dsn) as template_connection:
+                rows = template_connection.execute(
+                    "SELECT extname, extversion FROM pg_extension ORDER BY extname"
+                ).fetchall()
+        except psycopg.Error:
+            raise PostgresEvaluationError(
+                "Could not inspect the PostgreSQL evaluation template database"
+            ) from None
+        extensions = tuple(f"{name}={version}" for name, version in rows)
+        if not any(extension.startswith("vector=") for extension in extensions):
+            raise PostgresEvaluationSafetyError(
+                "PostgreSQL evaluation template database must have the vector extension installed"
             )
-            return self._identity
+        self._identity = ClusterIdentity(
+            host=host,
+            port=port,
+            database=database,
+            user=str(user),
+            server_version=str(server_version),
+            template_database=self._template_database,
+            template_extensions=extensions,
+        )
+        return self._identity
 
     def cache_database_name(self, cache_key: str) -> str:
         """Return the deterministic canonical database name for ``cache_key``."""
@@ -261,6 +319,15 @@ class PostgresEvaluationDatabaseManager:
             "prefix": self._database_prefix,
         }
         return json.dumps(marker, sort_keys=True, separators=(",", ":"))
+
+    def _safe_builder_error(self, exc: BaseException) -> str | None:
+        if not isinstance(exc, (StrophaError, psycopg.Error)):
+            return None
+        detail = str(exc)
+        with_password = conninfo_to_dict(self._admin_dsn).get("password")
+        if with_password:
+            detail = detail.replace(str(with_password), "***")
+        return detail[:500]
 
     @staticmethod
     def _decode_marker(comment: str | None) -> _Marker | None:
@@ -431,7 +498,10 @@ class PostgresEvaluationDatabaseManager:
 
                 try:
                     cursor.execute(
-                        sql.SQL("CREATE DATABASE {}").format(sql.Identifier(staging_name))
+                        sql.SQL("CREATE DATABASE {} TEMPLATE {}").format(
+                            sql.Identifier(staging_name),
+                            sql.Identifier(self._template_database),
+                        )
                     )
                     created = True
                     self._comment_database(
@@ -445,9 +515,11 @@ class PostgresEvaluationDatabaseManager:
                     )
                     try:
                         builder(staging_ref)
-                    except Exception:
+                    except Exception as exc:
+                        detail = self._safe_builder_error(exc)
                         raise _BuilderFailed(
                             f"Cache builder failed for database {staging_name!r}"
+                            + (f": {detail}" if detail else "")
                         ) from None
 
                     cursor.execute(

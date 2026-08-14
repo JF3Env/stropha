@@ -3321,6 +3321,7 @@ def _meta_experiment_backend(
         manager = PostgresEvaluationDatabaseManager(
             admin_dsn=admin_dsn,
             database_prefix=policy.config.postgres.database_prefix,
+            template_database=policy.config.postgres.template_database,
             production_database=_meta_production_database(admin_dsn, base_config),
         )
         cluster = manager.preflight()
@@ -3330,6 +3331,8 @@ def _meta_experiment_backend(
             "database": cluster.database,
             "user": cluster.user,
             "server_version": cluster.server_version,
+            "template_database": cluster.template_database,
+            "template_extensions": list(cluster.template_extensions),
         }
     experiment = {
         "storage": storage,

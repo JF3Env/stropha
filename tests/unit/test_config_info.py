@@ -213,6 +213,7 @@ def test_experiment_settings_load_from_yaml(tmp_path):
           postgres:
             admin_dsn: postgresql://admin:secret@localhost/stropha_bench
             database_prefix: local_bench
+            template_database: local_bench_template
           blacklist:
             adapters:
               embedder: [voyage]
@@ -224,6 +225,7 @@ def test_experiment_settings_load_from_yaml(tmp_path):
 
     assert experiments.storage == "postgres"
     assert experiments.postgres.database_prefix == "local_bench"
+    assert experiments.postgres.template_database == "local_bench_template"
     assert experiments.blacklist.adapters == {
         "embedder": ("voyage",),
         "walker": ("git-diff",),
@@ -253,6 +255,7 @@ def test_postgres_experiment_missing_dsn_loads_but_fails_run_validation(tmp_path
         ({"storage": "memory"}, "storage must be"),
         ({"postgres": {"database_prefix": "Upper"}}, "database_prefix must match"),
         ({"postgres": {"database_prefix": "a" * 33}}, "at most 32"),
+        ({"postgres": {"template_database": "Bad-Template"}}, "template_database must be"),
         ({"blacklist": {"adapters": []}}, "adapters must be a mapping"),
         (
             {"blacklist": {"adapters": {"embedder": ["voyage", "voyage"]}}},
@@ -289,6 +292,7 @@ def test_experiment_introspection_redacts_postgres_dsn(tmp_path):
     assert info["settings"]["experiments"]["postgres"] == {
         "admin_dsn": "(set)",
         "database_prefix": "local_bench",
+        "template_database": "template1",
     }
     assert info["experiments"] == info["settings"]["experiments"]
     assert dsn not in repr(info)

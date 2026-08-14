@@ -391,6 +391,7 @@ def _parse_experiments(raw: Any) -> ExperimentsConfig:
         postgres=ExperimentPostgresConfig(
             admin_dsn=postgres_raw.get("admin_dsn"),
             database_prefix=postgres_raw.get("database_prefix", "stropha_bench"),
+            template_database=postgres_raw.get("template_database", "template1"),
         ),
         blacklist=ExperimentBlacklistConfig(adapters=adapters_raw),
     )
@@ -525,6 +526,7 @@ def get_config_info() -> dict[str, Any]:
         "postgres": {
             "admin_dsn": "(set)" if cfg.experiments.postgres.admin_dsn else None,
             "database_prefix": cfg.experiments.postgres.database_prefix,
+            "template_database": cfg.experiments.postgres.template_database,
         },
         "blacklist": {
             "adapters": {

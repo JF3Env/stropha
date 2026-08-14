@@ -444,6 +444,8 @@ class TestMetaRun:
                 database="stropha_meta_admin",
                 user="eval_user",
                 server_version="17.2",
+                template_database="stropha_meta_template",
+                template_extensions=("plpgsql=1.0", "vector=0.8.1"),
             )
 
             def __init__(self, **kwargs: Any) -> None:
