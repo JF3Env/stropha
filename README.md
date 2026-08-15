@@ -312,7 +312,10 @@ production-backend behaviors are what the experiment must measure.
 The PostgreSQL `admin_dsn` must name a database beginning with
 `<database_prefix>_`; the example therefore uses `stropha_bench_admin`. Use a
 dedicated, non-production admin database and role, and grant that role
-`CREATEDB`. The credentials stay only in `~/.stropha/config.yaml`: experiment
+`CREATEDB` plus membership in `pg_signal_backend`. The latter lets guarded
+`DROP DATABASE ... FORCE` cleanup terminate PostgreSQL maintenance sessions in
+an exact, marked evaluation database. The credentials stay only in
+`~/.stropha/config.yaml`: experiment
 provenance records a policy fingerprint and non-secret cluster identity, never
 the DSN or password. The production DSN and production database are never
 mutated.

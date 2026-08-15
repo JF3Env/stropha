@@ -195,10 +195,12 @@ def run_batch(
     results_path = prepared.root / "results.jsonl"
     decision_path = prepared.root / "decision.json"
     has_results = results_path.is_file() and results_path.stat().st_size > 0
-    if not dry_run and (decision_path.is_file() or has_results):
+    if not dry_run and decision_path.is_file():
         raise BatchError(
             f"batch {prepared.name!r} has already been executed; create a new unseen batch"
         )
+    if not dry_run and has_results:
+        _archive_index_failures(results_path)
 
     repo = Path(spec.get("repo", ".")).expanduser().resolve()
     matrix = load_matrix(_repo_path(repo, spec["matrix"]))
@@ -258,6 +260,36 @@ def run_batch(
         decision["promoted"] = True
         _atomic_json(decision_path, decision)
     return decision
+
+
+def _archive_index_failures(results_path: Path) -> Path:
+    """Archive an attempt that failed before any holdout query was executed."""
+    try:
+        records = [
+            json.loads(line)
+            for line in results_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+    except (OSError, json.JSONDecodeError) as exc:
+        raise BatchError(f"could not validate prior batch results: {exc}") from exc
+    if not records or any(
+        not isinstance(record, dict)
+        or record.get("ok") is not False
+        or not str(record.get("error", "")).startswith("index:")
+        for record in records
+    ):
+        raise BatchError(
+            "batch has already exposed holdout execution; create a new unseen batch"
+        )
+
+    attempts = results_path.parent / "attempts"
+    attempts.mkdir(exist_ok=True)
+    attempt = 1
+    while (attempts / f"index-failure-{attempt:03d}.jsonl").exists():
+        attempt += 1
+    archive_path = attempts / f"index-failure-{attempt:03d}.jsonl"
+    results_path.replace(archive_path)
+    return archive_path
 
 
 def evaluate_gates(

@@ -11,6 +11,7 @@ from typer.testing import CliRunner
 
 from stropha.bench.batch import (
     BatchError,
+    _archive_index_failures,
     _load_catalog,
     _promote,
     _run_verification,
@@ -168,6 +169,29 @@ def test_run_batch_rejects_already_executed_cohort(tmp_path: Path) -> None:
 
     with pytest.raises(BatchError, match="already been executed"):
         run_batch(spec, artifact_root=artifacts, verify=False)
+
+
+def test_archive_index_failures_preserves_retry_audit(tmp_path: Path) -> None:
+    results = tmp_path / "results.jsonl"
+    payload = '{"ok":false,"error":"index: backend unavailable"}\n'
+    results.write_text(payload, encoding="utf-8")
+
+    archived = _archive_index_failures(results)
+
+    assert not results.exists()
+    assert archived == tmp_path / "attempts/index-failure-001.jsonl"
+    assert archived.read_text(encoding="utf-8") == payload
+
+
+def test_archive_index_failures_rejects_query_failure(tmp_path: Path) -> None:
+    results = tmp_path / "results.jsonl"
+    results.write_text(
+        '{"ok":false,"error":"query evaluation failed"}\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(BatchError, match="exposed holdout execution"):
+        _archive_index_failures(results)
 
 
 def test_prepare_batch_rejects_query_from_prior_yaml_catalog(tmp_path: Path) -> None:

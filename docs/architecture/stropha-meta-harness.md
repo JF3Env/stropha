@@ -218,7 +218,10 @@ experiments:
 ```
 
 The admin database name must begin with `<database_prefix>_`, and the role must
-have `CREATEDB`. Credentials remain only in `~/.stropha/config.yaml`; persisted
+have `CREATEDB` and membership in `pg_signal_backend`. The latter is required
+for guarded `DROP DATABASE ... FORCE` cleanup when a PostgreSQL maintenance
+session is attached to an exact, marked evaluation database. Credentials remain
+only in `~/.stropha/config.yaml`; persisted
 provenance contains the policy fingerprint and non-secret cluster coordinates,
 not the DSN or password. The production DSN and production database are never
 mutated. Holdout validation fails closed unless the frozen storage backend,

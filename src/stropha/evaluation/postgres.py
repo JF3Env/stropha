@@ -211,14 +211,15 @@ class PostgresEvaluationDatabaseManager:
                                SELECT rolcreatedb OR rolsuper
                                FROM pg_roles
                                WHERE rolname = current_user
-                           ), false)
+                           ), false),
+                           pg_has_role(current_user, 'pg_signal_backend', 'MEMBER')
                     """
                 )
                 row = cursor.fetchone()
             if row is None:
                 raise PostgresEvaluationError("PostgreSQL preflight returned no identity")
 
-            database, user, server_version, can_create_database = row
+            database, user, server_version, can_create_database, can_signal_backend = row
             database = str(database)
             if database != self._admin_database:
                 raise PostgresEvaluationSafetyError(
@@ -226,6 +227,10 @@ class PostgresEvaluationDatabaseManager:
                 )
             if not bool(can_create_database):
                 raise PostgresEvaluationSafetyError("The PostgreSQL admin role must have CREATEDB")
+            if not bool(can_signal_backend):
+                raise PostgresEvaluationSafetyError(
+                    "The PostgreSQL admin role must have pg_signal_backend"
+                )
 
             with connection.cursor() as cursor:
                 cursor.execute(

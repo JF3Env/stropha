@@ -39,8 +39,14 @@ class _FakeInfo:
 
 
 class _FakeCluster:
-    def __init__(self, *, can_create_database: bool = True) -> None:
+    def __init__(
+        self,
+        *,
+        can_create_database: bool = True,
+        can_signal_backend: bool = True,
+    ) -> None:
         self.can_create_database = can_create_database
+        self.can_signal_backend = can_signal_backend
         self.databases = {
             "eval_admin": _FakeDatabase(owner=OWNER),
             "template1": _FakeDatabase(
@@ -129,6 +135,7 @@ class _FakeCursor:
                 OWNER,
                 "17.2",
                 self.cluster.can_create_database,
+                self.cluster.can_signal_backend,
             )
             return
         if statement.startswith("SELECT pg_get_userbyid(datdba), datistemplate"):
@@ -290,6 +297,18 @@ def test_preflight_requires_createdb(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
     with pytest.raises(PostgresEvaluationSafetyError, match="CREATEDB"):
+        manager.preflight()
+
+
+def test_preflight_requires_pg_signal_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+    cluster = _FakeCluster(can_signal_backend=False)
+    monkeypatch.setattr(postgres_module.psycopg, "connect", cluster.connect)
+    manager = PostgresEvaluationDatabaseManager(
+        admin_dsn=ADMIN_DSN,
+        database_prefix=PREFIX,
+    )
+
+    with pytest.raises(PostgresEvaluationSafetyError, match="pg_signal_backend"):
         manager.preflight()
 
 
