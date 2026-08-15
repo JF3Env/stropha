@@ -317,6 +317,7 @@ The bundled comprehensive campaign runs broad discovery on the development
 validation on the frozen `holdout` split in a detached process:
 
 ```bash
+uv run stropha bench campaign plan --spec path/to/campaign.yaml
 uv run stropha bench campaign start
 uv run stropha bench campaign status
 ```
@@ -325,11 +326,22 @@ The launcher pins the current commit in a detached worktree, so later edits to
 the main checkout do not invalidate a multi-day run. Results, logs, PID/state,
 per-stage CSV/JSON reports, the final summary, and a human-readable `report.md`
 are stored under
-`.stropha/bench/campaigns/comprehensive-quality-v3/<commit>-<config>/`. The report
+`.stropha/bench/campaigns/<name>/<commit>-<config>/`; exhaustive runs append the
+plan hash to that directory name. The report
 includes winner stability, confidence intervals, quality/cost metrics, and the
 strongest and weakest query tags. The configured experiment policy still
 controls storage and adapter blacklists; PostgreSQL campaigns use canonical
 index caches plus disposable per-cell clones.
+
+`campaign plan` resolves every selected cell, golden case, index group, policy
+exclusion, effective pipeline base, estimate, and budget before execution. The
+launcher saves this plan and the worker refuses to run if its hash changes.
+Campaigns with `mode: exhaustive` must declare `max_cells`, `max_queries`, and
+`max_index_builds`; estimate-backed wall-time, artifact-size, and LLM-token
+limits are optional. Their matrices must contain a checked-in `pipeline` with
+global retrieval-feature inheritance disabled. Exhaustive campaigns run every
+declared repetition and may set `max_parallel_stages` above one when experiment
+storage is PostgreSQL. Adaptive campaigns retain confidence-based early stop.
 
 An interrupted or failed campaign resumes successful cells when `start` is run
 again at the same commit. Stop the worker and its active benchmark with:

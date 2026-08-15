@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import contextlib
 import fcntl
 import hashlib
@@ -12,8 +13,10 @@ import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Iterator
 from datetime import UTC, datetime
@@ -30,6 +33,15 @@ from .matrix import load_matrix
 from .report import BenchReport, load_results, to_csv
 
 _STAGE_ID = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+_CORE_EXHAUSTIVE_BUDGETS = {"max_cells", "max_queries", "max_index_builds"}
+_BUDGET_METRICS = {
+    "max_cells": "cells",
+    "max_queries": "queries",
+    "max_index_builds": "index_builds",
+    "max_llm_reranker_input_tokens": "llm_reranker_input_tokens",
+    "max_wall_seconds": "wall_seconds",
+    "max_artifact_bytes": "artifact_bytes",
+}
 
 
 class CampaignError(StrophaError):
@@ -51,6 +63,40 @@ def load_campaign_spec(path: Path) -> dict[str, Any]:
         raise CampaignError("campaign split must be 'search' or 'holdout'")
     if "holdout_note" in raw and not isinstance(raw["holdout_note"], str):
         raise CampaignError("campaign holdout_note must be a string")
+    mode = raw.get("mode", "adaptive")
+    if mode not in {"adaptive", "exhaustive"}:
+        raise CampaignError("campaign mode must be 'adaptive' or 'exhaustive'")
+    raw["mode"] = mode
+    max_parallel_stages = raw.get("max_parallel_stages", 1)
+    if (
+        not isinstance(max_parallel_stages, int)
+        or isinstance(max_parallel_stages, bool)
+        or not 1 <= max_parallel_stages <= 16
+    ):
+        raise CampaignError("campaign max_parallel_stages must be between 1 and 16")
+    raw["max_parallel_stages"] = max_parallel_stages
+    budgets = raw.get("budgets") or {}
+    if not isinstance(budgets, dict):
+        raise CampaignError("campaign budgets must be a mapping")
+    unknown_budgets = set(budgets) - set(_BUDGET_METRICS)
+    if unknown_budgets:
+        raise CampaignError(f"unknown campaign budgets: {sorted(unknown_budgets)}")
+    if any(
+        not isinstance(value, (int, float))
+        or isinstance(value, bool)
+        or value <= 0
+        for value in budgets.values()
+    ):
+        raise CampaignError("campaign budgets must be positive numbers")
+    if mode == "exhaustive" and not set(budgets) >= _CORE_EXHAUSTIVE_BUDGETS:
+        missing = sorted(_CORE_EXHAUSTIVE_BUDGETS - set(budgets))
+        raise CampaignError(f"exhaustive campaign missing required budgets: {missing}")
+    estimates = raw.get("estimates") or {}
+    if not isinstance(estimates, dict) or any(
+        not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0
+        for value in estimates.values()
+    ):
+        raise CampaignError("campaign estimates must be a mapping of non-negative numbers")
     stages = raw.get("stages")
     if not isinstance(stages, list) or not stages:
         raise CampaignError("campaign spec must declare at least one stage")
@@ -79,11 +125,278 @@ def load_campaign_spec(path: Path) -> dict[str, Any]:
             raise CampaignError(
                 f"campaign stage {stage_id!r} min_repetitions must be between 1 and repetitions"
             )
+        if mode == "exhaustive" and min_repetitions != repetitions:
+            raise CampaignError(
+                f"exhaustive campaign stage {stage_id!r} must run every repetition"
+            )
         axes = stage.get("axes", [])
         if not isinstance(axes, list) or not all(isinstance(axis, str) and axis for axis in axes):
             raise CampaignError(f"campaign stage {stage_id!r} axes must be a list of names")
         seen.add(stage_id)
     return raw
+
+
+def plan_campaign(
+    spec_path: Path,
+    *,
+    source_repo: Path,
+) -> dict[str, Any]:
+    """Return an immutable, budget-checked execution plan without running cells."""
+    source_repo = source_repo.expanduser().resolve()
+    spec_path = spec_path.expanduser().resolve()
+    spec = load_campaign_spec(spec_path)
+    if spec["mode"] == "exhaustive":
+        _assert_clean_source(source_repo)
+    else:
+        _assert_clean_campaign_inputs(spec, source_repo, spec_path)
+    try:
+        spec_rel = spec_path.relative_to(source_repo)
+    except ValueError as exc:
+        raise CampaignError("campaign spec must be inside the source repository") from exc
+    return _build_campaign_plan(
+        spec,
+        source_root=source_repo,
+        spec_rel=spec_rel,
+        source_commit=resolve_sha("HEAD", source_repo),
+        config_sha=_config_sha256(),
+    )
+
+
+def _build_campaign_plan(
+    spec: dict[str, Any],
+    *,
+    source_root: Path,
+    spec_rel: Path,
+    source_commit: str,
+    config_sha: str,
+) -> dict[str, Any]:
+    from ..eval import filter_by_split, load_golden
+    from ..ingest.git_meta import detect
+    from ..pipeline.config import load_pipeline_config, pipeline_config_from_dict
+    from .runner import _index_runtime_id, _resolved_indexing_hash
+
+    policy = ExperimentPolicy.from_config(get_config())
+    if spec["max_parallel_stages"] > 1 and policy.config.storage != "postgres":
+        raise CampaignError("parallel campaign stages require PostgreSQL experiment storage")
+    stage_plans: list[dict[str, Any]] = []
+    index_keys: set[str] = set()
+    index_runtime_id = _index_runtime_id()
+    total_cells = total_queries = total_llm_queries = excluded_cells = 0
+    for declared in spec["stages"]:
+        stage_id = str(declared["id"])
+        matrix_path = (source_root / declared["matrix"]).resolve()
+        try:
+            matrix_path.relative_to(source_root)
+        except ValueError as exc:
+            raise CampaignError(f"matrix for stage {stage_id!r} escapes the source root") from exc
+        raw_matrix = load_matrix(matrix_path)
+        if spec["mode"] == "exhaustive":
+            _validate_exhaustive_pipeline(stage_id, raw_matrix.pipeline)
+        filtered_matrix = policy.filter_matrix(load_matrix(matrix_path))
+        axes = declared.get("axes", [])
+        if axes:
+            raw_matrix = raw_matrix.select_axes(axes)
+            filtered_matrix = filtered_matrix.select_axes(axes)
+        raw_cells = raw_matrix.expand()
+        cells = filtered_matrix.expand()
+        raw_ids = {cell.cell_id for cell in raw_cells}
+        cell_ids = {cell.cell_id for cell in cells}
+        excluded = sorted(raw_ids - cell_ids)
+        split = declared.get("split", spec["split"])
+        golden_path = (source_root / filtered_matrix.golden).resolve()
+        repo_path = (source_root / filtered_matrix.repo).resolve()
+        if spec["mode"] == "exhaustive":
+            for label, path in (("golden", golden_path), ("repository", repo_path)):
+                try:
+                    path.relative_to(source_root)
+                except ValueError as exc:
+                    raise CampaignError(
+                        f"exhaustive stage {stage_id!r} {label} escapes the source root"
+                    ) from exc
+        cases = filter_by_split(load_golden(golden_path), split)
+        repetitions = int(declared.get("repetitions", 1))
+        queries = len(cells) * len(cases) * repetitions
+        llm_cells = sum(_cell_uses_llm_reranker(cell.values, filtered_matrix.pipeline) for cell in cells)
+        llm_queries = llm_cells * len(cases) * repetitions
+        total_cells += len(cells) * repetitions
+        total_queries += queries
+        total_llm_queries += llm_queries
+        excluded_cells += len(excluded)
+
+        base_pipeline = (
+            pipeline_config_from_dict(filtered_matrix.pipeline, resolve_storage_path=False)
+            if filtered_matrix.pipeline is not None
+            else load_pipeline_config()
+        )
+        repo_identity = detect(repo_path)
+        source_state_id = hashlib.sha256(f"{repo_identity.head_commit}:".encode()).hexdigest()[:12]
+        for group in filtered_matrix.groups().values():
+            indexing_hash = _resolved_indexing_hash(group[0], filtered_matrix.pipeline)
+            index_keys.add(
+                hashlib.sha256(
+                    json.dumps(
+                        {
+                            "repo_key": repo_identity.normalized_key,
+                            "source_state_id": source_state_id,
+                            "indexing_sig": group[0].indexing_sig,
+                            "indexing_hash": indexing_hash,
+                            "index_runtime_id": index_runtime_id,
+                            "policy_fingerprint": policy.fingerprint,
+                        },
+                        sort_keys=True,
+                        default=str,
+                    ).encode()
+                ).hexdigest()
+            )
+        stage_plans.append(
+            {
+                "id": stage_id,
+                "matrix": str(declared["matrix"]),
+                "matrix_id": filtered_matrix.matrix_id,
+                "split": split,
+                "repetitions": repetitions,
+                "cases": len(cases),
+                "case_ids": [case.id for case in cases],
+                "golden": str(filtered_matrix.golden),
+                "golden_sha256": hashlib.sha256(golden_path.read_bytes()).hexdigest(),
+                "raw_cells": len(raw_cells),
+                "cells_per_repetition": len(cells),
+                "total_cells": len(cells) * repetitions,
+                "queries": queries,
+                "llm_reranker_queries": llm_queries,
+                "index_groups": len(filtered_matrix.groups()),
+                "cell_ids": sorted(cell_ids),
+                "cells": [
+                    {
+                        "cell_id": cell.cell_id,
+                        "indexing_sig": cell.indexing_sig,
+                        "values": cell.values,
+                    }
+                    for cell in sorted(cells, key=lambda item: item.cell_id)
+                ],
+                "excluded_cell_ids": excluded,
+                "effective_pipeline_base": _redact_config(base_pipeline),
+            }
+        )
+
+    estimates = spec.get("estimates") or {}
+    _validate_budget_estimates(spec.get("budgets") or {}, estimates, total_llm_queries)
+    estimated = {
+        "llm_reranker_input_tokens": round(
+            total_llm_queries * float(estimates.get("reranker_input_tokens_per_query", 0))
+        ),
+        "wall_seconds": round(
+            total_queries * float(estimates.get("seconds_per_query", 0))
+            + len(index_keys) * float(estimates.get("seconds_per_index", 0))
+        ),
+        "artifact_bytes": round(
+            total_cells * float(estimates.get("artifact_bytes_per_cell", 0))
+        ),
+    }
+    totals = {
+        "cells": total_cells,
+        "queries": total_queries,
+        "index_builds": len(index_keys),
+        "llm_reranker_queries": total_llm_queries,
+        "excluded_cells": excluded_cells,
+        **estimated,
+    }
+    checks = [
+        {
+            "budget": budget,
+            "metric": _BUDGET_METRICS[budget],
+            "actual": totals[_BUDGET_METRICS[budget]],
+            "limit": limit,
+            "ok": totals[_BUDGET_METRICS[budget]] <= limit,
+        }
+        for budget, limit in (spec.get("budgets") or {}).items()
+    ]
+    payload: dict[str, Any] = {
+        "version": 1,
+        "campaign": spec["name"],
+        "mode": spec["mode"],
+        "max_parallel_stages": spec["max_parallel_stages"],
+        "source_commit": source_commit,
+        "config_sha256": config_sha,
+        "spec": str(spec_rel),
+        "spec_sha256": hashlib.sha256((source_root / spec_rel).read_bytes()).hexdigest(),
+        "policy_fingerprint": policy.fingerprint,
+        "index_runtime_id": index_runtime_id,
+        "stages": stage_plans,
+        "totals": totals,
+        "budgets": spec.get("budgets") or {},
+        "estimates": estimates,
+        "budget_checks": checks,
+        "allowed": all(check["ok"] for check in checks),
+    }
+    payload["plan_sha256"] = _plan_digest(payload)
+    return payload
+
+
+def _plan_digest(payload: dict[str, Any]) -> str:
+    content = {key: value for key, value in payload.items() if key != "plan_sha256"}
+    return hashlib.sha256(
+        json.dumps(content, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def _cell_uses_llm_reranker(values: dict[str, Any], pipeline: dict[str, Any] | None) -> int:
+    value = values.get("reranker")
+    if value is None and "reranker" not in values and pipeline is not None:
+        value = ((pipeline.get("retrieval") or {}).get("config") or {}).get("reranker")
+    adapter = value.get("adapter") if isinstance(value, dict) else value
+    return int(adapter == "llm")
+
+
+def _validate_exhaustive_pipeline(stage_id: str, pipeline: dict[str, Any] | None) -> None:
+    if pipeline is None:
+        raise CampaignError(
+            f"exhaustive campaign stage {stage_id!r} requires a checked-in matrix pipeline"
+        )
+    required = {"walker", "chunker", "enricher", "embedder", "retrieval"}
+    missing = sorted(required - set(pipeline))
+    if missing:
+        raise CampaignError(
+            f"exhaustive campaign stage {stage_id!r} pipeline is missing stages: {missing}"
+        )
+    retrieval_config = (pipeline.get("retrieval") or {}).get("config") or {}
+    if retrieval_config.get("inherit_global_features") is not False:
+        raise CampaignError(
+            f"exhaustive campaign stage {stage_id!r} must set "
+            "retrieval.config.inherit_global_features=false"
+        )
+
+
+def _validate_budget_estimates(
+    budgets: dict[str, Any],
+    estimates: dict[str, Any],
+    llm_queries: int,
+) -> None:
+    required: dict[str, tuple[str, ...]] = {
+        "max_wall_seconds": ("seconds_per_query", "seconds_per_index"),
+        "max_artifact_bytes": ("artifact_bytes_per_cell",),
+    }
+    if llm_queries:
+        required["max_llm_reranker_input_tokens"] = ("reranker_input_tokens_per_query",)
+    missing = sorted(
+        estimate
+        for budget, names in required.items()
+        if budget in budgets
+        for estimate in names
+        if estimate not in estimates
+    )
+    if missing:
+        raise CampaignError(f"campaign budgets require estimates: {missing}")
+
+
+def _redact_config(value: Any, key: str = "") -> Any:
+    if isinstance(value, dict):
+        return {str(k): _redact_config(v, str(k)) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_redact_config(item, key) for item in value]
+    if any(token in key.lower() for token in ("password", "secret", "api_key", "dsn", "token")):
+        return "(redacted)" if value else value
+    return value
 
 
 def start_campaign(
@@ -96,6 +409,10 @@ def start_campaign(
     source_repo = source_repo.expanduser().resolve()
     spec_path = spec_path.expanduser().resolve()
     spec = load_campaign_spec(spec_path)
+    if spec["mode"] == "exhaustive":
+        _assert_clean_source(source_repo)
+    else:
+        _assert_clean_campaign_inputs(spec, source_repo, spec_path)
     try:
         spec_rel = spec_path.relative_to(source_repo)
     except ValueError as exc:
@@ -109,7 +426,26 @@ def start_campaign(
     )
     campaign_home = base / spec["name"]
     config_sha = _config_sha256()
-    root = campaign_home / f"{sha[:12]}-{config_sha[:12]}"
+    plan = _build_campaign_plan(
+        spec,
+        source_root=source_repo,
+        spec_rel=spec_rel,
+        source_commit=sha,
+        config_sha=config_sha,
+    )
+    if not plan["allowed"]:
+        failures = [
+            f"{check['metric']}={check['actual']} > {check['limit']}"
+            for check in plan["budget_checks"]
+            if not check["ok"]
+        ]
+        raise CampaignError("campaign plan exceeds budget: " + ", ".join(failures))
+    suffix = (
+        f"{sha[:12]}-{config_sha[:12]}-{plan['plan_sha256'][:12]}"
+        if spec["mode"] == "exhaustive"
+        else f"{sha[:12]}-{config_sha[:12]}"
+    )
+    root = campaign_home / suffix
     root.mkdir(parents=True, exist_ok=True)
     campaign_home.mkdir(parents=True, exist_ok=True)
     with _exclusive_start(campaign_home / "start.lock"):
@@ -121,6 +457,7 @@ def start_campaign(
             config_sha=config_sha,
             campaign_home=campaign_home,
             root=root,
+            plan=plan,
         )
 
 
@@ -133,6 +470,7 @@ def _start_campaign_locked(
     config_sha: str,
     campaign_home: Path,
     root: Path,
+    plan: dict[str, Any],
 ) -> dict[str, Any]:
     """Start a worker while holding the campaign's cross-process launch lock."""
     state_path = root / "state.json"
@@ -156,12 +494,20 @@ def _start_campaign_locked(
             raise CampaignError("campaign spec is not committed at the selected HEAD")
 
         log_path = root / "campaign.log"
+        _atomic_json(root / "plan.json", plan)
         state = {
             "version": 1,
             "name": spec["name"],
             "status": "starting",
             "source_commit": sha,
             "config_sha256": config_sha,
+            "mode": spec["mode"],
+            "plan": str(root / "plan.json"),
+            "plan_sha256": plan["plan_sha256"],
+            "budgets": plan["budgets"],
+            "totals": plan["totals"],
+            "index_runtime_id": plan["index_runtime_id"],
+            "max_parallel_stages": spec["max_parallel_stages"],
             "holdout_note": spec.get("holdout_note"),
             "source_repo": str(source_repo),
             "snapshot": str(snapshot.path),
@@ -169,8 +515,10 @@ def _start_campaign_locked(
             "artifact_root": str(root),
             "log": str(log_path),
             "started_at": _now(),
+            "started_epoch": time.time(),
             "pid": None,
             "active_child_pid": None,
+            "active_child_pids": [],
             "stages": [],
         }
         _atomic_json(state_path, state)
@@ -282,16 +630,21 @@ def stop_campaign(
     pid = state.get("pid")
     if not isinstance(pid, int):
         pid = _read_pid(root / "campaign.pid")
-    child_pid = state.get("active_child_pid")
+    child_pids = state.get("active_child_pids") or [state.get("active_child_pid")]
     worker_matches = isinstance(pid, int) and _process_matches(pid, root)
-    child_matches = isinstance(child_pid, int) and _process_matches(child_pid, root)
-    if not worker_matches and not child_matches:
+    matching_children = [
+        child_pid
+        for child_pid in child_pids
+        if isinstance(child_pid, int) and _process_matches(child_pid, root)
+    ]
+    if not worker_matches and not matching_children:
         return status
     try:
         if isinstance(pid, int) and worker_matches:
             os.kill(pid, signal.SIGTERM)
-        elif isinstance(child_pid, int) and child_matches:
-            os.kill(child_pid, signal.SIGINT)
+        else:
+            for child_pid in matching_children:
+                os.kill(child_pid, signal.SIGINT)
     except OSError as exc:
         raise CampaignError(f"could not stop campaign process: {exc}") from exc
     return {**status, "stop_requested": True}
@@ -324,6 +677,7 @@ def _run_worker(
             "status": "running",
             "pid": os.getpid(),
             "active_child_pid": None,
+            "active_child_pids": [],
             "stages": prior.get("stages") or [],
             "updated_at": _now(),
         }
@@ -332,6 +686,17 @@ def _run_worker(
         pid_path.write_text(f"{os.getpid()}\n", encoding="ascii")
         _assert_config_unchanged(state)
         spec = load_campaign_spec(spec_path)
+        saved_plan = _read_json(artifact_root / "plan.json")
+        if not saved_plan:
+            raise CampaignError("campaign execution plan is missing")
+        current_plan = _build_campaign_plan(
+            spec,
+            source_root=snapshot_path,
+            spec_rel=Path(state["spec"]),
+            source_commit=str(state["source_commit"]),
+            config_sha=str(state["config_sha256"]),
+        )
+        _assert_plan_unchanged(saved_plan, current_plan, state.get("plan_sha256"))
         stages = _prepare_stages(
             spec,
             snapshot_path,
@@ -340,27 +705,37 @@ def _run_worker(
         )
         state["stages"] = stages
         _atomic_json(state_path, state)
-        for stage in stages:
-            if stage.get("status") in {"completed", "not_needed"}:
-                continue
-            stability = _completed_group_stability(stages, stage)
-            if stability and stability["confident"]:
-                stage["status"] = "not_needed"
-                stage["reason"] = (
-                    f"winner stability reached after {stability['runs']} repetitions"
-                )
-                state["updated_at"] = _now()
-                _atomic_json(state_path, state)
-                continue
-            _assert_config_unchanged(state)
-            _run_stage(stage, state, state_path, snapshot_path, artifact_root)
-            _assert_config_unchanged(state)
+        pending_stages = [
+            stage
+            for stage in stages
+            if stage.get("status") not in {"completed", "not_needed"}
+        ]
+        if spec["mode"] == "exhaustive" and spec["max_parallel_stages"] > 1:
+            _run_stages_parallel(
+                pending_stages,
+                spec["max_parallel_stages"],
+                state,
+                state_path,
+                snapshot_path,
+                artifact_root,
+            )
+        else:
+            _run_stages_sequentially(
+                pending_stages,
+                stages,
+                spec,
+                state,
+                state_path,
+                snapshot_path,
+                artifact_root,
+            )
         failed = any(stage.get("status") not in {"completed", "not_needed"} for stage in stages)
         state["status"] = "completed_with_failures" if failed else "completed"
         _write_campaign_summary(state, artifact_root)
     except KeyboardInterrupt:
         interrupted = True
         state["status"] = "interrupted"
+        _interrupt_active_children(state)
     except Exception as exc:
         state["status"] = "failed"
         state["error"] = str(exc)
@@ -379,6 +754,115 @@ def _run_worker(
             signal.signal(signal.SIGTERM, previous_sigterm)
     status = state.get("status")
     return 130 if interrupted else (0 if status == "completed" else 1)
+
+
+def _run_stages_sequentially(
+    pending_stages: list[dict[str, Any]],
+    all_stages: list[dict[str, Any]],
+    spec: dict[str, Any],
+    state: dict[str, Any],
+    state_path: Path,
+    snapshot_path: Path,
+    artifact_root: Path,
+) -> None:
+    for stage in pending_stages:
+        _assert_runtime_budgets(artifact_root, state)
+        if spec["mode"] == "adaptive":
+            stability = _completed_group_stability(all_stages, stage)
+            if stability and stability["confident"]:
+                stage["status"] = "not_needed"
+                stage["reason"] = f"winner stability reached after {stability['runs']} repetitions"
+                state["updated_at"] = _now()
+                _atomic_json(state_path, state)
+                continue
+        _assert_config_unchanged(state)
+        _run_stage(stage, state, state_path, snapshot_path, artifact_root)
+        _assert_config_unchanged(state)
+        _assert_runtime_budgets(artifact_root, state)
+
+
+def _assert_plan_unchanged(
+    saved_plan: dict[str, Any],
+    current_plan: dict[str, Any],
+    state_digest: Any,
+) -> None:
+    saved_digest = _plan_digest(saved_plan)
+    if (
+        saved_digest != saved_plan.get("plan_sha256")
+        or saved_digest != state_digest
+        or saved_digest != current_plan.get("plan_sha256")
+    ):
+        raise CampaignError("campaign plan drifted after preflight")
+
+
+def _run_stages_parallel(
+    stages: list[dict[str, Any]],
+    max_workers: int,
+    state: dict[str, Any],
+    state_path: Path,
+    snapshot_path: Path,
+    artifact_root: Path,
+) -> None:
+    state_lock = threading.Lock()
+    cancel_event = threading.Event()
+    process_registry: list[subprocess.Popen[Any]] = []
+    executor: concurrent.futures.ThreadPoolExecutor | None = None
+    futures: list[concurrent.futures.Future[None]] = []
+    try:
+        executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=max_workers,
+            thread_name_prefix="stropha-campaign",
+        )
+        for stage in stages:
+            futures.append(
+                executor.submit(
+                    _run_stage,
+                    stage,
+                    state,
+                    state_path,
+                    snapshot_path,
+                    artifact_root,
+                    state_lock=state_lock,
+                    cancel_event=cancel_event,
+                    process_registry=process_registry,
+                )
+            )
+        for future in concurrent.futures.as_completed(futures):
+            future.result()
+            _assert_config_unchanged(state)
+            _assert_runtime_budgets(artifact_root, state)
+    except BaseException:
+        cancel_event.set()
+        for future in futures:
+            future.cancel()
+        _interrupt_registered_processes(process_registry, state_lock)
+        raise
+    finally:
+        if executor is not None:
+            executor.shutdown(wait=True, cancel_futures=True)
+
+
+def _assert_runtime_budgets(artifact_root: Path, state: dict[str, Any]) -> None:
+    budgets = state.get("budgets") or {}
+    max_wall = budgets.get("max_wall_seconds")
+    if max_wall is not None:
+        elapsed = time.time() - float(state.get("started_epoch", time.time()))
+        if elapsed > float(max_wall):
+            raise CampaignError(f"campaign exceeded max_wall_seconds ({elapsed:.1f} > {max_wall})")
+    max_artifacts = budgets.get("max_artifact_bytes")
+    if max_artifacts is not None:
+        size = 0
+        for path in artifact_root.rglob("*"):
+            try:
+                file_stat = path.stat()
+            except FileNotFoundError:
+                continue
+            if stat.S_ISREG(file_stat.st_mode):
+                size += file_stat.st_size
+        if size > float(max_artifacts):
+            raise CampaignError(
+                f"campaign exceeded max_artifact_bytes ({size} > {max_artifacts})"
+            )
 
 
 def _prepare_stages(
@@ -438,12 +922,18 @@ def _run_stage(
     state_path: Path,
     snapshot_path: Path,
     artifact_root: Path,
+    *,
+    state_lock: Any | None = None,
+    cancel_event: threading.Event | None = None,
+    process_registry: list[subprocess.Popen[Any]] | None = None,
 ) -> None:
-    stage["status"] = "running"
-    stage["started_at"] = _now()
-    stage.pop("error", None)
-    state["updated_at"] = _now()
-    _atomic_json(state_path, state)
+    lock = state_lock or contextlib.nullcontext()
+    with lock:
+        stage["status"] = "running"
+        stage["started_at"] = _now()
+        stage.pop("error", None)
+        state["updated_at"] = _now()
+        _atomic_json(state_path, state)
     matrix_path = snapshot_path / stage["matrix"]
     results_path = Path(stage["results"])
     command = [
@@ -469,21 +959,43 @@ def _run_stage(
         command.extend(["--axis", axis])
     env = os.environ.copy()
     env["STROPHA_BENCH_EXPECTED_CONFIG_SHA256"] = str(state["config_sha256"])
+    if cancel_event is not None and cancel_event.is_set():
+        raise CampaignError("campaign stage cancelled before launch")
     process = subprocess.Popen(command, cwd=snapshot_path, env=env)
     try:
-        state["active_child_pid"] = process.pid
-        _atomic_json(state_path, state)
-        returncode = process.wait()
+        with lock:
+            if process_registry is not None:
+                process_registry.append(process)
+            child_pids = state.setdefault("active_child_pids", [])
+            child_pids.append(process.pid)
+            state["active_child_pid"] = child_pids[0]
+            _atomic_json(state_path, state)
+        if cancel_event is not None and cancel_event.is_set():
+            raise CampaignError("campaign stage cancelled during launch")
+        returncode = _wait_for_stage_process(
+            process,
+            artifact_root,
+            state,
+            cancel_event=cancel_event,
+        )
     except BaseException:
         _interrupt_child(process)
         raise
     finally:
-        state["active_child_pid"] = None
+        with lock:
+            if process_registry is not None:
+                with contextlib.suppress(ValueError):
+                    process_registry.remove(process)
+            child_pids = state.setdefault("active_child_pids", [])
+            with contextlib.suppress(ValueError):
+                child_pids.remove(process.pid)
+            state["active_child_pid"] = child_pids[0] if child_pids else None
     _assert_config_unchanged(state)
+    _assert_runtime_budgets(artifact_root, state)
+    report: dict[str, Any] | None = None
+    error: str | None = None
     try:
         report = _write_stage_report(stage, matrix_path)
-        stage["successful_cells"] = report["successful_cells"]
-        stage["failed_cells"] = report["failed_cells"]
         if returncode != 0:
             raise CampaignError(f"bench process exited with status {returncode}")
         if report["failed_cells"]:
@@ -493,13 +1005,34 @@ def _run_stage(
                 f"expected {stage['total_cells']} successful cells, "
                 f"found {report['successful_cells']}"
             )
-        stage["status"] = "completed"
     except Exception as exc:
-        stage["status"] = "failed"
-        stage["error"] = str(exc)
-    stage["finished_at"] = _now()
-    state["updated_at"] = _now()
-    _atomic_json(state_path, state)
+        error = str(exc)
+    with lock:
+        if report is not None:
+            stage["successful_cells"] = report["successful_cells"]
+            stage["failed_cells"] = report["failed_cells"]
+        stage["status"] = "failed" if error is not None else "completed"
+        if error is not None:
+            stage["error"] = error
+        stage["finished_at"] = _now()
+        state["updated_at"] = _now()
+        _atomic_json(state_path, state)
+
+
+def _wait_for_stage_process(
+    process: subprocess.Popen[Any],
+    artifact_root: Path,
+    state: dict[str, Any],
+    *,
+    cancel_event: threading.Event | None,
+) -> int:
+    while True:
+        if cancel_event is not None and cancel_event.is_set():
+            raise CampaignError("campaign stage cancelled")
+        try:
+            return process.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            _assert_runtime_budgets(artifact_root, state)
 
 
 def _write_stage_report(stage: dict[str, Any], matrix_path: Path) -> dict[str, Any]:
@@ -576,8 +1109,13 @@ def _write_campaign_summary(state: dict[str, Any], artifact_root: Path) -> None:
     payload = {
         "name": state["name"],
         "status": state["status"],
+        "mode": state.get("mode", "adaptive"),
         "source_commit": state["source_commit"],
         "config_sha256": state["config_sha256"],
+        "plan": state.get("plan"),
+        "plan_sha256": state.get("plan_sha256"),
+        "budgets": state.get("budgets") or {},
+        "totals": state.get("totals") or {},
         "holdout_note": state.get("holdout_note"),
         "started_at": state.get("started_at"),
         "finished_at": _now(),
@@ -794,9 +1332,14 @@ def _public_status(state: dict[str, Any], root: Path) -> dict[str, Any]:
     return {
         "name": state.get("name"),
         "status": state.get("status"),
+        "mode": state.get("mode", "adaptive"),
         "running": _campaign_alive(state, root),
         "pid": pid,
         "source_commit": state.get("source_commit"),
+        "plan": state.get("plan", str(root / "plan.json")),
+        "plan_sha256": state.get("plan_sha256"),
+        "budgets": state.get("budgets") or {},
+        "totals": state.get("totals") or {},
         "artifact_root": str(root),
         "log": state.get("log", str(root / "campaign.log")),
         "summary": str(root / "summary.json"),
@@ -809,10 +1352,13 @@ def _campaign_alive(state: dict[str, Any], root: Path) -> bool:
     pid = state.get("pid")
     if not isinstance(pid, int):
         pid = _read_pid(root / "campaign.pid")
-    child_pid = state.get("active_child_pid")
+    child_pids = state.get("active_child_pids") or [state.get("active_child_pid")]
     return bool(
         (isinstance(pid, int) and _process_matches(pid, root))
-        or (isinstance(child_pid, int) and _process_matches(child_pid, root))
+        or any(
+            isinstance(child_pid, int) and _process_matches(child_pid, root)
+            for child_pid in child_pids
+        )
     )
 
 
@@ -878,6 +1424,61 @@ def _config_sha256() -> str:
     return hashlib.sha256(content).hexdigest()
 
 
+def _assert_clean_source(source_repo: Path) -> None:
+    try:
+        result = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=all"],
+            cwd=source_repo,
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise CampaignError(f"could not verify exhaustive source state: {exc}") from exc
+    if result.returncode != 0:
+        detail = result.stderr.strip() or f"git exited with status {result.returncode}"
+        raise CampaignError(f"could not verify exhaustive source state: {detail}")
+    if result.stdout.strip():
+        raise CampaignError("exhaustive campaigns require a clean source worktree")
+
+
+def _assert_clean_campaign_inputs(
+    spec: dict[str, Any],
+    source_repo: Path,
+    spec_path: Path,
+) -> None:
+    inputs = [spec_path]
+    for stage in spec["stages"]:
+        matrix_path = (source_repo / stage["matrix"]).resolve()
+        inputs.append(matrix_path)
+        if matrix_path.is_file():
+            matrix = load_matrix(matrix_path)
+            inputs.append((source_repo / matrix.golden).resolve())
+    relative_inputs = []
+    for path in inputs:
+        with contextlib.suppress(ValueError):
+            relative_inputs.append(str(path.relative_to(source_repo)))
+    if not relative_inputs:
+        return
+    try:
+        result = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=all", "--", *relative_inputs],
+            cwd=source_repo,
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise CampaignError(f"could not verify campaign inputs: {exc}") from exc
+    if result.returncode != 0:
+        detail = result.stderr.strip() or f"git exited with status {result.returncode}"
+        raise CampaignError(f"could not verify campaign inputs: {detail}")
+    if result.stdout.strip():
+        raise CampaignError("campaign spec, matrices, and golden sets must be committed")
+
+
 def _interrupt_child(process: subprocess.Popen[Any]) -> None:
     if process.poll() is not None:
         return
@@ -893,6 +1494,25 @@ def _interrupt_child(process: subprocess.Popen[Any]) -> None:
             process.wait()
 
 
+def _interrupt_active_children(state: dict[str, Any]) -> None:
+    child_pids = state.get("active_child_pids") or [state.get("active_child_pid")]
+    for child_pid in child_pids:
+        if not isinstance(child_pid, int) or not _pid_alive(child_pid):
+            continue
+        with contextlib.suppress(OSError):
+            os.kill(child_pid, signal.SIGINT)
+
+
+def _interrupt_registered_processes(
+    processes: list[subprocess.Popen[Any]],
+    state_lock: Any,
+) -> None:
+    with state_lock:
+        active = list(processes)
+    for process in active:
+        _interrupt_child(process)
+
+
 def _assert_config_unchanged(state: dict[str, Any]) -> None:
     expected = state.get("config_sha256")
     actual = _config_sha256()
@@ -900,6 +1520,12 @@ def _assert_config_unchanged(state: dict[str, Any]) -> None:
         raise CampaignError(
             "machine config changed during the campaign; start again to create a new run"
         )
+    expected_index_runtime = state.get("index_runtime_id")
+    if expected_index_runtime is not None:
+        from .runner import _index_runtime_id
+
+        if _index_runtime_id() != expected_index_runtime:
+            raise CampaignError("index runtime changed during the campaign; start a new run")
 
 
 def _require_expected_config() -> None:
@@ -974,6 +1600,7 @@ __all__ = [
     "CampaignError",
     "campaign_status",
     "load_campaign_spec",
+    "plan_campaign",
     "start_campaign",
     "stop_campaign",
 ]

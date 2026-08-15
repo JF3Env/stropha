@@ -286,7 +286,8 @@ class HybridRrfRetrieval(RetrievalStage):
         else:
             rewrite_id = "off"
         return (
-            f"hybrid-rrf:k={self._config.rrf_k}:streams={digest}:"
+            f"hybrid-rrf:top={self._config.top_k}:candidates={self._config.candidate_k}:"
+            f"k={self._config.rrf_k}:streams={digest}:"
             f"reranker={reranker_id}:adaptive={int(self._config.adaptive_weighting)}:"
             f"mq={multi_query_id}:"
             f"rewrite={rewrite_id}:"

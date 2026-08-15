@@ -182,6 +182,24 @@ def test_retrieval_adapter_id_reflects_config() -> None:
     assert a.adapter_id != b.adapter_id
 
 
+@pytest.mark.parametrize("field", ["top_k", "candidate_k"])
+def test_retrieval_adapter_id_reflects_output_limits(field: str) -> None:
+    base = HybridRrfConfig()
+    changed = HybridRrfConfig(**{field: getattr(base, field) + 1})
+    first = HybridRrfRetrieval(
+        base,
+        storage=_DummyStorage(),
+        embedder=_StubEmbedder(),
+    )
+    second = HybridRrfRetrieval(
+        changed,
+        storage=_DummyStorage(),
+        embedder=_StubEmbedder(),
+    )
+
+    assert first.adapter_id != second.adapter_id
+
+
 def test_retrieval_adapter_requires_storage_and_embedder() -> None:
     with pytest.raises(ValueError):
         HybridRrfRetrieval(HybridRrfConfig())

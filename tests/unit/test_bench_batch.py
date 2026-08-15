@@ -15,13 +15,26 @@ from stropha.bench.batch import (
     _load_catalog,
     _promote,
     _run_verification,
+    _selected_matrix,
     _validate_cases,
     evaluate_gates,
     prepare_batch,
     run_batch,
 )
-from stropha.bench.matrix import Cell
+from stropha.bench.matrix import Cell, Matrix
 from stropha.cli import app
+
+
+def test_selected_batch_matrix_preserves_checked_in_pipeline() -> None:
+    matrix = Matrix(
+        axes={"candidate_k": [20, 50]},
+        pipeline={"retrieval": {"adapter": "hybrid-rrf"}},
+    )
+    baseline, candidate = matrix.expand()
+
+    selected = _selected_matrix(matrix, baseline, candidate)
+
+    assert selected.pipeline == matrix.pipeline
 
 
 def _write_repo(tmp_path: Path) -> tuple[Path, Path]:

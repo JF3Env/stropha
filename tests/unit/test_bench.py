@@ -99,6 +99,37 @@ def test_matrix_id_is_stable_and_changes_with_semantics(matrix) -> None:
     assert changed.matrix_id != matrix.matrix_id
 
 
+def test_matrix_id_and_axis_selection_preserve_pipeline() -> None:
+    first = Matrix(
+        axes={"candidate_k": [20, 50]},
+        pipeline={"retrieval": {"adapter": "hybrid-rrf", "config": {"rrf_k": 60}}},
+    )
+    second = Matrix(
+        axes=first.axes,
+        pipeline={"retrieval": {"adapter": "hybrid-rrf", "config": {"rrf_k": 61}}},
+    )
+
+    assert first.matrix_id != second.matrix_id
+    assert first.select_axes(["candidate_k"]).pipeline == first.pipeline
+
+
+def test_matrix_without_pipeline_keeps_legacy_identity() -> None:
+    matrix = Matrix(axes={"candidate_k": [20]}, golden="golden.jsonl", top_k=10)
+    legacy_fields = {
+        "axes": matrix.axes,
+        "baseline": matrix.baseline,
+        "constraints": matrix.constraints,
+        "golden": matrix.golden,
+        "repo": matrix.repo,
+        "top_k": matrix.top_k,
+    }
+    expected = hashlib.sha256(
+        json.dumps(legacy_fields, sort_keys=True, ensure_ascii=False, default=str).encode()
+    ).hexdigest()[:12]
+
+    assert matrix.matrix_id == expected
+
+
 def test_expand_product_minus_constraints(matrix) -> None:
     cells = matrix.expand()
     # 2*2*2*2 = 16, minus mlx+hierarchical (reranker2 * hyde2 = 4) = 12.
@@ -992,6 +1023,34 @@ def test_query_only_benchmark_inherits_active_indexing_stages(
     assert resolved["storage"]["config"]["dsn"] == "evaluation"
     assert resolved["retrieval"]["config"]["candidate_k"] == 20
     assert resolved["retrieval"]["config"]["query_rewrite_enabled"] is True
+
+
+def test_checked_in_pipeline_isolated_from_active_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from stropha.bench.runner import _pipeline_config_for_bench
+
+    monkeypatch.setattr(
+        "stropha.pipeline.config.load_pipeline_config",
+        lambda: pytest.fail("hermetic matrix must not load the active pipeline"),
+    )
+    resolved = _pipeline_config_for_bench(
+        {"retrieval": {"config": {"candidate_k": 20}}},
+        resolve_storage_path=False,
+        base_pipeline={
+            "embedder": {"adapter": "mlx", "config": {"model": "qwen"}},
+            "enricher": {"adapter": "hierarchical"},
+            "retrieval": {
+                "adapter": "hybrid-rrf",
+                "config": {"candidate_k": 99, "inherit_global_features": False},
+            },
+        },
+    )
+
+    assert resolved["embedder"]["config"]["model"] == "qwen"
+    assert resolved["enricher"]["adapter"] == "hierarchical"
+    assert resolved["retrieval"]["config"]["candidate_k"] == 20
+    assert resolved["retrieval"]["config"]["inherit_global_features"] is False
 
 
 def test_postgres_provenance_is_secret_free_and_changes_run_identity(

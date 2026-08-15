@@ -18,6 +18,7 @@ database per indexing group and a disposable writable clone per cell.
 from __future__ import annotations
 
 import contextlib
+import copy
 import dataclasses
 import hashlib
 import json
@@ -256,11 +257,14 @@ def _pipeline_config_for_bench(
     overrides: dict[str, Any],
     *,
     resolve_storage_path: bool,
+    base_pipeline: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Apply matrix overrides on top of the active pipeline configuration."""
+    """Apply cell overrides to a checked-in base or the active pipeline."""
     from ..pipeline.config import load_pipeline_config, pipeline_config_from_dict
 
-    resolved = load_pipeline_config()
+    resolved = (
+        copy.deepcopy(base_pipeline) if base_pipeline is not None else load_pipeline_config()
+    )
     _merge(resolved, overrides)
     return pipeline_config_from_dict(
         resolved,
@@ -300,6 +304,7 @@ def build_index(
     cfg = _pipeline_config_for_bench(
         overrides,
         resolve_storage_path=storage_dsn is None,
+        base_pipeline=getattr(matrix, "pipeline", None),
     )
     built = build_stages(cfg, force_rebuild=not resume_partial)
     reset_enricher_diagnostics = getattr(built.enricher, "reset_diagnostics", None)
@@ -384,6 +389,7 @@ def eval_cell(
     cfg = _pipeline_config_for_bench(
         overrides,
         resolve_storage_path=storage_dsn is None,
+        base_pipeline=getattr(matrix, "pipeline", None),
     )
     with _override_features(_feature_overrides(cell)):
         built = build_stages(cfg)
@@ -654,10 +660,14 @@ def _runtime_id(matrix: Matrix) -> str:
     """Fingerprint query-time dependencies not fully declared by the matrix."""
     from ..inference import get_backend
     from ..meta.stream_weights import StreamWeightProfiles
-    from ..pipeline.config import load_pipeline_config
+    from ..pipeline.config import load_pipeline_config, pipeline_config_from_dict
 
     config = get_config()
-    pipeline_defaults = load_pipeline_config()
+    pipeline_defaults = (
+        pipeline_config_from_dict(matrix.pipeline, resolve_storage_path=False)
+        if matrix.pipeline is not None
+        else load_pipeline_config()
+    )
     learned_dirs: set[Path] = set()
     for cell in matrix.expand():
         if not cell.values.get("learned_weights"):
@@ -781,13 +791,14 @@ def _postgres_cache_key(indexing_sig: str, provenance: dict[str, Any]) -> str:
     return json.dumps(fields, sort_keys=True, separators=(",", ":"))
 
 
-def _resolved_indexing_hash(cell: Cell) -> str:
+def _resolved_indexing_hash(cell: Cell, base_pipeline: dict[str, Any] | None = None) -> str:
     """Resolve the adapter identity behind one matrix indexing group."""
     from ..pipeline.builder import build_stages
 
     config = _pipeline_config_for_bench(
         _indexing_overrides(cell),
         resolve_storage_path=False,
+        base_pipeline=base_pipeline,
     )
     return build_stages(config, open_storage=False).indexing_hash()
 
@@ -840,7 +851,14 @@ def run_matrix(
     out_path.parent.mkdir(parents=True, exist_ok=True)
     if not resume and out_path.is_file():
         raise BenchError("--no-resume requires a new --out path")
-    indexing_identities = {sig: _resolved_indexing_hash(group[0]) for sig, group in groups.items()}
+    indexing_identities = {
+        sig: (
+            _resolved_indexing_hash(group[0], selected_matrix.pipeline)
+            if selected_matrix.pipeline is not None
+            else _resolved_indexing_hash(group[0])
+        )
+        for sig, group in groups.items()
+    }
     run_provenance = _run_provenance(
         selected_matrix,
         split,

@@ -2081,6 +2081,21 @@ def _default_campaign_path() -> Path:
     return Path(_bench.__file__).resolve().parent / "comprehensive_campaign.yaml"
 
 
+@bench_campaign_app.command("plan")
+def bench_campaign_plan_cmd(
+    spec: Path = typer.Option(None, "--spec", help="Campaign YAML."),
+) -> None:
+    """Resolve cells, costs, identities, exclusions, and hard budgets without running."""
+    from .bench.campaign import CampaignError, plan_campaign
+
+    try:
+        result = plan_campaign(spec or _default_campaign_path(), source_repo=Path.cwd())
+    except CampaignError as exc:
+        console.print(f"[red]Campaign planning failed:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+    console.print_json(data=result)
+
+
 @bench_campaign_app.command("start")
 def bench_campaign_start_cmd(
     spec: Path = typer.Option(None, "--spec", help="Campaign YAML."),

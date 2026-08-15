@@ -93,3 +93,10 @@ def test_hierarchical_adapter_id_reflects_toggles() -> None:
         )
     ).adapter_id
     assert len({default, with_repo, bare}) == 3
+
+
+def test_hierarchical_adapter_id_reflects_separator() -> None:
+    default = HierarchicalEnricher().adapter_id
+    custom = HierarchicalEnricher(HierarchicalEnricherConfig(separator="\n\n")).adapter_id
+
+    assert default != custom

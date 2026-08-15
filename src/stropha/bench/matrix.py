@@ -135,20 +135,22 @@ class Matrix:
     repo: str = "."
     baseline: dict[str, Any] | None = None
     constraints: list[dict[str, Any]] = field(default_factory=list)
+    pipeline: dict[str, Any] | None = None
 
     @property
     def matrix_id(self) -> str:
         """Stable identity for the semantic matrix definition."""
-        payload = _canonical(
-            {
-                "axes": self.axes,
-                "baseline": self.baseline,
-                "constraints": self.constraints,
-                "golden": self.golden,
-                "repo": self.repo,
-                "top_k": self.top_k,
-            }
-        )
+        fields = {
+            "axes": self.axes,
+            "baseline": self.baseline,
+            "constraints": self.constraints,
+            "golden": self.golden,
+            "repo": self.repo,
+            "top_k": self.top_k,
+        }
+        if self.pipeline is not None:
+            fields["pipeline"] = self.pipeline
+        payload = _canonical(fields)
         return _short_hash(payload)
 
     def expand(self) -> list[Cell]:
@@ -208,6 +210,7 @@ class Matrix:
             repo=self.repo,
             baseline=self.baseline,
             constraints=self.constraints,
+            pipeline=self.pipeline,
         )
 
     def baseline_cell(self) -> Cell | None:
@@ -263,6 +266,9 @@ def load_matrix(path: Path | str) -> Matrix:
     constraints = raw.get("constraints") or []
     if not isinstance(constraints, list):
         raise MatrixError("`constraints` must be a list")
+    pipeline = raw.get("pipeline")
+    if pipeline is not None and not isinstance(pipeline, dict):
+        raise MatrixError("`pipeline` must be a mapping")
 
     return Matrix(
         axes=norm_axes,
@@ -271,6 +277,7 @@ def load_matrix(path: Path | str) -> Matrix:
         repo=str(raw.get("repo", ".")),
         baseline=raw.get("baseline"),
         constraints=[c for c in constraints if isinstance(c, dict)],
+        pipeline=pipeline,
     )
 
 

@@ -12,6 +12,8 @@ Design constraints (per ADR-001):
 
 from __future__ import annotations
 
+import hashlib
+
 from pydantic import BaseModel, Field
 
 from ...models import Chunk
@@ -56,6 +58,8 @@ class HierarchicalEnricher(EnricherStage):
             parts.append("p")
         if self._config.include_repo_url:
             parts.append("r")
+        separator_id = hashlib.sha256(self._config.separator.encode()).hexdigest()[:12]
+        parts.append(f"sep={separator_id}")
         return ":".join(parts)
 
     @property

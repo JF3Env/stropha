@@ -474,6 +474,7 @@ def _selected_matrix(matrix: Matrix, baseline: Cell, candidate: Cell) -> Matrix:
         repo=matrix.repo,
         baseline=baseline.values,
         constraints=constraints,
+        pipeline=matrix.pipeline,
     )
 
 
