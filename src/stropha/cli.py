@@ -1466,16 +1466,17 @@ def eval(
     repo_id: int | None = None
     repo_key: str | None = None
     lookup_repo_id = getattr(built.storage, "lookup_repo_id", None)
-    if not include_other_repos and callable(lookup_repo_id):
+    if callable(lookup_repo_id):
         from .ingest.git_meta import detect as _detect_repo
 
         try:
             repo_key = _detect_repo(target_repo).normalized_key
-            repo_id = lookup_repo_id(repo_key)
+            if not include_other_repos:
+                repo_id = lookup_repo_id(repo_key)
         except (OSError, StrophaError) as exc:
             console.print(f"[red]Could not resolve eval repository:[/red] {exc}")
             raise typer.Exit(code=1) from exc
-        if repo_id is None:
+        if not include_other_repos and repo_id is None:
             console.print(f"[red]Repository is not indexed:[/red] {repo_key}")
             raise typer.Exit(code=1)
 
@@ -1523,6 +1524,7 @@ def eval(
                 built.retrieval,
                 top_k=top_k,
                 repo_id=repo_id,
+                expected_repo_key=repo_key,
                 provenance=provenance,
             )
     except StrophaError as exc:

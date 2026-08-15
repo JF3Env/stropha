@@ -245,6 +245,7 @@ class EvalResult:
     max_chunks_from_one_file: int = 0
     spilled_relevant_entities: int = 0
     diversity_deferred_count: int = 0
+    wrong_repo_count: int = 0
 
     @property
     def hit(self) -> bool:
@@ -407,6 +408,7 @@ class EvalReport:
         returned_tokens = sum(r.returned_tokens for r in self.results)
         duplicate_entities = sum(r.duplicate_entity_count for r in self.results)
         packed_relevant = sum(r.relevant_count for r in self.results)
+        wrong_repo_hits = sum(r.wrong_repo_count for r in self.results)
         summary = {
             "cases": self.n,
             "hits": self.n_hits,
@@ -421,6 +423,11 @@ class EvalReport:
             "latency_p99_ms": round(self.latency_p99_ms, 3),
             "returned_tokens": returned_tokens,
             "returned_hits": returned_hits,
+            "wrong_repo_hits": wrong_repo_hits,
+            "wrong_repo_rate": round(
+                wrong_repo_hits / returned_hits if returned_hits else 0.0,
+                4,
+            ),
             "unique_files_returned": sum(r.unique_files_returned for r in self.results),
             "unique_symbols_returned": sum(r.unique_symbols_returned for r in self.results),
             "duplicate_entity_count": duplicate_entities,
@@ -526,7 +533,7 @@ def _path_matches(actual: str, expected: Iterable[str]) -> str | None:
         if not e:
             continue
         e = e.strip()
-        if a == e or a.endswith("/" + e) or a.endswith(e):
+        if a == e or a.endswith("/" + e):
             return e
     return None
 
@@ -570,6 +577,7 @@ def run_eval(
     *,
     top_k: int = 10,
     repo_id: int | None = None,
+    expected_repo_key: str | None = None,
     provenance: dict[str, Any] | None = None,
     context_budget: int | None = None,
     diversity_enabled: bool = False,
@@ -619,6 +627,7 @@ def run_eval(
         first_matched_path: str | None = None
         first_matched_symbol: str | None = None
         matched_entities: set[int] = set()
+        wrong_repo_count = 0
 
         for rank, h in enumerate(hits, 1):
             # Tolerate both real SearchHit (.rel_path) and tests' fake hits (.path).
@@ -629,7 +638,14 @@ def run_eval(
             )
             actual_symbol = getattr(h, "symbol", None)
 
-            matched_entity, mp, ms = _match_entity(case, h, matched_entities)
+            hit_repo = getattr(h, "repo", None)
+            hit_repo_key = getattr(hit_repo, "normalized_key", None)
+            wrong_repo = expected_repo_key is not None and hit_repo_key != expected_repo_key
+            if wrong_repo:
+                wrong_repo_count += 1
+                matched_entity, mp, ms = None, None, None
+            else:
+                matched_entity, mp, ms = _match_entity(case, h, matched_entities)
 
             if matched_entity is not None:
                 # This hit is relevant
@@ -653,6 +669,11 @@ def run_eval(
         spilled_matches: set[int] = set()
         matched_or_spilled = set(matched_entities)
         for hit in spilled:
+            hit_repo = getattr(hit, "repo", None)
+            if expected_repo_key is not None and getattr(
+                hit_repo, "normalized_key", None
+            ) != expected_repo_key:
+                continue
             matched_entity, _, _ = _match_entity(case, hit, matched_or_spilled)
             if matched_entity is not None:
                 spilled_matches.add(matched_entity)
@@ -692,6 +713,7 @@ def run_eval(
             max_chunks_from_one_file=diversity.max_chunks_per_file,
             spilled_relevant_entities=len(spilled_matches),
             diversity_deferred_count=diversity_deferred_count,
+            wrong_repo_count=wrong_repo_count,
         )
         report.results.append(result)
         log.info(

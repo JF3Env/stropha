@@ -57,6 +57,9 @@ _RETRIEVAL_FIELD: dict[str, str] = {
     "candidate_k": "candidate_k",
     "rrf_k": "rrf_k",
     "k": "rrf_k",
+    "streams": "streams",
+    "hyde": "hyde_enabled",
+    "hyde_code_tuned": "hyde_code_tuned",
     "recursive": "recursive_enabled",
     "recursive_adjacency": "recursive_adjacency",
     "adaptive_weighting": "adaptive_weighting",
@@ -433,6 +436,7 @@ def eval_cell(
                 cases,
                 built.retrieval,
                 top_k=matrix.top_k,
+                expected_repo_key=(run_provenance or {}).get("repo_key"),
                 provenance=provenance,
                 context_budget=cell.values.get("context_budget"),
                 diversity_enabled=bool(cell.values.get("diversity", False)),
@@ -477,6 +481,8 @@ def eval_cell(
             "success@10": float(r.hit),
             "mrr": r.reciprocal_rank,
             "ndcg@10": r.ndcg,
+            "precision@10": r.precision,
+            "wrong_repo_count": r.wrong_repo_count,
             "latency_ms": round(r.latency_ms, 3),
         }
         for r in report.results

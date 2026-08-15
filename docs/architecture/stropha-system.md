@@ -436,14 +436,23 @@ Falha de resolução retorna o modelo de resposta nativo vazio, sem consultar o
 Resultados cross-repo exigem `include_other_repos=true` no MCP/frontend ou
 `--include-other-repos` no CLI. Um `repo_url` explícito sempre permanece limitado
 ao clone/cache solicitado, independentemente dessa flag.
+Como o daemon HTTP é compartilhado e seu target padrão é process-wide,
+`search_code(repo_url=...)` e `assemble_context(repo=...)` aceitam um path local
+absoluto indexado ou normalized key para selecionar explicitamente o workspace do caller;
+`repo_url` continua aceitando URLs Git para clone/cache remoto.
 
 Internamente, `repo_id=None` significa busca em todos os repositórios. Um ID
 concreto é aplicado no storage antes de ranking e `LIMIT`; pins são filtrados
-antes de prepend e há filtro final de defesa-em-profundidade. GraphVec filtra
+antes de prepend e há filtro final de defesa-em-profundidade. A montagem de
+contexto repete essa validação sobre os hits primários antes de packing. GraphVec filtra
 `graph_nodes` e hidrata chunks pela mesma identidade de repo. Recursive merge usa
 `(repo, rel_path)` como chave para não unir arquivos homônimos de repos distintos.
 `repo_id=None` chega aos tools diretos somente após opt-in explícito com
 `include_other_repos=true`.
+
+O harness de avaliação recebe a normalized key esperada. Hits sem identidade de
+repo ou pertencentes a outro repo nunca satisfazem path/symbol judgments e são
+reportados como `wrong_repo_hits`/`wrong_repo_rate`.
 
 Pipeline padrão:
 

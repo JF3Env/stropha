@@ -181,7 +181,8 @@ def _build_campaign_plan(
     stage_plans: list[dict[str, Any]] = []
     index_keys: set[str] = set()
     index_runtime_id = _index_runtime_id()
-    total_cells = total_queries = total_llm_queries = excluded_cells = 0
+    total_cells = total_queries = total_llm_queries = total_inference_calls = 0
+    excluded_cells = 0
     for declared in spec["stages"]:
         stage_id = str(declared["id"])
         matrix_path = (source_root / declared["matrix"]).resolve()
@@ -216,11 +217,19 @@ def _build_campaign_plan(
         cases = filter_by_split(load_golden(golden_path), split)
         repetitions = int(declared.get("repetitions", 1))
         queries = len(cells) * len(cases) * repetitions
-        llm_cells = sum(_cell_uses_llm_reranker(cell.values, filtered_matrix.pipeline) for cell in cells)
-        llm_queries = llm_cells * len(cases) * repetitions
+        llm_invocations = sum(
+            _cell_llm_reranker_invocations(cell.values, filtered_matrix.pipeline)
+            for cell in cells
+        )
+        llm_queries = llm_invocations * len(cases) * repetitions
+        inference_generations = sum(
+            _cell_query_intelligence_calls(cell.values, filtered_matrix.pipeline)
+            for cell in cells
+        ) * len(cases) * repetitions
         total_cells += len(cells) * repetitions
         total_queries += queries
         total_llm_queries += llm_queries
+        total_inference_calls += inference_generations
         excluded_cells += len(excluded)
 
         base_pipeline = (
@@ -263,7 +272,8 @@ def _build_campaign_plan(
                 "cells_per_repetition": len(cells),
                 "total_cells": len(cells) * repetitions,
                 "queries": queries,
-                "llm_reranker_queries": llm_queries,
+                "max_llm_reranker_invocations": llm_queries,
+                "max_query_intelligence_inference_calls": inference_generations,
                 "index_groups": len(filtered_matrix.groups()),
                 "cell_ids": sorted(cell_ids),
                 "cells": [
@@ -297,7 +307,8 @@ def _build_campaign_plan(
         "cells": total_cells,
         "queries": total_queries,
         "index_builds": len(index_keys),
-        "llm_reranker_queries": total_llm_queries,
+        "max_llm_reranker_invocations": total_llm_queries,
+        "max_query_intelligence_inference_calls": total_inference_calls,
         "excluded_cells": excluded_cells,
         **estimated,
     }
@@ -340,12 +351,57 @@ def _plan_digest(payload: dict[str, Any]) -> str:
     ).hexdigest()
 
 
-def _cell_uses_llm_reranker(values: dict[str, Any], pipeline: dict[str, Any] | None) -> int:
+def _cell_llm_reranker_invocations(
+    values: dict[str, Any], pipeline: dict[str, Any] | None
+) -> int:
     value = values.get("reranker")
     if value is None and "reranker" not in values and pipeline is not None:
         value = ((pipeline.get("retrieval") or {}).get("config") or {}).get("reranker")
     adapter = value.get("adapter") if isinstance(value, dict) else value
-    return int(adapter == "llm")
+    if adapter != "llm":
+        return 0
+    retrieval = ((pipeline or {}).get("retrieval") or {}).get("config") or {}
+    multi_query = values.get("multi_query", retrieval.get("multi_query_enabled", False))
+    invocations = 1
+    if multi_query:
+        count = int(values.get("multi_query_count", retrieval.get("multi_query_count", 3)))
+        invocations = count + 2
+    reranker_config = value.get("config", {}) if isinstance(value, dict) else {}
+    repair_enabled = (
+        reranker_config.get("repair_enabled", value.get("repair_enabled", True))
+        if isinstance(reranker_config, dict) and isinstance(value, dict)
+        else True
+    )
+    return invocations * (2 if repair_enabled else 1)
+
+
+def _cell_query_intelligence_calls(
+    values: dict[str, Any], pipeline: dict[str, Any] | None
+) -> int:
+    retrieval = ((pipeline or {}).get("retrieval") or {}).get("config") or {}
+    hyde = bool(values.get("hyde", retrieval.get("hyde_enabled", False)))
+    rewrite = bool(
+        values.get("query_rewrite", retrieval.get("query_rewrite_enabled", False))
+    )
+    multi_query = bool(
+        values.get("multi_query", retrieval.get("multi_query_enabled", False))
+    )
+    if not multi_query:
+        return int(hyde) + int(rewrite)
+    count = int(values.get("multi_query_count", retrieval.get("multi_query_count", 3)))
+    successful_expansion = 1 + (count + 1 if hyde else 0)
+    rewrite_max_value = values.get(
+        "query_rewrite_max_terms", retrieval.get("query_rewrite_max_terms", 6)
+    )
+    multi_query_min_value = values.get(
+        "multi_query_min_terms", retrieval.get("multi_query_min_terms", 7)
+    )
+    rewrite_max_terms = int(rewrite_max_value if rewrite_max_value is not None else 6)
+    multi_query_min_terms = int(
+        multi_query_min_value if multi_query_min_value is not None else 7
+    )
+    fallback = 1 + int(hyde) + int(rewrite and multi_query_min_terms <= rewrite_max_terms)
+    return max(successful_expansion, fallback)
 
 
 def _validate_exhaustive_pipeline(stage_id: str, pipeline: dict[str, Any] | None) -> None:

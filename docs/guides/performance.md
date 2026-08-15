@@ -343,6 +343,22 @@ global retrieval-feature inheritance disabled. Exhaustive campaigns run every
 declared repetition and may set `max_parallel_stages` above one when experiment
 storage is PostgreSQL. Adaptive campaigns retain confidence-based early stop.
 
+The retrieval-only quality campaign fixes the Qwen/contextual index and evaluates
+6,216 distinct combinations across stream selection, every reranker category and
+documented cross-encoder, candidate/RRF depth, adaptive weighting,
+HyDE, query rewriting, multi-query expansion, and recursive merging:
+
+```bash
+uv run stropha bench campaign plan \
+  --spec src/stropha/bench/retrieval_quality_exhaustive_campaign.yaml
+uv run stropha bench campaign start \
+  --spec src/stropha/bench/retrieval_quality_exhaustive_campaign.yaml
+```
+
+The matrix deliberately excludes GraphVec and Model2Vec because those lanes need
+graph/secondary indexes, and learned weights because no trained profile is pinned.
+Add them with their required artifacts rather than comparing inert switches.
+
 An interrupted or failed campaign resumes successful cells when `start` is run
 again at the same commit. Stop the worker and its active benchmark with:
 

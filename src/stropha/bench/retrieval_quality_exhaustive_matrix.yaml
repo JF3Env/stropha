@@ -1,0 +1,129 @@
+# Retrieval-only quality sweep. The indexing pipeline is fixed so every one of
+# the distinct query-time strategies share one PostgreSQL cache.
+repo: .
+golden: tests/eval/golden.jsonl
+top_k: 10
+
+pipeline:
+  walker: {adapter: git-ls-files}
+  chunker: {adapter: tree-sitter-dispatch}
+  enricher:
+    adapter: contextual
+    config:
+      max_content_chars: 4000
+      temperature: 0
+      max_tokens: 64
+      max_description_chars: 200
+      prompt_template: 'Write a dense 2-3 sentence semantic description of this code
+        chunk for retrieval.Cover:- What this code does (functionality)- Where it
+        fits (layer, module, responsibility)- Related concepts or components it interacts
+        withKeep it concrete. Avoid filler words and meta-commentary.Code:```{language}{content}```File:
+        {rel_path}Symbol: {symbol}Output: ONLY the description, starting with "This...".
+        No code, no preamble, no markdown.'
+  embedder:
+    adapter: mlx
+    config:
+      model: mlx-community/Qwen3-Embedding-4B-4bit-DWQ
+      batch_size: 4
+  retrieval:
+    adapter: hybrid-rrf
+    config:
+      inherit_global_features: false
+      candidate_k: 20
+      rrf_k: 60
+      adaptive_weighting: true
+      learned_weights_enabled: false
+      hyde_enabled: false
+      hyde_code_tuned: true
+      query_rewrite_enabled: false
+      query_rewrite_max_terms: 6
+      multi_query_enabled: false
+      multi_query_count: 3
+      multi_query_min_terms: 7
+      recursive_enabled: false
+      recursive_adjacency: 5
+      streams:
+        dense: {adapter: vec-cosine, config: {k: 100}}
+        sparse: {adapter: fts5-bm25, config: {k: 100}}
+        symbol: {adapter: like-tokens, config: {k: 100}}
+
+axes:
+  # Every retrieval/reranker adapter category that works against the fixed
+  # primary index. GraphVec/Model2Vec are deferred with their required indexes.
+  streams:
+    - {}
+    - {symbol: null}
+    - {sparse: null}
+    - {dense: null}
+    - {sparse: null, symbol: null}
+    - {dense: null, symbol: null}
+    - {dense: null, sparse: null}
+  reranker:
+    - null
+    - code-aware
+    - {adapter: cross-encoder, model: Xenova/ms-marco-MiniLM-L-6-v2, batch_size: 32}
+    - {adapter: cross-encoder, model: Xenova/ms-marco-MiniLM-L-12-v2, batch_size: 32}
+    - {adapter: cross-encoder, model: BAAI/bge-reranker-base, batch_size: 32}
+    - {adapter: cross-encoder, model: jinaai/jina-reranker-v1-turbo-en, batch_size: 32}
+    - {adapter: cross-encoder, model: jinaai/jina-reranker-v2-base-multilingual, batch_size: 32}
+    - adapter: llm
+      max_candidates: 50
+      max_snippet_chars: 4000
+      max_tokens: 2048
+      temperature: 0
+      output_mode: json_schema
+      disable_thinking: true
+      timeout_seconds: 300
+      repair_enabled: true
+      fallback: code-aware
+  candidate_k: [20, 50]
+  rrf_k: [40, 60, 80]
+  adaptive_weighting: [false, true]
+  hyde: [false, true]
+  hyde_code_tuned: [true]
+  query_rewrite: [false, true]
+  query_rewrite_max_terms: [6]
+  multi_query: [false, true]
+  multi_query_count: [3]
+  multi_query_min_terms: [7]
+  recursive: [false, true]
+  recursive_adjacency: [5]
+
+baseline:
+  streams: {}
+  reranker: null
+  candidate_k: 20
+  rrf_k: 60
+  adaptive_weighting: true
+  hyde: false
+  hyde_code_tuned: true
+  query_rewrite: false
+  query_rewrite_max_terms: 6
+  multi_query: false
+  multi_query_count: 3
+  multi_query_min_terms: 7
+  recursive: true
+  recursive_adjacency: 5
+
+constraints:
+  # HyDE only changes the dense lane.
+  - skip_when: {streams: {dense: null}, hyde: true}
+  - skip_when: {streams: {dense: null, symbol: null}, hyde: true}
+  - skip_when: {streams: {dense: null, sparse: null}, hyde: true}
+
+  # Stream weighting cannot change a single-stream result.
+  - skip_when: {streams: {sparse: null, symbol: null}, adaptive_weighting: true}
+  - skip_when: {streams: {dense: null, symbol: null}, adaptive_weighting: true}
+  - skip_when: {streams: {dense: null, sparse: null}, adaptive_weighting: true}
+
+  # RRF k is inert for a single query over one stream; retain it when
+  # multi-query needs to fuse the query variants.
+  - skip_when: {streams: {sparse: null, symbol: null}, multi_query: false, rrf_k: 40}
+  - skip_when: {streams: {sparse: null, symbol: null}, multi_query: false, rrf_k: 80}
+  - skip_when: {streams: {dense: null, symbol: null}, multi_query: false, rrf_k: 40}
+  - skip_when: {streams: {dense: null, symbol: null}, multi_query: false, rrf_k: 80}
+  - skip_when: {streams: {dense: null, sparse: null}, multi_query: false, rrf_k: 40}
+  - skip_when: {streams: {dense: null, sparse: null}, multi_query: false, rrf_k: 80}
+
+  # Without reranking or query expansion, candidate_k cannot alter top_k=10.
+  - skip_when: {reranker: null, multi_query: false, candidate_k: 50}

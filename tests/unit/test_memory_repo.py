@@ -315,6 +315,19 @@ def test_resolve_repo_by_path() -> None:
     app.storage.lookup_repo_id.assert_called_once_with(REPO)
 
 
+def test_resolve_repo_treats_relative_path_as_exact_key() -> None:
+    app = MagicMock()
+    app.storage.lookup_repo_id.return_value = None
+
+    with patch("stropha.ingest.git_meta.detect") as detect:
+        repo_id, local = _resolve_repo(app, "src/stropha")
+
+    assert repo_id is None
+    assert local is None
+    detect.assert_not_called()
+    app.storage.lookup_repo_id.assert_called_once_with("src/stropha")
+
+
 def test_resolve_repo_defaults_to_target() -> None:
     app = MagicMock()
     app.config.target_repo = "/tmp/target"

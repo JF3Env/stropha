@@ -16,6 +16,8 @@ from stropha.bench.campaign import (
     _assert_plan_unchanged,
     _assert_runtime_budgets,
     _build_campaign_plan,
+    _cell_llm_reranker_invocations,
+    _cell_query_intelligence_calls,
     _completed_group_stability,
     _configuration_label,
     _exclusive_start,
@@ -68,6 +70,89 @@ def test_comprehensive_campaign_has_repeats_and_frozen_holdout() -> None:
     assert indexing.baseline_cell() is not None
     assert retrieval.baseline_cell() is not None
     assert retrieval.baseline_cell().values["learned_weights"] is False
+
+
+def test_retrieval_quality_campaign_is_exhaustive_and_bounded() -> None:
+    repo = Path(__file__).resolve().parents[2]
+    spec = load_campaign_spec(
+        repo / "src/stropha/bench/retrieval_quality_exhaustive_campaign.yaml"
+    )
+
+    assert spec["mode"] == "exhaustive"
+    assert spec["budgets"] == {
+        "max_cells": 10_000,
+        "max_queries": 1_000_000,
+        "max_index_builds": 1,
+    }
+    assert len(spec["stages"]) == 1
+
+
+def test_retrieval_quality_campaign_plan_matches_declared_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = Path(__file__).resolve().parents[2]
+    rel = Path("src/stropha/bench/retrieval_quality_exhaustive_campaign.yaml")
+    spec = load_campaign_spec(repo / rel)
+    monkeypatch.setattr("stropha.bench.campaign.get_config", Config)
+    _stub_plan_runtime(monkeypatch)
+
+    plan = _build_campaign_plan(
+        spec,
+        source_root=repo,
+        spec_rel=rel,
+        source_commit="a" * 40,
+        config_sha="config",
+    )
+
+    assert plan["allowed"] is True
+    assert plan["totals"]["cells"] == 6_216
+    assert plan["totals"]["queries"] == 540_792
+    assert plan["totals"]["index_builds"] == 1
+    assert plan["totals"]["max_llm_reranker_invocations"] == 439_872
+    assert plan["totals"]["max_query_intelligence_inference_calls"] == 987_624
+
+
+def test_llm_reranker_plan_counts_possible_repair_generations() -> None:
+    assert (
+        _cell_llm_reranker_invocations(
+            {"reranker": {"adapter": "llm", "repair_enabled": True}}, None
+        )
+        == 2
+    )
+    assert (
+        _cell_llm_reranker_invocations(
+            {
+                "reranker": {"adapter": "llm", "repair_enabled": True},
+                "multi_query": True,
+                "multi_query_count": 3,
+            },
+            None,
+        )
+        == 10
+    )
+    assert (
+        _cell_llm_reranker_invocations(
+            {"reranker": {"adapter": "llm", "config": {"repair_enabled": False}}},
+            None,
+        )
+        == 1
+    )
+
+
+def test_query_intelligence_plan_counts_multi_query_rewrite_fallback() -> None:
+    values = {
+        "multi_query": True,
+        "multi_query_count": 3,
+        "multi_query_min_terms": 4,
+        "query_rewrite": True,
+        "query_rewrite_max_terms": 6,
+    }
+
+    assert _cell_query_intelligence_calls(values, None) == 2
+    assert (
+        _cell_query_intelligence_calls({**values, "multi_query_min_terms": 7}, None)
+        == 1
+    )
 
 
 def test_campaign_spec_rejects_invalid_split(tmp_path: Path) -> None:

@@ -292,6 +292,16 @@ def assemble_context(
     if repo_id is not None:
         search_kwargs["repo_id"] = repo_id
     primary_hits: list[SearchHit] = list(search_engine.search(task, **search_kwargs))
+    if repo_id is not None and storage is not None:
+        scoped_hits = []
+        for hit in primary_hits:
+            try:
+                chunk = storage.get_chunk_by_id(hit.chunk_id)
+            except Exception:
+                chunk = None
+            if isinstance(chunk, dict) and chunk.get("repo_id") == repo_id:
+                scoped_hits.append(hit)
+        primary_hits = scoped_hits
 
     if diff_scope:
         # Filter to only files in the diff. On failure (git missing,

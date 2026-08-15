@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -115,6 +116,33 @@ def test_recall_when_path_matches_at_rank_1() -> None:
     assert report.n_hits == 1
     assert report.recall_at_k == 1.0
     assert report.mrr == 1.0
+
+
+def test_foreign_repository_hit_is_never_relevant() -> None:
+    case = EvalCase(id="c1", query="foo", expected_paths=("a.py",))
+    engine = _FakeEngine(
+        {"foo": [_FakeHit("a.py", None, repo=SimpleNamespace(normalized_key="foreign"))]}
+    )
+
+    report = run_eval(
+        [case],
+        engine,  # type: ignore[arg-type]
+        top_k=1,
+        expected_repo_key="target",
+    )
+
+    assert report.n_hits == 0
+    assert report.summary()["wrong_repo_hits"] == 1
+    assert report.summary()["wrong_repo_rate"] == 1.0
+
+
+def test_path_suffix_match_requires_component_boundary() -> None:
+    case = EvalCase(id="c1", query="foo", expected_paths=("foo.py",))
+    engine = _FakeEngine({"foo": [_FakeHit("notfoo.py", None)]})
+
+    report = run_eval([case], engine, top_k=1)  # type: ignore[arg-type]
+
+    assert report.n_hits == 0
 
 
 def test_recall_zero_when_no_hit() -> None:

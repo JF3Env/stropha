@@ -1,0 +1,19 @@
+version: 1
+name: retrieval-quality-exhaustive-v1
+mode: exhaustive
+split: search
+max_parallel_stages: 1
+
+# The grid is intentionally quality-first. These admission limits prevent an
+# accidental domain expansion without placing a latency or monetary ceiling on
+# the approved strategies.
+budgets:
+  max_cells: 10000
+  max_queries: 1000000
+  max_index_builds: 1
+
+stages:
+  - id: retrieval-strategies
+    matrix: src/stropha/bench/retrieval_quality_exhaustive_matrix.yaml
+    repetitions: 1
+    min_repetitions: 1

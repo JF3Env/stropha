@@ -44,6 +44,12 @@ def _mcp_app(hits: list[SearchHit], repo_ids: dict[str, int]) -> MagicMock:
     app.recent_queries = deque(maxlen=5)
     app.built = SimpleNamespace(router=None)
     app.search_engine.search.return_value = hits
+    ids_by_key = {
+        hit.repo.normalized_key: repo_ids[hit.chunk_id]
+        for hit in hits
+        if hit.repo is not None and hit.chunk_id in repo_ids
+    }
+    app.storage.lookup_repo_id.side_effect = ids_by_key.get
     app.storage.get_chunk_by_id.side_effect = lambda chunk_id: (
         {"chunk_id": chunk_id, "repo_id": repo_ids[chunk_id]}
         if chunk_id in repo_ids
@@ -157,6 +163,34 @@ def test_mcp_search_defaults_to_current_repo_and_opt_in_broadens() -> None:
     assert {result.chunk_id for result in broad.results} == {"local", "foreign"}
     assert app.search_engine.search.call_args_list[0].kwargs["repo_id"] == 7
     assert "repo_id" not in app.search_engine.search.call_args_list[1].kwargs
+
+
+def test_mcp_search_accepts_explicit_indexed_repository_selector() -> None:
+    from stropha.server import search_code
+
+    local = _hit("local", "github.com/example/local")
+    app = _mcp_app([local], {"local": 7})
+    with patch("stropha.server._resolve_target_repo_id", return_value=7) as resolve:
+        response = search_code(
+            "shared",
+            repo_url="github.com/example/local",
+            ctx=_ctx(app),
+        )
+
+    assert [result.chunk_id for result in response.results] == ["local"]
+    resolve.assert_called_once_with(app, repo="github.com/example/local")
+
+
+def test_mcp_search_rejects_relative_repository_selector() -> None:
+    from stropha.server import search_code
+
+    local = _hit("local", "github.com/example/local")
+    app = _mcp_app([local], {"local": 7})
+    with patch("stropha.server._resolve_target_repo_id", return_value=None) as resolve:
+        response = search_code("shared", repo_url=".", ctx=_ctx(app))
+
+    assert response.results == []
+    resolve.assert_called_once_with(app, repo=".")
 
 
 def test_direct_mcp_routes_scope_duplicate_symbols_and_community_ids(
@@ -388,6 +422,90 @@ def test_composed_tools_default_scoped_and_explicitly_broaden() -> None:
         for call in app.search_engine.search.call_args_list
         if call.kwargs.get("repo_id") is None
     )
+
+
+def test_scoped_assembly_defensively_drops_foreign_primary_hits() -> None:
+    from stropha.server import assemble_context
+
+    local = _hit("local", "github.com/example/local")
+    foreign = _hit("foreign", "github.com/example/foreign")
+    app = _mcp_app([local, foreign], {"local": 7, "foreign": 8})
+
+    with patch(
+        "stropha.server_memory_tools._resolve_repo",
+        return_value=(7, Path("/tmp/local")),
+    ) as resolve:
+        response = assemble_context(
+            "shared",
+            repo="github.com/example/local",
+            ctx=_ctx(app),
+        )
+
+    primary = next(section for section in response.sections if section.key == "primary")
+    assert [hit.chunk_id for hit in primary.hits] == ["local"]
+    assert resolve.call_args.args == (app, "github.com/example/local")
+
+
+def test_explicit_repo_rejects_cross_repository_broadening() -> None:
+    from stropha.server import assemble_context, search_code
+
+    app = _mcp_app([_hit("foreign", "github.com/example/foreign")], {"foreign": 8})
+
+    searched = search_code(
+        "shared",
+        repo_url="github.com/example/local",
+        include_other_repos=True,
+        ctx=_ctx(app),
+    )
+    assembled = assemble_context(
+        "shared",
+        repo="github.com/example/local",
+        include_other_repos=True,
+        ctx=_ctx(app),
+    )
+
+    assert searched.results == []
+    assert assembled.sections == []
+    app.search_engine.search.assert_not_called()
+
+
+def test_assembly_rejects_relative_repository_selector() -> None:
+    from stropha.server import assemble_context
+
+    app = _mcp_app([_hit("local", "github.com/example/local")], {"local": 7})
+
+    assembled = assemble_context("shared", repo=".", ctx=_ctx(app))
+
+    assert assembled.sections == []
+    app.search_engine.search.assert_not_called()
+
+
+def test_explicit_repo_drives_diff_scope_repository() -> None:
+    from stropha.server import assemble_context
+
+    app = _mcp_app([], {})
+    selected = Path("/tmp/selected-repo")
+    assembled = SimpleNamespace(
+        task="task",
+        bundle="",
+        sections=[],
+        total_tokens=0,
+        budget_tokens=4000,
+        spilled_count=0,
+        truncated_oversize=False,
+    )
+    with (
+        patch("stropha.server_memory_tools._resolve_repo", return_value=(7, selected)),
+        patch("stropha.retrieval.assemble.assemble_context", return_value=assembled) as run,
+    ):
+        assemble_context(
+            "task",
+            repo="github.com/example/local",
+            diff_scope=True,
+            ctx=_ctx(app),
+        )
+
+    assert run.call_args.kwargs["diff_repo"] == selected
 
 
 def test_broad_investigation_plan_preserves_opt_in_on_every_step() -> None:

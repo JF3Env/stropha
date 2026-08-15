@@ -51,8 +51,8 @@ def _resolve_repo(
 ) -> tuple[int | None, Path | None]:
     """Resolve ``repo`` to ``(repo_id, local_path)``.
 
-    ``repo`` may be a normalized key (``github.com/org/name``), a local path,
-    or ``None`` → the server's configured ``target_repo`` (legacy single-repo
+    ``repo`` may be a normalized key (``github.com/org/name``), an absolute
+    local path, or ``None`` → the server's configured ``target_repo`` (legacy single-repo
     behaviour). An explicit ``repo`` lets multi-repo callers anchor memory to
     the repo they're actually reasoning about, instead of always the server's
     target (Problem 2 in docs/persisting-problems-2026-06-07.md).
@@ -65,7 +65,7 @@ def _resolve_repo(
         if not cand:
             return None, None
         p = Path(cand).expanduser()
-        if cand.startswith(("/", ".", "~")) or p.exists():
+        if p.is_absolute():
             # local path → detect its normalized key
             try:
                 key = detect_repo(p).normalized_key

@@ -223,6 +223,9 @@ def test_retrieval_axes_map_to_runtime_config_fields() -> None:
                 "multi_query": True,
                 "multi_query_count": 2,
                 "multi_query_min_terms": 7,
+                "hyde": True,
+                "hyde_code_tuned": False,
+                "streams": {"symbol": None},
             }
         )
     )
@@ -239,6 +242,9 @@ def test_retrieval_axes_map_to_runtime_config_fields() -> None:
         "multi_query_enabled": True,
         "multi_query_count": 2,
         "multi_query_min_terms": 7,
+        "hyde_enabled": True,
+        "hyde_code_tuned": False,
+        "streams": {"symbol": None},
     }
 
 
@@ -343,6 +349,51 @@ def test_phase4_quality_candidates_freeze_exact_three_cells() -> None:
         isinstance(value["enricher"], dict) and value["rrf_k"] == 40 for value in values
     )
     assert all(value["learned_weights"] is False for value in values)
+
+
+def test_exhaustive_retrieval_matrix_covers_all_query_mechanisms() -> None:
+    path = Path(__file__).resolve().parents[2] / "src/stropha/bench/retrieval_quality_exhaustive_matrix.yaml"
+    matrix = load_matrix(path)
+    cells = matrix.expand()
+
+    assert matrix.pipeline is not None
+    assert matrix.pipeline["retrieval"]["config"]["inherit_global_features"] is False
+    assert len(cells) == 6_216
+    assert len(matrix.groups()) == 1
+    assert {cell.values["hyde"] for cell in cells} == {False, True}
+    assert {cell.values["query_rewrite"] for cell in cells} == {False, True}
+    assert {cell.values["multi_query"] for cell in cells} == {False, True}
+    assert {cell.values["recursive"] for cell in cells} == {False, True}
+    rerankers = {
+        value.get("adapter") if isinstance(value, dict) else value
+        for value in matrix.axes["reranker"]
+    }
+    assert rerankers == {None, "code-aware", "cross-encoder", "llm"}
+    assert len(matrix.axes["streams"]) == 7
+    assert "learned_weights" not in matrix.axes
+
+
+def test_exhaustive_hyde_axis_overrides_hermetic_retrieval_config() -> None:
+    from stropha.bench.runner import _pipeline_config_for_bench
+
+    path = (
+        Path(__file__).resolve().parents[2]
+        / "src/stropha/bench/retrieval_quality_exhaustive_matrix.yaml"
+    )
+    matrix = load_matrix(path)
+    assert matrix.pipeline is not None
+    overrides = _retrieval_overrides(Cell(values={"hyde": True, "hyde_code_tuned": True}))
+
+    resolved = _pipeline_config_for_bench(
+        overrides,
+        resolve_storage_path=False,
+        base_pipeline=matrix.pipeline,
+    )
+
+    config = resolved["retrieval"]["config"]
+    assert config["inherit_global_features"] is False
+    assert config["hyde_enabled"] is True
+    assert config["hyde_code_tuned"] is True
 
 
 def test_phase2_shortlist_is_frozen_to_four_cells() -> None:
@@ -1288,6 +1339,8 @@ def test_eval_cell_records_full_metrics_provenance_and_diagnostics(
                 hit=True,
                 reciprocal_rank=1.0,
                 ndcg=1.0,
+                precision=0.1,
+                wrong_repo_count=0,
                 latency_ms=1.23456,
             )
         ],
@@ -1353,9 +1406,11 @@ def test_eval_cell_records_full_metrics_provenance_and_diagnostics(
     assert record["per_query_metrics"] == {
         "q1": {
             "success@10": 1.0,
-            "mrr": 1.0,
-            "ndcg@10": 1.0,
-            "latency_ms": 1.235,
+                "mrr": 1.0,
+                "ndcg@10": 1.0,
+                "precision@10": 0.1,
+                "wrong_repo_count": 0,
+                "latency_ms": 1.235,
         }
     }
     assert run_eval.call_args.kwargs["provenance"] == record["provenance"]

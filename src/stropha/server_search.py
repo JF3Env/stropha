@@ -12,7 +12,7 @@ ToResult = Callable[[Any], SearchResult]
 PersistSessionState = Callable[[AppContext], None]
 ApplyFilters = Callable[..., list[Any]]
 TrackSearchSavings = Callable[[str, list[Any]], Any]
-ResolveTargetRepoId = Callable[[AppContext], int | None]
+ResolveTargetRepoId = Callable[..., int | None]
 
 
 def _hit_belongs_to_repo(storage: Any, hit: Any, repo_id: int) -> bool:
@@ -92,16 +92,18 @@ def search_code_impl(
 
     repo_id: int | None = None
     try:
-        if repo_url:
-            if not is_git_url_fn(repo_url):
-                raise stropha_error_cls(f"Invalid git repository URL: {repo_url}")
+        if repo_url and is_git_url_fn(repo_url):
             log.info("mcp.search_code.remote", repo_url=repo_url, refresh=refresh)
             remote = search_git_url_fn(query, repo_url, top_k=fetch_k, refresh=refresh)
             hits = remote.hits
             repo_id = remote.repo_id
         else:
             if not include_other_repos:
-                repo_id = resolve_target_repo_id_fn(app)
+                repo_id = (
+                    resolve_target_repo_id_fn(app, repo=repo_url)
+                    if repo_url
+                    else resolve_target_repo_id_fn(app)
+                )
                 if repo_id is None:
                     log.warning("mcp.search_code.repo_not_resolved")
                     return SearchResponse(

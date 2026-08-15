@@ -687,7 +687,8 @@ def _apply_filters(
         "For a known exact symbol name (e.g., 'UserService.createUser'), use get_symbol instead. "
         "Filters: language=['java','python'], path_prefix='src/', kind=['method','class'], exclude_tests=True. "
         "Set recursive=True to auto-merge related chunks for more context. "
-        "Results default to the current repository; set include_other_repos=True explicitly "
+        "Results default to the current repository; repo_url also accepts an exact indexed "
+        "absolute local path or normalized key, or set include_other_repos=True explicitly "
         "to search every indexed repository. "
         "Results include file path (relative to repo root), line numbers, and snippet."
     ),
@@ -726,8 +727,9 @@ def search_code(
         exclude_tests: If True, exclude test files from results.
         include_facets: If True, include facet counts (language, kind, repo distribution).
         recursive: If True, auto-merge sibling chunks (same parent) and adjacent chunks.
-        repo_url: Optional git URL to search (e.g., https://github.com/org/repo).
-                  The repo is cloned and indexed on first access, then cached.
+        repo_url: Optional git URL, indexed absolute local path, or normalized repository key.
+            Git URLs are cloned/indexed on first access. Local/key selectors avoid
+            the shared daemon's process-level default when it differs from the caller.
         include_other_repos: Search all indexed repositories. False scopes results
             to the current target repository. Ignored when repo_url is provided.
         refresh: If True with repo_url, re-clone and re-index the remote repository.
@@ -766,6 +768,10 @@ def search_code(
             from earlier turns into the dense match.
     """
     from .tools.git_url import is_git_url, search_git_url_scoped
+
+    remote_repo_selector = bool(repo_url and is_git_url(repo_url))
+    if repo_url and not remote_repo_selector and include_other_repos:
+        return SearchResponse(results=[], total_candidates=0, query=query, facets=None)
 
     return search_code_impl(
         query,
@@ -1972,7 +1978,8 @@ class AssembleContextResponse(BaseModel):
         "headers + fenced code blocks; ``sections`` is the structured "
         "view if you'd rather work in JSON. Set diff_scope=True for "
         "PR-review workflows: results are filtered to chunks in the "
-        "current git diff (WIN-211). Defaults to the current repository; "
+        "current git diff (WIN-211). Defaults to the current repository; pass repo "
+        "to select an exact indexed absolute local path or normalized key; "
         "include_other_repos=True explicitly broadens every retrieval step."
     ),
 )
@@ -1989,6 +1996,7 @@ def assemble_context(
     diff_ref_b: str | None = None,
     include_other_repos: bool = False,
     *,
+    repo: str | None = None,
     ctx: Context,
 ) -> AssembleContextResponse:
     """Run the WIN-209 assembly pipeline and return a packed bundle.
@@ -2020,6 +2028,7 @@ def assemble_context(
         diff_ref_b: ending git ref. None + diff_ref_a set = HEAD.
         include_other_repos: Search every indexed repository. False scopes
             primary retrieval and graph extensions to the current repository.
+        repo: Optional indexed absolute local path or normalized repository key.
     """
     from .retrieval.assemble import assemble_context as _assemble
 
@@ -2034,7 +2043,24 @@ def assemble_context(
             total_tokens=0,
             budget_tokens=0,
         )
-    repo_id = None if include_other_repos else _resolve_target_repo_id(app)
+    repo_selector = (repo or "").strip() or None
+    if repo_selector and include_other_repos:
+        return AssembleContextResponse(
+            task=task,
+            bundle="",
+            sections=[],
+            total_tokens=0,
+            budget_tokens=context_budget,
+        )
+    selected_repo_path = None
+    if include_other_repos:
+        repo_id = None
+    elif repo_selector:
+        from .server_memory_tools import _resolve_repo
+
+        repo_id, selected_repo_path = _resolve_repo(app, repo_selector, log=log)
+    else:
+        repo_id = _resolve_target_repo_id(app)
     if repo_id is None and not include_other_repos:
         return AssembleContextResponse(
             task=task,
@@ -2047,7 +2073,7 @@ def assemble_context(
     # the configured ``target_repo`` so the agent doesn't have to
     # remember the path. The library function falls back gracefully
     # when the repo is missing or git fails.
-    diff_repo = app.config.target_repo if diff_scope else None
+    diff_repo = (selected_repo_path or app.config.target_repo) if diff_scope else None
     result = _assemble(
         task,
         search_engine=app.search_engine,
