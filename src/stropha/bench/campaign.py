@@ -513,6 +513,32 @@ def _write_stage_report(stage: dict[str, Any], matrix_path: Path) -> dict[str, A
     baseline = matrix.baseline_cell()
     latest = _latest_records(results_path)
     failed = sum(not record.get("ok", True) for record in latest.values())
+    indexes: dict[str, dict[str, Any]] = {}
+    for record in records:
+        diagnostics = record.get("diagnostics") or {}
+        index = diagnostics.get("index") if isinstance(diagnostics, dict) else None
+        indexing_sig = record.get("indexing_sig")
+        if not isinstance(index, dict) or not isinstance(indexing_sig, str):
+            continue
+        previous = indexes.get(indexing_sig)
+        if previous is None or (previous.get("index_reused") and not index.get("index_reused")):
+            indexes[indexing_sig] = index
+    indexing = {
+        "unique_indexes": len(indexes),
+        "built_indexes": sum(not item.get("index_reused", False) for item in indexes.values()),
+        "reused_indexes": sum(bool(item.get("index_reused", False)) for item in indexes.values()),
+        "total_seconds": round(
+            sum(float(item.get("index_seconds", 0.0)) for item in indexes.values()), 3
+        ),
+        "enricher_estimated_input_tokens": sum(
+            int((item.get("enricher") or {}).get("estimated_input_tokens", 0))
+            for item in indexes.values()
+        ),
+        "enricher_estimated_output_tokens": sum(
+            int((item.get("enricher") or {}).get("estimated_output_tokens", 0))
+            for item in indexes.values()
+        ),
+    }
     payload: dict[str, Any] = {
         "stage": stage["id"],
         "group": stage.get("group", stage["id"]),
@@ -529,12 +555,16 @@ def _write_stage_report(stage: dict[str, Any], matrix_path: Path) -> dict[str, A
                 "values": record.get("values"),
                 "metrics": record.get("metrics"),
                 "by_tag": record.get("by_tag"),
+                "provenance": record.get("provenance"),
+                "diagnostics": record.get("diagnostics"),
+                "per_query_metrics": record.get("per_query_metrics"),
             }
             for record in report.rank_table(metric)[:20]
         ],
         "marginals": report.marginals(metric),
         "baseline_cell_id": baseline.cell_id if baseline else None,
         "baseline_deltas": report.baseline_deltas(baseline.cell_id) if baseline else [],
+        "indexing": indexing,
         "generated_at": _now(),
     }
     _atomic_json(Path(stage["report"]), payload)

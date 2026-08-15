@@ -75,9 +75,20 @@ def load_batch_spec(path: Path) -> dict[str, Any]:
         raise BatchError("batch spec version must be 1")
     if raw.get("invalidated"):
         raise BatchError(f"batch is invalidated: {raw['invalidated']}")
-    for key in ("name", "catalog", "matrix"):
+    for key in ("name", "matrix"):
         if not raw.get(key):
             raise BatchError(f"batch spec missing {key!r}")
+    catalogs = raw.get("catalogs")
+    if raw.get("catalog") and catalogs:
+        raise BatchError("batch spec must declare either catalog or catalogs, not both")
+    if catalogs is not None and (
+        not isinstance(catalogs, list)
+        or not catalogs
+        or not all(isinstance(item, str) and item for item in catalogs)
+    ):
+        raise BatchError("batch spec catalogs must be a non-empty list of paths")
+    if not raw.get("catalog") and catalogs is None:
+        raise BatchError("batch spec missing 'catalog' or 'catalogs'")
     return raw
 
 
@@ -86,11 +97,13 @@ def prepare_batch(spec_path: Path, *, artifact_root: Path | None = None) -> Prep
     spec_path = spec_path.resolve()
     spec = load_batch_spec(spec_path)
     repo = Path(spec.get("repo", ".")).expanduser().resolve()
-    catalog_path = _repo_path(repo, spec["catalog"])
+    catalog_values = spec.get("catalogs") or [spec["catalog"]]
+    catalog_paths = [_repo_path(repo, catalog) for catalog in catalog_values]
     matrix_path = _repo_path(repo, spec["matrix"])
-    _assert_catalog_excluded(repo, catalog_path)
+    for catalog_path in catalog_paths:
+        _assert_catalog_excluded(repo, catalog_path)
     exposed_path = _repo_path(repo, spec.get("exposed_golden", "tests/eval/golden.jsonl"))
-    cases = _load_catalog(catalog_path)
+    cases = [case for catalog_path in catalog_paths for case in _load_catalog(catalog_path)]
     exposed = load_golden(exposed_path) if exposed_path.is_file() else []
     exposed_catalogs = spec.get("exposed_catalogs") or []
     if not isinstance(exposed_catalogs, list):
@@ -111,7 +124,9 @@ def prepare_batch(spec_path: Path, *, artifact_root: Path | None = None) -> Prep
         for case in sorted(cases, key=lambda item: item.id)
     )
     cohort_sha = hashlib.sha256(payload.encode()).hexdigest()
-    catalog_sha = hashlib.sha256(catalog_path.read_bytes()).hexdigest()
+    catalog_hashes = {
+        str(path): hashlib.sha256(path.read_bytes()).hexdigest() for path in catalog_paths
+    }
     protocol_sha = _protocol_sha256(
         spec, matrix_path, exposed_path, exposed_catalog_paths
     )
@@ -131,8 +146,14 @@ def prepare_batch(spec_path: Path, *, artifact_root: Path | None = None) -> Prep
         "version": 1,
         "name": spec["name"],
         "status": "frozen",
-        "catalog": str(catalog_path),
-        "catalog_sha256": catalog_sha,
+        "catalogs": [str(path) for path in catalog_paths],
+        "catalog_sha256": (
+            next(iter(catalog_hashes.values()))
+            if len(catalog_hashes) == 1
+            else hashlib.sha256(
+                json.dumps(catalog_hashes, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest()
+        ),
         "cohort": str(cohort_path),
         "cohort_sha256": cohort_sha,
         "protocol_sha256": protocol_sha,
@@ -171,6 +192,13 @@ def run_batch(
     prepared = prepare_batch(spec_path, artifact_root=artifact_root)
     if prepare_only:
         return _prepared_result(prepared)
+    results_path = prepared.root / "results.jsonl"
+    decision_path = prepared.root / "decision.json"
+    has_results = results_path.is_file() and results_path.stat().st_size > 0
+    if not dry_run and (decision_path.is_file() or has_results):
+        raise BatchError(
+            f"batch {prepared.name!r} has already been executed; create a new unseen batch"
+        )
 
     repo = Path(spec.get("repo", ".")).expanduser().resolve()
     matrix = load_matrix(_repo_path(repo, spec["matrix"]))
@@ -180,7 +208,6 @@ def run_batch(
     candidate = _select_cell(matrix, spec.get("candidate") or {})
     _validate_promotion_axis(spec, baseline, candidate)
     selected = _selected_matrix(matrix, baseline, candidate)
-    results_path = prepared.root / "results.jsonl"
     index_dir = prepared.root / "indexes"
     if dry_run:
         plan = run_matrix(
@@ -215,7 +242,6 @@ def run_batch(
             "summary": summary,
         }
     )
-    decision_path = prepared.root / "decision.json"
     _atomic_json(decision_path, decision)
     if promote:
         if not decision["eligible"]:
@@ -338,6 +364,7 @@ def _validate_cases(
     cohort: dict[str, Any],
 ) -> dict[str, Any]:
     ids: set[str] = set()
+    queries: set[str] = set()
     exposed_ids = {case.id for case in exposed}
     exposed_queries = {_normalize_query(case.query) for case in exposed}
     category_counts = {tag: 0 for tag in _CATEGORY_TAGS}
@@ -346,6 +373,10 @@ def _validate_cases(
         if case.id in ids:
             raise BatchError(f"duplicate cohort case id {case.id!r}")
         ids.add(case.id)
+        normalized_query = _normalize_query(case.query)
+        if normalized_query in queries:
+            raise BatchError(f"duplicate cohort query {case.query!r}")
+        queries.add(normalized_query)
         if case.id in exposed_ids or _normalize_query(case.query) in exposed_queries:
             raise BatchError(f"case {case.id!r} overlaps the exposed golden set")
         if case.split != "holdout":

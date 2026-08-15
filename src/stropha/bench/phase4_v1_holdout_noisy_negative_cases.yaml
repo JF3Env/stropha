@@ -1,0 +1,201 @@
+version: 1
+cases:
+  - id: phase4-negative-001
+    query: How are returned snippet tokens compared with a conservative repository-reading baseline without confusing the cost estimator with its tests or log consumers?
+    expected_paths: [src/stropha/retrieval/savings.py]
+    expected_symbols: [calculate_savings]
+    relevance:
+      src/stropha/retrieval/savings.py: 2
+      calculate_savings: 3
+    tags: [noisy-negative, token-savings]
+    split: holdout
+
+  - id: phase4-negative-002
+    query: Where is per-hit stream provenance rendered with canonical streams first, unknown streams alphabetically, and optional rounded RRF scores?
+    expected_paths: [src/stropha/retrieval/provenance.py]
+    expected_symbols: [provenance_label]
+    relevance:
+      src/stropha/retrieval/provenance.py: 2
+      provenance_label: 3
+    tags: [noisy-negative, stream-provenance]
+    split: holdout
+
+  - id: phase4-negative-003
+    query: Which production refinement routine retries sparse, test-free, single-file, and compound result sets while deduplicating additions and containing search failures?
+    expected_paths: [src/stropha/retrieval/refinement.py]
+    expected_symbols: [refine_results]
+    relevance:
+      src/stropha/retrieval/refinement.py: 2
+      refine_results: 3
+    tags: [noisy-negative, result-refinement]
+    split: holdout
+
+  - id: phase4-negative-004
+    query: What routing implementation prefers deterministic intent patterns, accepts an LLM verdict only above its confidence threshold, and otherwise falls back to code search?
+    expected_paths: [src/stropha/retrieval/query_router.py]
+    expected_symbols: [route_query]
+    relevance:
+      src/stropha/retrieval/query_router.py: 2
+      route_query: 3
+    tags: [noisy-negative, intent-routing]
+    split: holdout
+
+  - id: phase4-negative-005
+    query: Where does cost-limited breadth-first traversal skip cycles and over-budget neighbors, tolerate broken neighbor readers, and report why traversal halted?
+    expected_paths: [src/stropha/retrieval/cost_traversal.py]
+    expected_symbols: [cost_budgeted_bfs]
+    relevance:
+      src/stropha/retrieval/cost_traversal.py: 2
+      cost_budgeted_bfs: 3
+    tags: [noisy-negative, traversal-budget]
+    split: holdout
+
+  - id: phase4-negative-006
+    query: Which in-memory semantic cache lookup distinguishes filters and top-k in its quantized-vector key, expires stale entries, updates LRU position, and returns hydration stubs?
+    expected_paths: [src/stropha/retrieval/cache.py]
+    expected_symbols: [SemanticCache.get]
+    relevance:
+      src/stropha/retrieval/cache.py: 2
+      SemanticCache.get: 3
+    tags: [noisy-negative, memory-cache]
+    split: holdout
+
+  - id: phase4-negative-007
+    query: Which card renderer extracts a signature and adjacent comment or docstring for paragraph disclosure, falls back for file chunks, and rejects unknown levels?
+    expected_paths: [src/stropha/retrieval/cards.py]
+    expected_symbols: [render_card]
+    relevance:
+      src/stropha/retrieval/cards.py: 2
+      render_card: 3
+    tags: [noisy-negative, result-cards]
+    split: holdout
+
+  - id: phase4-negative-008
+    query: Where are next-tool recommendations gated by graph and rationale availability, derived from top hit shape, deduplicated, confidence-sorted, and capped?
+    expected_paths: [src/stropha/retrieval/suggest_next.py]
+    expected_symbols: [suggest_next_tool]
+    relevance:
+      src/stropha/retrieval/suggest_next.py: 2
+      suggest_next_tool: 3
+    tags: [noisy-negative, tool-suggestions]
+    split: holdout
+
+  - id: phase4-negative-009
+    query: Which Git diff path resolver distinguishes unstaged, staged-inclusive, and ref-to-ref modes and raises a typed error instead of treating command failure as an empty diff?
+    expected_paths: [src/stropha/retrieval/diff_scope.py]
+    expected_symbols: [diff_paths]
+    relevance:
+      src/stropha/retrieval/diff_scope.py: 2
+      diff_paths: 3
+    tags: [noisy-negative, diff-resolution]
+    split: holdout
+
+  - id: phase4-negative-010
+    query: What detector applies language and kind constraints before matching symbols, content, or paths and combines every architectural-anchor category with the maximum boost?
+    expected_paths: [src/stropha/ingest/anchors.py]
+    expected_symbols: [AnchorDetector.detect]
+    relevance:
+      src/stropha/ingest/anchors.py: 2
+      AnchorDetector.detect: 3
+    tags: [noisy-negative, architectural-anchors]
+    split: holdout
+
+  - id: phase4-negative-011
+    query: Which registered language-chunker fallback owns the active stage contract and delegates unknown-language files to file-level splitting rather than merely testing the legacy helper?
+    expected_paths: [src/stropha/adapters/chunker/languages/file_level.py]
+    expected_symbols: [FileLevelLanguageChunker.chunk]
+    relevance:
+      src/stropha/adapters/chunker/languages/file_level.py: 2
+      FileLevelLanguageChunker.chunk: 3
+    tags: [noisy-negative, file-level-chunker]
+    split: holdout
+
+  - id: phase4-negative-012
+    query: Where is the registered generic AST language adapter that carries the selected language in its identity and delegates chunking to the structural implementation?
+    expected_paths: [src/stropha/adapters/chunker/languages/ast_generic.py]
+    expected_symbols: [AstGenericLanguageChunker.chunk]
+    relevance:
+      src/stropha/adapters/chunker/languages/ast_generic.py: 2
+      AstGenericLanguageChunker.chunk: 3
+    tags: [noisy-negative, ast-language-adapter]
+    split: holdout
+
+  - id: phase4-negative-013
+    query: Which active pipeline method keeps enrichment output in input order, selects serial, threaded, or batched execution, and leaves storage writes outside worker threads?
+    expected_paths: [src/stropha/pipeline/pipeline.py]
+    expected_symbols: [Pipeline._enrich_chunks]
+    relevance:
+      src/stropha/pipeline/pipeline.py: 2
+      Pipeline._enrich_chunks: 3
+    tags: [noisy-negative, parallel-enrichment]
+    split: holdout
+
+  - id: phase4-negative-014
+    query: What production hardware check rejects missing accelerators and mismatched CUDA or ROCm PyTorch builds while separately probing OpenVINO for an NPU device?
+    expected_paths: [src/stropha/adapters/embedder/hardware.py]
+    expected_symbols: [NativeExecution.ensure_available]
+    relevance:
+      src/stropha/adapters/embedder/hardware.py: 2
+      NativeExecution.ensure_available: 3
+    tags: [noisy-negative, accelerator-validation]
+    split: holdout
+
+  - id: phase4-negative-015
+    query: Which Model2Vec loader turns missing packages and pretrained-model failures into embedding errors and probes the loaded static model for its actual dimension?
+    expected_paths: [src/stropha/adapters/embedder/model2vec.py]
+    expected_symbols: [Model2VecEmbedder._load_model]
+    relevance:
+      src/stropha/adapters/embedder/model2vec.py: 2
+      Model2VecEmbedder._load_model: 3
+    tags: [noisy-negative, static-embedding-load]
+    split: holdout
+
+  - id: phase4-negative-016
+    query: Where does the BGE-M3 adapter reject unrelated model names and unsupported FastEmbed use before constructing the native MLX embedder with a drift-distinct identity?
+    expected_paths: [src/stropha/adapters/embedder/bge_m3.py]
+    expected_symbols: [BgeM3Embedder.__init__]
+    relevance:
+      src/stropha/adapters/embedder/bge_m3.py: 2
+      BgeM3Embedder.__init__: 3
+    tags: [noisy-negative, bge-m3-validation]
+    split: holdout
+
+  - id: phase4-negative-017
+    query: Which Ollama enrichment implementation sends a bounded non-streaming generation request, degrades to no summary on transport or JSON failure, and keeps only the first cleaned response line?
+    expected_paths: [src/stropha/adapters/enricher/ollama.py]
+    expected_symbols: [OllamaEnricher._summarise]
+    relevance:
+      src/stropha/adapters/enricher/ollama.py: 2
+      OllamaEnricher._summarise: 3
+    tags: [noisy-negative, ollama-summary]
+    split: holdout
+
+  - id: phase4-negative-018
+    query: What HTTP session manager recovers an unknown stale MCP session after restart and guarantees a completed body or an explicit re-initialization error instead of leaving the client hanging?
+    expected_paths: [src/stropha/server_http.py]
+    expected_symbols: [RestartTolerantSessionManager._recover_stale_session]
+    relevance:
+      src/stropha/server_http.py: 2
+      RestartTolerantSessionManager._recover_stale_session: 3
+    tags: [noisy-negative, stale-http-session]
+    split: holdout
+
+  - id: phase4-negative-019
+    query: Which discovery-tool implementation bounds top-k, uses the configured router and repository scope, and converts a typed smart-search failure into an explicit fallback response?
+    expected_paths: [src/stropha/server_discovery_tools.py]
+    expected_symbols: [smart_search_tool_impl]
+    relevance:
+      src/stropha/server_discovery_tools.py: 2
+      smart_search_tool_impl: 3
+    tags: [noisy-negative, smart-search-adapter]
+    split: holdout
+
+  - id: phase4-negative-020
+    query: Where does the MCP tracing decorator preserve tool signatures, share one trace ID between response and record, capture failures, and prevent recorder errors from breaking tool calls?
+    expected_paths: [src/stropha/meta/decorator.py]
+    expected_symbols: [traced]
+    relevance:
+      src/stropha/meta/decorator.py: 2
+      traced: 3
+    tags: [noisy-negative, tool-tracing]
+    split: holdout

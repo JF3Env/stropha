@@ -284,6 +284,7 @@ def build_index(
     from ..pipeline.builder import build_stages
     from ..pipeline.pipeline import Pipeline
 
+    started = time.perf_counter()
     _patch_graphify_off()
 
     if storage_dsn is None and db_path is not None and db_path.is_file():
@@ -291,7 +292,7 @@ def build_index(
             v = _verify_index(db_path)
             if v["complete"] and v["chunks"] > 0 and v["vecs"] == v["chunks"]:
                 log.info("bench.index_reuse", db=str(db_path), **v)
-                return v
+                return {**v, "index_seconds": 0.0, "index_reused": True}
     resume_partial = storage_dsn is None and db_path is not None and db_path.is_file()
 
     overrides = _indexing_overrides(cell)
@@ -301,9 +302,11 @@ def build_index(
         resolve_storage_path=storage_dsn is None,
     )
     built = build_stages(cfg, force_rebuild=not resume_partial)
+    reset_enricher_diagnostics = getattr(built.enricher, "reset_diagnostics", None)
+    if callable(reset_enricher_diagnostics):
+        reset_enricher_diagnostics()
     inference = get_config().inference
     repo = Path(matrix.repo).resolve()
-    t0 = time.perf_counter()
     enrichment_failures = 0
     verified: dict[str, int | bool] | None = None
     with built.storage as storage:
@@ -335,7 +338,7 @@ def build_index(
             for suffix in ("", "-wal", "-shm"):
                 Path(f"{db_path}{suffix}").unlink(missing_ok=True)
         raise BenchError(f"index enrichment failed for {enrichment_failures} chunks")
-    dt = time.perf_counter() - t0
+    dt = time.perf_counter() - started
 
     if storage_dsn is None:
         assert db_path is not None
@@ -349,7 +352,14 @@ def build_index(
         seconds=round(dt, 1),
         **verified,
     )
-    return {**verified, "index_seconds": round(dt, 1)}
+    enricher_diagnostics = getattr(built.enricher, "diagnostics", None)
+    diagnostics = enricher_diagnostics() if callable(enricher_diagnostics) else None
+    return {
+        **verified,
+        "index_seconds": round(dt, 1),
+        "index_reused": False,
+        **({"enricher": diagnostics} if isinstance(diagnostics, dict) else {}),
+    }
 
 
 # ---------------------------------------------------------------- evaluation
@@ -361,6 +371,7 @@ def eval_cell(
     *,
     run_provenance: dict[str, Any] | None = None,
     storage_dsn: str | None = None,
+    index_diagnostics: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Score one cell against ``cases`` using the selected storage target."""
     from ..eval import run_eval
@@ -425,12 +436,31 @@ def eval_cell(
             )
 
     s = report.summary()
-    reranker = report.diagnostics.get("reranker")
+    diagnostics = dict(report.diagnostics)
+    if index_diagnostics is not None:
+        diagnostics["index"] = index_diagnostics
+        index_seconds = index_diagnostics.get("index_seconds")
+        if isinstance(index_seconds, (int, float)):
+            s["index_seconds"] = index_seconds
+        enricher = index_diagnostics.get("enricher")
+        if isinstance(enricher, dict):
+            for key in (
+                "estimated_input_tokens",
+                "estimated_output_tokens",
+                "estimated_total_tokens",
+            ):
+                value = enricher.get(key)
+                if isinstance(value, (int, float)):
+                    s[f"enricher_{key}"] = value
+    reranker = diagnostics.get("reranker")
     if isinstance(reranker, dict):
         for key in (
             "primary_latency_p95_ms",
             "repair_latency_p95_ms",
             "latency_ms",
+            "estimated_input_tokens",
+            "estimated_output_tokens",
+            "estimated_total_tokens",
         ):
             value = reranker.get(key)
             if isinstance(value, (int, float)):
@@ -441,6 +471,7 @@ def eval_cell(
             "success@10": float(r.hit),
             "mrr": r.reciprocal_rank,
             "ndcg@10": r.ndcg,
+            "latency_ms": round(r.latency_ms, 3),
         }
         for r in report.results
     }
@@ -453,7 +484,7 @@ def eval_cell(
         "values": cell.values,
         "metrics": dict(s),
         "provenance": provenance,
-        "diagnostics": report.diagnostics,
+        "diagnostics": diagnostics,
         "per_query": per_query,
         "per_query_metrics": per_query_metrics,
         "by_tag": by_tag,
@@ -863,12 +894,17 @@ def run_matrix(
             continue
         db_path: Path | None = None
         cache_ref: Any = None
+        index_diagnostics: dict[str, Any] = {
+            "index_seconds": 0.0,
+            "index_reused": True,
+        }
         try:
             if experiment_storage == "postgres":
                 cache_key = _postgres_cache_key(sig, run_provenance)
 
                 def build_postgres_cache(ref: Any, index_cell: Cell = pending[0]) -> None:
-                    build_index(
+                    nonlocal index_diagnostics
+                    index_diagnostics = build_index(
                         selected_matrix,
                         index_cell,
                         storage_dsn=ref.dsn,
@@ -884,7 +920,7 @@ def run_matrix(
                     f"{run_provenance['index_runtime_id']}_"
                     f"{indexing_identities[sig]}.db"
                 )
-                build_index(selected_matrix, pending[0], db_path)
+                index_diagnostics = build_index(selected_matrix, pending[0], db_path)
             _assert_run_environment(selected_matrix, run_provenance, initial_source_state)
         except Exception as exc:
             log.warning("bench.index_failed", indexing_sig=sig, error=str(exc))
@@ -920,6 +956,7 @@ def run_matrix(
                             cases,
                             run_provenance=run_provenance,
                             storage_dsn=work_ref.dsn,
+                            index_diagnostics=index_diagnostics,
                         )
                 else:
                     rec = eval_cell(
@@ -928,6 +965,7 @@ def run_matrix(
                         db_path,
                         cases,
                         run_provenance=run_provenance,
+                        index_diagnostics=index_diagnostics,
                     )
                 _assert_run_environment(selected_matrix, run_provenance, initial_source_state)
                 evaluated += 1

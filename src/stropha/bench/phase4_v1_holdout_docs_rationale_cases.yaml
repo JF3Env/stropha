@@ -1,0 +1,241 @@
+version: 1
+cases:
+  - id: phase4-rationale-001
+    query: Why does adapter discovery recursively import lightweight modules and let decorators populate the registry instead of maintaining a central adapter table?
+    expected_paths: [src/stropha/adapters/__init__.py, src/stropha/pipeline/registry.py, docs/architecture/stropha-pipeline-adapters.md]
+    expected_symbols: [_autoload, register_adapter]
+    relevance:
+      src/stropha/adapters/__init__.py: 3
+      src/stropha/pipeline/registry.py: 3
+      docs/architecture/stropha-pipeline-adapters.md: 3
+      _autoload: 3
+      register_adapter: 3
+    tags: [phase4, docs-rationale, adapter-discovery]
+    split: holdout
+
+  - id: phase4-rationale-002
+    query: Why is invalid adapter configuration rejected while stages are built, but runtime health is checked separately as an operator-requested probe?
+    expected_paths: [src/stropha/pipeline/builder.py, src/stropha/cli.py, docs/architecture/stropha-pipeline-adapters.md]
+    expected_symbols: [build_stages, pipeline_validate]
+    relevance:
+      src/stropha/pipeline/builder.py: 3
+      src/stropha/cli.py: 2
+      docs/architecture/stropha-pipeline-adapters.md: 3
+      build_stages: 3
+      pipeline_validate: 2
+    tags: [phase4, docs-rationale, adapter-health]
+    split: holdout
+
+  - id: phase4-rationale-003
+    query: Why do experimental adapters register in a context-local namespace rather than replacing entries in the process-wide production registry?
+    expected_paths: [src/stropha/pipeline/registry.py, docs/architecture/stropha-meta-harness.md, docs/architecture/stropha-pipeline-adapters.md]
+    expected_symbols: [namespace_scope]
+    relevance:
+      src/stropha/pipeline/registry.py: 3
+      docs/architecture/stropha-meta-harness.md: 3
+      docs/architecture/stropha-pipeline-adapters.md: 2
+      namespace_scope: 3
+    tags: [phase4, docs-rationale, registry-isolation]
+    split: holdout
+
+  - id: phase4-rationale-004
+    query: Why is one user-level YAML document the persistent configuration source instead of combining project files, environment overlays, and flat setting variables?
+    expected_paths: [src/stropha/config/__init__.py, docs/architecture/stropha-pipeline-adapters.md]
+    expected_symbols: [load_config]
+    relevance:
+      src/stropha/config/__init__.py: 2
+      docs/architecture/stropha-pipeline-adapters.md: 3
+      load_config: 2
+    tags: [phase4, docs-rationale, config-source]
+    split: holdout
+
+  - id: phase4-rationale-005
+    query: Why does Stropha consume Graphify as the structural source of truth rather than implementing another cross-language symbol graph extractor?
+    expected_paths: [src/stropha/ingest/graphify_loader.py, docs/architecture/stropha-graphify-integration.md]
+    expected_symbols: [GraphifyLoader.load]
+    relevance:
+      src/stropha/ingest/graphify_loader.py: 2
+      docs/architecture/stropha-graphify-integration.md: 3
+      GraphifyLoader.load: 2
+    tags: [phase4, docs-rationale, graph-source]
+    split: holdout
+
+  - id: phase4-rationale-006
+    query: Why is Graphify output transactionally mirrored into storage tables instead of loading the graph file into memory for every command?
+    expected_paths: [src/stropha/storage/sqlite.py, src/stropha/ingest/graphify_loader.py, docs/architecture/stropha-graphify-integration.md]
+    expected_symbols: [Storage._migrate, GraphifyLoader.load]
+    relevance:
+      src/stropha/storage/sqlite.py: 2
+      src/stropha/ingest/graphify_loader.py: 3
+      docs/architecture/stropha-graphify-integration.md: 3
+      Storage._migrate: 2
+      GraphifyLoader.load: 3
+    tags: [phase4, docs-rationale, graph-mirror]
+    split: holdout
+
+  - id: phase4-rationale-007
+    query: Why does graph import freshness compare the graph file timestamp with repository-scoped metadata and treat a missing graph as having nothing to reload?
+    expected_paths: [src/stropha/ingest/graphify_loader.py, docs/architecture/stropha-graphify-integration.md]
+    expected_symbols: [GraphifyLoader.is_stale]
+    relevance:
+      src/stropha/ingest/graphify_loader.py: 3
+      docs/architecture/stropha-graphify-integration.md: 3
+      GraphifyLoader.is_stale: 3
+    tags: [phase4, docs-rationale, graph-staleness]
+    split: holdout
+
+  - id: phase4-rationale-008
+    query: Why must graph-backed tools distinguish an unavailable graph from a loaded graph that simply has no rationale edges?
+    expected_paths: [src/stropha/server_graph_tools.py, src/stropha/retrieval/graph.py, docs/architecture/stropha-mcp-tool-layer-audit.md]
+    expected_symbols: [find_rationale_impl, graph_loaded]
+    relevance:
+      src/stropha/server_graph_tools.py: 3
+      src/stropha/retrieval/graph.py: 2
+      docs/architecture/stropha-mcp-tool-layer-audit.md: 3
+      find_rationale_impl: 3
+      graph_loaded: 2
+    tags: [phase4, docs-rationale, graph-availability]
+    split: holdout
+
+  - id: phase4-rationale-009
+    query: Why does the indexing pipeline own the ordered sequence from primary chunks through secondary vectors to Graphify refresh, graph loading, node embeddings, and lexical augmentation?
+    expected_paths: [src/stropha/pipeline/pipeline.py, docs/architecture/stropha-graphify-integration.md, docs/architecture/stropha-meta-harness.md]
+    expected_symbols: [Pipeline.run]
+    relevance:
+      src/stropha/pipeline/pipeline.py: 3
+      docs/architecture/stropha-graphify-integration.md: 3
+      docs/architecture/stropha-meta-harness.md: 2
+      Pipeline.run: 3
+    tags: [phase4, docs-rationale, graph-lifecycle]
+    split: holdout
+
+  - id: phase4-rationale-010
+    query: Why is MCP exposed through one streamable-HTTP daemon rather than stdio subprocesses started independently by each client?
+    expected_paths: [src/stropha/server.py, src/stropha/server_runtime.py, docs/architecture/stropha-system.md]
+    expected_symbols: [main, _shared_runtime]
+    relevance:
+      src/stropha/server.py: 3
+      src/stropha/server_runtime.py: 3
+      docs/architecture/stropha-system.md: 3
+      main: 2
+      _shared_runtime: 3
+    tags: [phase4, docs-rationale, mcp-transport]
+    split: holdout
+
+  - id: phase4-rationale-011
+    query: Why are dense, lexical, and symbol rankings combined by reciprocal rank rather than by directly adding their incompatible raw scores?
+    expected_paths: [src/stropha/adapters/retrieval/hybrid_rrf.py, docs/architecture/stropha-system.md]
+    expected_symbols: [HybridRrfRetrieval._search_single_query]
+    relevance:
+      src/stropha/adapters/retrieval/hybrid_rrf.py: 3
+      docs/architecture/stropha-system.md: 3
+      HybridRrfRetrieval._search_single_query: 3
+    tags: [phase4, docs-rationale, rank-fusion]
+    split: holdout
+
+  - id: phase4-rationale-012
+    query: Why does an LLM reranker failure fall back to deterministic code-aware ordering or the fused list instead of failing the retrieval request?
+    expected_paths: [src/stropha/adapters/retrieval/reranker/llm.py, docs/architecture/stropha-system.md, docs/architecture/stropha-output-quality-implementation-plan.md]
+    expected_symbols: [LlmReranker._fallback]
+    relevance:
+      src/stropha/adapters/retrieval/reranker/llm.py: 3
+      docs/architecture/stropha-system.md: 3
+      docs/architecture/stropha-output-quality-implementation-plan.md: 2
+      LlmReranker._fallback: 3
+    tags: [phase4, docs-rationale, graceful-reranking]
+    split: holdout
+
+  - id: phase4-rationale-013
+    query: Why does automatic inference choose local MLX or Ollama while cloud backends require an explicit selection and never trigger startup probes?
+    expected_paths: [src/stropha/inference/backend.py, docs/architecture/stropha-system.md]
+    expected_symbols: [get_backend]
+    relevance:
+      src/stropha/inference/backend.py: 3
+      docs/architecture/stropha-system.md: 3
+      get_backend: 3
+    tags: [phase4, docs-rationale, local-inference]
+    split: holdout
+
+  - id: phase4-rationale-014
+    query: Why do both storage backends use idempotent forward-only schema creation instead of destructive startup migrations?
+    expected_paths: [src/stropha/storage/sqlite.py, src/stropha/adapters/storage/postgres.py, docs/architecture/stropha-system.md]
+    expected_symbols: [Storage._migrate, PostgresStorage._run_migration_ddl]
+    relevance:
+      src/stropha/storage/sqlite.py: 3
+      src/stropha/adapters/storage/postgres.py: 3
+      docs/architecture/stropha-system.md: 3
+      Storage._migrate: 3
+      PostgresStorage._run_migration_ddl: 3
+    tags: [phase4, docs-rationale, schema-evolution]
+    split: holdout
+
+  - id: phase4-rationale-015
+    query: Why does each optimization run pin one commit in a detached worktree instead of evaluating candidates against a moving or dirty checkout?
+    expected_paths: [src/stropha/meta/snapshot.py, docs/architecture/stropha-meta-harness.md]
+    expected_symbols: [create_snapshot]
+    relevance:
+      src/stropha/meta/snapshot.py: 3
+      docs/architecture/stropha-meta-harness.md: 3
+      create_snapshot: 3
+    tags: [phase4, docs-rationale, snapshot-isolation]
+    split: holdout
+
+  - id: phase4-rationale-016
+    query: Why does every candidate receive a disposable writable index clone while canonical cache entries and the production index remain untouched?
+    expected_paths: [src/stropha/meta/candidate_index.py, src/stropha/meta/index_cache.py, docs/architecture/stropha-meta-harness.md]
+    expected_symbols: [CandidateIndexProvider.open_candidate, IndexCache.clone_writable]
+    relevance:
+      src/stropha/meta/candidate_index.py: 3
+      src/stropha/meta/index_cache.py: 3
+      docs/architecture/stropha-meta-harness.md: 3
+      CandidateIndexProvider.open_candidate: 3
+      IndexCache.clone_writable: 3
+    tags: [phase4, docs-rationale, index-isolation]
+    split: holdout
+
+  - id: phase4-rationale-017
+    query: Why is holdout evidence withheld during candidate search and opened only by the separate validation command?
+    expected_paths: [src/stropha/cli.py, docs/architecture/stropha-meta-harness.md]
+    expected_symbols: [meta_validate_cmd]
+    relevance:
+      src/stropha/cli.py: 2
+      docs/architecture/stropha-meta-harness.md: 3
+      meta_validate_cmd: 3
+    tags: [phase4, docs-rationale, holdout-boundary]
+    split: holdout
+
+  - id: phase4-rationale-018
+    query: Why are proposals registered and consumed in slot order even when their evaluations run concurrently?
+    expected_paths: [src/stropha/meta/loop.py, docs/architecture/stropha-meta-harness.md]
+    expected_symbols: [run_loop]
+    relevance:
+      src/stropha/meta/loop.py: 3
+      docs/architecture/stropha-meta-harness.md: 3
+      run_loop: 3
+    tags: [phase4, docs-rationale, deterministic-search]
+    split: holdout
+
+  - id: phase4-rationale-019
+    query: Why are generated code candidates restricted to one statically checked reranker and executed in a constrained subprocess with serialized inputs?
+    expected_paths: [src/stropha/meta/code_candidate.py, src/stropha/meta/sandbox.py, docs/architecture/stropha-meta-harness.md]
+    expected_symbols: [validate_code_candidate, SubprocessSandbox.run]
+    relevance:
+      src/stropha/meta/code_candidate.py: 3
+      src/stropha/meta/sandbox.py: 3
+      docs/architecture/stropha-meta-harness.md: 3
+      validate_code_candidate: 3
+      SubprocessSandbox.run: 3
+    tags: [phase4, docs-rationale, candidate-sandbox]
+    split: holdout
+
+  - id: phase4-rationale-020
+    query: Why can a candidate that improves the primary search metric still be blocked from promotion by holdout, per-tag, per-case, verification, or identity regressions?
+    expected_paths: [src/stropha/meta/validation.py, docs/architecture/stropha-meta-harness.md, docs/architecture/stropha-output-quality-implementation-plan.md]
+    expected_symbols: [evaluate_validation_gate]
+    relevance:
+      src/stropha/meta/validation.py: 3
+      docs/architecture/stropha-meta-harness.md: 3
+      docs/architecture/stropha-output-quality-implementation-plan.md: 2
+      evaluate_validation_gate: 3
+    tags: [phase4, docs-rationale, promotion-safety]
+    split: holdout

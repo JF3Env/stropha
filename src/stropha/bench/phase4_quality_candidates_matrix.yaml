@@ -1,0 +1,48 @@
+# Frozen after comprehensive-quality-v3 and the one-time Phase 3 V4 holdout.
+# Evaluate these exact cells only on a new source-reviewed unseen cohort.
+repo: .
+golden: tests/eval/golden.jsonl
+top_k: 10
+
+qwen: &qwen
+  adapter: mlx
+  model: mlx-community/Qwen3-Embedding-4B-4bit-DWQ
+  batch_size: 4
+
+contextual: &contextual
+  adapter: contextual
+  max_content_chars: 4000
+  temperature: 0
+  max_tokens: 64
+  max_description_chars: 200
+  prompt_template: 'Write a dense 2-3 sentence semantic description of this code
+    chunk for retrieval.Cover:- What this code does (functionality)- Where it
+    fits (layer, module, responsibility)- Related concepts or components it interacts
+    withKeep it concrete. Avoid filler words and meta-commentary.Code:```{language}{content}```File:
+    {rel_path}Symbol: {symbol}Output: ONLY the description, starting with "This...".
+    No code, no preamble, no markdown.'
+
+axes:
+  embedder: [*qwen]
+  enricher: [*contextual, hierarchical]
+  reranker: [llm]
+  candidate_k: [20]
+  adaptive_weighting: [true]
+  learned_weights: [false]
+  recursive: [true]
+  recursive_adjacency: [5]
+  rrf_k: [40, 60]
+
+baseline:
+  embedder: *qwen
+  enricher: *contextual
+  reranker: llm
+  candidate_k: 20
+  adaptive_weighting: true
+  learned_weights: false
+  recursive: true
+  recursive_adjacency: 5
+  rrf_k: 60
+
+constraints:
+  - skip_when: {enricher: hierarchical, rrf_k: 40}

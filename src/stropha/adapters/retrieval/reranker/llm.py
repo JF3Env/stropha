@@ -88,6 +88,8 @@ class LlmReranker:
         self._repair_successes = 0
         self._primary_latencies_ms: list[float] = []
         self._repair_latencies_ms: list[float] = []
+        self._estimated_input_tokens = 0
+        self._estimated_output_tokens = 0
 
     @property
     def stage_name(self) -> str:
@@ -151,6 +153,7 @@ class LlmReranker:
         self._attempts += 1
         backend = get_backend()
         started = time.perf_counter()
+        raw: str | None = None
         try:
             try:
                 raw = generate(
@@ -178,6 +181,7 @@ class LlmReranker:
             self._primary_latencies_ms.append(
                 (time.perf_counter() - started) * 1000.0
             )
+            self._record_generation(prompt, raw)
 
         order, failure_reason = self._parse_response(raw, len(candidates))
         if not order:
@@ -212,6 +216,8 @@ class LlmReranker:
         self._repair_successes = 0
         self._primary_latencies_ms = []
         self._repair_latencies_ms = []
+        self._estimated_input_tokens = 0
+        self._estimated_output_tokens = 0
 
     def diagnostics(self) -> dict[str, int | float]:
         primary_latency = sum(self._primary_latencies_ms)
@@ -228,6 +234,11 @@ class LlmReranker:
             "repair_latency_ms": round(repair_latency, 3),
             "repair_latency_p95_ms": self._percentile(self._repair_latencies_ms, 0.95),
             "latency_ms": round(primary_latency + repair_latency, 3),
+            "estimated_input_tokens": self._estimated_input_tokens,
+            "estimated_output_tokens": self._estimated_output_tokens,
+            "estimated_total_tokens": (
+                self._estimated_input_tokens + self._estimated_output_tokens
+            ),
         }
         return diagnostics
 
@@ -243,6 +254,7 @@ class LlmReranker:
             response=(raw or "(empty)")[:4000],
         )
         started = time.perf_counter()
+        repaired: str | None = None
         try:
             try:
                 repaired = generate(
@@ -268,6 +280,7 @@ class LlmReranker:
             self._repair_latencies_ms.append(
                 (time.perf_counter() - started) * 1000.0
             )
+            self._record_generation(prompt, repaired)
         order, failure_reason = self._parse_response(repaired, candidate_count)
         if not order:
             assert failure_reason is not None
@@ -275,6 +288,10 @@ class LlmReranker:
             return []
         self._repair_successes += 1
         return order
+
+    def _record_generation(self, prompt: str, output: str | None) -> None:
+        self._estimated_input_tokens += (len(prompt) + 3) // 4
+        self._estimated_output_tokens += (len(output or "") + 3) // 4
 
     def _log_failure(
         self,

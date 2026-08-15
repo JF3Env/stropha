@@ -155,6 +155,11 @@ def test_one_repair_attempt_succeeds() -> None:
     assert diagnostics["repair_attempts"] == 1
     assert diagnostics["repair_successes"] == 1
     assert diagnostics["fallbacks"] == 0
+    assert diagnostics["estimated_input_tokens"] > 0
+    assert diagnostics["estimated_output_tokens"] > 0
+    assert diagnostics["estimated_total_tokens"] == (
+        diagnostics["estimated_input_tokens"] + diagnostics["estimated_output_tokens"]
+    )
 
 
 def test_failed_repair_falls_back_without_retrying() -> None:
@@ -243,6 +248,9 @@ def test_diagnostics_reset_clears_all_counters_and_latencies() -> None:
         "repair_latency_ms": 0,
         "repair_latency_p95_ms": 0.0,
         "latency_ms": 0,
+        "estimated_input_tokens": 0,
+        "estimated_output_tokens": 0,
+        "estimated_total_tokens": 0,
     }
 
 

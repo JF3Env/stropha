@@ -47,6 +47,7 @@ import hashlib
 import json
 import re
 from collections.abc import Sequence
+from threading import Lock
 
 from pydantic import BaseModel, Field
 
@@ -189,6 +190,8 @@ class ContextualEnricher(EnricherStage):
 
     def __init__(self, config: ContextualEnricherConfig | None = None) -> None:
         self._config = config or ContextualEnricherConfig()
+        self._diagnostics_lock = Lock()
+        self.reset_diagnostics()
 
     @property
     def stage_name(self) -> str:
@@ -330,6 +333,7 @@ class ContextualEnricher(EnricherStage):
             max_tokens=max_tokens,
             temperature=self._config.temperature,
         )
+        self._record_generation(prompt, raw)
 
         if not raw:
             # LLM failed entirely (rate limit, timeout, missing key) —
@@ -393,6 +397,29 @@ class ContextualEnricher(EnricherStage):
         ]
 
     # ----- internals --------------------------------------------------------
+
+    def reset_diagnostics(self) -> None:
+        with self._diagnostics_lock:
+            self._generation_calls = 0
+            self._estimated_input_tokens = 0
+            self._estimated_output_tokens = 0
+
+    def diagnostics(self) -> dict[str, int]:
+        with self._diagnostics_lock:
+            input_tokens = self._estimated_input_tokens
+            output_tokens = self._estimated_output_tokens
+            return {
+                "generation_calls": self._generation_calls,
+                "estimated_input_tokens": input_tokens,
+                "estimated_output_tokens": output_tokens,
+                "estimated_total_tokens": input_tokens + output_tokens,
+            }
+
+    def _record_generation(self, prompt: str, output: str | None) -> None:
+        with self._diagnostics_lock:
+            self._generation_calls += 1
+            self._estimated_input_tokens += (len(prompt) + 3) // 4
+            self._estimated_output_tokens += (len(output or "") + 3) // 4
 
     def _build_batch_prompt(self, chunks: Sequence[Chunk]) -> str:
         """Render the structured-JSON batch prompt for N chunks.
@@ -549,5 +576,6 @@ class ContextualEnricher(EnricherStage):
             max_tokens=self._config.max_tokens,
             temperature=self._config.temperature,
         )
+        self._record_generation(prompt, text)
 
         return self._clean_description(text)

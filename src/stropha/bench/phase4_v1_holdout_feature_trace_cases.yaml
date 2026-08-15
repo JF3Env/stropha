@@ -1,0 +1,261 @@
+version: 1
+cases:
+  - id: phase4-trace-001
+    query: After selective query rewriting returns an outcome, how does hybrid retrieval record reason-specific results, token and latency totals, and expose fallback rates and skip counts in diagnostics?
+    expected_paths: [src/stropha/adapters/retrieval/hybrid_rrf.py, src/stropha/adapters/retrieval/hybrid_rrf.py]
+    expected_symbols: [HybridRrfRetrieval._record_query_rewrite, HybridRrfRetrieval.diagnostics]
+    relevance:
+      src/stropha/adapters/retrieval/hybrid_rrf.py: 3
+      HybridRrfRetrieval._record_query_rewrite: 3
+      HybridRrfRetrieval.diagnostics: 3
+    tags: [phase4, feature-trace, selective-query-rewrite]
+    split: holdout
+
+  - id: phase4-trace-002
+    query: When a behavioral question is eligible for HyDE, how is a code-tuned hypothetical document generated, cleaned, and substituted only for the dense embedding while lexical streams retain the search terms?
+    expected_paths: [src/stropha/adapters/retrieval/hybrid_rrf.py, src/stropha/retrieval/hyde.py]
+    expected_symbols: [HybridRrfRetrieval._search_single_query, generate_hypothetical]
+    relevance:
+      src/stropha/adapters/retrieval/hybrid_rrf.py: 3
+      src/stropha/retrieval/hyde.py: 3
+      HybridRrfRetrieval._search_single_query: 3
+      generate_hypothetical: 3
+    tags: [phase4, feature-trace, selective-hyde]
+    split: holdout
+
+  - id: phase4-trace-003
+    query: For a broad conceptual question, how are valid paraphrases generated and cached, searched independently, and fused back into one ranked result set before optional reranking?
+    expected_paths: [src/stropha/adapters/retrieval/hybrid_rrf.py, src/stropha/retrieval/multi_query.py, src/stropha/retrieval/rrf.py]
+    expected_symbols: [HybridRrfRetrieval._search_multi_query, expand_query, rrf_fuse]
+    relevance:
+      src/stropha/adapters/retrieval/hybrid_rrf.py: 3
+      src/stropha/retrieval/multi_query.py: 3
+      src/stropha/retrieval/rrf.py: 2
+      HybridRrfRetrieval._search_multi_query: 3
+      expand_query: 3
+      rrf_fuse: 2
+    tags: [phase4, feature-trace, selective-multi-query]
+    split: holdout
+
+  - id: phase4-trace-004
+    query: When conversation-aware MCP search is requested, how are recent session questions assembled into context and added to the dense query without changing the sparse and symbol queries?
+    expected_paths: [src/stropha/server_search.py, src/stropha/adapters/retrieval/hybrid_rrf.py]
+    expected_symbols: [search_code_impl, HybridRrfRetrieval._search_single_query]
+    relevance:
+      src/stropha/server_search.py: 3
+      src/stropha/adapters/retrieval/hybrid_rrf.py: 3
+      search_code_impl: 3
+      HybridRrfRetrieval._search_single_query: 3
+    tags: [phase4, feature-trace, conversation-aware-search]
+    split: holdout
+
+  - id: phase4-trace-005
+    query: How does hybrid retrieval discover validated per-repository stream profiles, reload them after atomic writes, and multiply those learned weights into named-stream RRF fusion?
+    expected_paths: [src/stropha/adapters/retrieval/hybrid_rrf.py, src/stropha/meta/stream_weights.py, src/stropha/adapters/retrieval/hybrid_rrf.py, src/stropha/retrieval/rrf.py]
+    expected_symbols: [HybridRrfRetrieval._build_learned_weights, StreamWeightProfiles.weights, HybridRrfRetrieval._search_single_query, rrf_fuse_named]
+    relevance:
+      src/stropha/adapters/retrieval/hybrid_rrf.py: 3
+      src/stropha/meta/stream_weights.py: 3
+      src/stropha/retrieval/rrf.py: 2
+      HybridRrfRetrieval._build_learned_weights: 2
+      StreamWeightProfiles.weights: 3
+      HybridRrfRetrieval._search_single_query: 3
+      rrf_fuse_named: 2
+    tags: [phase4, feature-trace, learned-stream-weights]
+    split: holdout
+
+  - id: phase4-trace-006
+    query: After MCP search has finalized its repository-scoped hits, how does it derive a cheap freshness watermark from those repositories and attach indexed commit, timestamp, and age data to the response?
+    expected_paths: [src/stropha/server_search.py, src/stropha/server_health_tools.py]
+    expected_symbols: [search_code_impl, build_index_watermark]
+    relevance:
+      src/stropha/server_search.py: 3
+      src/stropha/server_health_tools.py: 3
+      search_code_impl: 3
+      build_index_watermark: 3
+    tags: [phase4, feature-trace, search-watermark]
+    split: holdout
+
+  - id: phase4-trace-007
+    query: When a search response requests relevance decay and a token budget, how are lower-ranked snippets progressively reduced before diversified packing protects pinned results and reports spills or oversize truncation?
+    expected_paths: [src/stropha/server_search.py, src/stropha/retrieval/cards.py, src/stropha/retrieval/packing.py]
+    expected_symbols: [search_code_impl, apply_relevance_decay, pack_to_budget]
+    relevance:
+      src/stropha/server_search.py: 3
+      src/stropha/retrieval/cards.py: 3
+      src/stropha/retrieval/packing.py: 3
+      search_code_impl: 3
+      apply_relevance_decay: 3
+      pack_to_budget: 3
+    tags: [phase4, feature-trace, response-shaping]
+    split: holdout
+
+  - id: phase4-trace-008
+    query: Across repeated MCP searches, how are previously served chunks suppressed while pinned chunks remain visible, and how is the updated seen set written through for the current client session?
+    expected_paths: [src/stropha/server_search.py, src/stropha/server_runtime.py]
+    expected_symbols: [search_code_impl, persist_session_state]
+    relevance:
+      src/stropha/server_search.py: 3
+      src/stropha/server_runtime.py: 3
+      search_code_impl: 3
+      persist_session_state: 3
+    tags: [phase4, feature-trace, session-dedup]
+    split: holdout
+
+  - id: phase4-trace-009
+    query: When an agent appends a scratchpad note, how is the newline boundary normalized and the resulting text persisted together with the session's seen and pinned chunk sets?
+    expected_paths: [src/stropha/server_memory_tools.py, src/stropha/server_runtime.py, src/stropha/storage/sqlite.py]
+    expected_symbols: [scratchpad_append_impl, persist_session_state, Storage.upsert_session]
+    relevance:
+      src/stropha/server_memory_tools.py: 3
+      src/stropha/server_runtime.py: 3
+      src/stropha/storage/sqlite.py: 2
+      scratchpad_append_impl: 3
+      persist_session_state: 3
+      Storage.upsert_session: 2
+    tags: [phase4, feature-trace, scratchpad-persistence]
+    split: holdout
+
+  - id: phase4-trace-010
+    query: When an MCP client reconnects with the same client identity, how are its newest session state and scratchpad restored at startup and written back again when the session closes?
+    expected_paths: [src/stropha/server_runtime.py, src/stropha/storage/sqlite.py, src/stropha/storage/sqlite.py]
+    expected_symbols: [lifespan, Storage.list_sessions, Storage.upsert_session]
+    relevance:
+      src/stropha/server_runtime.py: 3
+      src/stropha/storage/sqlite.py: 3
+      lifespan: 3
+      Storage.list_sessions: 3
+      Storage.upsert_session: 2
+    tags: [phase4, feature-trace, session-resume]
+    split: holdout
+
+  - id: phase4-trace-011
+    query: When the next-tool adviser receives no explicit chunk IDs, how does it hydrate recent session hits within repository scope, inspect graph availability, and rank actionable follow-up tools without an LLM call?
+    expected_paths: [src/stropha/server.py, src/stropha/retrieval/suggest_next.py]
+    expected_symbols: [suggest_next_tool_mcp, suggest_next_tool]
+    relevance:
+      src/stropha/server.py: 3
+      src/stropha/retrieval/suggest_next.py: 3
+      suggest_next_tool_mcp: 3
+      suggest_next_tool: 3
+    tags: [phase4, feature-trace, next-tool-guidance]
+    split: holdout
+
+  - id: phase4-trace-012
+    query: When feature tracing is requested, how is graph availability enforced before natural-language tokens select entry nodes and bounded cycle-safe call traversal hydrates each traced chain?
+    expected_paths: [src/stropha/server_graph_tools.py, src/stropha/retrieval/graph.py]
+    expected_symbols: [trace_feature_impl, trace_feature]
+    relevance:
+      src/stropha/server_graph_tools.py: 2
+      src/stropha/retrieval/graph.py: 3
+      trace_feature_impl: 2
+      trace_feature: 3
+    tags: [phase4, feature-trace, graph-feature-walk]
+    split: holdout
+
+  - id: phase4-trace-013
+    query: How does a one-call investigation first derive ordered search, caller, test, and rationale steps, then execute and deduplicate them into a single token-bounded context bundle?
+    expected_paths: [src/stropha/server.py, src/stropha/retrieval/investigation.py, src/stropha/retrieval/dag.py]
+    expected_symbols: [execute_investigation, plan_investigation, execute_plan]
+    relevance:
+      src/stropha/server.py: 2
+      src/stropha/retrieval/investigation.py: 3
+      src/stropha/retrieval/dag.py: 3
+      execute_investigation: 2
+      plan_investigation: 3
+      execute_plan: 3
+    tags: [phase4, feature-trace, investigation-dag]
+    split: holdout
+
+  - id: phase4-trace-014
+    query: For a pull-request context request, how does assembly over-fetch semantic candidates, resolve working-tree or ref-to-ref changed paths, and retain only hits whose files belong to that diff?
+    expected_paths: [src/stropha/retrieval/assemble.py, src/stropha/retrieval/diff_scope.py, src/stropha/retrieval/diff_scope.py]
+    expected_symbols: [assemble_context, diff_paths, filter_hits_to_diff]
+    relevance:
+      src/stropha/retrieval/assemble.py: 3
+      src/stropha/retrieval/diff_scope.py: 3
+      assemble_context: 3
+      diff_paths: 3
+      filter_hits_to_diff: 3
+    tags: [phase4, feature-trace, diff-scoped-context]
+    split: holdout
+
+  - id: phase4-trace-015
+    query: When an assembled context bundle is rendered, how do ranked hits become file-and-line code spans with stable per-stream attribution labels showing their RRF contributions?
+    expected_paths: [src/stropha/retrieval/assemble.py, src/stropha/retrieval/assemble.py, src/stropha/retrieval/provenance.py]
+    expected_symbols: [assemble_context, _format_span, hit_provenance_line]
+    relevance:
+      src/stropha/retrieval/assemble.py: 3
+      src/stropha/retrieval/provenance.py: 3
+      assemble_context: 2
+      _format_span: 3
+      hit_provenance_line: 3
+    tags: [phase4, feature-trace, stream-provenance]
+    split: holdout
+
+  - id: phase4-trace-016
+    query: When a local dashboard question is submitted with conversation history, how is it validated, scoped to the configured repository, grounded in retrieved evidence, and answered with source IDs plus an inference trace?
+    expected_paths: [src/stropha/server.py, src/stropha/server_frontend.py, src/stropha/inference/backend.py]
+    expected_symbols: [_frontend_query, answer_index_question, generate]
+    relevance:
+      src/stropha/server.py: 2
+      src/stropha/server_frontend.py: 3
+      src/stropha/inference/backend.py: 2
+      _frontend_query: 2
+      answer_index_question: 3
+      generate: 2
+    tags: [phase4, feature-trace, grounded-dashboard-answer]
+    split: holdout
+
+  - id: phase4-trace-017
+    query: When the dashboard requests service status, how are the active inference backend and MoA gateway health checked concurrently when distinct, available gateway models listed, and pipeline and index details returned?
+    expected_paths: [src/stropha/server.py, src/stropha/inference/backend.py, src/stropha/inference/moa_backend.py]
+    expected_symbols: [_frontend_status, get_backend, MoaBackend.list_models]
+    relevance:
+      src/stropha/server.py: 3
+      src/stropha/inference/backend.py: 2
+      src/stropha/inference/moa_backend.py: 2
+      _frontend_status: 3
+      get_backend: 2
+      MoaBackend.list_models: 2
+    tags: [phase4, feature-trace, dashboard-status]
+    split: holdout
+
+  - id: phase4-trace-018
+    query: When pipeline configuration selects a native NVIDIA, AMD, or Intel NPU embedder, how does stage construction instantiate the shared hardware shell and reject an unavailable or mismatched accelerator before loading the model?
+    expected_paths: [src/stropha/pipeline/builder.py, src/stropha/adapters/embedder/hardware.py, src/stropha/adapters/embedder/hardware.py]
+    expected_symbols: [build_stages, _HardwareEmbedder.__init__, NativeExecution.ensure_available]
+    relevance:
+      src/stropha/pipeline/builder.py: 2
+      src/stropha/adapters/embedder/hardware.py: 3
+      build_stages: 2
+      _HardwareEmbedder.__init__: 3
+      NativeExecution.ensure_available: 3
+    tags: [phase4, feature-trace, native-accelerator-embedding]
+    split: holdout
+
+  - id: phase4-trace-019
+    query: After search results have been filtered and packed, how are returned-token and naive-read baselines estimated and emitted as a search-served savings event without allowing telemetry failure to break the response?
+    expected_paths: [src/stropha/server_search.py, src/stropha/retrieval/savings.py]
+    expected_symbols: [search_code_impl, track_search_savings]
+    relevance:
+      src/stropha/server_search.py: 3
+      src/stropha/retrieval/savings.py: 3
+      search_code_impl: 3
+      track_search_savings: 3
+    tags: [phase4, feature-trace, search-savings]
+    split: holdout
+
+  - id: phase4-trace-020
+    query: When the dashboard opens its settings schema, how does the HTTP route expose safe field metadata while the catalog walks the live adapter registry and materializes defaults for pipeline and nested adapter choices?
+    expected_paths: [src/stropha/server.py, src/stropha/server_frontend.py, src/stropha/pipeline/registry.py]
+    expected_symbols: [_frontend_config_schema, configuration_catalog, get_registry]
+    relevance:
+      src/stropha/server.py: 2
+      src/stropha/server_frontend.py: 3
+      src/stropha/pipeline/registry.py: 2
+      _frontend_config_schema: 2
+      configuration_catalog: 3
+      get_registry: 2
+    tags: [phase4, feature-trace, dashboard-config-catalog]
+    split: holdout

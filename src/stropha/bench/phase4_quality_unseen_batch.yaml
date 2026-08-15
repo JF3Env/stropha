@@ -1,0 +1,60 @@
+version: 1
+name: phase4-quality-unseen-v1
+repo: .
+catalogs:
+  - src/stropha/bench/phase4_v1_holdout_exact_lookup_cases.yaml
+  - src/stropha/bench/phase4_v1_holdout_conceptual_cases.yaml
+  - src/stropha/bench/phase4_v1_holdout_callers_usage_cases.yaml
+  - src/stropha/bench/phase4_v1_holdout_tests_contracts_cases.yaml
+  - src/stropha/bench/phase4_v1_holdout_feature_trace_cases.yaml
+  - src/stropha/bench/phase4_v1_holdout_config_ops_cases.yaml
+  - src/stropha/bench/phase4_v1_holdout_docs_rationale_cases.yaml
+  - src/stropha/bench/phase4_v1_holdout_ambiguous_symbols_cases.yaml
+  - src/stropha/bench/phase4_v1_holdout_noisy_negative_cases.yaml
+  - src/stropha/bench/phase4_v1_holdout_multi_repo_cases.yaml
+exposed_golden: tests/eval/golden.jsonl
+exposed_catalogs:
+  - src/stropha/bench/phase3_holdout_cases.yaml
+  - src/stropha/bench/phase3_v4_holdout_cases.yaml
+matrix: src/stropha/bench/phase4_quality_candidates_matrix.yaml
+
+cohort:
+  min_cases: 200
+  min_per_category: 20
+  min_multi_or_graded_ratio: 1.0
+
+baseline:
+  enricher:
+    adapter: contextual
+    max_content_chars: 4000
+    temperature: 0
+    max_tokens: 64
+    max_description_chars: 200
+    prompt_template: 'Write a dense 2-3 sentence semantic description of this code
+      chunk for retrieval.Cover:- What this code does (functionality)- Where it
+      fits (layer, module, responsibility)- Related concepts or components it interacts
+      withKeep it concrete. Avoid filler words and meta-commentary.Code:```{language}{content}```File:
+      {rel_path}Symbol: {symbol}Output: ONLY the description, starting with "This...".
+      No code, no preamble, no markdown.'
+  rrf_k: 60
+
+candidate:
+  enricher: hierarchical
+  rrf_k: 60
+
+gates:
+  success_delta_min: -0.01
+  recall_delta_min: -0.01
+  ndcg_delta_min: 0.02
+  mrr_delta_min: -0.01
+  fallback_rate_max: 0.05
+  latency_ratio_max: 1.25
+  token_ratio_max: 1.1
+  per_tag_regression_max: 0.01
+  no_case_rank_regression: true
+
+verification: [ruff, mypy, pytest, diff-check]
+
+# Reporting-only indexing contrast. The batch command cannot promote enrichers.
+promotion:
+  axis: enricher

@@ -1,0 +1,256 @@
+version: 1
+cases:
+  - id: phase4-conceptual-001
+    query: How does hybrid search enrich only the semantic lane with selective HyDE and recent conversation while preserving the literal query for lexical and symbol matching?
+    expected_paths: [src/stropha/retrieval/search.py, src/stropha/retrieval/hyde.py]
+    expected_symbols: [SearchEngine._search_single, generate_hypothetical]
+    relevance:
+      src/stropha/retrieval/search.py: 3
+      src/stropha/retrieval/hyde.py: 2
+      SearchEngine._search_single: 3
+      generate_hypothetical: 2
+    tags: [phase4, conceptual, dense-query-isolation]
+    split: holdout
+
+  - id: phase4-conceptual-002
+    query: Why does the retrieval pipeline compress snippets before token packing but wait until after recursive parent merging to enforce the final context budget?
+    expected_paths: [src/stropha/retrieval/search.py, src/stropha/retrieval/compression.py, src/stropha/retrieval/recursive.py, src/stropha/retrieval/packing.py]
+    expected_symbols: [SearchEngine.search, compress_hits, merge_hits, pack_to_budget]
+    relevance:
+      src/stropha/retrieval/search.py: 3
+      src/stropha/retrieval/compression.py: 3
+      src/stropha/retrieval/recursive.py: 2
+      src/stropha/retrieval/packing.py: 2
+      SearchEngine.search: 3
+      compress_hits: 3
+      merge_hits: 2
+      pack_to_budget: 2
+    tags: [phase4, conceptual, context-shaping]
+    split: holdout
+
+  - id: phase4-conceptual-003
+    query: How does MCP result packing protect the prepended pin prefix while stably deferring redundant file and parent-symbol evidence instead of discarding it?
+    expected_paths: [src/stropha/server_search.py, src/stropha/retrieval/packing.py]
+    expected_symbols: [search_code_impl, diversify_hits]
+    relevance:
+      src/stropha/server_search.py: 3
+      src/stropha/retrieval/packing.py: 3
+      search_code_impl: 3
+      diversify_hits: 3
+    tags: [phase4, conceptual, diversity-packing]
+    split: holdout
+
+  - id: phase4-conceptual-004
+    query: How are structural questions routed cheaply first, optionally classified by an LLM, and safely downgraded to hybrid search when the repository graph is unavailable?
+    expected_paths: [src/stropha/retrieval/query_router.py, src/stropha/retrieval/smart_search.py]
+    expected_symbols: [route_query, smart_search]
+    relevance:
+      src/stropha/retrieval/query_router.py: 3
+      src/stropha/retrieval/smart_search.py: 3
+      route_query: 3
+      smart_search: 3
+    tags: [phase4, conceptual, resilient-routing]
+    split: holdout
+
+  - id: phase4-conceptual-005
+    query: How do next-action guidance and local result refinement use cheap graph-aware heuristics to react to sparse, single-file, code-anchor, and compound-query evidence without an LLM?
+    expected_paths: [src/stropha/retrieval/suggest_next.py, src/stropha/retrieval/refinement.py]
+    expected_symbols: [suggest_next_tool, refine_results]
+    relevance:
+      src/stropha/retrieval/suggest_next.py: 3
+      src/stropha/retrieval/refinement.py: 3
+      suggest_next_tool: 3
+      refine_results: 3
+    tags: [phase4, conceptual, heuristic-guidance]
+    split: holdout
+
+  - id: phase4-conceptual-006
+    query: How is investigation planning kept as inspectable data while a separate server-side executor dispatches graph steps, deduplicates sections, and applies one shared token budget?
+    expected_paths: [src/stropha/retrieval/investigation.py, src/stropha/retrieval/dag.py]
+    expected_symbols: [plan_investigation, execute_plan]
+    relevance:
+      src/stropha/retrieval/investigation.py: 3
+      src/stropha/retrieval/dag.py: 3
+      plan_investigation: 3
+      execute_plan: 3
+    tags: [phase4, conceptual, investigation-dag]
+    split: holdout
+
+  - id: phase4-conceptual-007
+    query: How does cost-budgeted breadth-first traversal make graph spend and stopping reasons auditable while remaining distinct from the production graph reader's depth and result limits?
+    expected_paths: [src/stropha/retrieval/cost_traversal.py, src/stropha/retrieval/graph.py]
+    expected_symbols: [cost_budgeted_bfs, find_related]
+    relevance:
+      src/stropha/retrieval/cost_traversal.py: 3
+      src/stropha/retrieval/graph.py: 2
+      cost_budgeted_bfs: 3
+      find_related: 2
+    tags: [phase4, conceptual, graph-cost-budget]
+    split: holdout
+
+  - id: phase4-conceptual-008
+    query: How are likely follow-up searches forecast from recent queries and result anchors, then executed through synchronous fan-out that isolates failures and treats cancellation as best effort?
+    expected_paths: [src/stropha/retrieval/speculative.py, src/stropha/retrieval/speculative.py, src/stropha/retrieval/parallel_fanout.py]
+    expected_symbols: [predict_next_queries, prefetch, parallel_fanout]
+    relevance:
+      src/stropha/retrieval/speculative.py: 3
+      src/stropha/retrieval/parallel_fanout.py: 2
+      predict_next_queries: 3
+      prefetch: 3
+      parallel_fanout: 2
+    tags: [phase4, conceptual, speculative-retrieval]
+    split: holdout
+
+  - id: phase4-conceptual-009
+    query: How does a served MCP search turn estimated reading avoidance into a non-fatal structured event that the cost report later aggregates across log files?
+    expected_paths: [src/stropha/server_search.py, src/stropha/retrieval/savings.py, src/stropha/retrieval/savings.py, src/stropha/cost.py]
+    expected_symbols: [search_code_impl, track_search_savings, log_savings, aggregate]
+    relevance:
+      src/stropha/server_search.py: 3
+      src/stropha/retrieval/savings.py: 3
+      src/stropha/cost.py: 2
+      search_code_impl: 3
+      track_search_savings: 3
+      log_savings: 3
+      aggregate: 2
+    tags: [phase4, conceptual, savings-observability]
+    split: holdout
+
+  - id: phase4-conceptual-010
+    query: How do glossary terms and aliases become synthetic searchable chunks whose vector writes retain embedding and enrichment identity for later drift detection?
+    expected_paths: [src/stropha/ingest/glossary.py, src/stropha/storage/sqlite.py]
+    expected_symbols: [GlossaryTerm.to_chunk, Storage.upsert_chunk]
+    relevance:
+      src/stropha/ingest/glossary.py: 3
+      src/stropha/storage/sqlite.py: 2
+      GlossaryTerm.to_chunk: 3
+      Storage.upsert_chunk: 2
+    tags: [phase4, conceptual, glossary-indexing]
+    split: holdout
+
+  - id: phase4-conceptual-011
+    query: How does indexing skip an already imported fresh graph, update changed repositories sequentially, and choose full clustering only when graph output does not yet exist?
+    expected_paths: [src/stropha/pipeline/pipeline.py, src/stropha/pipeline/graphify_runner.py, src/stropha/pipeline/graphify_runner.py]
+    expected_symbols: [Pipeline._run_graphify, run_graphify_multi, run_graphify]
+    relevance:
+      src/stropha/pipeline/pipeline.py: 3
+      src/stropha/pipeline/graphify_runner.py: 2
+      Pipeline._run_graphify: 3
+      run_graphify_multi: 2
+      run_graphify: 2
+    tags: [phase4, conceptual, graphify-refresh]
+    split: holdout
+
+  - id: phase4-conceptual-012
+    query: How are candidate indexes pinned to a source snapshot, keyed by every content-shaping identity, and opened as disposable writable copies rather than shared cache files?
+    expected_paths: [src/stropha/meta/snapshot.py, src/stropha/meta/candidate_index.py, src/stropha/meta/candidate_index.py, src/stropha/meta/index_cache.py]
+    expected_symbols: [create_snapshot, CandidateIndexProvider.identity_for, CandidateIndexProvider.open_candidate, IndexCache.clone_writable]
+    relevance:
+      src/stropha/meta/snapshot.py: 2
+      src/stropha/meta/candidate_index.py: 3
+      src/stropha/meta/index_cache.py: 3
+      create_snapshot: 2
+      CandidateIndexProvider.identity_for: 3
+      CandidateIndexProvider.open_candidate: 3
+      IndexCache.clone_writable: 3
+    tags: [phase4, conceptual, candidate-index-isolation]
+    split: holdout
+
+  - id: phase4-conceptual-013
+    query: Why is the optimization search space hand-annotated but continuously checked against the live adapter registry for missing choices, stale exclusions, and consumer dimension drift?
+    expected_paths: [src/stropha/meta/search_space.py, src/stropha/pipeline/registry.py]
+    expected_symbols: [discover_gaps, all_adapters]
+    relevance:
+      src/stropha/meta/search_space.py: 3
+      src/stropha/pipeline/registry.py: 2
+      discover_gaps: 3
+      all_adapters: 2
+    tags: [phase4, conceptual, search-space-drift]
+    split: holdout
+
+  - id: phase4-conceptual-014
+    query: How does post-hoc retrieval supervision keep read-only evidence neutral, prioritize explicit negative feedback, and preserve outcome quality as a separate objective in candidate fitness?
+    expected_paths: [src/stropha/meta/outcome.py, src/stropha/meta/fitness.py]
+    expected_symbols: [label_hit, build_scorecard]
+    relevance:
+      src/stropha/meta/outcome.py: 3
+      src/stropha/meta/fitness.py: 3
+      label_hit: 3
+      build_scorecard: 3
+    tags: [phase4, conceptual, outcome-fitness]
+    split: holdout
+
+  - id: phase4-conceptual-015
+    query: How is every non-dominated search candidate evaluated on holdout, and how are overfit gaps summarized across the whole trade-off frontier?
+    expected_paths: [src/stropha/meta/frontier.py, src/stropha/meta/fitness.py]
+    expected_symbols: [evaluate_frontier_on_holdout, pareto_frontier]
+    relevance:
+      src/stropha/meta/frontier.py: 3
+      src/stropha/meta/fitness.py: 2
+      evaluate_frontier_on_holdout: 3
+      pareto_frontier: 2
+    tags: [phase4, conceptual, frontier-generalization]
+    split: holdout
+
+  - id: phase4-conceptual-016
+    query: How does human-gated promotion translate candidate knobs into a deep-merged configuration diff and record a new production baseline only from eligible validation evidence?
+    expected_paths: [src/stropha/cli.py, src/stropha/meta/promote.py, src/stropha/meta/baseline.py]
+    expected_symbols: [meta_promote_cmd, build_plan, write_verified_baseline]
+    relevance:
+      src/stropha/cli.py: 3
+      src/stropha/meta/promote.py: 3
+      src/stropha/meta/baseline.py: 2
+      meta_promote_cmd: 3
+      build_plan: 3
+      write_verified_baseline: 2
+    tags: [phase4, conceptual, validated-promotion]
+    split: holdout
+
+  - id: phase4-conceptual-017
+    query: How are generated adapter candidates rejected cheaply through static validation and import smoke checks before the full test suite, with resource-bounded subprocess isolation around candidate code?
+    expected_paths: [src/stropha/meta/gate.py, src/stropha/meta/sandbox.py]
+    expected_symbols: [PytestGate.__call__, SubprocessSandbox.run]
+    relevance:
+      src/stropha/meta/gate.py: 3
+      src/stropha/meta/sandbox.py: 3
+      PytestGate.__call__: 3
+      SubprocessSandbox.run: 3
+    tags: [phase4, conceptual, candidate-safety]
+    split: holdout
+
+  - id: phase4-conceptual-018
+    query: How does the outer optimization loop keep proposal registration, archive insertion, callbacks, and checkpoints deterministic while allowing candidate evaluations to run in parallel?
+    expected_paths: [src/stropha/meta/loop.py, src/stropha/meta/store.py]
+    expected_symbols: [run_loop, ArtifactStore.register_candidate]
+    relevance:
+      src/stropha/meta/loop.py: 3
+      src/stropha/meta/store.py: 2
+      run_loop: 3
+      ArtifactStore.register_candidate: 2
+    tags: [phase4, conceptual, deterministic-optimization]
+    split: holdout
+
+  - id: phase4-conceptual-019
+    query: How does candidate validation fail closed on an unverified baseline or incomparable runtime identities while also checking search improvement and bounded holdout regressions?
+    expected_paths: [src/stropha/meta/validation.py, src/stropha/meta/baseline.py]
+    expected_symbols: [evaluate_validation_gate, BaselineRecord.is_verified]
+    relevance:
+      src/stropha/meta/validation.py: 3
+      src/stropha/meta/baseline.py: 2
+      evaluate_validation_gate: 3
+      BaselineRecord.is_verified: 2
+    tags: [phase4, conceptual, fail-closed-validation]
+    split: holdout
+
+  - id: phase4-conceptual-020
+    query: How does candidate evaluation capture both successful and failed retrieval calls with run identity while keeping JSONL persistence off the evaluation thread and non-blocking under queue pressure?
+    expected_paths: [src/stropha/meta/evaluator.py, src/stropha/meta/evaluator.py, src/stropha/meta/trace.py]
+    expected_symbols: [_TracingSearchEngine.search, _TracingSearchEngine._record, TraceRecorder.record]
+    relevance:
+      src/stropha/meta/evaluator.py: 3
+      src/stropha/meta/trace.py: 3
+      _TracingSearchEngine.search: 3
+      _TracingSearchEngine._record: 3
+      TraceRecorder.record: 3
+    tags: [phase4, conceptual, evaluation-tracing]
+    split: holdout

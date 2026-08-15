@@ -1,0 +1,321 @@
+version: 1
+cases:
+  - id: phase4-ambiguous-001
+    query: "I'm looking for search: which implementation owns dense, sparse, and symbol fusion, not the adapter that only delegates to FTS5 BM25?"
+    expected_paths:
+      - src/stropha/retrieval/search.py
+      - src/stropha/adapters/retrieval/streams/fts5_bm25.py
+    expected_symbols:
+      - SearchEngine.search
+      - Fts5Bm25Stream.search
+    relevance:
+      src/stropha/retrieval/search.py: 3
+      SearchEngine.search: 3
+      src/stropha/adapters/retrieval/streams/fts5_bm25.py: 1
+      Fts5Bm25Stream.search: 1
+    tags: [ambiguous-symbols]
+    split: holdout
+
+  - id: phase4-ambiguous-002
+    query: "Two retrieval streams expose search; where is graph-node cosine search, and where is the independent Model2Vec chunk-vector search?"
+    expected_paths:
+      - src/stropha/adapters/retrieval/streams/graph_vec.py
+      - src/stropha/adapters/retrieval/streams/model2vec_cosine.py
+    expected_symbols:
+      - GraphVecStream.search
+      - Model2VecCosineStream.search
+    relevance:
+      src/stropha/adapters/retrieval/streams/graph_vec.py: 3
+      GraphVecStream.search: 3
+      src/stropha/adapters/retrieval/streams/model2vec_cosine.py: 3
+      Model2VecCosineStream.search: 3
+    tags: [ambiguous-symbols]
+    split: holdout
+
+  - id: phase4-ambiguous-003
+    query: "Which run method owns the configured indexing pipeline and graphify lifecycle, rather than the older walk-and-index loop?"
+    expected_paths:
+      - src/stropha/pipeline/pipeline.py
+      - src/stropha/ingest/pipeline.py
+    expected_symbols:
+      - Pipeline.run
+      - IndexPipeline.run
+    relevance:
+      src/stropha/pipeline/pipeline.py: 3
+      Pipeline.run: 3
+      src/stropha/ingest/pipeline.py: 1
+      IndexPipeline.run: 1
+    tags: [ambiguous-symbols]
+    split: holdout
+
+  - id: phase4-ambiguous-004
+    query: "For run, distinguish the method that launches a resource-limited candidate subprocess from the async context manager that wraps MCP HTTP sessions."
+    expected_paths:
+      - src/stropha/meta/sandbox.py
+      - src/stropha/server_http.py
+    expected_symbols:
+      - SubprocessSandbox.run
+      - RestartTolerantSessionManager.run
+    relevance:
+      src/stropha/meta/sandbox.py: 3
+      SubprocessSandbox.run: 3
+      src/stropha/server_http.py: 2
+      RestartTolerantSessionManager.run: 2
+    tags: [ambiguous-symbols]
+    split: holdout
+
+  - id: phase4-ambiguous-005
+    query: "Which load reads graph.json into graph tables, and which same-named method embeds the graph nodes already in those tables?"
+    expected_paths:
+      - src/stropha/ingest/graphify_loader.py
+      - src/stropha/ingest/graph_vec_loader.py
+    expected_symbols:
+      - GraphifyLoader.load
+      - GraphVecLoader.load
+    relevance:
+      src/stropha/ingest/graphify_loader.py: 3
+      GraphifyLoader.load: 3
+      src/stropha/ingest/graph_vec_loader.py: 3
+      GraphVecLoader.load: 3
+    tags: [ambiguous-symbols]
+    split: holdout
+
+  - id: phase4-ambiguous-006
+    query: "I need the load that backfills the independent secondary chunk-vector space, not the load that updates graph-node embeddings."
+    expected_paths:
+      - src/stropha/ingest/secondary_embedding_loader.py
+      - src/stropha/ingest/graph_vec_loader.py
+    expected_symbols:
+      - SecondaryEmbeddingLoader.load
+      - GraphVecLoader.load
+    relevance:
+      src/stropha/ingest/secondary_embedding_loader.py: 3
+      SecondaryEmbeddingLoader.load: 3
+      src/stropha/ingest/graph_vec_loader.py: 1
+      GraphVecLoader.load: 1
+    tags: [ambiguous-symbols]
+    split: holdout
+
+  - id: phase4-ambiguous-007
+    query: "Which close drains the background trace writer, and which close shuts down watcher and storage resources shared by MCP sessions?"
+    expected_paths:
+      - src/stropha/meta/trace.py
+      - src/stropha/server_runtime.py
+    expected_symbols:
+      - TraceRecorder.close
+      - SharedRuntime.close
+    relevance:
+      src/stropha/meta/trace.py: 3
+      TraceRecorder.close: 3
+      src/stropha/server_runtime.py: 3
+      SharedRuntime.close: 3
+    tags: [ambiguous-symbols]
+    split: holdout
+
+  - id: phase4-ambiguous-008
+    query: "For storage close, where does PostgreSQL release its advisory index lock before disconnecting, versus SQLite simply closing its connection?"
+    expected_paths:
+      - src/stropha/adapters/storage/postgres.py
+      - src/stropha/storage/sqlite.py
+    expected_symbols:
+      - PostgresStorage.close
+      - Storage.close
+    relevance:
+      src/stropha/adapters/storage/postgres.py: 3
+      PostgresStorage.close: 3
+      src/stropha/storage/sqlite.py: 2
+      Storage.close: 2
+    tags: [ambiguous-symbols]
+    split: holdout
+
+  - id: phase4-ambiguous-009
+    query: "Which chunk iterates over source files and applies repository namespacing, rather than splitting one Vue single-file component?"
+    expected_paths:
+      - src/stropha/ingest/chunker.py
+      - src/stropha/ingest/chunkers/vue.py
+    expected_symbols:
+      - Chunker.chunk
+      - VueChunker.chunk
+    relevance:
+      src/stropha/ingest/chunker.py: 3
+      Chunker.chunk: 3
+      src/stropha/ingest/chunkers/vue.py: 1
+      VueChunker.chunk: 1
+    tags: [ambiguous-symbols]
+    split: holdout
+
+  - id: phase4-ambiguous-010
+    query: "Where is the chunk method that partitions YAML by document and node boundaries, and where is the generic file-level fallback with line splitting?"
+    expected_paths:
+      - src/stropha/adapters/chunker/languages/yaml_structure.py
+      - src/stropha/ingest/chunkers/fallback.py
+    expected_symbols:
+      - YamlStructureLanguageChunker.chunk
+      - FallbackChunker.chunk
+    relevance:
+      src/stropha/adapters/chunker/languages/yaml_structure.py: 3
+      YamlStructureLanguageChunker.chunk: 3
+      src/stropha/ingest/chunkers/fallback.py: 2
+      FallbackChunker.chunk: 2
+    tags: [ambiguous-symbols]
+    split: holdout
+
+  - id: phase4-ambiguous-011
+    query: "Which enrich generates LLM context with a success-aware fallback, instead of returning the chunk content unchanged?"
+    expected_paths:
+      - src/stropha/adapters/enricher/contextual.py
+      - src/stropha/adapters/enricher/noop.py
+    expected_symbols:
+      - ContextualEnricher.enrich
+      - NoopEnricher.enrich
+    relevance:
+      src/stropha/adapters/enricher/contextual.py: 3
+      ContextualEnricher.enrich: 3
+      src/stropha/adapters/enricher/noop.py: 1
+      NoopEnricher.enrich: 1
+    tags: [ambiguous-symbols]
+    split: holdout
+
+  - id: phase4-ambiguous-012
+    query: "For enrich, distinguish the implementation that injects graph community and node labels from the one limited to repository and parent context."
+    expected_paths:
+      - src/stropha/adapters/enricher/graph_aware.py
+      - src/stropha/adapters/enricher/hierarchical.py
+    expected_symbols:
+      - GraphAwareEnricher.enrich
+      - HierarchicalEnricher.enrich
+    relevance:
+      src/stropha/adapters/enricher/graph_aware.py: 3
+      GraphAwareEnricher.enrich: 3
+      src/stropha/adapters/enricher/hierarchical.py: 2
+      HierarchicalEnricher.enrich: 2
+    tags: [ambiguous-symbols]
+    split: holdout
+
+  - id: phase4-ambiguous-013
+    query: "Which rerank builds a listwise prompt for an inference backend, and which rerank scores query-document pairs with a local cross-encoder?"
+    expected_paths:
+      - src/stropha/adapters/retrieval/reranker/llm.py
+      - src/stropha/adapters/retrieval/reranker/cross_encoder.py
+    expected_symbols:
+      - LlmReranker.rerank
+      - CrossEncoderReranker.rerank
+    relevance:
+      src/stropha/adapters/retrieval/reranker/llm.py: 3
+      LlmReranker.rerank: 3
+      src/stropha/adapters/retrieval/reranker/cross_encoder.py: 3
+      CrossEncoderReranker.rerank: 3
+    tags: [ambiguous-symbols]
+    split: holdout
+
+  - id: phase4-ambiguous-014
+    query: "I want rerank to apply definition boosts and noise penalties, not the same-named pass-through that only truncates results."
+    expected_paths:
+      - src/stropha/adapters/retrieval/reranker/code_aware.py
+      - src/stropha/adapters/retrieval/reranker/noop.py
+    expected_symbols:
+      - CodeAwareReranker.rerank
+      - NoopReranker.rerank
+    relevance:
+      src/stropha/adapters/retrieval/reranker/code_aware.py: 3
+      CodeAwareReranker.rerank: 3
+      src/stropha/adapters/retrieval/reranker/noop.py: 1
+      NoopReranker.rerank: 1
+    tags: [ambiguous-symbols]
+    split: holdout
+
+  - id: phase4-ambiguous-015
+    query: "Which prune removes selected persisted cross-session semantic-cache rows, rather than deleting every candidate index cache entry outside a keep set?"
+    expected_paths:
+      - src/stropha/retrieval/cross_session_cache.py
+      - src/stropha/meta/index_cache.py
+    expected_symbols:
+      - prune
+      - IndexCache.prune
+    relevance:
+      src/stropha/retrieval/cross_session_cache.py: 3
+      prune: 3
+      src/stropha/meta/index_cache.py: 1
+      IndexCache.prune: 1
+    tags: [ambiguous-symbols]
+    split: holdout
+
+  - id: phase4-ambiguous-016
+    query: "Which stats reports persistent SQLite index metadata, and which stats member reports hit-rate metrics for the in-process semantic cache?"
+    expected_paths:
+      - src/stropha/storage/sqlite.py
+      - src/stropha/retrieval/cache.py
+    expected_symbols:
+      - Storage.stats
+      - SemanticCache.stats
+    relevance:
+      src/stropha/storage/sqlite.py: 3
+      Storage.stats: 3
+      src/stropha/retrieval/cache.py: 2
+      SemanticCache.stats: 2
+    tags: [ambiguous-symbols]
+    split: holdout
+
+  - id: phase4-ambiguous-017
+    query: "For generate, where is the convenience dispatcher that selects a backend and conditionally records the call, versus the method that posts directly to Ollama's API?"
+    expected_paths:
+      - src/stropha/inference/backend.py
+      - src/stropha/inference/ollama_backend.py
+    expected_symbols:
+      - generate
+      - OllamaBackend.generate
+    relevance:
+      src/stropha/inference/backend.py: 3
+      generate: 3
+      src/stropha/inference/ollama_backend.py: 2
+      OllamaBackend.generate: 2
+    tags: [ambiguous-symbols]
+    split: holdout
+
+  - id: phase4-ambiguous-018
+    query: "Which route confidence-gates a primary router before escalating, rather than directly asking the LLM classifier once?"
+    expected_paths:
+      - src/stropha/adapters/router/escalating.py
+      - src/stropha/adapters/router/llm.py
+    expected_symbols:
+      - EscalatingRouter.route
+      - LLMRouter.route
+    relevance:
+      src/stropha/adapters/router/escalating.py: 3
+      EscalatingRouter.route: 3
+      src/stropha/adapters/router/llm.py: 1
+      LLMRouter.route: 1
+    tags: [ambiguous-symbols]
+    split: holdout
+
+  - id: phase4-ambiguous-019
+    query: "For discover, which walker traverses nested Git repositories, and which delta-only walker rejects full discovery in favor of discover_deltas?"
+    expected_paths:
+      - src/stropha/adapters/walker/nested_git.py
+      - src/stropha/adapters/walker/git_diff.py
+    expected_symbols:
+      - NestedGitWalker.discover
+      - GitDiffWalker.discover
+    relevance:
+      src/stropha/adapters/walker/nested_git.py: 3
+      NestedGitWalker.discover: 3
+      src/stropha/adapters/walker/git_diff.py: 3
+      GitDiffWalker.discover: 3
+    tags: [ambiguous-symbols]
+    split: holdout
+
+  - id: phase4-ambiguous-020
+    query: "Which embed_query marks Voyage input as a query, and which same-named FastEmbed engine method calls query_embed locally?"
+    expected_paths:
+      - src/stropha/adapters/embedder/voyage.py
+      - src/stropha/adapters/embedder/local.py
+    expected_symbols:
+      - VoyageEmbedder.embed_query
+      - FastEmbedEngine.embed_query
+    relevance:
+      src/stropha/adapters/embedder/voyage.py: 3
+      VoyageEmbedder.embed_query: 3
+      src/stropha/adapters/embedder/local.py: 3
+      FastEmbedEngine.embed_query: 3
+    tags: [ambiguous-symbols]
+    split: holdout

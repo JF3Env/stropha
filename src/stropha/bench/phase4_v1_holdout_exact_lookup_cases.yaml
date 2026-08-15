@@ -1,0 +1,241 @@
+version: 1
+cases:
+  - id: phase4-exact-001
+    query: Where are benchmark batch specifications and campaign specifications loaded?
+    expected_paths: [src/stropha/bench/batch.py, src/stropha/bench/campaign.py]
+    expected_symbols: [load_batch_spec, load_campaign_spec]
+    relevance:
+      src/stropha/bench/batch.py: 3
+      src/stropha/bench/campaign.py: 3
+      load_batch_spec: 3
+      load_campaign_spec: 3
+    tags: [exact-lookup, benchmark-orchestration]
+    split: holdout
+
+  - id: phase4-exact-002
+    query: Where are benchmark matrices parsed and benchmark result records loaded?
+    expected_paths: [src/stropha/bench/matrix.py, src/stropha/bench/report.py]
+    expected_symbols: [load_matrix, load_results]
+    relevance:
+      src/stropha/bench/matrix.py: 3
+      src/stropha/bench/report.py: 3
+      load_matrix: 3
+      load_results: 3
+    tags: [exact-lookup, benchmark-reporting]
+    split: holdout
+
+  - id: phase4-exact-003
+    query: Where are routing benchmark cases loaded and retrieval queries classified by symbol ratio?
+    expected_paths: [src/stropha/bench/routing.py, src/stropha/retrieval/query_classify.py]
+    expected_symbols: [load_routing_cases, classify_query]
+    relevance:
+      src/stropha/bench/routing.py: 3
+      src/stropha/retrieval/query_classify.py: 3
+      load_routing_cases: 3
+      classify_query: 3
+    tags: [exact-lookup, query-routing]
+    split: holdout
+
+  - id: phase4-exact-004
+    query: Where are batch quality gates and meta-harness validation gates evaluated?
+    expected_paths: [src/stropha/bench/batch.py, src/stropha/meta/validation.py]
+    expected_symbols: [evaluate_gates, evaluate_validation_gate]
+    relevance:
+      src/stropha/bench/batch.py: 3
+      src/stropha/meta/validation.py: 3
+      evaluate_gates: 3
+      evaluate_validation_gate: 3
+    tags: [exact-lookup, quality-gates]
+    split: holdout
+
+  - id: phase4-exact-005
+    query: Where are detached Git worktree snapshots created and meta-harness artifacts pruned?
+    expected_paths: [src/stropha/meta/snapshot.py, src/stropha/meta/prune.py]
+    expected_symbols: [create_snapshot, prune]
+    relevance:
+      src/stropha/meta/snapshot.py: 3
+      src/stropha/meta/prune.py: 3
+      create_snapshot: 3
+      prune: 3
+    tags: [exact-lookup, meta-harness-maintenance]
+    split: holdout
+
+  - id: phase4-exact-006
+    query: Where are Pareto-frontier candidates scored on holdout data and objective vectors reduced to scalar fitness?
+    expected_paths: [src/stropha/meta/frontier.py, src/stropha/meta/fitness.py]
+    expected_symbols: [evaluate_frontier_on_holdout, scalar_fitness]
+    relevance:
+      src/stropha/meta/frontier.py: 3
+      src/stropha/meta/fitness.py: 3
+      evaluate_frontier_on_holdout: 3
+      scalar_fitness: 3
+    tags: [exact-lookup, candidate-fitness]
+    split: holdout
+
+  - id: phase4-exact-007
+    query: Where is the candidate search-space manifest loaded and where is an evaluation PostgreSQL cluster preflighted?
+    expected_paths: [src/stropha/meta/search_space.py, src/stropha/evaluation/postgres.py]
+    expected_symbols: [load_search_space, PostgresEvaluationDatabaseManager.preflight]
+    relevance:
+      src/stropha/meta/search_space.py: 3
+      src/stropha/evaluation/postgres.py: 3
+      load_search_space: 3
+      PostgresEvaluationDatabaseManager.preflight: 3
+    tags: [exact-lookup, experiment-safety]
+    split: holdout
+
+  - id: phase4-exact-008
+    query: Where are evaluation DSNs redacted and storage adapter DSNs sanitized for diagnostics?
+    expected_paths: [src/stropha/evaluation/postgres.py, src/stropha/adapters/storage/postgres.py]
+    expected_symbols: [redact_dsn, PostgresStorage._sanitized_dsn]
+    relevance:
+      src/stropha/evaluation/postgres.py: 3
+      src/stropha/adapters/storage/postgres.py: 3
+      redact_dsn: 3
+      PostgresStorage._sanitized_dsn: 3
+    tags: [exact-lookup, postgres-security]
+    split: holdout
+
+  - id: phase4-exact-009
+    query: Where are search token savings calculated and per-hit retrieval provenance rendered?
+    expected_paths: [src/stropha/retrieval/savings.py, src/stropha/retrieval/provenance.py]
+    expected_symbols: [calculate_savings, hit_provenance_line]
+    relevance:
+      src/stropha/retrieval/savings.py: 3
+      src/stropha/retrieval/provenance.py: 3
+      calculate_savings: 3
+      hit_provenance_line: 3
+    tags: [exact-lookup, retrieval-diagnostics]
+    split: holdout
+
+  - id: phase4-exact-010
+    query: Where are sparse search results refined and query intents routed to retrieval tools?
+    expected_paths: [src/stropha/retrieval/refinement.py, src/stropha/retrieval/query_router.py]
+    expected_symbols: [refine_results, route_query]
+    relevance:
+      src/stropha/retrieval/refinement.py: 3
+      src/stropha/retrieval/query_router.py: 3
+      refine_results: 3
+      route_query: 3
+    tags: [exact-lookup, adaptive-retrieval]
+    split: holdout
+
+  - id: phase4-exact-011
+    query: Where are cost-capped graph breadth-first traversal and concurrent retrieval fan-out implemented?
+    expected_paths: [src/stropha/retrieval/cost_traversal.py, src/stropha/retrieval/parallel_fanout.py]
+    expected_symbols: [cost_budgeted_bfs, parallel_fanout]
+    relevance:
+      src/stropha/retrieval/cost_traversal.py: 3
+      src/stropha/retrieval/parallel_fanout.py: 3
+      cost_budgeted_bfs: 3
+      parallel_fanout: 3
+    tags: [exact-lookup, retrieval-orchestration]
+    split: holdout
+
+  - id: phase4-exact-012
+    query: Where are architectural anchors detected in chunks and source languages inferred from file paths?
+    expected_paths: [src/stropha/ingest/anchors.py, src/stropha/ingest/walker.py]
+    expected_symbols: [AnchorDetector.detect, detect_language]
+    relevance:
+      src/stropha/ingest/anchors.py: 3
+      src/stropha/ingest/walker.py: 3
+      AnchorDetector.detect: 3
+      detect_language: 3
+    tags: [exact-lookup, ingestion-analysis]
+    split: holdout
+
+  - id: phase4-exact-013
+    query: Where are legacy index runs coordinated and source files dispatched to language-specific chunkers?
+    expected_paths: [src/stropha/ingest/pipeline.py, src/stropha/ingest/chunker.py]
+    expected_symbols: [IndexPipeline.run, Chunker.chunk]
+    relevance:
+      src/stropha/ingest/pipeline.py: 3
+      src/stropha/ingest/chunker.py: 3
+      IndexPipeline.run: 3
+      Chunker.chunk: 3
+    tags: [exact-lookup, ingestion-pipeline]
+    split: holdout
+
+  - id: phase4-exact-014
+    query: Where are remote Git URLs converted to cache keys and shared HTTP MCP client entries generated?
+    expected_paths: [src/stropha/tools/git_url.py, src/stropha/tools/init_project.py]
+    expected_symbols: [url_to_cache_key, generate_mcp_entry]
+    relevance:
+      src/stropha/tools/git_url.py: 3
+      src/stropha/tools/init_project.py: 3
+      url_to_cache_key: 3
+      generate_mcp_entry: 3
+    tags: [exact-lookup, project-tooling]
+    split: holdout
+
+  - id: phase4-exact-015
+    query: Where do the disabled router and always-LLM router implement query routing?
+    expected_paths: [src/stropha/adapters/router/noop.py, src/stropha/adapters/router/llm.py]
+    expected_symbols: [NoopRouter.route, LLMRouter.route]
+    relevance:
+      src/stropha/adapters/router/noop.py: 3
+      src/stropha/adapters/router/llm.py: 3
+      NoopRouter.route: 3
+      LLMRouter.route: 3
+    tags: [exact-lookup, router-adapters]
+    split: holdout
+
+  - id: phase4-exact-016
+    query: Where do the MLX and Ollama enrichers prepend generated summaries to chunks?
+    expected_paths: [src/stropha/adapters/enricher/mlx.py, src/stropha/adapters/enricher/ollama.py]
+    expected_symbols: [MlxEnricher.enrich, OllamaEnricher.enrich]
+    relevance:
+      src/stropha/adapters/enricher/mlx.py: 3
+      src/stropha/adapters/enricher/ollama.py: 3
+      MlxEnricher.enrich: 3
+      OllamaEnricher.enrich: 3
+    tags: [exact-lookup, enricher-adapters]
+    split: holdout
+
+  - id: phase4-exact-017
+    query: Where do the MoA Gateway and LM Studio backends implement text generation?
+    expected_paths: [src/stropha/inference/moa_backend.py, src/stropha/inference/lms_backend.py]
+    expected_symbols: [MoaBackend.generate, LmsBackend.generate]
+    relevance:
+      src/stropha/inference/moa_backend.py: 3
+      src/stropha/inference/lms_backend.py: 3
+      MoaBackend.generate: 3
+      LmsBackend.generate: 3
+    tags: [exact-lookup, inference-backends]
+    split: holdout
+
+  - id: phase4-exact-018
+    query: Where do the MLX embedding engine and FastEmbed engine encode individual queries?
+    expected_paths: [src/stropha/adapters/embedder/mlx.py, src/stropha/adapters/embedder/local.py]
+    expected_symbols: [MlxEngine.embed_query, FastEmbedEngine.embed_query]
+    relevance:
+      src/stropha/adapters/embedder/mlx.py: 3
+      src/stropha/adapters/embedder/local.py: 3
+      MlxEngine.embed_query: 3
+      FastEmbedEngine.embed_query: 3
+    tags: [exact-lookup, embedding-engines]
+    split: holdout
+
+  - id: phase4-exact-019
+    query: Where do SQLite and PostgreSQL storage adapters expose their persistence targets?
+    expected_paths: [src/stropha/adapters/storage/sqlite_vec.py, src/stropha/adapters/storage/postgres.py]
+    expected_symbols: [SqliteVecStorage.storage_target, PostgresStorage.storage_target]
+    relevance:
+      src/stropha/adapters/storage/sqlite_vec.py: 3
+      src/stropha/adapters/storage/postgres.py: 3
+      SqliteVecStorage.storage_target: 3
+      PostgresStorage.storage_target: 3
+    tags: [exact-lookup, storage-introspection]
+    split: holdout
+
+  - id: phase4-exact-020
+    query: Where are oversized fallback files split and AST language chunking delegated to the legacy implementation?
+    expected_paths: [src/stropha/ingest/chunkers/fallback.py, src/stropha/adapters/chunker/languages/ast_generic.py]
+    expected_symbols: [FallbackChunker._split_oversized, AstGenericLanguageChunker.chunk]
+    relevance:
+      src/stropha/ingest/chunkers/fallback.py: 3
+      src/stropha/adapters/chunker/languages/ast_generic.py: 3
+      FallbackChunker._split_oversized: 3
+      AstGenericLanguageChunker.chunk: 3
+    tags: [exact-lookup, chunking]
+    split: holdout

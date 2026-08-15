@@ -1,0 +1,241 @@
+version: 1
+cases:
+  - id: phase4-multirepo-001
+    query: When one daemon serves several repositories, how does it resolve an explicit repository key or local path instead of falling back to the configured target?
+    expected_paths: [src/stropha/server_memory_tools.py, tests/unit/test_memory_repo.py]
+    expected_symbols: [_resolve_repo, test_resolve_repo_by_path]
+    relevance:
+      src/stropha/server_memory_tools.py: 3
+      tests/unit/test_memory_repo.py: 2
+      _resolve_repo: 3
+      test_resolve_repo_by_path: 2
+    tags: [multi-repo, scope-resolution]
+    split: holdout
+
+  - id: phase4-multirepo-002
+    query: How does MCP code search stop rather than leak another repository's matches when the current target cannot be resolved in the shared index?
+    expected_paths: [src/stropha/server_search.py, tests/unit/test_repo_scoped_search.py]
+    expected_symbols: [search_code_impl, test_mcp_search_fails_closed_when_current_repo_cannot_be_resolved]
+    relevance:
+      src/stropha/server_search.py: 3
+      tests/unit/test_repo_scoped_search.py: 3
+      search_code_impl: 3
+      test_mcp_search_fails_closed_when_current_repo_cannot_be_resolved: 3
+    tags: [multi-repo, unresolved-target]
+    split: holdout
+
+  - id: phase4-multirepo-003
+    query: Where does MCP search pass the current repo_id by default but deliberately omit that filter for an all-repositories request?
+    expected_paths: [src/stropha/server_search.py, tests/unit/test_repo_scoped_search.py]
+    expected_symbols: [search_code_impl, test_mcp_search_defaults_to_current_repo_and_opt_in_broadens]
+    relevance:
+      src/stropha/server_search.py: 3
+      tests/unit/test_repo_scoped_search.py: 3
+      search_code_impl: 3
+      test_mcp_search_defaults_to_current_repo_and_opt_in_broadens: 3
+    tags: [multi-repo, search-scope]
+    split: holdout
+
+  - id: phase4-multirepo-004
+    query: After retrieval and pin prepending, what final guard prevents a chunk from a different repository entering a repository-scoped search response?
+    expected_paths: [src/stropha/server_search.py, tests/unit/test_repo_scoped_search.py]
+    expected_symbols: [_hit_belongs_to_repo, test_mcp_search_does_not_reinsert_foreign_pins]
+    relevance:
+      src/stropha/server_search.py: 3
+      tests/unit/test_repo_scoped_search.py: 3
+      _hit_belongs_to_repo: 3
+      test_mcp_search_does_not_reinsert_foreign_pins: 3
+    tags: [multi-repo, foreign-hit-guard]
+    split: holdout
+
+  - id: phase4-multirepo-005
+    query: If a remote-repository search returns no matches, how is that remote repo_id retained so only its pins can still appear in the response?
+    expected_paths: [src/stropha/server_search.py, tests/unit/test_repo_scoped_search.py]
+    expected_symbols: [search_code_impl, test_mcp_remote_search_uses_remote_identity_for_zero_result_pins]
+    relevance:
+      src/stropha/server_search.py: 3
+      tests/unit/test_repo_scoped_search.py: 3
+      search_code_impl: 3
+      test_mcp_remote_search_uses_remote_identity_for_zero_result_pins: 3
+    tags: [multi-repo, remote-pin-scope]
+    split: holdout
+
+  - id: phase4-multirepo-006
+    query: How are duplicate symbol names and identical relative file paths restricted to the current repository while an explicit broad lookup can return both repositories?
+    expected_paths: [src/stropha/server_discovery_tools.py, tests/unit/test_repo_scoped_search.py]
+    expected_symbols: [get_symbol_impl, test_direct_mcp_routes_scope_duplicate_symbols_and_community_ids]
+    relevance:
+      src/stropha/server_discovery_tools.py: 3
+      tests/unit/test_repo_scoped_search.py: 3
+      get_symbol_impl: 3
+      test_direct_mcp_routes_scope_duplicate_symbols_and_community_ids: 3
+    tags: [multi-repo, duplicate-entities]
+    split: holdout
+
+  - id: phase4-multirepo-007
+    query: What response distinguishes an unavailable current repository from an empty graph result so graph tools fail closed in a multi-repository index?
+    expected_paths: [src/stropha/server.py, tests/unit/test_repo_scoped_search.py]
+    expected_symbols: [_graph_repo_unavailable, test_direct_graph_routes_fail_closed_when_current_repo_is_unresolved]
+    relevance:
+      src/stropha/server.py: 3
+      tests/unit/test_repo_scoped_search.py: 3
+      _graph_repo_unavailable: 3
+      test_direct_graph_routes_fail_closed_when_current_repo_is_unresolved: 3
+    tags: [multi-repo, repository-availability]
+    split: holdout
+
+  - id: phase4-multirepo-008
+    query: Which direct symbol, graph, pin, expansion, citation, and working-set tools expose the same opt-in switch for crossing repository boundaries?
+    expected_paths: [src/stropha/server.py, tests/unit/test_repo_scoped_search.py]
+    expected_symbols: [get_symbol, test_every_direct_symbol_and_graph_mcp_route_exposes_scope_opt_in]
+    relevance:
+      src/stropha/server.py: 2
+      tests/unit/test_repo_scoped_search.py: 3
+      get_symbol: 2
+      test_every_direct_symbol_and_graph_mcp_route_exposes_scope_opt_in: 3
+    tags: [multi-repo, tool-scope-contract]
+    split: holdout
+
+  - id: phase4-multirepo-009
+    query: How does session pinning reject chunk IDs owned by another repository by default while allowing them during an explicitly broad operation?
+    expected_paths: [src/stropha/server_session_tools.py, tests/unit/test_pinning.py]
+    expected_symbols: [pin_chunks_impl, TestPinTools.test_pin_chunks_rejects_foreign_ids_unless_broad]
+    relevance:
+      src/stropha/server_session_tools.py: 3
+      tests/unit/test_pinning.py: 3
+      pin_chunks_impl: 3
+      TestPinTools.test_pin_chunks_rejects_foreign_ids_unless_broad: 3
+    tags: [multi-repo, pin-admission]
+    split: holdout
+
+  - id: phase4-multirepo-010
+    query: When a session contains pins from several repositories, where are foreign pins removed from the current repository's visible pin listing?
+    expected_paths: [src/stropha/server_session_tools.py, tests/unit/test_pinning.py]
+    expected_symbols: [list_pins_impl, TestListPins.test_foreign_pin_is_filtered]
+    relevance:
+      src/stropha/server_session_tools.py: 3
+      tests/unit/test_pinning.py: 3
+      list_pins_impl: 3
+      TestListPins.test_foreign_pin_is_filtered: 3
+    tags: [multi-repo, pin-listing]
+    split: holdout
+
+  - id: phase4-multirepo-011
+    query: How does single-chunk expansion treat a valid foreign chunk as not found unless cross-repository dereferencing was explicitly requested?
+    expected_paths: [src/stropha/server_session_tools.py, tests/unit/test_expand_chunk.py]
+    expected_symbols: [expand_chunk_impl, TestExpandChunk.test_foreign_chunk_is_not_expanded_without_broad_opt_in]
+    relevance:
+      src/stropha/server_session_tools.py: 3
+      tests/unit/test_expand_chunk.py: 3
+      expand_chunk_impl: 3
+      TestExpandChunk.test_foreign_chunk_is_not_expanded_without_broad_opt_in: 3
+    tags: [multi-repo, chunk-expansion]
+    split: holdout
+
+  - id: phase4-multirepo-012
+    query: How does a session working set hydrate local pins and recent chunks without admitting entries owned by another indexed repository?
+    expected_paths: [src/stropha/server.py, tests/unit/test_working_set.py]
+    expected_symbols: [working_set_tool, TestWorkingSetMCP.test_foreign_chunks_are_filtered]
+    relevance:
+      src/stropha/server.py: 3
+      tests/unit/test_working_set.py: 3
+      working_set_tool: 3
+      TestWorkingSetMCP.test_foreign_chunks_are_filtered: 3
+    tags: [multi-repo, working-set-scope]
+    split: holdout
+
+  - id: phase4-multirepo-013
+    query: Before proposing follow-up tools, how are candidate chunk handles checked so suggestions cannot be based on another repository's source?
+    expected_paths: [src/stropha/server.py, tests/unit/test_suggest_next.py]
+    expected_symbols: [suggest_next_tool_mcp, TestSuggestNextToolMCP.test_foreign_chunk_is_filtered]
+    relevance:
+      src/stropha/server.py: 3
+      tests/unit/test_suggest_next.py: 3
+      suggest_next_tool_mcp: 3
+      TestSuggestNextToolMCP.test_foreign_chunk_is_filtered: 3
+    tags: [multi-repo, suggestion-scope]
+    split: holdout
+
+  - id: phase4-multirepo-014
+    query: How does repository discovery expose every indexed repository's clone URL, local path, revision, and file and chunk counts from one aggregate query?
+    expected_paths: [src/stropha/server_discovery_tools.py, src/stropha/storage/sqlite.py]
+    expected_symbols: [list_repos_impl, Storage.list_repos]
+    relevance:
+      src/stropha/server_discovery_tools.py: 3
+      src/stropha/storage/sqlite.py: 3
+      list_repos_impl: 3
+      Storage.list_repos: 3
+    tags: [multi-repo, repository-discovery]
+    split: holdout
+
+  - id: phase4-multirepo-015
+    query: In SQLite, where is repo_id applied before dense, lexical, and symbol ranking limits so a stronger foreign match cannot displace the best local result?
+    expected_paths: [src/stropha/storage/sqlite.py, tests/unit/test_storage.py]
+    expected_symbols: [Storage.search_dense, test_search_lanes_filter_repo_before_ranking_and_limit]
+    relevance:
+      src/stropha/storage/sqlite.py: 3
+      tests/unit/test_storage.py: 3
+      Storage.search_dense: 3
+      test_search_lanes_filter_repo_before_ranking_and_limit: 3
+    tags: [multi-repo, sqlite-search-scope]
+    split: holdout
+
+  - id: phase4-multirepo-016
+    query: How does the PostgreSQL adapter keep dense, full-text, symbol, exact-symbol, and secondary-vector results inside one repository before limiting them?
+    expected_paths: [src/stropha/adapters/storage/postgres.py, tests/unit/test_postgres_storage.py]
+    expected_symbols: [PostgresStorage.search_dense, test_search_lanes_scope_before_ranking_and_limit]
+    relevance:
+      src/stropha/adapters/storage/postgres.py: 3
+      tests/unit/test_postgres_storage.py: 3
+      PostgresStorage.search_dense: 3
+      test_search_lanes_scope_before_ranking_and_limit: 3
+    tags: [multi-repo, postgres-search-scope]
+    split: holdout
+
+  - id: phase4-multirepo-017
+    query: How are identical file content and line ranges assigned different chunk IDs when they come from different repository namespaces?
+    expected_paths: [src/stropha/ingest/chunkers/base.py, tests/unit/test_pipeline_multirepo.py]
+    expected_symbols: [make_chunk_id, test_chunk_id_namespacing_distinguishes_repos]
+    relevance:
+      src/stropha/ingest/chunkers/base.py: 3
+      tests/unit/test_pipeline_multirepo.py: 3
+      make_chunk_id: 3
+      test_chunk_id_namespacing_distinguishes_repos: 3
+    tags: [multi-repo, chunk-namespacing]
+    split: holdout
+
+  - id: phase4-multirepo-018
+    query: How does one indexing run register two repositories and persist colliding relative paths as distinct chunks with repository metadata?
+    expected_paths: [src/stropha/ingest/pipeline.py, tests/unit/test_pipeline_multirepo.py]
+    expected_symbols: [IndexPipeline._index_one_repo, test_pipeline_indexes_two_repos_without_collision]
+    relevance:
+      src/stropha/ingest/pipeline.py: 3
+      tests/unit/test_pipeline_multirepo.py: 3
+      IndexPipeline._index_one_repo: 3
+      test_pipeline_indexes_two_repos_without_collision: 3
+    tags: [multi-repo, collision-free-indexing]
+    split: holdout
+
+  - id: phase4-multirepo-019
+    query: During a targeted rebuild of a shared index, how are only the selected repository's chunks cleared while another repository remains intact?
+    expected_paths: [src/stropha/ingest/pipeline.py, tests/unit/test_pipeline_multirepo.py]
+    expected_symbols: [IndexPipeline.run, test_pipeline_rebuild_clears_only_selected_repos]
+    relevance:
+      src/stropha/ingest/pipeline.py: 3
+      tests/unit/test_pipeline_multirepo.py: 3
+      IndexPipeline.run: 3
+      test_pipeline_rebuild_clears_only_selected_repos: 3
+    tags: [multi-repo, targeted-rebuild]
+    split: holdout
+
+  - id: phase4-multirepo-020
+    query: When searching a cached Git URL in the shared database, how is its normalized identity converted to an exact repo_id and passed into retrieval even for zero hits?
+    expected_paths: [src/stropha/tools/git_url.py, tests/unit/test_git_url.py]
+    expected_symbols: [search_git_url_scoped, test_search_git_url_scopes_retrieval_to_cached_repo]
+    relevance:
+      src/stropha/tools/git_url.py: 3
+      tests/unit/test_git_url.py: 3
+      search_git_url_scoped: 3
+      test_search_git_url_scopes_retrieval_to_cached_repo: 3
+    tags: [multi-repo, cached-repo-search]
+    split: holdout

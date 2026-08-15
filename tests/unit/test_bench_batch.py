@@ -103,6 +103,30 @@ def test_prepare_batch_is_deterministic_and_freezes_manifest(tmp_path: Path) -> 
     assert manifest["case_count"] == 1
 
 
+def test_prepare_batch_combines_multiple_excluded_catalogs(tmp_path: Path) -> None:
+    spec, catalog = _write_repo(tmp_path)
+    second = catalog.with_name("second-catalog.yaml")
+    raw = yaml.safe_load(catalog.read_text(encoding="utf-8"))
+    raw["cases"][0]["id"] = "second"
+    raw["cases"][0]["query"] = "locate the target function"
+    second.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    (spec.parent / ".strophaignore").write_text(
+        "catalog.yaml\nsecond-catalog.yaml\n",
+        encoding="utf-8",
+    )
+    batch = yaml.safe_load(spec.read_text(encoding="utf-8"))
+    batch.pop("catalog")
+    batch["catalogs"] = [catalog.name, second.name]
+    batch["cohort"]["min_cases"] = 2
+    spec.write_text(yaml.safe_dump(batch), encoding="utf-8")
+
+    prepared = prepare_batch(spec, artifact_root=tmp_path / "artifacts")
+    manifest = json.loads(prepared.manifest_path.read_text(encoding="utf-8"))
+
+    assert prepared.case_count == 2
+    assert manifest["catalogs"] == [str(catalog), str(second)]
+
+
 def test_prepare_batch_rejects_changed_frozen_catalog(tmp_path: Path) -> None:
     spec, catalog = _write_repo(tmp_path)
     artifacts = tmp_path / "artifacts"
@@ -121,6 +145,29 @@ def test_prepare_batch_rejects_exposed_query(tmp_path: Path) -> None:
     catalog.write_text(yaml.safe_dump(raw), encoding="utf-8")
     with pytest.raises(BatchError, match="overlaps the exposed golden"):
         prepare_batch(spec, artifact_root=tmp_path / "artifacts")
+
+
+def test_prepare_batch_rejects_duplicate_normalized_query(tmp_path: Path) -> None:
+    spec, catalog = _write_repo(tmp_path)
+    raw = yaml.safe_load(catalog.read_text(encoding="utf-8"))
+    duplicate = dict(raw["cases"][0])
+    duplicate["id"] = "duplicate"
+    duplicate["query"] = "  FIND   TARGET implementation  "
+    raw["cases"].append(duplicate)
+    catalog.write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+    with pytest.raises(BatchError, match="duplicate cohort query"):
+        prepare_batch(spec, artifact_root=tmp_path / "artifacts")
+
+
+def test_run_batch_rejects_already_executed_cohort(tmp_path: Path) -> None:
+    spec, _ = _write_repo(tmp_path)
+    artifacts = tmp_path / "artifacts"
+    prepared = prepare_batch(spec, artifact_root=artifacts)
+    (prepared.root / "decision.json").write_text("{}\n", encoding="utf-8")
+
+    with pytest.raises(BatchError, match="already been executed"):
+        run_batch(spec, artifact_root=artifacts, verify=False)
 
 
 def test_prepare_batch_rejects_query_from_prior_yaml_catalog(tmp_path: Path) -> None:
@@ -579,3 +626,22 @@ def test_phase3_v4_catalog_has_balanced_valid_cases() -> None:
     assert len(cases) == 30
     assert validation["multi_or_graded_ratio"] == 1.0
     assert set(validation["category_counts"].values()) == {3}
+
+
+def test_phase4_catalog_prepares_two_hundred_balanced_unseen_cases(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[2]
+    source_spec = root / "src/stropha/bench/phase4_quality_unseen_batch.yaml"
+    raw = yaml.safe_load(source_spec.read_text(encoding="utf-8"))
+    raw["repo"] = str(root)
+    spec = tmp_path / "phase4_quality_unseen_batch.yaml"
+    spec.write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+    prepared = prepare_batch(spec, artifact_root=tmp_path / "artifacts")
+    manifest = json.loads(prepared.manifest_path.read_text(encoding="utf-8"))
+
+    assert prepared.case_count == 200
+    assert prepared.cohort_sha256 == (
+        "7676003c755d980d765ef69b24b528b365af85626bb0ccf20d2bc81a569c35c9"
+    )
+    assert set(manifest["validation"]["category_counts"].values()) == {20}
+    assert manifest["validation"]["multi_or_graded_ratio"] == 1.0

@@ -1,0 +1,323 @@
+version: 1
+name: phase4-v1-holdout-tests-contracts
+primary_category: tests-contracts
+cases:
+  - id: phase4-contracts-001
+    query: Which test ensures a golden target's path and symbol aliases count once when computing ideal graded relevance?
+    expected_paths:
+      - src/stropha/eval/harness.py
+      - tests/unit/test_eval_harness.py
+    expected_symbols:
+      - EvalCase.ideal_relevances
+      - TestEvalCaseRelevance.test_ideal_relevance_counts_paired_path_symbol_once
+    relevance:
+      src/stropha/eval/harness.py: 3
+      tests/unit/test_eval_harness.py: 3
+      EvalCase.ideal_relevances: 3
+      TestEvalCaseRelevance.test_ideal_relevance_counts_paired_path_symbol_once: 3
+    tags: [tests-contracts]
+    split: holdout
+
+  - id: phase4-contracts-002
+    query: How is the MCP runtime tested to reuse heavy adapters while keeping each session's dedup, pins, scratchpad, and recent queries isolated?
+    expected_paths:
+      - src/stropha/server_runtime.py
+      - tests/unit/test_server_runtime.py
+    expected_symbols:
+      - lifespan
+      - test_lifespan_reuses_heavy_runtime_and_isolates_session_state
+    relevance:
+      src/stropha/server_runtime.py: 3
+      tests/unit/test_server_runtime.py: 3
+      lifespan: 3
+      test_lifespan_reuses_heavy_runtime_and_isolates_session_state: 3
+    tags: [tests-contracts]
+    split: holdout
+
+  - id: phase4-contracts-003
+    query: Which contract test proves editing the contextual enrichment prompt changes its adapter identity?
+    expected_paths:
+      - src/stropha/adapters/enricher/contextual.py
+      - tests/unit/test_contextual_enricher.py
+    expected_symbols:
+      - ContextualEnricher.adapter_id
+      - test_adapter_id_changes_with_prompt_edit
+    relevance:
+      src/stropha/adapters/enricher/contextual.py: 3
+      tests/unit/test_contextual_enricher.py: 3
+      ContextualEnricher.adapter_id: 3
+      test_adapter_id_changes_with_prompt_edit: 3
+    tags: [tests-contracts]
+    split: holdout
+
+  - id: phase4-contracts-004
+    query: Where is it verified that changing contextual enrichment output limits invalidates the adapter identity?
+    expected_paths:
+      - src/stropha/adapters/enricher/contextual.py
+      - tests/unit/test_contextual_enricher.py
+    expected_symbols:
+      - ContextualEnricher.adapter_id
+      - test_adapter_id_changes_with_output_config
+    relevance:
+      src/stropha/adapters/enricher/contextual.py: 3
+      tests/unit/test_contextual_enricher.py: 3
+      ContextualEnricher.adapter_id: 3
+      test_adapter_id_changes_with_output_config: 3
+    tags: [tests-contracts]
+    split: holdout
+
+  - id: phase4-contracts-005
+    query: What test guarantees switching the inference backend identity changes the contextual enricher cache identity?
+    expected_paths:
+      - src/stropha/adapters/enricher/contextual.py
+      - tests/unit/test_contextual_enricher.py
+    expected_symbols:
+      - ContextualEnricher.adapter_id
+      - test_adapter_id_changes_with_inference_identity
+    relevance:
+      src/stropha/adapters/enricher/contextual.py: 3
+      tests/unit/test_contextual_enricher.py: 3
+      ContextualEnricher.adapter_id: 3
+      test_adapter_id_changes_with_inference_identity: 3
+    tags: [tests-contracts]
+    split: holdout
+
+  - id: phase4-contracts-006
+    query: Which stage contract verifies that changing the Voyage embedding model changes adapter identity?
+    expected_paths:
+      - src/stropha/adapters/embedder/voyage.py
+      - tests/unit/test_voyage_embedder.py
+    expected_symbols:
+      - VoyageEmbedder.adapter_id
+      - TestVoyageEmbedderStageContract.test_adapter_id_changes_with_model
+    relevance:
+      src/stropha/adapters/embedder/voyage.py: 3
+      tests/unit/test_voyage_embedder.py: 3
+      VoyageEmbedder.adapter_id: 3
+      TestVoyageEmbedderStageContract.test_adapter_id_changes_with_model: 3
+    tags: [tests-contracts]
+    split: holdout
+
+  - id: phase4-contracts-007
+    query: What test establishes that changing the Voyage vector dimension must change adapter identity?
+    expected_paths:
+      - src/stropha/adapters/embedder/voyage.py
+      - tests/unit/test_voyage_embedder.py
+    expected_symbols:
+      - VoyageEmbedder.adapter_id
+      - TestVoyageEmbedderStageContract.test_adapter_id_changes_with_dim
+    relevance:
+      src/stropha/adapters/embedder/voyage.py: 3
+      tests/unit/test_voyage_embedder.py: 3
+      VoyageEmbedder.adapter_id: 3
+      TestVoyageEmbedderStageContract.test_adapter_id_changes_with_dim: 3
+    tags: [tests-contracts]
+    split: holdout
+
+  - id: phase4-contracts-008
+    query: Which contract keeps Voyage adapter identity stable when only request batching knobs change?
+    expected_paths:
+      - src/stropha/adapters/embedder/voyage.py
+      - tests/unit/test_voyage_embedder.py
+    expected_symbols:
+      - VoyageEmbedder.adapter_id
+      - TestVoyageEmbedderStageContract.test_adapter_id_stable_across_batching_knobs
+    relevance:
+      src/stropha/adapters/embedder/voyage.py: 3
+      tests/unit/test_voyage_embedder.py: 3
+      VoyageEmbedder.adapter_id: 3
+      TestVoyageEmbedderStageContract.test_adapter_id_stable_across_batching_knobs: 3
+    tags: [tests-contracts]
+    split: holdout
+
+  - id: phase4-contracts-009
+    query: What contract ensures changing a hybrid RRF retrieval stream's configuration changes the retrieval adapter identity?
+    expected_paths:
+      - src/stropha/adapters/retrieval/hybrid_rrf.py
+      - tests/unit/test_phase4_retrieval_streams.py
+    expected_symbols:
+      - HybridRrfRetrieval.adapter_id
+      - test_hybrid_rrf_adapter_id_changes_with_stream_swap
+    relevance:
+      src/stropha/adapters/retrieval/hybrid_rrf.py: 3
+      tests/unit/test_phase4_retrieval_streams.py: 3
+      HybridRrfRetrieval.adapter_id: 3
+      test_hybrid_rrf_adapter_id_changes_with_stream_swap: 3
+    tags: [tests-contracts]
+    split: holdout
+
+  - id: phase4-contracts-010
+    query: Which test guarantees tree-sitter dispatcher identity includes each language sub-adapter's configuration?
+    expected_paths:
+      - src/stropha/adapters/chunker/tree_sitter_dispatch.py
+      - tests/unit/test_phase3_chunker.py
+    expected_symbols:
+      - TreeSitterDispatchChunker.adapter_id
+      - test_dispatcher_adapter_id_includes_sub_adapter_config
+    relevance:
+      src/stropha/adapters/chunker/tree_sitter_dispatch.py: 3
+      tests/unit/test_phase3_chunker.py: 3
+      TreeSitterDispatchChunker.adapter_id: 3
+      test_dispatcher_adapter_id_includes_sub_adapter_config: 3
+    tags: [tests-contracts]
+    split: holdout
+
+  - id: phase4-contracts-011
+    query: How does the contract-test MCP tool report an unavailable graph instead of returning an unexplained empty result?
+    expected_paths:
+      - src/stropha/server_graph_tools.py
+      - tests/unit/test_contract_tests.py
+    expected_symbols:
+      - contract_tests_impl
+      - TestContractTestsMCP.test_graph_not_loaded
+    relevance:
+      src/stropha/server_graph_tools.py: 3
+      tests/unit/test_contract_tests.py: 3
+      contract_tests_impl: 3
+      TestContractTestsMCP.test_graph_not_loaded: 3
+    tags: [tests-contracts]
+    split: holdout
+
+  - id: phase4-contracts-012
+    query: What test ensures the repository-scoped find-callers route fails closed when the current repository cannot be resolved?
+    expected_paths:
+      - src/stropha/server.py
+      - tests/unit/test_repo_scoped_search.py
+    expected_symbols:
+      - find_callers
+      - test_direct_graph_routes_fail_closed_when_current_repo_is_unresolved
+    relevance:
+      src/stropha/server.py: 3
+      tests/unit/test_repo_scoped_search.py: 3
+      find_callers: 3
+      test_direct_graph_routes_fail_closed_when_current_repo_is_unresolved: 3
+    tags: [tests-contracts]
+    split: holdout
+
+  - id: phase4-contracts-013
+    query: Which search contract makes pinned chunks survive session dedup even after they were previously seen?
+    expected_paths:
+      - src/stropha/server_search.py
+      - tests/unit/test_pinning.py
+    expected_symbols:
+      - search_code_impl
+      - TestPinDedupComposition.test_pinned_chunk_not_filtered_by_dedup
+    relevance:
+      src/stropha/server_search.py: 3
+      tests/unit/test_pinning.py: 3
+      search_code_impl: 3
+      TestPinDedupComposition.test_pinned_chunk_not_filtered_by_dedup: 3
+    tags: [tests-contracts]
+    split: holdout
+
+  - id: phase4-contracts-014
+    query: What test confirms a search with dedup disabled does not accumulate session seen state?
+    expected_paths:
+      - src/stropha/server_search.py
+      - tests/unit/test_session_dedup.py
+    expected_symbols:
+      - search_code_impl
+      - TestSearchCodeDedupOff.test_does_not_accumulate_seen_set
+    relevance:
+      src/stropha/server_search.py: 3
+      tests/unit/test_session_dedup.py: 3
+      search_code_impl: 3
+      TestSearchCodeDedupOff.test_does_not_accumulate_seen_set: 3
+    tags: [tests-contracts]
+    split: holdout
+
+  - id: phase4-contracts-015
+    query: How is an existing session scratchpad preserved when an upsert omits the scratchpad value?
+    expected_paths:
+      - src/stropha/storage/sqlite.py
+      - tests/unit/test_scratchpad.py
+    expected_symbols:
+      - Storage.upsert_session
+      - TestUpsertSessionScratchpad.test_none_preserves_existing
+    relevance:
+      src/stropha/storage/sqlite.py: 3
+      tests/unit/test_scratchpad.py: 3
+      Storage.upsert_session: 3
+      TestUpsertSessionScratchpad.test_none_preserves_existing: 3
+    tags: [tests-contracts]
+    split: holdout
+
+  - id: phase4-contracts-016
+    query: What contract allows an explicit empty scratchpad string to clear persisted session notes?
+    expected_paths:
+      - src/stropha/storage/sqlite.py
+      - tests/unit/test_scratchpad.py
+    expected_symbols:
+      - Storage.upsert_session
+      - TestUpsertSessionScratchpad.test_explicit_empty_string_clears
+    relevance:
+      src/stropha/storage/sqlite.py: 3
+      tests/unit/test_scratchpad.py: 3
+      Storage.upsert_session: 3
+      TestUpsertSessionScratchpad.test_explicit_empty_string_clears: 3
+    tags: [tests-contracts]
+    split: holdout
+
+  - id: phase4-contracts-017
+    query: Which test ensures a Voyage client ignores VOYAGE_API_KEY and lazily uses the YAML secret?
+    expected_paths:
+      - src/stropha/adapters/embedder/voyage.py
+      - tests/unit/test_voyage_embedder.py
+    expected_symbols:
+      - VoyageEmbedder._get_client
+      - TestVoyageEmbedderInit.test_environment_key_is_ignored_in_favor_of_yaml
+    relevance:
+      src/stropha/adapters/embedder/voyage.py: 3
+      tests/unit/test_voyage_embedder.py: 3
+      VoyageEmbedder._get_client: 3
+      TestVoyageEmbedderInit.test_environment_key_is_ignored_in_favor_of_yaml: 3
+    tags: [tests-contracts]
+    split: holdout
+
+  - id: phase4-contracts-018
+    query: What test confirms STROPHA_TARGET_REPO remains an environment-backed runtime override in configuration introspection?
+    expected_paths:
+      - src/stropha/config/__init__.py
+      - tests/unit/test_config_info.py
+    expected_symbols:
+      - get_config_info
+      - test_target_repo_env_override
+    relevance:
+      src/stropha/config/__init__.py: 3
+      tests/unit/test_config_info.py: 3
+      get_config_info: 3
+      test_target_repo_env_override: 3
+    tags: [tests-contracts]
+    split: holdout
+
+  - id: phase4-contracts-019
+    query: What test ensures enabling graphify runs both graph generation and mirror refresh during indexing?
+    expected_paths:
+      - src/stropha/pipeline/pipeline.py
+      - tests/unit/test_graphify_runner.py
+    expected_symbols:
+      - Pipeline.run
+      - TestPipelineGraphifyIntegration.test_graphify_enabled_calls_run_graphify
+    relevance:
+      src/stropha/pipeline/pipeline.py: 3
+      tests/unit/test_graphify_runner.py: 3
+      Pipeline.run: 3
+      TestPipelineGraphifyIntegration.test_graphify_enabled_calls_run_graphify: 3
+    tags: [tests-contracts]
+    split: holdout
+
+  - id: phase4-contracts-020
+    query: How does the pipeline skip the graphify subprocess for unchanged repositories whose graph is already imported and fresh?
+    expected_paths:
+      - src/stropha/pipeline/pipeline.py
+      - tests/unit/test_graphify_runner.py
+    expected_symbols:
+      - Pipeline._run_graphify
+      - TestPipelineGraphifyIntegration.test_unchanged_imported_graph_skips_graphify_subprocess
+    relevance:
+      src/stropha/pipeline/pipeline.py: 3
+      tests/unit/test_graphify_runner.py: 3
+      Pipeline._run_graphify: 3
+      TestPipelineGraphifyIntegration.test_unchanged_imported_graph_skips_graphify_subprocess: 3
+    tags: [tests-contracts]
+    split: holdout

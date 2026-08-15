@@ -3,7 +3,7 @@
 Golden data is generated through checked-in batch specifications. Do not hand-edit
 materialized files under `.stropha/bench/batches/`.
 
-The production golden contains 124 source-reviewed cases: 88 search and 36
+The production golden contains 124 source-reviewed cases: 87 search and 37
 holdout, with 72 graded or multi-entity cases and every major category represented
 in both splits. SHA-256:
 `c61c5fef05bd3f2f0f67e3da425d3bd46d79c2bca9b779aa135187c4c5e01b1b`.
@@ -55,6 +55,17 @@ Frozen v4 cohort SHA-256:
 V4 did not promote `rrf_k=40`. NDCG@10 improved from `0.8419` to `0.8451`
 (`+0.0032`) against the required `+0.02`; all other gates and verification
 steps passed. Production remains at `rrf_k=60`.
+
+The next unseen protocol freezes the three cells in
+`src/stropha/bench/phase4_quality_candidates_matrix.yaml`: the deployed
+contextual baseline, hierarchical indexing, and contextual retrieval with
+`rrf_k=40`. Its future catalog must contain about 200 newly source-reviewed
+cases, list both v1 and v4 under `exposed_catalogs`, and be prepared before any
+retrieval run. Do not execute the matrix against an incomplete or unreviewed
+catalog.
+
+Frozen Phase 4 V1 cohort SHA-256:
+`7676003c755d980d765ef69b24b528b365af85626bb0ccf20d2bc81a569c35c9`.
 
 ```bash
 uv run stropha bench batch \

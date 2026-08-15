@@ -296,6 +296,24 @@ def test_active_matrix_pins_deployed_contextual_identity() -> None:
     assert (prompt_hash, config_hash) == ("93f8f282", "c5ab6279")
 
 
+def test_phase4_quality_candidates_freeze_exact_three_cells() -> None:
+    root = Path(__file__).resolve().parents[2]
+    matrix = load_matrix(root / "src/stropha/bench/phase4_quality_candidates_matrix.yaml")
+    cells = matrix.expand()
+
+    assert len(cells) == 3
+    assert matrix.baseline_cell() is not None
+    values = [cell.values for cell in cells]
+    assert any(
+        value["enricher"] == "hierarchical" and value["rrf_k"] == 60
+        for value in values
+    )
+    assert any(
+        isinstance(value["enricher"], dict) and value["rrf_k"] == 40 for value in values
+    )
+    assert all(value["learned_weights"] is False for value in values)
+
+
 def test_phase2_shortlist_is_frozen_to_four_cells() -> None:
     path = Path(__file__).resolve().parents[2] / "src/stropha/bench/phase2_shortlist_matrix.yaml"
     shortlist = load_matrix(path)
@@ -792,10 +810,11 @@ def test_postgres_run_reuses_cache_and_clones_each_cell(
         db_path: Path | None = None,
         *,
         storage_dsn: str | None = None,
-    ) -> None:
+    ) -> dict[str, object]:
         assert db_path is None
         assert storage_dsn is not None
         build_dsns.append(storage_dsn)
+        return {"index_seconds": 12.3, "index_reused": False}
 
     def fake_eval_cell(
         _matrix: Matrix,
@@ -938,6 +957,8 @@ def test_build_index_postgres_uses_storage_protocol_not_sqlite(
 
     assert result["complete"] is True
     assert result["chunks"] == result["vecs"] == 2
+    assert result["index_reused"] is False
+    assert result["index_seconds"] >= 0
     assert resolved[0]["storage"] == {"adapter": "postgres", "config": {"dsn": dsn}}
 
 
@@ -1208,6 +1229,7 @@ def test_eval_cell_records_full_metrics_provenance_and_diagnostics(
                 hit=True,
                 reciprocal_rank=1.0,
                 ndcg=1.0,
+                latency_ms=1.23456,
             )
         ],
         diagnostics={"reranker": {"primary_latency_p95_ms": 4.0}},
@@ -1235,18 +1257,47 @@ def test_eval_cell_records_full_metrics_provenance_and_diagnostics(
         tmp_path / "index.db",
         [object()],
         run_provenance={"run_id": "run-one"},
+        index_diagnostics={
+            "index_seconds": 12.3,
+            "index_reused": False,
+            "enricher": {
+                "estimated_input_tokens": 100,
+                "estimated_output_tokens": 20,
+                "estimated_total_tokens": 120,
+            },
+        },
     )
 
     assert record["metrics"] == {
         **summary,
         "reranker_primary_latency_p95_ms": 4.0,
+        "index_seconds": 12.3,
+        "enricher_estimated_input_tokens": 100,
+        "enricher_estimated_output_tokens": 20,
+        "enricher_estimated_total_tokens": 120,
     }
-    assert record["diagnostics"] == report.diagnostics
+    assert record["diagnostics"] == {
+        **report.diagnostics,
+        "index": {
+            "index_seconds": 12.3,
+            "index_reused": False,
+            "enricher": {
+                "estimated_input_tokens": 100,
+                "estimated_output_tokens": 20,
+                "estimated_total_tokens": 120,
+            },
+        },
+    }
     assert record["provenance"]["run_id"] == "run-one"
     assert record["provenance"]["index"]["comparable"] is True
     assert record["provenance"]["pipeline"]["retrieval"] == "retrieval:test"
     assert record["per_query_metrics"] == {
-        "q1": {"success@10": 1.0, "mrr": 1.0, "ndcg@10": 1.0}
+        "q1": {
+            "success@10": 1.0,
+            "mrr": 1.0,
+            "ndcg@10": 1.0,
+            "latency_ms": 1.235,
+        }
     }
     assert run_eval.call_args.kwargs["provenance"] == record["provenance"]
     assert run_eval.call_args.kwargs["context_budget"] == 200

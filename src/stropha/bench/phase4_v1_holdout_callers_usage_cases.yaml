@@ -1,0 +1,241 @@
+version: 1
+cases:
+  - id: phase4-callers-001
+    query: When I pin chunk handles, what MCP entry point hands them to the implementation that filters by repository and persists session state?
+    expected_paths: [src/stropha/server.py, src/stropha/server_session_tools.py]
+    expected_symbols: [pin_chunks, pin_chunks_impl]
+    relevance:
+      src/stropha/server.py: 3
+      src/stropha/server_session_tools.py: 2
+      pin_chunks: 3
+      pin_chunks_impl: 2
+    tags: [callers-usage, session-pins]
+    split: holdout
+
+  - id: phase4-callers-002
+    query: When I expand one chunk handle, which public tool delegates the lookup and card-level rendering to the session helper?
+    expected_paths: [src/stropha/server.py, src/stropha/server_session_tools.py]
+    expected_symbols: [expand_chunk, expand_chunk_impl]
+    relevance:
+      src/stropha/server.py: 3
+      src/stropha/server_session_tools.py: 2
+      expand_chunk: 3
+      expand_chunk_impl: 2
+    tags: [callers-usage, chunk-expansion]
+    split: holdout
+
+  - id: phase4-callers-003
+    query: What public memory endpoint passes a note and provenance callbacks to the project-scoped upsert implementation?
+    expected_paths: [src/stropha/server.py, src/stropha/server_memory_tools.py]
+    expected_symbols: [remember, remember_impl]
+    relevance:
+      src/stropha/server.py: 3
+      src/stropha/server_memory_tools.py: 2
+      remember: 3
+      remember_impl: 2
+    tags: [callers-usage, project-memory]
+    split: holdout
+
+  - id: phase4-callers-004
+    query: Which MCP staleness endpoint delegates a memory key and anchor files to the implementation that computes repository-local drift?
+    expected_paths: [src/stropha/server.py, src/stropha/server_memory_tools.py]
+    expected_symbols: [check_staleness, check_staleness_impl]
+    relevance:
+      src/stropha/server.py: 3
+      src/stropha/server_memory_tools.py: 2
+      check_staleness: 3
+      check_staleness_impl: 2
+    tags: [callers-usage, memory-staleness]
+    split: holdout
+
+  - id: phase4-callers-005
+    query: What public co-touch lookup passes file and symbol switches to the implementation that queries episodic co-occurrence?
+    expected_paths: [src/stropha/server.py, src/stropha/server_memory_tools.py]
+    expected_symbols: [co_occurrence, co_occurrence_impl]
+    relevance:
+      src/stropha/server.py: 3
+      src/stropha/server_memory_tools.py: 2
+      co_occurrence: 3
+      co_occurrence_impl: 2
+    tags: [callers-usage, episodic-memory]
+    split: holdout
+
+  - id: phase4-callers-006
+    query: Which MCP symbol-check endpoint invokes the guard implementation that resolves exact names and near-miss suggestions?
+    expected_paths: [src/stropha/server.py, src/stropha/server_graph_tools.py]
+    expected_symbols: [check_symbols_tool, check_symbols_impl]
+    relevance:
+      src/stropha/server.py: 3
+      src/stropha/server_graph_tools.py: 2
+      check_symbols_tool: 3
+      check_symbols_impl: 2
+    tags: [callers-usage, symbol-guard]
+    split: holdout
+
+  - id: phase4-callers-007
+    query: What freshness tool forwards a cached snippet and strictness flag to the repository-scoped freshness implementation?
+    expected_paths: [src/stropha/server.py, src/stropha/server_graph_tools.py]
+    expected_symbols: [assert_snippet_freshness_tool, assert_snippet_freshness_impl]
+    relevance:
+      src/stropha/server.py: 3
+      src/stropha/server_graph_tools.py: 2
+      assert_snippet_freshness_tool: 3
+      assert_snippet_freshness_impl: 2
+    tags: [callers-usage, snippet-freshness]
+    split: holdout
+
+  - id: phase4-callers-008
+    query: Which hook install CLI handler calls the installer that writes or updates the marked post-commit block?
+    expected_paths: [src/stropha/cli.py, src/stropha/tools/hook_install.py]
+    expected_symbols: [hook_install_cmd, install]
+    relevance:
+      src/stropha/cli.py: 3
+      src/stropha/tools/hook_install.py: 2
+      hook_install_cmd: 3
+      install: 2
+    tags: [callers-usage, hook-installation]
+    split: holdout
+
+  - id: phase4-callers-009
+    query: Which hook status CLI handler calls the inspector that parses installation version and cohabitation details?
+    expected_paths: [src/stropha/cli.py, src/stropha/tools/hook_install.py]
+    expected_symbols: [hook_status_cmd, status]
+    relevance:
+      src/stropha/cli.py: 3
+      src/stropha/tools/hook_install.py: 2
+      hook_status_cmd: 3
+      status: 2
+    tags: [callers-usage, hook-inspection]
+    split: holdout
+
+  - id: phase4-callers-010
+    query: When a glossary term is removed from the command line, which handler calls the loader deletion method?
+    expected_paths: [src/stropha/cli.py, src/stropha/ingest/glossary.py]
+    expected_symbols: [glossary_remove_cmd, GlossaryLoader.remove_term]
+    relevance:
+      src/stropha/cli.py: 3
+      src/stropha/ingest/glossary.py: 2
+      glossary_remove_cmd: 3
+      GlossaryLoader.remove_term: 2
+    tags: [callers-usage, glossary-removal]
+    split: holdout
+
+  - id: phase4-callers-011
+    query: Which glossary statistics command uses the loader method that counts glossary chunks and reads the update marker?
+    expected_paths: [src/stropha/cli.py, src/stropha/ingest/glossary.py]
+    expected_symbols: [glossary_stats_cmd, GlossaryLoader.stats]
+    relevance:
+      src/stropha/cli.py: 3
+      src/stropha/ingest/glossary.py: 2
+      glossary_stats_cmd: 3
+      GlossaryLoader.stats: 2
+    tags: [callers-usage, glossary-statistics]
+    split: holdout
+
+  - id: phase4-callers-012
+    query: What adapter-list command obtains its stage-to-name snapshot from the registry helper?
+    expected_paths: [src/stropha/cli.py, src/stropha/pipeline/registry.py]
+    expected_symbols: [adapters_list, all_adapters]
+    relevance:
+      src/stropha/cli.py: 3
+      src/stropha/pipeline/registry.py: 2
+      adapters_list: 3
+      all_adapters: 2
+    tags: [callers-usage, adapter-registry]
+    split: holdout
+
+  - id: phase4-callers-013
+    query: When decomposition is enabled, which search method calls the query splitter before running each sub-question?
+    expected_paths: [src/stropha/retrieval/search.py, src/stropha/retrieval/query_decomposition.py]
+    expected_symbols: [SearchEngine.search, decompose_query]
+    relevance:
+      src/stropha/retrieval/search.py: 3
+      src/stropha/retrieval/query_decomposition.py: 2
+      SearchEngine.search: 3
+      decompose_query: 2
+    tags: [callers-usage, query-decomposition]
+    split: holdout
+
+  - id: phase4-callers-014
+    query: Which search helper calls extractive compression before token-budget packing?
+    expected_paths: [src/stropha/retrieval/search.py, src/stropha/retrieval/compression.py]
+    expected_symbols: [SearchEngine._maybe_compress, compress_hits]
+    relevance:
+      src/stropha/retrieval/search.py: 3
+      src/stropha/retrieval/compression.py: 2
+      SearchEngine._maybe_compress: 3
+      compress_hits: 2
+    tags: [callers-usage, result-compression]
+    split: holdout
+
+  - id: phase4-callers-015
+    query: When an adapter router is injected, which smart-search function uses the router protocol's route method?
+    expected_paths: [src/stropha/retrieval/smart_search.py, src/stropha/stages/router.py]
+    expected_symbols: [smart_search, RouterStage.route]
+    relevance:
+      src/stropha/retrieval/smart_search.py: 3
+      src/stropha/stages/router.py: 2
+      smart_search: 3
+      RouterStage.route: 2
+    tags: [callers-usage, query-routing]
+    split: holdout
+
+  - id: phase4-callers-016
+    query: Which contextual enrichment helper calls shared inference generation to create a per-chunk description?
+    expected_paths: [src/stropha/adapters/enricher/contextual.py, src/stropha/inference/backend.py]
+    expected_symbols: [ContextualEnricher._generate_context, generate]
+    relevance:
+      src/stropha/adapters/enricher/contextual.py: 3
+      src/stropha/inference/backend.py: 2
+      ContextualEnricher._generate_context: 3
+      generate: 2
+    tags: [callers-usage, contextual-enrichment]
+    split: holdout
+
+  - id: phase4-callers-017
+    query: Which LLM reranking method calls shared inference generation with structured output, timeout, and error controls?
+    expected_paths: [src/stropha/adapters/retrieval/reranker/llm.py, src/stropha/inference/backend.py]
+    expected_symbols: [LlmReranker.rerank, generate]
+    relevance:
+      src/stropha/adapters/retrieval/reranker/llm.py: 3
+      src/stropha/inference/backend.py: 2
+      LlmReranker.rerank: 3
+      generate: 2
+    tags: [callers-usage, llm-reranking]
+    split: holdout
+
+  - id: phase4-callers-018
+    query: After primary chunks commit, which pipeline entry point calls the secondary-vector loader for incremental backfill?
+    expected_paths: [src/stropha/pipeline/pipeline.py, src/stropha/ingest/secondary_embedding_loader.py]
+    expected_symbols: [Pipeline.run, SecondaryEmbeddingLoader.load]
+    relevance:
+      src/stropha/pipeline/pipeline.py: 3
+      src/stropha/ingest/secondary_embedding_loader.py: 2
+      Pipeline.run: 3
+      SecondaryEmbeddingLoader.load: 2
+    tags: [callers-usage, secondary-vectors]
+    split: holdout
+
+  - id: phase4-callers-019
+    query: Which graph mirror refresh method invokes the graph-vector loader after checking whether node embeddings are stale?
+    expected_paths: [src/stropha/pipeline/pipeline.py, src/stropha/ingest/graph_vec_loader.py]
+    expected_symbols: [Pipeline._refresh_graphify_mirror, GraphVecLoader.load]
+    relevance:
+      src/stropha/pipeline/pipeline.py: 3
+      src/stropha/ingest/graph_vec_loader.py: 2
+      Pipeline._refresh_graphify_mirror: 3
+      GraphVecLoader.load: 2
+    tags: [callers-usage, graph-vectors]
+    split: holdout
+
+  - id: phase4-callers-020
+    query: During a debounced file watch, which reindex helper constructs a pipeline and calls its run method?
+    expected_paths: [src/stropha/watch.py, src/stropha/pipeline/pipeline.py]
+    expected_symbols: [_reindex, Pipeline.run]
+    relevance:
+      src/stropha/watch.py: 3
+      src/stropha/pipeline/pipeline.py: 2
+      _reindex: 3
+      Pipeline.run: 2
+    tags: [callers-usage, watcher-reindex]
+    split: holdout

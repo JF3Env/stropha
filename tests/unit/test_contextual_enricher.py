@@ -339,6 +339,23 @@ def test_enrich_batch_packs_chunks_into_one_llm_call() -> None:
     assert "This is two." in results[1][0]
     assert "This is three." in results[2][0]
 
+    prompt = mock_gen.call_args.args[0]
+    output = mock_gen.return_value
+    assert enricher.diagnostics() == {
+        "generation_calls": 1,
+        "estimated_input_tokens": (len(prompt) + 3) // 4,
+        "estimated_output_tokens": (len(output) + 3) // 4,
+        "estimated_total_tokens": (len(prompt) + 3) // 4 + (len(output) + 3) // 4,
+    }
+
+    enricher.reset_diagnostics()
+    assert enricher.diagnostics() == {
+        "generation_calls": 0,
+        "estimated_input_tokens": 0,
+        "estimated_output_tokens": 0,
+        "estimated_total_tokens": 0,
+    }
+
 
 def test_enrich_batch_prompt_lists_all_chunks_numbered() -> None:
     """The batched prompt must contain every chunk's id + metadata."""
@@ -378,6 +395,7 @@ def test_enrich_batch_whole_call_fails_falls_back_per_chunk() -> None:
 
     # 1 batched call + 4 per-chunk fallbacks = 5 total calls.
     assert mock_gen.call_count == 5
+    assert enricher.diagnostics()["generation_calls"] == 5
     assert len(results) == 4
     assert all(not success for _, success in results)
     for chunk, (text, _) in zip(chunks, results, strict=False):

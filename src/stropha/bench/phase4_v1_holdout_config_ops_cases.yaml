@@ -1,0 +1,328 @@
+version: 1
+cases:
+  - id: phase4-config-001
+    query: Where does stropha decide the repository to operate on when no --repo is given, and which setting is a runtime argument rather than persistent YAML configuration?
+    expected_paths:
+      - src/stropha/config/__init__.py
+      - src/stropha/cli.py
+    expected_symbols:
+      - _parse_paths
+      - index
+    relevance:
+      src/stropha/config/__init__.py: 3
+      src/stropha/cli.py: 2
+      _parse_paths: 3
+      index: 2
+    tags: [config-ops]
+    split: holdout
+
+  - id: phase4-config-002
+    query: How are persistent adapter settings resolved when callers still pass the old project_root or environ arguments, and which source wins over the user YAML?
+    expected_paths:
+      - src/stropha/config/__init__.py
+      - src/stropha/pipeline/config.py
+    expected_symbols:
+      - load_config
+      - load_pipeline_config
+    relevance:
+      src/stropha/config/__init__.py: 3
+      src/stropha/pipeline/config.py: 3
+      load_config: 3
+      load_pipeline_config: 3
+    tags: [config-ops]
+    split: holdout
+
+  - id: phase4-config-003
+    query: If a backend-specific enrichment batch size is configured but I also pass --batch-size, what precedence does indexing use?
+    expected_paths:
+      - src/stropha/config/models.py
+      - src/stropha/cli.py
+    expected_symbols:
+      - InferenceConfig.effective_batch_size
+      - index
+    relevance:
+      src/stropha/config/models.py: 3
+      src/stropha/cli.py: 3
+      InferenceConfig.effective_batch_size: 3
+      index: 3
+    tags: [config-ops]
+    split: holdout
+
+  - id: phase4-config-004
+    query: When an operator runs pipeline show with --no-open, how are CLI adapter overrides resolved while storage and retrieval construction is skipped and the remaining stages are health-probed?
+    expected_paths:
+      - src/stropha/cli.py
+      - src/stropha/pipeline/builder.py
+    expected_symbols:
+      - pipeline_show
+      - build_stages
+    relevance:
+      src/stropha/cli.py: 3
+      src/stropha/pipeline/builder.py: 3
+      pipeline_show: 3
+      build_stages: 3
+    tags: [config-ops]
+    split: holdout
+
+  - id: phase4-config-005
+    query: What is the operational difference between a missing unified config file and malformed pipeline YAML during startup?
+    expected_paths:
+      - src/stropha/config/__init__.py
+      - src/stropha/pipeline/config.py
+    expected_symbols:
+      - _load_yaml
+      - _read_yaml
+    relevance:
+      src/stropha/config/__init__.py: 3
+      src/stropha/pipeline/config.py: 3
+      _load_yaml: 3
+      _read_yaml: 3
+    tags: [config-ops]
+    split: holdout
+
+  - id: phase4-config-006
+    query: Which code paths prevent API keys and database passwords from leaking through config diagnostics, logs, and the dashboard response?
+    expected_paths:
+      - src/stropha/config/__init__.py
+      - src/stropha/pipeline/config.py
+      - src/stropha/server_frontend.py
+    expected_symbols:
+      - get_config_info
+      - _redact_for_log
+      - redact_config_document
+    relevance:
+      src/stropha/config/__init__.py: 3
+      src/stropha/pipeline/config.py: 3
+      src/stropha/server_frontend.py: 3
+      get_config_info: 3
+      _redact_for_log: 3
+      redact_config_document: 3
+    tags: [config-ops]
+    split: holdout
+
+  - id: phase4-config-007
+    query: How does the MCP launcher distinguish a responsive protocol endpoint from a process whose basic health URL still answers?
+    expected_paths:
+      - bin/stropha-mcp-ensure
+    expected_symbols:
+      - _mcp_responsive
+    relevance:
+      bin/stropha-mcp-ensure: 3
+      _mcp_responsive: 3
+    tags: [config-ops]
+    split: holdout
+
+  - id: phase4-config-008
+    query: When will the launcher create or start a local pgvector container, and how does that relate to the PostgreSQL DSN configured for the storage adapter?
+    expected_paths:
+      - bin/stropha-mcp-ensure
+      - src/stropha/adapters/storage/postgres.py
+    expected_symbols:
+      - _pg_start
+      - PostgresStorageConfig
+    relevance:
+      bin/stropha-mcp-ensure: 3
+      src/stropha/adapters/storage/postgres.py: 2
+      _pg_start: 3
+      PostgresStorageConfig: 2
+    tags: [config-ops]
+    split: holdout
+
+  - id: phase4-config-009
+    query: Why can the MCP pidfile stop referring to the uv wrapper, and how does the launcher recover the actual listening server process?
+    expected_paths:
+      - bin/stropha-mcp-ensure
+    expected_symbols:
+      - _track_listener_pid
+    relevance:
+      bin/stropha-mcp-ensure: 3
+      _track_listener_pid: 3
+    tags: [config-ops]
+    split: holdout
+
+  - id: phase4-config-010
+    query: If Git uses core.hooksPath, how does stropha find the active post-commit file safely and show that resolved location to the operator?
+    expected_paths:
+      - src/stropha/tools/hook_install.py
+      - src/stropha/cli.py
+    expected_symbols:
+      - _resolve_hooks_dir
+      - hook_status_cmd
+    relevance:
+      src/stropha/tools/hook_install.py: 3
+      src/stropha/cli.py: 2
+      _resolve_hooks_dir: 3
+      hook_status_cmd: 2
+    tags: [config-ops]
+    split: holdout
+
+  - id: phase4-config-011
+    query: When the hook is uninstalled, how does stropha remove only its marked block, preserve unrelated script content, and delete the file only when just a shebang remains?
+    expected_paths:
+      - src/stropha/cli.py
+      - src/stropha/tools/hook_install.py
+    expected_symbols:
+      - hook_uninstall_cmd
+      - uninstall
+    relevance:
+      src/stropha/cli.py: 2
+      src/stropha/tools/hook_install.py: 3
+      hook_uninstall_cmd: 2
+      uninstall: 3
+    tags: [config-ops]
+    split: holdout
+
+  - id: phase4-config-012
+    query: What happens when hook installation finds an existing script or an older stropha block, and which CLI options are baked into the replacement block?
+    expected_paths:
+      - src/stropha/tools/hook_install.py
+      - src/stropha/cli.py
+    expected_symbols:
+      - install
+      - hook_install_cmd
+    relevance:
+      src/stropha/tools/hook_install.py: 3
+      src/stropha/cli.py: 2
+      install: 3
+      hook_install_cmd: 2
+    tags: [config-ops]
+    split: holdout
+
+  - id: phase4-config-013
+    query: How does the post-commit hook return quickly while preventing overlapping background refreshes on systems without flock?
+    expected_paths:
+      - src/stropha/tools/hook_install.py
+    expected_symbols:
+      - _render_hook_block
+    relevance:
+      src/stropha/tools/hook_install.py: 3
+      _render_hook_block: 3
+    tags: [config-ops]
+    split: holdout
+
+  - id: phase4-config-014
+    query: How does --rebuild let SQLite indexing recover from a changed primary embedding dimension before storage rejects the mismatch?
+    expected_paths:
+      - src/stropha/cli.py
+      - src/stropha/pipeline/builder.py
+      - src/stropha/storage/sqlite.py
+    expected_symbols:
+      - index
+      - build_stages
+      - Storage._reset_dim_dependent_tables_if_needed
+    relevance:
+      src/stropha/cli.py: 3
+      src/stropha/pipeline/builder.py: 3
+      src/stropha/storage/sqlite.py: 3
+      index: 3
+      build_stages: 3
+      Storage._reset_dim_dependent_tables_if_needed: 3
+    tags: [config-ops]
+    split: holdout
+
+  - id: phase4-config-015
+    query: When an existing SQLite chunk changes, how are its vector row and contentless FTS row replaced without issuing an FTS UPDATE?
+    expected_paths:
+      - src/stropha/storage/sqlite.py
+    expected_symbols:
+      - Storage.upsert_chunk
+    relevance:
+      src/stropha/storage/sqlite.py: 3
+      Storage.upsert_chunk: 3
+    tags: [config-ops]
+    split: holdout
+
+  - id: phase4-config-016
+    query: How does the stream-weights report command locate profile directories, distinguish candidate from active profiles, and explain invalid or blocked entries in table or JSON output?
+    expected_paths:
+      - src/stropha/cli.py
+      - src/stropha/meta/stream_weights.py
+    expected_symbols:
+      - stream_weights_report_cmd
+      - StreamWeightProfiles.report
+    relevance:
+      src/stropha/cli.py: 3
+      src/stropha/meta/stream_weights.py: 3
+      stream_weights_report_cmd: 3
+      StreamWeightProfiles.report: 3
+    tags: [config-ops]
+    split: holdout
+
+  - id: phase4-config-017
+    query: How does config introspection report the real persistence target for each shipped storage backend without exposing a PostgreSQL password?
+    expected_paths:
+      - src/stropha/server.py
+      - src/stropha/adapters/storage/sqlite_vec.py
+      - src/stropha/adapters/storage/postgres.py
+    expected_symbols:
+      - _pipeline_snapshot
+      - SqliteVecStorage.storage_target
+      - PostgresStorage.storage_target
+    relevance:
+      src/stropha/server.py: 3
+      src/stropha/adapters/storage/sqlite_vec.py: 3
+      src/stropha/adapters/storage/postgres.py: 3
+      _pipeline_snapshot: 3
+      SqliteVecStorage.storage_target: 3
+      PostgresStorage.storage_target: 3
+    tags: [config-ops]
+    split: holdout
+
+  - id: phase4-config-018
+    query: When an operator exports the glossary, how does the CLI open configured storage, reconstruct term records from glossary chunks, and write YAML only when terms exist?
+    expected_paths:
+      - src/stropha/cli.py
+      - src/stropha/ingest/glossary.py
+      - src/stropha/ingest/glossary.py
+    expected_symbols:
+      - glossary_export_cmd
+      - GlossaryLoader.list_terms
+      - GlossaryLoader.export_yaml
+    relevance:
+      src/stropha/cli.py: 2
+      src/stropha/ingest/glossary.py: 3
+      glossary_export_cmd: 2
+      GlossaryLoader.list_terms: 2
+      GlossaryLoader.export_yaml: 3
+    tags: [config-ops]
+    split: holdout
+
+  - id: phase4-config-019
+    query: Why can a successful stats command still be looking at a newly created empty SQLite index, and which counts should an operator verify?
+    expected_paths:
+      - src/stropha/cli.py
+      - src/stropha/adapters/storage/sqlite_vec.py
+      - src/stropha/storage/sqlite.py
+    expected_symbols:
+      - stats
+      - SqliteVecStorage.__init__
+      - Storage.__init__
+    relevance:
+      src/stropha/cli.py: 3
+      src/stropha/adapters/storage/sqlite_vec.py: 2
+      src/stropha/storage/sqlite.py: 3
+      stats: 3
+      SqliteVecStorage.__init__: 2
+      Storage.__init__: 3
+    tags: [config-ops]
+    split: holdout
+
+  - id: phase4-config-020
+    query: What happens when the local dashboard patches configuration successfully but the new embedder dimension cannot use the current index yet?
+    expected_paths:
+      - src/stropha/server.py
+      - src/stropha/server_frontend.py
+      - src/stropha/server_runtime.py
+    expected_symbols:
+      - _frontend_config
+      - merge_config_document
+      - reload_shared_runtime
+    relevance:
+      src/stropha/server.py: 3
+      src/stropha/server_frontend.py: 3
+      src/stropha/server_runtime.py: 3
+      _frontend_config: 3
+      merge_config_document: 3
+      reload_shared_runtime: 3
+    tags: [config-ops]
+    split: holdout

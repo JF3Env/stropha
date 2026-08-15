@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -16,6 +17,7 @@ from stropha.bench.campaign import (
     _run_stage,
     _run_worker,
     _winner_stability,
+    _write_stage_report,
     load_campaign_spec,
 )
 from stropha.bench.matrix import load_matrix
@@ -196,6 +198,74 @@ def test_run_stage_forwards_split_and_selected_axes(
     assert command[command.index("--split") + 1] == "holdout"
     assert command.count("--axis") == 2
     assert stage["status"] == "completed"
+
+
+def test_stage_report_preserves_cost_diagnostics_without_double_counting_index(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    matrix_path = tmp_path / "matrix.yaml"
+    matrix_path.write_text(
+        "repo: .\ngolden: golden.jsonl\naxes:\n  hyde: [false, true]\n"
+        "baseline:\n  hyde: false\n",
+        encoding="utf-8",
+    )
+    matrix = load_matrix(matrix_path)
+    records = []
+    for index, cell in enumerate(matrix.expand()):
+        records.append(
+            {
+                "ok": True,
+                "cell_id": cell.cell_id,
+                "indexing_sig": "shared-index",
+                "label": cell.label(),
+                "values": cell.values,
+                "metrics": {"ndcg@10": 0.8 - index * 0.1},
+                "provenance": {"run_id": "run-one"},
+                "diagnostics": {
+                    "index": {
+                        "index_seconds": 10.0,
+                        "index_reused": False,
+                        "enricher": {
+                            "estimated_input_tokens": 100,
+                            "estimated_output_tokens": 20,
+                        },
+                    }
+                },
+                "per_query": {"q1": 1},
+                "per_query_metrics": {"q1": {"ndcg@10": 1.0, "latency_ms": 2.0}},
+                "by_tag": {},
+            }
+        )
+    results = tmp_path / "results.jsonl"
+    results.write_text(
+        "".join(json.dumps(record) + "\n" for record in records),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("stropha.bench.campaign.get_config", lambda: object())
+    monkeypatch.setattr(
+        "stropha.bench.campaign.ExperimentPolicy.from_config",
+        lambda _config: SimpleNamespace(filter_matrix=lambda selected: selected),
+    )
+    stage = {
+        "id": "costs",
+        "results": str(results),
+        "report": str(tmp_path / "report.json"),
+        "csv": str(tmp_path / "results.csv"),
+    }
+
+    payload = _write_stage_report(stage, matrix_path)
+
+    assert payload["indexing"] == {
+        "unique_indexes": 1,
+        "built_indexes": 1,
+        "reused_indexes": 0,
+        "total_seconds": 10.0,
+        "enricher_estimated_input_tokens": 100,
+        "enricher_estimated_output_tokens": 20,
+    }
+    assert payload["top"][0]["diagnostics"] == records[0]["diagnostics"]
+    assert payload["top"][0]["per_query_metrics"] == records[0]["per_query_metrics"]
 
 
 def test_public_status_counts_latest_record_per_cell(tmp_path: Path) -> None:
