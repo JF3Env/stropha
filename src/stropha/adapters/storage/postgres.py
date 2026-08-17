@@ -37,6 +37,8 @@ from __future__ import annotations
 
 import functools
 import json
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from types import TracebackType
@@ -378,6 +380,18 @@ class PostgresStorageConfig(BaseModel):
             "`pipeline.storage.config.dsn` in ~/.stropha/config.yaml."
         ),
     )
+    read_pool_size: int = Field(
+        default=8,
+        ge=1,
+        le=64,
+        description="Maximum concurrent PostgreSQL retrieval connections.",
+    )
+    read_pool_timeout: float = Field(
+        default=5.0,
+        gt=0.0,
+        le=60.0,
+        description="Maximum seconds to wait for a retrieval connection.",
+    )
 
 
 @register_adapter(stage="storage", name="postgres")
@@ -413,10 +427,11 @@ class PostgresStorage:
 
         try:
             import psycopg
+            import psycopg_pool  # noqa: F401
         except ModuleNotFoundError as exc:  # pragma: no cover - optional dep
             raise StorageError(
                 "PostgresStorage needs psycopg. Install the extra: "
-                "`uv pip install 'psycopg[binary]>=3.2'` (or `pip install "
+                "`uv pip install 'psycopg[binary,pool]>=3.2'` (or `pip install "
                 "'stropha[postgres]'`)."
             ) from exc
 
@@ -438,6 +453,7 @@ class PostgresStorage:
         if force_rebuild:
             self._reset_dim_dependent_tables_if_needed()
         self._check_dimension_consistency()
+        self._read_pool = self._open_read_pool()
 
     # ----- connection lifecycle -------------------------------------------
 
@@ -447,6 +463,51 @@ class PostgresStorage:
         from psycopg.rows import dict_row
 
         return psycopg.connect(self._dsn, row_factory=dict_row, autocommit=False)
+
+    def _open_read_pool(self) -> Any:
+        """Create the independent bounded pool used by retrieval reads."""
+        from psycopg.rows import dict_row
+        from psycopg_pool import ConnectionPool
+
+        pool = None
+        try:
+            pool = ConnectionPool(
+                conninfo=self._dsn,
+                min_size=1,
+                max_size=self._adapter_config.read_pool_size,
+                timeout=self._adapter_config.read_pool_timeout,
+                kwargs={"autocommit": True, "row_factory": dict_row},
+                check=ConnectionPool.check_connection,
+                name="stropha-retrieval",
+                open=True,
+            )
+            pool.wait(timeout=self._adapter_config.read_pool_timeout)
+            return pool
+        except Exception as exc:
+            if pool is not None:
+                pool.close()
+            self._raw.close()
+            raise StorageError(f"Could not initialize PostgreSQL read pool: {exc}") from exc
+
+    @contextmanager
+    def _read_connection(self) -> Iterator[Any]:
+        """Use the writer during indexing; otherwise check out a pooled reader."""
+        if self._index_lock_held:
+            with self._raw.transaction():
+                yield self._raw
+            return
+
+        from psycopg_pool import PoolTimeout
+
+        try:
+            with self._read_pool.connection(
+                timeout=self._adapter_config.read_pool_timeout
+            ) as connection:
+                yield connection
+        except PoolTimeout as exc:
+            raise StorageError(
+                "Timed out waiting for a PostgreSQL retrieval connection"
+            ) from exc
 
     def _reconnect(self) -> None:
         """Replace a dead connection with a fresh one, rebinding the
@@ -881,12 +942,23 @@ class PostgresStorage:
         return f"postgres:dim={self._dim}"
 
     @property
+    def supports_concurrent_reads(self) -> bool:
+        """Whether retrieval can safely fan out over independent connections."""
+        return not self._index_lock_held and not self._read_pool.closed
+
+    @property
+    def read_pool_stats(self) -> dict[str, int]:
+        """Current psycopg pool counters for operational diagnostics."""
+        return dict(self._read_pool.get_stats())
+
+    @property
     def config_schema(self) -> type[BaseModel]:
         return PostgresStorageConfig
 
     def health(self) -> StageHealth:
         try:
             stats = self.stats()
+            pool_stats = self.read_pool_stats
             return StageHealth(
                 status="ready",
                 message=f"postgres ready ({stats['chunks']} chunks)",
@@ -894,6 +966,10 @@ class PostgresStorage:
                     "dsn": self._sanitized_dsn(),
                     "chunks": str(stats["chunks"]),
                     "dim": str(stats["index_dim"]),
+                    "read_pool_size": str(self._adapter_config.read_pool_size),
+                    "read_pool_available": str(pool_stats.get("pool_available", 0)),
+                    "read_pool_waiting": str(pool_stats.get("requests_waiting", 0)),
+                    "read_pool_wait_ms": str(pool_stats.get("requests_wait_ms", 0)),
                 },
             )
         except Exception as exc:  # pragma: no cover - defensive
@@ -984,6 +1060,8 @@ class PostgresStorage:
     def close(self) -> None:
         import contextlib
 
+        with contextlib.suppress(Exception):
+            self._read_pool.close()
         with contextlib.suppress(Exception):
             self.release_index_lock()
         with contextlib.suppress(Exception):
@@ -1193,7 +1271,6 @@ class PostgresStorage:
         ).fetchone()
         return int(row["n"]) if row else 0
 
-    @_scoped_read
     def search_secondary_embeddings(
         self,
         query_vec: list[float],
@@ -1220,21 +1297,22 @@ class PostgresStorage:
         if repo_id is not None:
             params.append(repo_id)
         params.extend([vec, k])
-        rows = self._raw.execute(
-            f"""
-            SELECT {_REPO_COLS}, s.embedding <-> %s::vector AS distance
-            FROM secondary_embeddings s
-            JOIN chunks c ON c.id = s.chunk_rowid
-            LEFT JOIN repos r ON r.id = c.repo_id
-            WHERE s.content_hash = c.content_hash
-              AND s.embedder_id = %s
-              AND s.embedding_dim = %s
-              {repo_clause}
-            ORDER BY s.embedding <-> %s::vector
-            LIMIT %s;
-            """,
-            params,
-        ).fetchall()
+        with self._read_connection() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT {_REPO_COLS}, s.embedding <-> %s::vector AS distance
+                FROM secondary_embeddings s
+                JOIN chunks c ON c.id = s.chunk_rowid
+                LEFT JOIN repos r ON r.id = c.repo_id
+                WHERE s.content_hash = c.content_hash
+                  AND s.embedder_id = %s
+                  AND s.embedding_dim = %s
+                  {repo_clause}
+                ORDER BY s.embedding <-> %s::vector
+                LIMIT %s;
+                """,
+                params,
+            ).fetchall()
         hits: list[SearchHit] = []
         for rank, row in enumerate(rows, start=1):
             distance = float(row["distance"])
@@ -2054,7 +2132,6 @@ class PostgresStorage:
 
     # ----- Reads ----------------------------------------------------------
 
-    @_scoped_read
     def search_dense(
         self,
         query_vec: list[float],
@@ -2073,17 +2150,18 @@ class PostgresStorage:
         if repo_id is not None:
             params.append(repo_id)
         params.extend([vec, k])
-        rows = self._raw.execute(
-            f"""
-            SELECT {_REPO_COLS}, {distance_expression} AS distance
-            FROM chunks c LEFT JOIN repos r ON r.id = c.repo_id
-            WHERE c.embedding IS NOT NULL
-              {repo_clause}
-            ORDER BY {distance_expression}
-            LIMIT %s;
-            """,
-            params,
-        ).fetchall()
+        with self._read_connection() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT {_REPO_COLS}, {distance_expression} AS distance
+                FROM chunks c LEFT JOIN repos r ON r.id = c.repo_id
+                WHERE c.embedding IS NOT NULL
+                  {repo_clause}
+                ORDER BY {distance_expression}
+                LIMIT %s;
+                """,
+                params,
+            ).fetchall()
         hits: list[SearchHit] = []
         for rank, row in enumerate(rows, start=1):
             distance = float(row["distance"])
@@ -2107,8 +2185,8 @@ class PostgresStorage:
             params.append(repo_id)
         params.append(k)
         try:
-            with self._raw.transaction():
-                rows = self._raw.execute(
+            with self._read_connection() as connection:
+                rows = connection.execute(
                     f"""
                     SELECT {_REPO_COLS},
                            ts_rank_cd(c.fts, to_tsquery('simple', %s)) AS score
@@ -2128,7 +2206,6 @@ class PostgresStorage:
             for rank, row in enumerate(rows, start=1)
         ]
 
-    @_scoped_read
     def search_symbol_tokens(
         self,
         query: str,
@@ -2149,17 +2226,18 @@ class PostgresStorage:
         if repo_id is not None:
             params.append(repo_id)
         params.append(k)
-        rows = self._raw.execute(
-            f"""
-            SELECT {_REPO_COLS}, ({score_terms}) AS match_count
-            FROM chunks c LEFT JOIN repos r ON r.id = c.repo_id
-            WHERE ({where_clause}) AND c.symbol IS NOT NULL
-              {repo_clause}
-            ORDER BY match_count DESC, char_length(c.symbol) ASC
-            LIMIT %s;
-            """,
-            params,
-        ).fetchall()
+        with self._read_connection() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT {_REPO_COLS}, ({score_terms}) AS match_count
+                FROM chunks c LEFT JOIN repos r ON r.id = c.repo_id
+                WHERE ({where_clause}) AND c.symbol IS NOT NULL
+                  {repo_clause}
+                ORDER BY match_count DESC, char_length(c.symbol) ASC
+                LIMIT %s;
+                """,
+                params,
+            ).fetchall()
         return [
             self._hit(row, rank=rank, score=float(row["match_count"]))
             for rank, row in enumerate(rows, start=1)

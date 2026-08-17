@@ -694,6 +694,10 @@ def _runtime_id(matrix: Matrix) -> str:
             "lms_timeout": config.inference.lms_timeout,
             "lms_max_retries": config.inference.lms_max_retries,
             "lms_think": config.inference.lms_think,
+            "lms_max_connections": config.inference.lms_max_connections,
+            "lms_max_keepalive_connections": (
+                config.inference.lms_max_keepalive_connections
+            ),
         },
         "retrieval_features": dataclasses.asdict(config.retrieval_features),
         "pipeline_defaults": {key: pipeline_defaults.get(key) for key in ("retrieval", "router")},

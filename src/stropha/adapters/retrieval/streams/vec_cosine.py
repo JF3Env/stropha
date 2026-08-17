@@ -39,6 +39,9 @@ class VecCosineStream:
     def adapter_id(self) -> str: return f"vec-cosine:k={self._config.k}"
 
     @property
+    def supports_concurrent_reads(self) -> bool: return True
+
+    @property
     def config_schema(self) -> type[BaseModel]: return VecCosineConfig
 
     def health(self) -> StageHealth:

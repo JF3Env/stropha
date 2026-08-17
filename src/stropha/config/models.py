@@ -118,6 +118,8 @@ class InferenceConfig:
     lms_timeout: float = 180.0
     lms_max_retries: int = 2
     lms_think: bool = False
+    lms_max_connections: int = 8
+    lms_max_keepalive_connections: int = 4
     # Local MoA Gateway. It exposes an OpenAI-compatible API and may run
     # without authentication when bound to loopback.
     moa_model: str = "moa-code"

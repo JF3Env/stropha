@@ -65,6 +65,9 @@ class LlmRerankerConfig(BaseModel):
     max_snippet_chars: int = Field(default=1200, ge=200, le=4000)
     max_tokens: int = Field(default=256, ge=64, le=2048)
     temperature: float = Field(default=0.0, ge=0.0, le=2.0)
+    top_p: float | None = Field(default=None, gt=0.0, le=1.0)
+    top_k: int | None = Field(default=None, ge=1)
+    presence_penalty: float | None = Field(default=None, ge=-2.0, le=2.0)
     output_mode: Literal["json_schema", "text"] = "json_schema"
     disable_thinking: bool = True
     timeout_seconds: float | None = Field(default=None, gt=0.0, le=300.0)
@@ -166,6 +169,9 @@ class LlmReranker:
                         else None
                     ),
                     think=False if self._config.disable_thinking else None,
+                    top_p=self._config.top_p,
+                    top_k=self._config.top_k,
+                    presence_penalty=self._config.presence_penalty,
                     timeout=self._config.timeout_seconds,
                     raise_errors=True,
                 )

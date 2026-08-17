@@ -34,6 +34,11 @@ from __future__ import annotations
 
 import hashlib
 import math
+import time
+from collections.abc import Callable, Sequence
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -58,6 +63,17 @@ _DEFAULT_STREAMS: dict[str, dict[str, Any] | None] = {
     "symbol": {"adapter": "like-tokens", "config": {"k": 20}},
 }
 
+def _ordered_parallel[T](
+    tasks: Sequence[Callable[[], T]], max_workers: int
+) -> list[T]:
+    """Run read-only tasks concurrently while preserving configured order."""
+    with ThreadPoolExecutor(
+        max_workers=min(max_workers, len(tasks)),
+        thread_name_prefix="stropha-retrieval",
+    ) as executor:
+        futures = [executor.submit(copy_context().run, task) for task in tasks]
+        return [future.result() for future in futures]
+
 
 class HybridRrfConfig(BaseModel):
     top_k: int = Field(default=10, ge=1, le=200)
@@ -72,6 +88,15 @@ class HybridRrfConfig(BaseModel):
         ge=1,
         le=1000,
         description="RRF smoothing constant (paper recommends 60).",
+    )
+    search_concurrency: int = Field(
+        default=4,
+        ge=1,
+        le=16,
+        description=(
+            "Maximum concurrent retrieval reads when storage and streams declare "
+            "concurrent-read safety."
+        ),
     )
     adaptive_weighting: bool = Field(
         default=True,
@@ -233,6 +258,10 @@ class HybridRrfRetrieval(RetrievalStage):
         self._multi_query_unique_before = 0
         self._multi_query_candidates_after = 0
         self._multi_query_unique_after = 0
+        self._stream_search_latencies_ms: list[float] = []
+        self._multi_query_retrieval_latencies_ms: list[float] = []
+        self._parallel_stream_searches = 0
+        self._parallel_multi_query_searches = 0
         self.reset_diagnostics()
 
     # ----- Stage contract -------------------------------------------------
@@ -309,6 +338,7 @@ class HybridRrfRetrieval(RetrievalStage):
                 message="hybrid-rrf has no enabled streams",
             )
         detail = {name: s.adapter_id for name, s in self._streams.items()}
+        detail["concurrent_reads"] = str(self._can_parallelize_reads()).lower()
         if self._reranker:
             detail["reranker"] = self._reranker.adapter_id
         reranker_msg = " + reranker" if self._reranker else ""
@@ -380,6 +410,10 @@ class HybridRrfRetrieval(RetrievalStage):
         self._multi_query_unique_before = 0
         self._multi_query_candidates_after = 0
         self._multi_query_unique_after = 0
+        self._stream_search_latencies_ms = []
+        self._multi_query_retrieval_latencies_ms = []
+        self._parallel_stream_searches = 0
+        self._parallel_multi_query_searches = 0
         reset = getattr(self._reranker, "reset_diagnostics", None)
         if callable(reset):
             reset()
@@ -530,6 +564,22 @@ class HybridRrfRetrieval(RetrievalStage):
             out["reranker"] = get_reranker()
         if self._learned_weights is not None:
             out["learned_weights"] = self._learned_weights.report(active=True)
+        out["execution"] = {
+            "concurrent_reads": self._can_parallelize_reads(),
+            "max_concurrency": self._config.search_concurrency,
+            "parallel_stream_searches": self._parallel_stream_searches,
+            "parallel_multi_query_searches": self._parallel_multi_query_searches,
+            "stream_search_latency_ms": round(sum(self._stream_search_latencies_ms), 3),
+            "stream_search_latency_p95_ms": self._percentile(
+                self._stream_search_latencies_ms, 0.95
+            ),
+            "multi_query_retrieval_latency_ms": round(
+                sum(self._multi_query_retrieval_latencies_ms), 3
+            ),
+            "multi_query_retrieval_latency_p95_ms": self._percentile(
+                self._multi_query_retrieval_latencies_ms, 0.95
+            ),
+        }
         return out
 
     @staticmethod
@@ -675,6 +725,11 @@ class HybridRrfRetrieval(RetrievalStage):
         search_query: str | None = None,
         conversation_context: str | None = None,
         repo_id: int | None = None,
+        finalize: bool = True,
+        query_vec_override: list[float] | None = None,
+        skip_hyde: bool = False,
+        allow_parallel_streams: bool = True,
+        record_execution: bool = True,
     ) -> list[SearchHit]:
         """Execute search with a single query (the standard path)."""
         # Query rewriting: expand natural language to code terms (affects ALL streams)
@@ -699,10 +754,11 @@ class HybridRrfRetrieval(RetrievalStage):
 
         # HyDE: generate hypothetical document for dense embedding only
         # Enabled via config.hyde_enabled OR retrieval_features.hyde_enabled in YAML
+        query_vec = query_vec_override
         dense_query = search_query
-        if needs_vec:
+        if needs_vec and query_vec is None:
             hyde_enabled, hyde_code_tuned = self._hyde_settings()
-            if hyde_enabled:
+            if hyde_enabled and not skip_hyde:
                 from ...retrieval.hyde import generate_hypothetical
 
                 hyde_result = generate_hypothetical(
@@ -719,17 +775,37 @@ class HybridRrfRetrieval(RetrievalStage):
                     f"{dense_query}\n\nRecent conversation: {conversation_context.strip()}"
                 )
 
-        query_vec = self._embedder.embed_query(dense_query) if needs_vec else None
+            query_vec = self._embedder.embed_query(dense_query)
 
         # Collect results from each stream with names for weighted fusion
-        ranked_by_name: dict[str, list[SearchHit]] = {}
-        for name, stream in self._streams.items():
+        stream_items = list(self._streams.items())
+
+        def search_stream(item: tuple[str, RetrievalStreamStage]) -> list[SearchHit]:
+            _, stream = item
             # Use search_query for sparse/symbol streams (may be rewritten)
             # query_vec already uses dense_query (may be HyDE-rewritten)
             if repo_id is None:
-                hits = stream.search(search_query, query_vec)
-            else:
-                hits = stream.search(search_query, query_vec, repo_id=repo_id)
+                return stream.search(search_query, query_vec)
+            return stream.search(search_query, query_vec, repo_id=repo_id)
+
+        parallel_streams = allow_parallel_streams and self._can_parallelize_reads()
+        search_started = time.perf_counter()
+        if parallel_streams:
+            stream_results = _ordered_parallel(
+                [partial(search_stream, item) for item in stream_items],
+                self._config.search_concurrency,
+            )
+        else:
+            stream_results = [search_stream(item) for item in stream_items]
+        if record_execution:
+            self._stream_search_latencies_ms.append(
+                (time.perf_counter() - search_started) * 1000.0
+            )
+            if parallel_streams:
+                self._parallel_stream_searches += 1
+
+        ranked_by_name: dict[str, list[SearchHit]] = {}
+        for (name, _), hits in zip(stream_items, stream_results, strict=True):
             if hits:
                 ranked_by_name[name] = hits
         if not ranked_by_name:
@@ -761,13 +837,13 @@ class HybridRrfRetrieval(RetrievalStage):
             )
 
         # Optional reranking
-        if self._reranker and fused:
+        if finalize and self._reranker and fused:
             fused = self._reranker.rerank(query, fused, top_k=k)
         else:
             fused = fused[:k]
 
         # Recursive retrieval / auto-merging
-        return self._maybe_recursive_merge(fused)
+        return self._maybe_recursive_merge(fused) if finalize else fused
 
     def _get_stream_weights(self, query: str) -> dict[str, float] | None:
         """Get adaptive stream weights based on query classification.
@@ -795,6 +871,17 @@ class HybridRrfRetrieval(RetrievalStage):
             if stream.adapter_name == "model2vec-cosine":
                 stream_weights[name] = weights.model2vec
         return stream_weights
+
+    def _can_parallelize_reads(self) -> bool:
+        return (
+            self._config.search_concurrency > 1
+            and len(self._streams) > 1
+            and bool(getattr(self._storage, "supports_concurrent_reads", False))
+            and all(
+                bool(getattr(stream, "supports_concurrent_reads", False))
+                for stream in self._streams.values()
+            )
+        )
 
     def _search_multi_query(
         self,
@@ -831,20 +918,82 @@ class HybridRrfRetrieval(RetrievalStage):
                 repo_id=repo_id,
             )
 
-        # Search with each paraphrase
-        all_results: list[list[SearchHit]] = []
+        shared_query_vec: list[float] | None = None
+        needs_vec = any(s.adapter_name in ("vec-cosine",) for s in self._streams.values())
+        hyde_enabled, hyde_code_tuned = self._hyde_settings()
+        if needs_vec and hyde_enabled:
+            from ...retrieval.hyde import generate_hypothetical
+
+            hyde_result = generate_hypothetical(
+                query,
+                force_enabled=True,
+                code_tuned=hyde_code_tuned,
+            )
+            self._record_hyde(hyde_result)
+            if hyde_result.text:
+                dense_query = hyde_result.text
+                if conversation_context and conversation_context.strip():
+                    dense_query = (
+                        f"{dense_query}\n\nRecent conversation: "
+                        f"{conversation_context.strip()}"
+                    )
+                shared_query_vec = self._embedder.embed_query(dense_query)
+
+        query_vectors: list[list[float] | None] = []
         for paraphrase in paraphrases:
+            if shared_query_vec is not None:
+                query_vectors.append(shared_query_vec)
+                continue
+            if not needs_vec:
+                query_vectors.append(None)
+                continue
+            dense_query = paraphrase
+            if conversation_context and conversation_context.strip():
+                dense_query = (
+                    f"{dense_query}\n\nRecent conversation: {conversation_context.strip()}"
+                )
+            query_vectors.append(self._embedder.embed_query(dense_query))
+
+        # Search with each paraphrase. Outer fan-out disables inner stream fan-out.
+        cand_k = max(k * 2, self._config.candidate_k)
+
+        def search_paraphrase(
+            paraphrase: str,
+            query_vec: list[float] | None,
+        ) -> list[SearchHit]:
             # Use larger candidate set since we'll fuse multiple result sets
-            cand_k = max(k * 2, self._config.candidate_k)
-            hits = self._search_single_query(
+            return self._search_single_query(
                 query,  # Original query for HyDE/reranking context
                 cand_k,
                 search_query=paraphrase,  # Paraphrase for actual search
                 conversation_context=conversation_context,
                 repo_id=repo_id,
+                finalize=False,
+                query_vec_override=query_vec,
+                skip_hyde=True,
+                allow_parallel_streams=False,
+                record_execution=False,
             )
-            if hits:
-                all_results.append(hits)
+
+        paraphrase_tasks = [
+            partial(search_paraphrase, paraphrase, query_vec)
+            for paraphrase, query_vec in zip(paraphrases, query_vectors, strict=True)
+        ]
+        parallel_multi_query = self._can_parallelize_reads()
+        retrieval_started = time.perf_counter()
+        if parallel_multi_query:
+            searched_results = _ordered_parallel(
+                paraphrase_tasks,
+                self._config.search_concurrency,
+            )
+        else:
+            searched_results = [task() for task in paraphrase_tasks]
+        self._multi_query_retrieval_latencies_ms.append(
+            (time.perf_counter() - retrieval_started) * 1000.0
+        )
+        if parallel_multi_query:
+            self._parallel_multi_query_searches += 1
+        all_results = [hits for hits in searched_results if hits]
         self._multi_query_searches += len(paraphrases)
 
         if not all_results:

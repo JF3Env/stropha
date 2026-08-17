@@ -60,6 +60,10 @@ class Model2VecCosineStream:
         return f"model2vec-cosine:k={self._config.k}:embedder={self._embedder.adapter_id}"
 
     @property
+    def supports_concurrent_reads(self) -> bool:
+        return False
+
+    @property
     def config_schema(self) -> type[Model2VecCosineConfig]:
         return Model2VecCosineConfig
 

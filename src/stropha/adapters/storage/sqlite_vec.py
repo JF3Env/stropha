@@ -89,6 +89,10 @@ class SqliteVecStorage(Storage):
         return f"sqlite-vec:dim={self._dim}"
 
     @property
+    def supports_concurrent_reads(self) -> bool:
+        return False
+
+    @property
     def storage_target(self) -> str:
         """Where this backend persists data: the resolved SQLite file path.
 

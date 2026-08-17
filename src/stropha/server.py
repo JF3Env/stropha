@@ -2302,6 +2302,10 @@ def _inference_snapshot(cfg: Config) -> dict:
                 "timeout_s": cfg.inference.lms_timeout,
                 "max_retries": cfg.inference.lms_max_retries,
                 "think": cfg.inference.lms_think,
+                "max_connections": cfg.inference.lms_max_connections,
+                "max_keepalive_connections": (
+                    cfg.inference.lms_max_keepalive_connections
+                ),
                 "location": "internal (OpenAI-compatible LMS)",
             }
         )

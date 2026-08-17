@@ -2,24 +2,23 @@
 
 from __future__ import annotations
 
-import json
 from unittest.mock import MagicMock, patch
-from urllib.error import URLError
 
+import httpx
 import pytest
 
 from stropha.config import get_config, reset_config
 from stropha.errors import InferenceError, InferenceTimeoutError
-from stropha.inference import LmsBackend, get_backend
+from stropha.inference import LmsBackend, generate, get_backend
 from stropha.inference.backend import reset_backend
 
 
-def _response(payload: dict) -> MagicMock:
-    response = MagicMock()
-    response.read.return_value = json.dumps(payload).encode()
-    response.__enter__.return_value = response
-    response.__exit__.return_value = False
-    return response
+def _response(payload: dict, status_code: int = 200) -> httpx.Response:
+    return httpx.Response(
+        status_code,
+        json=payload,
+        request=httpx.Request("POST", "https://lms.example/openai/chat/completions"),
+    )
 
 
 def test_lms_config_and_secret_parse(isolated_test_env) -> None:
@@ -31,6 +30,8 @@ def test_lms_config_and_secret_parse(isolated_test_env) -> None:
         "  lms_model: test-model\n"
         "  lms_base_url: https://lms.example/openai\n"
         "  lms_batch_size: 7\n"
+        "  lms_max_connections: 6\n"
+        "  lms_max_keepalive_connections: 3\n"
         "secrets:\n"
         "  lms_api_key: secret\n"
     )
@@ -39,6 +40,8 @@ def test_lms_config_and_secret_parse(isolated_test_env) -> None:
     cfg = get_config()
     assert cfg.inference.lms_model == "test-model"
     assert cfg.inference.effective_batch_size() == 7
+    assert cfg.inference.lms_max_connections == 6
+    assert cfg.inference.lms_max_keepalive_connections == 3
     assert cfg.secrets.has_lms is True
 
 
@@ -58,15 +61,14 @@ def test_generate_uses_bearer_chat_completions() -> None:
         max_retries=0,
     )
     with patch(
-        "stropha.inference.lms_backend.urllib_request.urlopen",
+        "httpx.Client.post",
         return_value=_response({"choices": [{"message": {"content": "result"}}]}),
-    ) as urlopen:
+    ) as post:
         assert backend.generate("hello", max_tokens=17, temperature=0.2) == "result"
 
-    request = urlopen.call_args.args[0]
-    assert request.full_url == "https://lms.example/openai/chat/completions"
-    assert request.headers["Authorization"] == "Bearer secret"
-    body = json.loads(request.data)
+    assert post.call_args.args[0] == "https://lms.example/openai/chat/completions"
+    assert post.call_args.kwargs["headers"]["Authorization"] == "Bearer secret"
+    body = post.call_args.kwargs["json"]
     assert body == {
         "model": "test-model",
         "messages": [{"role": "user", "content": "hello"}],
@@ -75,6 +77,54 @@ def test_generate_uses_bearer_chat_completions() -> None:
         "stream": False,
         "think": False,
     }
+
+
+def test_client_pool_has_bounded_configurable_limits() -> None:
+    with patch("stropha.inference.lms_backend.httpx.Client") as client_type:
+        backend = LmsBackend(
+            api_key="secret",
+            max_connections=6,
+            max_keepalive_connections=3,
+        )
+        backend.close()
+
+    limits = client_type.call_args.kwargs["limits"]
+    assert limits.max_connections == 6
+    assert limits.max_keepalive_connections == 3
+    client_type.return_value.close.assert_called_once_with()
+
+
+def test_generate_reuses_injected_client() -> None:
+    client = MagicMock(spec=httpx.Client)
+    client.post.return_value = _response(
+        {"choices": [{"message": {"content": "result"}}]}
+    )
+    backend = LmsBackend(api_key="secret", client=client)
+
+    assert backend.generate("one") == "result"
+    assert backend.generate("two") == "result"
+    backend.close()
+
+    assert client.post.call_count == 2
+    client.close.assert_not_called()
+
+
+def test_generate_retries_transient_http_status() -> None:
+    backend = LmsBackend(api_key="secret", max_retries=1)
+    with (
+        patch(
+            "httpx.Client.post",
+            side_effect=[
+                _response({}, status_code=503),
+                _response({"choices": [{"message": {"content": "result"}}]}),
+            ],
+        ) as post,
+        patch("stropha.inference.lms_backend.time.sleep") as sleep,
+    ):
+        assert backend.generate("hello") == "result"
+
+    assert post.call_count == 2
+    sleep.assert_called_once_with(1)
 
 
 def test_identity_changes_with_reliability_controls() -> None:
@@ -102,21 +152,27 @@ def test_generate_supports_structured_ranking_controls() -> None:
         "required": ["order"],
     }
     with patch(
-        "stropha.inference.lms_backend.urllib_request.urlopen",
+        "httpx.Client.post",
         return_value=_response({"choices": [{"message": {"content": "{}"}}]}),
-    ) as urlopen:
+    ) as post:
         assert (
             backend.generate(
                 "rank",
                 json_schema=schema,
                 think=False,
+                top_p=0.95,
+                top_k=40,
+                presence_penalty=1.0,
                 timeout=4.5,
             )
             == "{}"
         )
 
-    body = json.loads(urlopen.call_args.args[0].data)
+    body = post.call_args.kwargs["json"]
     assert body["think"] is False
+    assert body["top_p"] == 0.95
+    assert body["top_k"] == 40
+    assert body["presence_penalty"] == 1.0
     assert body["response_format"] == {
         "type": "json_schema",
         "json_schema": {
@@ -125,14 +181,37 @@ def test_generate_supports_structured_ranking_controls() -> None:
             "schema": schema,
         },
     }
-    assert urlopen.call_args.kwargs["timeout"] == 4.5
+    assert post.call_args.kwargs["timeout"] == 4.5
+
+
+def test_dispatcher_forwards_lms_sampling_controls() -> None:
+    client = MagicMock(spec=httpx.Client)
+    client.post.return_value = _response(
+        {"choices": [{"message": {"content": "result"}}]}
+    )
+    backend = LmsBackend(api_key="secret", client=client)
+    with patch("stropha.inference.backend.get_backend", return_value=backend):
+        assert (
+            generate(
+                "hello",
+                top_p=0.95,
+                top_k=40,
+                presence_penalty=1.0,
+            )
+            == "result"
+        )
+
+    body = client.post.call_args.kwargs["json"]
+    assert body["top_p"] == 0.95
+    assert body["top_k"] == 40
+    assert body["presence_penalty"] == 1.0
 
 
 @pytest.mark.parametrize(
     ("error", "expected"),
     [
-        (TimeoutError(), InferenceTimeoutError),
-        (URLError("offline"), InferenceError),
+        (httpx.ReadTimeout("timeout"), InferenceTimeoutError),
+        (httpx.ConnectError("offline"), InferenceError),
     ],
 )
 def test_generate_can_raise_typed_errors_for_diagnostics(
@@ -142,7 +221,7 @@ def test_generate_can_raise_typed_errors_for_diagnostics(
     backend = LmsBackend(api_key="secret", max_retries=0)
     with (
         patch(
-            "stropha.inference.lms_backend.urllib_request.urlopen",
+            "httpx.Client.post",
             side_effect=error,
         ),
         pytest.raises(expected),
@@ -161,7 +240,7 @@ def test_generate_raises_for_empty_success_response(payload: dict) -> None:
     backend = LmsBackend(api_key="secret", max_retries=0)
     with (
         patch(
-            "stropha.inference.lms_backend.urllib_request.urlopen",
+            "httpx.Client.post",
             return_value=_response(payload),
         ),
         pytest.raises(InferenceError),
@@ -178,7 +257,7 @@ def test_generate_raises_without_api_key_when_requested(isolated_test_env) -> No
 def test_health_checks_exact_model() -> None:
     backend = LmsBackend(model="wanted", api_key="secret", max_retries=0)
     with patch(
-        "stropha.inference.lms_backend.urllib_request.urlopen",
+        "httpx.Client.get",
         return_value=_response({"data": [{"id": "wanted"}]}),
     ):
         assert backend.health_check() == (True, "LMS ready with wanted")

@@ -43,6 +43,9 @@ class LikeTokensStream:
     def adapter_id(self) -> str: return f"like-tokens:k={self._config.k}"
 
     @property
+    def supports_concurrent_reads(self) -> bool: return True
+
+    @property
     def config_schema(self) -> type[BaseModel]: return LikeTokensConfig
 
     def health(self) -> StageHealth:

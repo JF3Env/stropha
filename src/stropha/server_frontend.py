@@ -177,6 +177,8 @@ def configuration_catalog() -> dict[str, Any]:
         _catalog_field("inference.lms_timeout", "LMS timeout", "number", 180, "Maximum seconds per LMS request.", minimum=1, step=1),
         _catalog_field("inference.lms_max_retries", "LMS retries", "integer", 2, "Retries transient LMS failures with exponential backoff.", minimum=0, maximum=10),
         _catalog_field("inference.lms_think", "LMS reasoning", "boolean", False, "Requests the provider's extended reasoning mode when supported.", enabled="May improve difficult answers but increases latency and token use.", disabled="Uses standard generation for lower latency and cost."),
+        _catalog_field("inference.lms_max_connections", "LMS maximum connections", "integer", 8, "Maximum concurrent LMS HTTP connections.", minimum=1, maximum=128),
+        _catalog_field("inference.lms_max_keepalive_connections", "LMS keep-alive connections", "integer", 4, "Maximum idle LMS connections retained for reuse.", minimum=0, maximum=128),
         _catalog_field("secrets.lms_api_key", "LMS API key", "secret", None, "Bearer token for the LMS endpoint. Leave blank to preserve it.", secret=True),
         _catalog_field("inference.anthropic_model", "Anthropic model", "string", "claude-haiku-4-5", "Anthropic model name; stronger models improve quality at higher cost."),
         _catalog_field("inference.anthropic_base_url", "Anthropic URL", "url", "https://api.anthropic.com/v1", "Anthropic Messages API root."),

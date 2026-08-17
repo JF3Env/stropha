@@ -273,6 +273,8 @@ def _parse_inference(raw: dict[str, Any]) -> InferenceConfig:
         lms_timeout=_float(raw.get("lms_timeout"), 180.0),
         lms_max_retries=_int(raw.get("lms_max_retries"), 2),
         lms_think=_bool(raw.get("lms_think"), False),
+        lms_max_connections=_int(raw.get("lms_max_connections"), 8),
+        lms_max_keepalive_connections=_int(raw.get("lms_max_keepalive_connections"), 4),
         moa_model=str(raw.get("moa_model", "moa-code")),
         moa_base_url=str(raw.get("moa_base_url", "http://127.0.0.1:14598/v1")),
         moa_timeout=_float(raw.get("moa_timeout"), 300.0),

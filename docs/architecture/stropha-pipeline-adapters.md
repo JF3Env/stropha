@@ -1157,13 +1157,13 @@ pipeline:
 | Adapter | Arquivo | Notas |
 |---|---|---|
 | `sqlite-vec` (default) | `adapters/storage/sqlite_vec.py` | Subclass do `stropha.storage.Storage` legacy — herda a superfície read/write completa. Schema v1→v14. |
-| `postgres` | `adapters/storage/postgres.py` | pgvector com paridade de schema v14. HNSW usa `vector_l2_ops` até 2000d e índice de expressão `halfvec_l2_ops` entre 2001d e 4000d, mantendo o vetor armazenado em precisão completa. |
+| `postgres` | `adapters/storage/postgres.py` | pgvector com paridade de schema v14. Mantém uma conexão writer dedicada para transactions/advisory lock e um pool bounded independente para retrieval reads. HNSW usa `vector_l2_ops` até 2000d e `halfvec_l2_ops` entre 2001d e 4000d. |
 
 ### Retrieval coordinator
 
 | Adapter | Arquivo | Notas |
 |---|---|---|
-| `hybrid-rrf` (default) | `adapters/retrieval/hybrid_rrf.py` | RRF (k=60) sobre N streams configuráveis em `config.streams.{name: {adapter, config}}`. `adapter_id` digests a composição de streams (drift). Skipa `embed_query` quando nenhuma stream dense está habilitada. Propaga o `repo_id` opcional para todos os caminhos single/multi-query e streams. |
+| `hybrid-rrf` (default) | `adapters/retrieval/hybrid_rrf.py` | RRF (k=60) sobre N streams configuráveis em `config.streams.{name: {adapter, config}}`. Preserva ordem determinística ao executar streams/paráfrases com concorrência limitada quando storage e streams declaram reads concorrentes seguros. Skipa `embed_query` sem stream dense e propaga `repo_id` em todos os caminhos. |
 
 ### Retrieval stream sub-adapters
 
@@ -1178,6 +1178,12 @@ pipeline:
 The built-in default composition enables `vec-cosine`, `fts5-bm25`, and
 `like-tokens`. Registered stream count is not the active-stream count; optional
 `graph-vec` and `model2vec-cosine` lanes appear only when configured.
+
+`vec-cosine`, `fts5-bm25`, and `like-tokens` are safe to fan out when backed by
+PostgreSQL's read pool. SQLite remains serial because it owns one thread-bound
+connection. `graph-vec` stays serial while it uses the mixed read/write `_conn`
+compatibility shim, and `model2vec-cosine` stays serial because query embedding
+thread safety is not part of the secondary embedder contract.
 
 ### Reranker
 

@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from contextvars import ContextVar
 from pathlib import Path
+from threading import Lock
+from time import sleep
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
@@ -14,6 +17,7 @@ from stropha.adapters.retrieval.hybrid_rrf import (
     HybridRrfConfig,
     HybridRrfRetrieval,
 )
+from stropha.adapters.retrieval.reranker.noop import NoopReranker
 from stropha.adapters.retrieval.streams.fts5_bm25 import (
     Fts5Bm25Config,
     Fts5Bm25Stream,
@@ -31,6 +35,7 @@ from stropha.errors import ConfigError
 from stropha.meta.stream_weights import StreamWeightProfile, write_stream_weight_profile
 from stropha.models import RepoRef, SearchHit
 from stropha.pipeline.registry import all_adapters
+from stropha.retrieval.hyde import HydeResult
 from stropha.retrieval.multi_query import MultiQueryResult
 from stropha.server import _features_snapshot
 
@@ -75,6 +80,59 @@ class _RecordingStorage:
     ) -> list[SearchHit]:
         self.calls.append(("symbol", (k, repo_id)))
         return [self._hit(i + 1, f"s{i}") for i in range(k)]
+
+
+_request_context: ContextVar[str | None] = ContextVar("request_context", default=None)
+
+
+class _ConcurrentRecordingStorage(_RecordingStorage):
+    supports_concurrent_reads = True
+
+    def __init__(self, delays: dict[str, float] | None = None) -> None:
+        super().__init__()
+        self._delays = delays or {}
+        self._lock = Lock()
+        self.active = 0
+        self.max_active = 0
+        self.contexts: list[str | None] = []
+
+    def _enter(self, stream: str) -> None:
+        with self._lock:
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+            self.contexts.append(_request_context.get())
+        sleep(self._delays.get(stream, 0.02))
+
+    def _exit(self) -> None:
+        with self._lock:
+            self.active -= 1
+
+    def search_dense(
+        self, vec: list[float], k: int, *, repo_id: int | None = None
+    ) -> list[SearchHit]:
+        self._enter("dense")
+        try:
+            return super().search_dense(vec, k, repo_id=repo_id)
+        finally:
+            self._exit()
+
+    def search_bm25(
+        self, query: str, k: int, *, repo_id: int | None = None
+    ) -> list[SearchHit]:
+        self._enter("bm25")
+        try:
+            return super().search_bm25(query, k, repo_id=repo_id)
+        finally:
+            self._exit()
+
+    def search_symbol_tokens(
+        self, query: str, k: int, *, repo_id: int | None = None
+    ) -> list[SearchHit]:
+        self._enter("symbol")
+        try:
+            return super().search_symbol_tokens(query, k, repo_id=repo_id)
+        finally:
+            self._exit()
 
 
 class _StubEmbedder:
@@ -226,6 +284,167 @@ def test_hybrid_rrf_propagates_repo_id_through_multi_query() -> None:
 
     assert len(storage.calls) == 6
     assert {details[1] for _, details in storage.calls} == {42}
+
+
+def test_multi_query_reranks_only_after_fusion() -> None:
+    storage = _RecordingStorage()
+    retrieval = HybridRrfRetrieval(
+        HybridRrfConfig(multi_query_enabled=True, recursive_enabled=True),
+        storage=storage,
+        embedder=_StubEmbedder(),
+    )
+    rerank_calls: list[list[str]] = []
+
+    class _Reranker(NoopReranker):
+        def rerank(self, query, hits, *, top_k):
+            rerank_calls.append([hit.chunk_id for hit in hits])
+            return hits[:top_k]
+
+    retrieval.set_reranker(_Reranker())
+    with (
+        patch(
+            "stropha.retrieval.multi_query.expand_query",
+            return_value=MultiQueryResult(
+                ("original", "alternative"),
+                "success",
+                requested_paraphrases=1,
+            ),
+        ),
+        patch("stropha.retrieval.recursive.merge_hits", side_effect=lambda hits, *_a, **_k: hits) as merge,
+    ):
+        retrieval.search("original")
+
+    assert len(rerank_calls) == 1
+    assert len(rerank_calls[0]) == retrieval._config.candidate_k
+    merge.assert_called_once()
+
+
+def test_multi_query_reuses_hyde_embedding() -> None:
+    embedder = _StubEmbedder()
+    retrieval = HybridRrfRetrieval(
+        HybridRrfConfig(multi_query_enabled=True, hyde_enabled=True),
+        storage=_RecordingStorage(),
+        embedder=embedder,
+    )
+    with (
+        patch(
+            "stropha.retrieval.multi_query.expand_query",
+            return_value=MultiQueryResult(
+                ("original", "alternative"),
+                "success",
+                requested_paraphrases=1,
+            ),
+        ),
+        patch(
+            "stropha.retrieval.hyde.generate_hypothetical",
+            return_value=HydeResult("hypothetical", "success", generation_calls=1),
+        ) as hyde,
+        patch.object(embedder, "embed_query", wraps=embedder.embed_query) as embed_query,
+    ):
+        retrieval.search("original")
+
+    hyde.assert_called_once()
+    embed_query.assert_called_once_with("hypothetical")
+
+
+def test_concurrent_stream_search_is_bounded_and_context_aware() -> None:
+    storage = _ConcurrentRecordingStorage()
+    retrieval = HybridRrfRetrieval(
+        HybridRrfConfig(search_concurrency=2),
+        storage=storage,
+        embedder=_StubEmbedder(),
+    )
+    token = _request_context.set("request-123")
+    try:
+        retrieval.search("query")
+    finally:
+        _request_context.reset(token)
+
+    assert storage.max_active == 2
+    assert storage.active == 0
+    assert storage.contexts == ["request-123"] * 3
+    execution = retrieval.diagnostics()["execution"]
+    assert execution["parallel_stream_searches"] == 1
+    assert execution["stream_search_latency_ms"] > 0
+
+
+def test_concurrent_stream_completion_order_does_not_change_results() -> None:
+    parallel_storage = _ConcurrentRecordingStorage(
+        {"dense": 0.03, "bm25": 0.02, "symbol": 0.01}
+    )
+    parallel = HybridRrfRetrieval(
+        HybridRrfConfig(search_concurrency=3),
+        storage=parallel_storage,
+        embedder=_StubEmbedder(),
+    )
+    serial_storage = _ConcurrentRecordingStorage()
+    serial_storage.supports_concurrent_reads = False
+    serial = HybridRrfRetrieval(
+        HybridRrfConfig(search_concurrency=3),
+        storage=serial_storage,
+        embedder=_StubEmbedder(),
+    )
+
+    parallel_hits = parallel.search("query")
+    serial_hits = serial.search("query")
+
+    assert [hit.chunk_id for hit in parallel_hits] == [hit.chunk_id for hit in serial_hits]
+    assert [hit.streams for hit in parallel_hits] == [hit.streams for hit in serial_hits]
+    assert serial_storage.max_active == 1
+
+
+def test_concurrent_stream_errors_are_raised_in_configured_order() -> None:
+    class _FailingStorage(_ConcurrentRecordingStorage):
+        def search_dense(self, vec, k, *, repo_id=None):
+            self._enter("dense")
+            try:
+                raise ValueError("dense failed")
+            finally:
+                self._exit()
+
+        def search_bm25(self, query, k, *, repo_id=None):
+            self._enter("bm25")
+            try:
+                raise RuntimeError("sparse failed")
+            finally:
+                self._exit()
+
+    storage = _FailingStorage({"dense": 0.03, "bm25": 0.01})
+    retrieval = HybridRrfRetrieval(
+        HybridRrfConfig(search_concurrency=3),
+        storage=storage,
+        embedder=_StubEmbedder(),
+    )
+
+    with pytest.raises(ValueError, match="dense failed"):
+        retrieval.search("query")
+
+    assert storage.active == 0
+
+
+def test_multi_query_parallel_search_preserves_repo_scope_without_nesting() -> None:
+    storage = _ConcurrentRecordingStorage()
+    retrieval = HybridRrfRetrieval(
+        HybridRrfConfig(multi_query_enabled=True, search_concurrency=2),
+        storage=storage,
+        embedder=_StubEmbedder(),
+    )
+    with patch(
+        "stropha.retrieval.multi_query.expand_query",
+        return_value=MultiQueryResult(
+            ("original", "alternative", "third"),
+            "success",
+            requested_paraphrases=2,
+        ),
+    ):
+        retrieval.search("original", repo_id=42)
+
+    assert storage.max_active == 2
+    assert len(storage.calls) == 9
+    assert {details[1] for _, details in storage.calls} == {42}
+    execution = retrieval.diagnostics()["execution"]
+    assert execution["parallel_multi_query_searches"] == 1
+    assert execution["multi_query_retrieval_latency_ms"] > 0
 
 
 def test_adaptive_weighting_ignores_legacy_environment_toggle(monkeypatch) -> None:

@@ -14,7 +14,9 @@ from __future__ import annotations
 import math
 import os
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Barrier
 from urllib.parse import urlsplit, urlunsplit
 
 import pytest
@@ -27,6 +29,7 @@ from stropha.adapters.storage.postgres import (  # noqa: E402
     _distance_expression,
     _hnsw_index_expression,
 )
+from stropha.errors import StorageError  # noqa: E402
 from stropha.ingest.git_meta import RepoIdentity  # noqa: E402
 from stropha.models import Chunk  # noqa: E402
 
@@ -156,6 +159,41 @@ def _seed(st: PostgresStorage) -> int:
                         repo_id=repo_id, enricher_id="noop")
     st.commit()
     return repo_id
+
+
+def test_read_pool_checks_out_distinct_connections(store: PostgresStorage) -> None:
+    barrier = Barrier(2)
+
+    def backend_pid() -> int:
+        with store._read_connection() as connection:
+            pid = int(connection.execute("SELECT pg_backend_pid() AS pid;").fetchone()["pid"])
+            barrier.wait(timeout=2)
+            return pid
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        pids = list(executor.map(lambda _: backend_pid(), range(2)))
+
+    assert len(set(pids)) == 2
+
+
+def test_read_pool_timeout_is_bounded(pg_dsn: str) -> None:
+    pooled = PostgresStorage(
+        PostgresStorageConfig(
+            dsn=pg_dsn,
+            read_pool_size=1,
+            read_pool_timeout=0.05,
+        ),
+        embedding_dim=DIM,
+    )
+    try:
+        with (
+            pooled._read_connection(),
+            pytest.raises(StorageError, match="Timed out"),
+            pooled._read_connection(),
+        ):
+            pass
+    finally:
+        pooled.close()
 
 
 def test_migrate_and_stats(store: PostgresStorage) -> None:

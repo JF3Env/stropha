@@ -407,6 +407,15 @@ No adapter SQLite, tudo fica em um único arquivo `.db`; no adapter PostgreSQL,
 os mesmos contratos vivem no banco configurado. Regras de FTS5 contentless e
 arquivo único são específicas de SQLite, não invariantes globais de storage.
 
+O adapter PostgreSQL mantém uma conexão writer dedicada para migrations,
+indexação e o session advisory lock. Retrieval tipado (`dense`, BM25, symbol e
+secondary vectors) usa um `psycopg_pool.ConnectionPool` separado, bounded por
+`read_pool_size` e `read_pool_timeout`. Assim, readers executam em transactions
+independentes sem compartilhar rollback/commit state com indexação. Durante um
+index lock, reads internos permanecem na conexão writer para preservar
+read-your-writes. O `_conn` compatibility shim continua serial até seus
+consumidores mistos de read/write migrarem para APIs tipadas.
+
 ### 5.4 Versionamento e migração
 
 - Cada storage adapter migra seu próprio schema de forma forward-only e

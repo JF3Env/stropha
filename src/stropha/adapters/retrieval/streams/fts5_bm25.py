@@ -39,6 +39,9 @@ class Fts5Bm25Stream:
     def adapter_id(self) -> str: return f"fts5-bm25:k={self._config.k}"
 
     @property
+    def supports_concurrent_reads(self) -> bool: return True
+
+    @property
     def config_schema(self) -> type[BaseModel]: return Fts5Bm25Config
 
     def health(self) -> StageHealth:

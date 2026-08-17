@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import time
 from contextlib import suppress
-from urllib import error as urllib_error
-from urllib import request as urllib_request
+
+import httpx
 
 from ..config import get_config
 from ..errors import InferenceError, InferenceTimeoutError
@@ -17,7 +16,7 @@ from .backend import InferenceBackend
 log = get_logger(__name__)
 
 _RETRYABLE_NETWORK_ERRORS: tuple[type[BaseException], ...] = (
-    urllib_error.URLError,
+    httpx.RequestError,
     OSError,
     TimeoutError,
 )
@@ -34,6 +33,9 @@ class LmsBackend(InferenceBackend):
         timeout: float | None = None,
         max_retries: int | None = None,
         think: bool | None = None,
+        max_connections: int | None = None,
+        max_keepalive_connections: int | None = None,
+        client: httpx.Client | None = None,
     ) -> None:
         cfg = get_config()
         self._default_model = model or cfg.inference.lms_model
@@ -44,6 +46,19 @@ class LmsBackend(InferenceBackend):
             max_retries if max_retries is not None else cfg.inference.lms_max_retries
         )
         self._think = think if think is not None else cfg.inference.lms_think
+        connection_limit = max_connections or cfg.inference.lms_max_connections
+        keepalive_limit = (
+            max_keepalive_connections
+            if max_keepalive_connections is not None
+            else cfg.inference.lms_max_keepalive_connections
+        )
+        self._owns_client = client is None
+        self._client = client or httpx.Client(
+            limits=httpx.Limits(
+                max_connections=max(connection_limit, 1),
+                max_keepalive_connections=max(min(keepalive_limit, connection_limit), 0),
+            )
+        )
 
     @property
     def name(self) -> str:
@@ -61,6 +76,10 @@ class LmsBackend(InferenceBackend):
     def is_available(self) -> bool:
         return bool(self._api_key and self._api_key.strip())
 
+    def close(self) -> None:
+        if self._owns_client:
+            self._client.close()
+
     def generate(
         self,
         prompt: str,
@@ -70,6 +89,9 @@ class LmsBackend(InferenceBackend):
         model: str | None = None,
         json_schema: dict[str, object] | None = None,
         think: bool | None = None,
+        top_p: float | None = None,
+        top_k: int | None = None,
+        presence_penalty: float | None = None,
         timeout: float | None = None,
         raise_errors: bool = False,
     ) -> str | None:
@@ -96,23 +118,28 @@ class LmsBackend(InferenceBackend):
                     "schema": json_schema,
                 },
             }
-        body = json.dumps(request_body).encode("utf-8")
+        if top_p is not None:
+            request_body["top_p"] = top_p
+        if top_k is not None:
+            request_body["top_k"] = top_k
+        if presence_penalty is not None:
+            request_body["presence_penalty"] = presence_penalty
         request_timeout = self._timeout if timeout is None else timeout
 
         attempts = self._max_retries + 1
         for attempt in range(1, attempts + 1):
             try:
-                req = urllib_request.Request(
+                response = self._client.post(
                     f"{self._base_url}/chat/completions",
-                    data=body,
                     headers={
                         "Content-Type": "application/json",
                         "Authorization": f"Bearer {self._api_key}",
                     },
-                    method="POST",
+                    json=request_body,
+                    timeout=request_timeout,
                 )
-                with urllib_request.urlopen(req, timeout=request_timeout) as resp:
-                    payload = json.loads(resp.read().decode("utf-8"))
+                response.raise_for_status()
+                payload = response.json()
                 choices = payload.get("choices") or []
                 if not choices:
                     log.warning("lms.generate_failed", reason="no choices", attempt=attempt)
@@ -123,15 +150,16 @@ class LmsBackend(InferenceBackend):
                 if not text and raise_errors:
                     raise InferenceError("LMS returned empty content")
                 return text or None
-            except urllib_error.HTTPError as exc:
-                retryable = exc.code == 429 or 500 <= exc.code < 600
+            except httpx.HTTPStatusError as exc:
+                status = exc.response.status_code
+                retryable = status == 429 or 500 <= status < 600
                 if not retryable or attempt >= attempts:
-                    log.warning("lms.generate_failed", status=exc.code, attempt=attempt)
+                    log.warning("lms.generate_failed", status=status, attempt=attempt)
                     if raise_errors:
-                        raise InferenceError(f"LMS request failed with HTTP {exc.code}") from exc
+                        raise InferenceError(f"LMS request failed with HTTP {status}") from exc
                     return None
                 delay = 2 ** (attempt - 1)
-                retry_after = exc.headers.get("retry-after") if exc.headers else None
+                retry_after = exc.response.headers.get("retry-after")
                 if retry_after:
                     with suppress(ValueError):
                         delay = min(max(float(retry_after), 0.0), 60.0)
@@ -144,14 +172,14 @@ class LmsBackend(InferenceBackend):
                         attempt=attempt,
                     )
                     if raise_errors:
-                        if isinstance(exc, TimeoutError):
+                        if isinstance(exc, (httpx.TimeoutException, TimeoutError)):
                             raise InferenceTimeoutError("LMS request timed out") from exc
                         raise InferenceError(
                             f"LMS request failed with {type(exc).__name__}"
                         ) from exc
                     return None
                 time.sleep(2 ** (attempt - 1))
-            except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+            except (KeyError, TypeError, ValueError) as exc:
                 log.warning("lms.generate_failed", error=type(exc).__name__)
                 if raise_errors:
                     raise InferenceError(
@@ -173,20 +201,21 @@ class LmsBackend(InferenceBackend):
         if not self.is_available:
             return False, "LMS API key not set (secrets.lms_api_key)"
         try:
-            req = urllib_request.Request(
+            response = self._client.get(
                 f"{self._base_url}/models",
                 headers={"Authorization": f"Bearer {self._api_key}"},
-                method="GET",
+                timeout=5,
             )
-            with urllib_request.urlopen(req, timeout=5) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
+            response.raise_for_status()
+            data = response.json()
             models = [m.get("id") for m in (data.get("data") or [])]
             if self._default_model in models or not models:
                 return True, f"LMS ready with {self._default_model}"
             return False, f"LMS model {self._default_model} not found"
-        except urllib_error.HTTPError as exc:
-            if exc.code in (401, 403):
-                return False, f"LMS auth failed ({exc.code}); check secrets.lms_api_key"
-            return False, f"LMS error {exc.code}: {exc.reason}"
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            if status in (401, 403):
+                return False, f"LMS auth failed ({status}); check secrets.lms_api_key"
+            return False, f"LMS error {status}: {exc.response.reason_phrase}"
         except Exception as exc:
             return False, f"LMS unreachable: {exc}"

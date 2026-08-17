@@ -90,6 +90,10 @@ class GraphVecStream:
         return f"graph-vec:k={self._config.k}:min={self._config.min_similarity}"
 
     @property
+    def supports_concurrent_reads(self) -> bool:
+        return False
+
+    @property
     def config_schema(self) -> type[BaseModel]:
         return GraphVecConfig
 

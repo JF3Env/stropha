@@ -99,6 +99,10 @@ class InferenceBackend(ABC):
             return True, f"{self.name} backend ready"
         return False, f"{self.name} backend not available"
 
+    def close(self) -> None:
+        """Release backend resources, if any."""
+        return None
+
 
 def is_mlx_available() -> bool:
     """Check if MLX is available (Apple Silicon only)."""
@@ -295,6 +299,9 @@ def generate(
     backend: str | None = None,
     json_schema: dict[str, object] | None = None,
     think: bool | None = None,
+    top_p: float | None = None,
+    top_k: int | None = None,
+    presence_penalty: float | None = None,
     timeout: float | None = None,
     raise_errors: bool = False,
 ) -> str | None:
@@ -310,6 +317,9 @@ def generate(
         backend: Optional backend preference ('mlx' or 'ollama').
         json_schema: Optional JSON schema for backends that support structured output.
         think: Optional per-call reasoning override for supporting backends.
+        top_p: Optional nucleus-sampling threshold for supporting backends.
+        top_k: Optional sampling candidate limit for supporting backends.
+        presence_penalty: Optional repetition penalty for supporting backends.
         timeout: Optional per-call timeout in seconds for supporting backends.
         raise_errors: Raise typed LMS errors instead of returning None.
 
@@ -332,6 +342,9 @@ def generate(
                 model=model,
                 json_schema=json_schema,
                 think=think,
+                top_p=top_p,
+                top_k=top_k,
+                presence_penalty=presence_penalty,
                 timeout=timeout,
                 raise_errors=raise_errors,
             )
@@ -372,4 +385,6 @@ def generate(
 def reset_backend() -> None:
     """Reset the cached backend. Useful for testing."""
     global _BACKEND
+    if _BACKEND is not None:
+        _BACKEND.close()
     _BACKEND = None

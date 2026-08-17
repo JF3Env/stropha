@@ -52,6 +52,20 @@ def test_reranks_from_structured_order_and_requests_ranking_controls() -> None:
     assert generate.call_args.kwargs["think"] is False
 
 
+def test_reranker_passes_sampling_controls_to_inference() -> None:
+    hits = [_hit(1), _hit(2)]
+    config = LlmRerankerConfig(top_p=0.95, top_k=40, presence_penalty=1.0)
+    with (
+        patch("stropha.inference.get_backend", return_value=_backend()),
+        patch("stropha.inference.generate", return_value='{"order": [1, 2]}') as generate,
+    ):
+        LlmReranker(config).rerank("query", hits)
+
+    assert generate.call_args.kwargs["top_p"] == 0.95
+    assert generate.call_args.kwargs["top_k"] == 40
+    assert generate.call_args.kwargs["presence_penalty"] == 1.0
+
+
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [
@@ -260,3 +274,4 @@ def test_adapter_id_changes_with_reranker_policy() -> None:
         assert LlmReranker(LlmRerankerConfig(output_mode="text")).adapter_id != base
         assert LlmReranker(LlmRerankerConfig(repair_enabled=False)).adapter_id != base
         assert LlmReranker(LlmRerankerConfig(fallback="original")).adapter_id != base
+        assert LlmReranker(LlmRerankerConfig(top_p=0.95)).adapter_id != base

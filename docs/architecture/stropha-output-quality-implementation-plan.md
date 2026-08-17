@@ -222,17 +222,19 @@ candidate count, and backend identity.
 
 ### Step 2: Make generation task-specific
 
-The generic `InferenceBackend.generate` API currently exposes only prompt,
-`max_tokens`, temperature, model, and backend. Add optional generation controls
-only if the LMS API and other adapters can support them without changing existing
-callers:
+The generic generation dispatcher preserves the common backend interface while
+forwarding optional task-specific controls to LMS without changing other
+backends:
 
 - Structured JSON response format.
 - Thinking/reasoning disabled for ranking-only requests.
+- Top-p, top-k, and presence-penalty sampling controls.
 - Per-call timeout if it can be implemented consistently.
 
 Keep defaults identical for enrichment and other inference users. Reranker-only
 settings belong in `LlmRerankerConfig` and must be included in its `adapter_id`.
+LMS uses one reusable `httpx.Client` with YAML-configured connection and
+keep-alive bounds; backend reset closes the owned pool.
 
 ### Step 3: Harden parsing and repair
 
