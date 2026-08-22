@@ -345,15 +345,31 @@ def assert_snippet_freshness_impl(
 ) -> FreshnessResponse:
     from .retrieval.freshness import assert_snippet_freshness
 
+    try:
+        chunk = app.storage.get_chunk_by_id(chunk_id)
+        allowed = chunk is not None and (
+            repo_id is None or chunk.get("repo_id") == repo_id
+        )
+        hit = app.storage.lookup_by_chunk_id(chunk_id) if allowed else None
+        source = getattr(hit, "source", None)
+        indexed_file_sha256 = getattr(source, "indexed_file_sha256", None)
+        if not isinstance(indexed_file_sha256, str):
+            indexed_file_sha256 = None
+    except Exception as exc:
+        return FreshnessResponse(
+            chunk_id=chunk_id,
+            fresh=None,
+            reason=f"lookup raised: {exc!r}",
+            current_snippet=None,
+            expected_snippet=expected_snippet,
+            drift_details=[],
+        )
     verdict = assert_snippet_freshness(
         chunk_id,
         expected_snippet,
-        lookup_fn=lambda cid: (
-            app.storage.lookup_by_chunk_id(cid)
-            if chunk_belongs_to_repo(app.storage, cid, repo_id)
-            else None
-        ),
+        lookup_fn=lambda _cid: hit,
         strict=bool(strict),
+        indexed_file_sha256=indexed_file_sha256,
     )
     return FreshnessResponse(
         chunk_id=verdict.chunk_id,
@@ -362,6 +378,7 @@ def assert_snippet_freshness_impl(
         current_snippet=verdict.current_snippet,
         expected_snippet=verdict.expected_snippet,
         drift_details=list(verdict.drift_details),
+        source=verdict.source,
     )
 
 

@@ -123,10 +123,12 @@ class TreeSitterDispatchChunker:
     ) -> Iterator[Chunk]:
         fallback = self._registry.get("_fallback")
         for sf in files:
-            try:
-                content = sf.path.read_text(encoding="utf-8", errors="replace")
-            except OSError as exc:
-                raise ChunkerError(f"Cannot read {sf.rel_path}: {exc}") from exc
+            content = sf.snapshot_content
+            if content is None:
+                try:
+                    content = sf.path.read_text(encoding="utf-8", errors="replace")
+                except OSError as exc:
+                    raise ChunkerError(f"Cannot read {sf.rel_path}: {exc}") from exc
             if not content.strip():
                 continue
             sub = self._registry.get(sf.language) or fallback

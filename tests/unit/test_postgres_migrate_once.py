@@ -14,6 +14,8 @@ failed migration.
 
 from __future__ import annotations
 
+from typing import cast
+
 import psycopg
 import pytest
 
@@ -35,8 +37,13 @@ class _PoisonedRaw:
 
 
 class _RecordingCursor:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        missing_columns: set[tuple[str, str]] | None = None,
+    ) -> None:
         self.calls: list[tuple[str, object]] = []
+        self._missing_columns = missing_columns or set()
+        self._rows: list[dict[str, str]] = []
 
     def __enter__(self):
         return self
@@ -46,18 +53,33 @@ class _RecordingCursor:
 
     def execute(self, sql: str, params: object = None) -> None:
         self.calls.append((sql, params))
+        if "information_schema.columns" in sql:
+            self._rows = [
+                {"table_name": table, "column_name": column}
+                for table, column in sorted(self._missing_columns)
+            ]
+
+    def fetchall(self) -> list[dict[str, str]]:
+        return self._rows
 
 
 class _RecordingRaw:
-    def __init__(self) -> None:
-        self.recording_cursor = _RecordingCursor()
+    def __init__(
+        self,
+        missing_columns: set[tuple[str, str]] | None = None,
+    ) -> None:
+        self.recording_cursor = _RecordingCursor(missing_columns)
         self.committed = False
+        self.rolled_back = False
 
     def cursor(self) -> _RecordingCursor:
         return self.recording_cursor
 
     def commit(self) -> None:
         self.committed = True
+
+    def rollback(self) -> None:
+        self.rolled_back = True
 
 
 class _LockingCursor(_RecordingCursor):
@@ -169,6 +191,74 @@ def test_migration_updates_existing_schema_version() -> None:
     assert "CAST(meta.value AS integer) < CAST(EXCLUDED.value AS integer)" in sql
     assert params == ("14",)
     assert raw.committed is True
+
+
+def test_migration_adds_and_verifies_all_forward_columns_before_version() -> None:
+    st = _bare_storage()
+    raw = _RecordingRaw()
+    st._raw = raw
+    st._dim = 4
+
+    st._run_migration_ddl()
+
+    normalized_calls = [" ".join(sql.split()) for sql, _params in raw.recording_cursor.calls]
+    expected_columns = {
+        ("chunks", "repo_id"),
+        ("chunks", "embedding_text"),
+        ("chunks", "enricher_id"),
+        ("files", "last_enricher_id"),
+        ("files", "last_embedder_model"),
+        ("sessions", "scratchpad"),
+        ("project_memory", "provenance_commit"),
+        ("episodes", "provenance_commit"),
+        ("graph_nodes", "embedding"),
+        ("graph_nodes", "embedding_model"),
+        ("graph_nodes", "embedding_dim"),
+        ("graph_nodes", "repo_id"),
+        ("graph_edges", "repo_id"),
+    }
+    for table, column in expected_columns:
+        statement = f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} "
+        assert any(sql.startswith(statement) for sql in normalized_calls)
+
+    verification_index, verification_call = next(
+        (index, call)
+        for index, call in enumerate(raw.recording_cursor.calls)
+        if "information_schema.columns" in call[0]
+    )
+    version_index = next(
+        index
+        for index, sql in enumerate(normalized_calls)
+        if "VALUES ('schema_version'" in sql
+    )
+    assert verification_index < version_index
+    tables, columns = cast(tuple[list[str], list[str]], verification_call[1])
+    verified_columns = set(zip(tables, columns, strict=True))
+    assert expected_columns <= verified_columns
+    assert {
+        ("secondary_embeddings", "chunk_rowid"),
+        ("secondary_embeddings", "content_hash"),
+        ("secondary_embeddings", "embedder_id"),
+        ("secondary_embeddings", "embedding_dim"),
+        ("secondary_embeddings", "embedding"),
+    } <= verified_columns
+
+
+def test_unverified_schema_is_not_versioned_or_memoized() -> None:
+    st = _bare_storage()
+    raw = _RecordingRaw({("sessions", "scratchpad")})
+    st._raw = raw
+    st._dim = 4
+
+    with pytest.raises(StorageError, match=r"sessions\.scratchpad"):
+        st._migrate()
+
+    assert not any(
+        "VALUES ('schema_version'" in sql for sql, _params in raw.recording_cursor.calls
+    )
+    assert raw.committed is False
+    assert raw.rolled_back is True
+    assert _TEST_DSN not in pg_mod._MIGRATED_DSNS
 
 
 def test_dimension_reset_has_bounded_lock_wait() -> None:

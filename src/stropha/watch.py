@@ -1,4 +1,4 @@
-"""Soft index — watch a working tree and re-index on file changes.
+"""Watch a saved working tree and persistently reconcile file changes.
 
 Per spec §8 / Phase 3: "Soft index para working tree (file watcher)."
 The post-commit hook covers the committed state; this command covers
@@ -7,16 +7,15 @@ your latest edits within seconds of saving.
 
 Design:
 - Standard library only (``watchdog`` not pulled in to keep deps light).
-  We poll the file mtimes on a low-frequency interval (default 1 s) and
-  diff against a snapshot. For typical code repos (<10k files) this is
-  sub-millisecond and trivial CPU.
+  We poll full source hashes on a low-frequency interval (default 1 s),
+  using the configured walker when the MCP runtime provides it.
 - Debounced: a wave of writes from an LSP/format/save-on-blur cycle
   collapses into a single re-index pass after the debounce window
   (default 2 s of quiet).
 - Respects `.gitignore` / `.strophaignore` via the standard ``Walker``
   filters, so build artefacts and caches don't trigger storms.
-- Only re-indexes the *changed* files (`Walker.discover_paths(rel)`).
-  Other chunks pay the freshness skip (cheap).
+- Re-indexes through the pipeline's hash-based reconcile mode, so changed
+  files are refreshed and unchanged files pay only the freshness skip.
 - Doesn't reload the graphify graph or re-embed graph nodes by default
   — those are heavy and the hook handles them on commit. Override via
   ``--full-refresh`` if you want a complete pass.
@@ -32,53 +31,144 @@ MCP Integration:
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import signal
 import threading
 import time
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from .config import get_config
-from .errors import StrophaError
+from .errors import PipelineError, StrophaError
 from .ingest.walker import Walker
 from .logging import get_logger
-from .pipeline import Pipeline, build_stages, load_pipeline_config
+from .pipeline import Pipeline, build_stages, build_walker, load_pipeline_config
+from .stages.walker import WalkerStage
 
 log = get_logger(__name__)
 
 _DEFAULT_INTERVAL_S = 1.0
 _DEFAULT_DEBOUNCE_S = 2.0
+_RETRY_INITIAL_S = 1.0
+_RETRY_MAX_S = 30.0
 
 
 @dataclass
 class _Snapshot:
-    """File-mtime snapshot for change detection."""
+    """Full-hash snapshot for saved-source change detection."""
 
-    mtimes: dict[Path, float] = field(default_factory=dict)
+    files: dict[Path, tuple[int, int, str]] = field(default_factory=dict)
 
     def diff(self, fresh: _Snapshot) -> tuple[set[Path], set[Path]]:
         """Return ``(changed_or_added, removed)`` since the previous snapshot."""
         changed: set[Path] = set()
-        for p, m in fresh.mtimes.items():
-            prev = self.mtimes.get(p)
-            if prev is None or prev != m:
-                changed.add(p)
-        removed = set(self.mtimes.keys()) - set(fresh.mtimes.keys())
+        for path, stamp in fresh.files.items():
+            previous_stamp = self.files.get(path)
+            if previous_stamp is None or previous_stamp != stamp:
+                changed.add(path)
+        removed = set(self.files) - set(fresh.files)
         return changed, removed
 
 
-def _snapshot(repo: Path, *, max_file_bytes: int = 524_288) -> _Snapshot:
-    """Walk via the standard ``Walker`` and capture per-file mtimes."""
+def _snapshot(
+    repo: Path,
+    *,
+    max_file_bytes: int = 524_288,
+    walker: WalkerStage | None = None,
+) -> _Snapshot:
+    """Walk indexable files and capture stable full-byte hashes."""
     snap = _Snapshot()
-    walker = Walker(repo, max_file_bytes=max_file_bytes)
-    for sf in walker.discover():
+    source_files = (
+        walker.discover(repo)
+        if walker is not None
+        else Walker(repo, max_file_bytes=max_file_bytes).discover()
+    )
+    for sf in source_files:
         try:
-            abs_path = (repo / sf.rel_path).resolve()
-            snap.mtimes[abs_path] = abs_path.stat().st_mtime
+            # Snapshot identity follows the walker's repository-relative path,
+            # not a potentially canonicalized physical SourceFile.path.
+            logical_path = (repo / sf.rel_path).absolute()
+            read_path = (
+                sf.path if sf.path.is_absolute() else repo / sf.rel_path
+            ).resolve()
+            before = read_path.stat()
+            raw = read_path.read_bytes()
+            after = read_path.stat()
+            resolved_after = logical_path.resolve()
         except OSError:
             continue
+        before_identity = (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_mtime_ns,
+            before.st_ctime_ns,
+        )
+        after_identity = (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_mtime_ns,
+            after.st_ctime_ns,
+        )
+        if (
+            before_identity != after_identity
+            or len(raw) != after.st_size
+            or resolved_after != read_path
+        ):
+            continue
+        snap.files[logical_path] = (
+            after.st_mtime_ns,
+            after.st_size,
+            hashlib.sha256(raw).hexdigest(),
+        )
     return snap
+
+
+@dataclass
+class _WatchState:
+    """Pending reconciliation and retry state shared by both watcher entry points."""
+
+    previous: _Snapshot
+    pending_since: float | None
+    retry_at: float | None = None
+    failures: int = 0
+    next_retry_s: float = field(default=_RETRY_INITIAL_S, repr=False)
+
+    @classmethod
+    def starting(cls, previous: _Snapshot, *, now: float) -> _WatchState:
+        # Reconcile edits made while no watcher was running.
+        return cls(previous=previous, pending_since=now)
+
+    def observe(self, fresh: _Snapshot, *, now: float) -> tuple[set[Path], set[Path]]:
+        """Merge a fresh filesystem observation into pending work."""
+        changed, removed = self.previous.diff(fresh)
+        if changed or removed:
+            self.previous = fresh
+            self.pending_since = now
+        return changed, removed
+
+    def is_ready(self, *, now: float, debounce_s: float) -> bool:
+        """Return whether pending work is quiet and outside retry backoff."""
+        if self.pending_since is None or now < self.pending_since + debounce_s:
+            return False
+        return self.retry_at is None or now >= self.retry_at
+
+    def mark_succeeded(self) -> None:
+        """Clear pending work only after a complete refresh."""
+        self.pending_since = None
+        self.retry_at = None
+        self.failures = 0
+        self.next_retry_s = _RETRY_INITIAL_S
+
+    def mark_failed(self, *, now: float) -> float:
+        """Keep work pending and schedule the next bounded retry."""
+        delay = self.next_retry_s
+        self.retry_at = now + delay
+        self.failures += 1
+        self.next_retry_s = min(delay * 2, _RETRY_MAX_S)
+        return delay
 
 
 def _format_changes(
@@ -101,6 +191,63 @@ def _format_changes(
     if removed_list:
         parts.append(f"{len(removed_list)} removed")
     return " · ".join(parts) if parts else "no changes"
+
+
+def _run_watch_loop(
+    repo: Path,
+    *,
+    interval_s: float,
+    debounce_s: float,
+    full_refresh: bool,
+    wait: Callable[[float], bool],
+    max_file_bytes: int = 524_288,
+    walker: WalkerStage | None = None,
+    once: bool = False,
+    now_fn: Callable[[], float] = time.monotonic,
+) -> None:
+    """Poll, debounce, and retry until ``wait`` reports a stop request."""
+    try:
+        initial = _snapshot(repo, max_file_bytes=max_file_bytes, walker=walker)
+    except Exception as exc:
+        log.warning("watch.snapshot_failed", error=str(exc))
+        initial = _Snapshot()
+    state = _WatchState.starting(initial, now=now_fn())
+
+    while not wait(interval_s):
+        try:
+            fresh = _snapshot(repo, max_file_bytes=max_file_bytes, walker=walker)
+        except Exception as exc:
+            log.warning("watch.snapshot_failed", error=str(exc))
+            if once:
+                break
+            continue
+
+        now = now_fn()
+        changed, removed = state.observe(fresh, now=now)
+        if changed or removed:
+            log.info(
+                "watch.changes_seen",
+                summary=_format_changes(changed, removed, root=repo),
+            )
+
+        if state.is_ready(now=now, debounce_s=debounce_s):
+            log.info("watch.reindex_start")
+            try:
+                _reindex(repo, full_refresh=full_refresh)
+            except Exception as exc:
+                retry_in_s = state.mark_failed(now=now_fn())
+                log.warning(
+                    "watch.reindex_failed",
+                    error=str(exc),
+                    failures=state.failures,
+                    retry_in_s=retry_in_s,
+                )
+            else:
+                state.mark_succeeded()
+                log.info("watch.reindex_done")
+
+        if once:
+            break
 
 
 def watch_repo(
@@ -135,13 +282,10 @@ def watch_repo(
         full_refresh=full_refresh,
     )
 
-    previous = _snapshot(repo)
-    pending_since: float | None = None
-
-    stop = {"flag": False}
+    stop_event = threading.Event()
 
     def _on_sigint(_sig: int, _frame: object) -> None:
-        stop["flag"] = True
+        stop_event.set()
         log.info("watch.stop_requested")
 
     try:
@@ -152,30 +296,17 @@ def watch_repo(
         # the watcher may run elsewhere — skip silently.
         pass
 
-    while not stop["flag"]:
-        time.sleep(interval_s)
-        fresh = _snapshot(repo)
-        changed, removed = previous.diff(fresh)
-
-        now = time.monotonic()
-        if changed or removed:
-            pending_since = now
-            log.info(
-                "watch.changes_seen",
-                summary=_format_changes(changed, removed, root=repo),
-            )
-            previous = fresh
-        elif pending_since is not None and (now - pending_since) >= debounce_s:
-            # Debounce window elapsed with no further activity → re-index.
-            log.info("watch.reindex_start")
-            try:
-                _reindex(repo, full_refresh=full_refresh)
-                log.info("watch.reindex_done")
-            except Exception as exc:
-                log.warning("watch.reindex_failed", error=str(exc))
-            pending_since = None
-        if once:
-            break
+    resolved = load_pipeline_config()
+    _run_watch_loop(
+        repo,
+        interval_s=interval_s,
+        debounce_s=debounce_s,
+        full_refresh=full_refresh,
+        wait=stop_event.wait,
+        max_file_bytes=get_config().max_file_bytes,
+        walker=build_walker(resolved),
+        once=once,
+    )
 
 
 def _reindex(repo: Path, *, full_refresh: bool) -> None:
@@ -204,7 +335,12 @@ def _reindex(repo: Path, *, full_refresh: bool) -> None:
             chunks=stats.chunks_seen,
             embedded=stats.chunks_embedded,
             reused=stats.chunks_skipped_fresh,
+            failed=stats.chunks_enriched_failed,
         )
+        if stats.chunks_enriched_failed:
+            raise PipelineError(
+                f"Re-index incomplete: {stats.chunks_enriched_failed} chunks failed enrichment"
+            )
     finally:
         if built.storage is not None:
             with contextlib.suppress(Exception):
@@ -227,6 +363,8 @@ class WatchController:
     interval_s: float = _DEFAULT_INTERVAL_S
     debounce_s: float = _DEFAULT_DEBOUNCE_S
     full_refresh: bool = False
+    max_file_bytes: int = 524_288
+    walker: WalkerStage | None = None
 
     _stop_event: threading.Event = field(default_factory=threading.Event)
     _thread: threading.Thread | None = field(default=None, init=False)
@@ -250,7 +388,7 @@ class WatchController:
             debounce_s=self.debounce_s,
         )
 
-    def stop(self, timeout: float = 5.0) -> None:
+    def stop(self, timeout: float | None = None) -> None:
         """Signal the watch loop to stop and wait for thread to finish."""
         if self._thread is None or not self._thread.is_alive():
             return
@@ -269,36 +407,12 @@ class WatchController:
             log.error("watch.not_a_directory", path=str(repo))
             return
 
-        previous = _snapshot(repo)
-        pending_since: float | None = None
-
-        while not self._stop_event.is_set():
-            # Use wait() with timeout instead of sleep() for responsive shutdown
-            if self._stop_event.wait(timeout=self.interval_s):
-                break  # Stop event was set
-
-            try:
-                fresh = _snapshot(repo)
-            except Exception as exc:
-                log.warning("watch.snapshot_failed", error=str(exc))
-                continue
-
-            changed, removed = previous.diff(fresh)
-            now = time.monotonic()
-
-            if changed or removed:
-                pending_since = now
-                log.info(
-                    "watch.changes_seen",
-                    summary=_format_changes(changed, removed, root=repo),
-                )
-                previous = fresh
-            elif pending_since is not None and (now - pending_since) >= self.debounce_s:
-                # Debounce window elapsed with no further activity → re-index.
-                log.info("watch.reindex_start")
-                try:
-                    _reindex(repo, full_refresh=self.full_refresh)
-                    log.info("watch.reindex_done")
-                except Exception as exc:
-                    log.warning("watch.reindex_failed", error=str(exc))
-                pending_since = None
+        _run_watch_loop(
+            repo,
+            interval_s=self.interval_s,
+            debounce_s=self.debounce_s,
+            full_refresh=self.full_refresh,
+            wait=self._stop_event.wait,
+            max_file_bytes=self.max_file_bytes,
+            walker=self.walker,
+        )

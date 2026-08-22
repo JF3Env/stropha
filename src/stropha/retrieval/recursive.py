@@ -180,10 +180,20 @@ def _absorb(host: SearchHit, other: SearchHit, storage: Storage) -> SearchHit:
     new_snippet = host.snippet
     if other.snippet and other.snippet not in host.snippet:
         new_snippet = f"{host.snippet}\n…\n{other.snippet}"
+    source = host.source
+    if source is not None:
+        source = source.model_copy(
+            update={
+                "start_line": new_start,
+                "end_line": new_end,
+                "source_slice_sha256": None,
+            }
+        )
     return host.model_copy(update={
         "start_line": new_start,
         "end_line": new_end,
         "snippet": new_snippet[:1200],
         # Keep the higher of the two scores so RRF semantics aren't lost.
         "score": max(host.score, other.score),
+        "source": source,
     })

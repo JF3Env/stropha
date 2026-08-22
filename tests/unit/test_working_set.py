@@ -1,11 +1,9 @@
-"""Unit tests for working-set assembler + MCP wrapper / resource
-(WIN-253, EPIC 1.12 #90)."""
+"""Unit tests for the working-set assembler and MCP wrapper."""
 
 from __future__ import annotations
 
 from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -311,24 +309,12 @@ class TestModuleSurface:
 # ---------------------------------------------------------------------------
 
 
-def _make_session_record(seen: set[str], pinned: set[str], sid: str = "s1"):
-    rec = MagicMock()
-    rec.session_id = sid
-    rec.seen_chunk_ids = seen
-    rec.pinned_chunk_ids = pinned
-    rec.created_at = ""
-    rec.updated_at = ""
-    return rec
-
-
 def _make_ctx(
     *,
     session_id: str = "in-mem",
     pinned: list[str] | None = None,
     seen: list[str] | None = None,
     hits: dict[str, _Hit] | None = None,
-    session_record=None,
-    session_raises: bool = False,
 ) -> MagicMock:
     app = MagicMock()
     app.session_id = session_id
@@ -342,10 +328,6 @@ def _make_ctx(
     )
     app.storage.lookup_repo_id.return_value = 1
     app.config.target_repo = Path.cwd()
-    if session_raises:
-        app.storage.get_session.side_effect = RuntimeError("session boom")
-    else:
-        app.storage.get_session.return_value = session_record
     ctx = MagicMock()
     ctx.request_context.lifespan_context = app
     return ctx
@@ -358,14 +340,11 @@ class TestWorkingSetMCP:
         tool_names = [t.name for t in mcp._tool_manager.list_tools()]
         assert "working_set_tool" in tool_names
 
-    def test_resource_registered(self) -> None:
+    def test_context_free_resource_not_registered(self) -> None:
         from stropha.server import mcp
 
         resource_uris = [r.uri for r in mcp._resource_manager.list_resources()]
-        # FastMCP stores URI objects; coerce to str.
-        assert any(
-            str(uri).startswith("stropha://working-set") for uri in resource_uris
-        )
+        assert not any(str(uri).startswith("stropha://working-set") for uri in resource_uris)
 
     def test_default_session(self) -> None:
         from stropha.server import working_set_tool
@@ -376,34 +355,33 @@ class TestWorkingSetMCP:
         assert response.pinned_count == 1
         assert response.recent_count == 1
 
-    def test_explicit_session(self) -> None:
+    def test_explicit_current_session(self) -> None:
         from stropha.server import working_set_tool
 
-        record = _make_session_record({"s-seen"}, {"s-pin"}, sid="explicit")
         ctx = _make_ctx(
+            session_id="session-1",
+            pinned=["s-pin"],
+            seen=["s-seen"],
             hits={"s-pin": _Hit(chunk_id="s-pin"), "s-seen": _Hit(chunk_id="s-seen")},
-            session_record=record,
         )
-        response = working_set_tool("explicit", ctx=ctx)
+        response = working_set_tool("session-1", ctx=ctx)
         assert response.pinned_count == 1
         assert response.recent_count == 1
-        assert response.session_id == "explicit"
+        assert response.session_id == "session-1"
 
-    def test_explicit_session_not_found(self) -> None:
+    def test_foreign_session_is_rejected(self) -> None:
         from stropha.server import working_set_tool
 
-        ctx = _make_ctx(session_record=None)
-        response = working_set_tool("ghost", ctx=ctx)
-        # No state -> empty working set with the requested id echoed.
-        assert response.pinned_count == 0
-        assert response.session_id == "ghost"
-
-    def test_explicit_session_get_raises(self) -> None:
-        from stropha.server import working_set_tool
-
-        ctx = _make_ctx(session_raises=True)
+        ctx = _make_ctx(
+            session_id="session-1",
+            pinned=["local"],
+            hits={"local": _Hit(chunk_id="local")},
+        )
         response = working_set_tool("ghost", ctx=ctx)
         assert response.pinned_count == 0
+        assert response.session_id == "session-1"
+        assert response.notes == ["Working sets are isolated to the current MCP session."]
+        ctx.request_context.lifespan_context.storage.get_session.assert_not_called()
 
     def test_negative_budget_clamped(self) -> None:
         from stropha.server import working_set_tool
@@ -451,138 +429,3 @@ class TestWorkingSetMCP:
 
         assert response.entries == []
         assert response.notes
-
-
-# ---------------------------------------------------------------------------
-# Resource handler — direct invocation
-# ---------------------------------------------------------------------------
-
-
-class TestWorkingSetResource:
-    def test_no_session_returns_placeholder(self) -> None:
-        from stropha.server import working_set_resource
-
-        fake_storage = MagicMock()
-        fake_storage.__enter__.return_value = fake_storage
-        fake_storage.__exit__.return_value = None
-        fake_storage.get_latest_session.return_value = None
-        fake_storage.lookup_repo_id.return_value = 1
-
-        fake_built = MagicMock(storage=fake_storage)
-        with patch(
-             "stropha.server.get_config",
-             return_value=SimpleNamespace(target_repo=Path.cwd()),
-             ), patch("stropha.server.load_pipeline_config", return_value={}), \
-             patch("stropha.server.build_stages", return_value=fake_built):
-            md = working_set_resource()
-        assert "no session state" in md
-
-    def test_storage_exception_returns_placeholder(self) -> None:
-        from stropha.server import working_set_resource
-
-        fake_storage = MagicMock()
-        fake_storage.__enter__.return_value = fake_storage
-        fake_storage.__exit__.return_value = None
-        fake_storage.get_latest_session.side_effect = RuntimeError("boom")
-        fake_storage.lookup_repo_id.return_value = 1
-
-        fake_built = MagicMock(storage=fake_storage)
-        with patch(
-             "stropha.server.get_config",
-             return_value=SimpleNamespace(target_repo=Path.cwd()),
-             ), patch("stropha.server.load_pipeline_config", return_value={}), \
-             patch("stropha.server.build_stages", return_value=fake_built):
-            md = working_set_resource()
-        assert "no session state" in md
-
-    def test_latest_session_renders(self) -> None:
-        from stropha.server import working_set_resource
-
-        record = _make_session_record({"r"}, {"p"}, sid="latest-sess")
-
-        fake_storage = MagicMock()
-        fake_storage.__enter__.return_value = fake_storage
-        fake_storage.__exit__.return_value = None
-        fake_storage.get_latest_session.return_value = record
-        fake_storage.lookup_repo_id.return_value = 1
-        fake_storage.get_chunk_by_id.return_value = {"repo_id": 1}
-        fake_storage.lookup_by_chunk_id.side_effect = lambda cid: _Hit(
-            chunk_id=cid,
-        )
-
-        fake_built = MagicMock(storage=fake_storage)
-        with patch(
-             "stropha.server.get_config",
-             return_value=SimpleNamespace(target_repo=Path.cwd()),
-             ), patch("stropha.server.load_pipeline_config", return_value={}), \
-             patch("stropha.server.build_stages", return_value=fake_built):
-            md = working_set_resource()
-        assert "latest-sess" in md
-        assert "## Pinned" in md
-
-    def test_lookup_exception_inside_resource_swallowed(self) -> None:
-        from stropha.server import working_set_resource
-
-        record = _make_session_record({"r"}, {"p"}, sid="s1")
-
-        fake_storage = MagicMock()
-        fake_storage.__enter__.return_value = fake_storage
-        fake_storage.__exit__.return_value = None
-        fake_storage.get_latest_session.return_value = record
-        fake_storage.lookup_repo_id.return_value = 1
-        fake_storage.get_chunk_by_id.return_value = {"repo_id": 1}
-        fake_storage.lookup_by_chunk_id.side_effect = RuntimeError("lookup boom")
-
-        fake_built = MagicMock(storage=fake_storage)
-        with patch(
-             "stropha.server.get_config",
-             return_value=SimpleNamespace(target_repo=Path.cwd()),
-             ), patch("stropha.server.load_pipeline_config", return_value={}), \
-             patch("stropha.server.build_stages", return_value=fake_built):
-            md = working_set_resource()
-        # Lookup failed -> empty entries -> placeholder body.
-        assert "no working-set" in md or "_no" in md
-
-    def test_resource_filters_foreign_chunks(self) -> None:
-        from stropha.server import working_set_resource
-
-        record = _make_session_record(set(), {"local", "foreign"}, sid="s1")
-        fake_storage = MagicMock()
-        fake_storage.__enter__.return_value = fake_storage
-        fake_storage.__exit__.return_value = None
-        fake_storage.lookup_repo_id.return_value = 1
-        fake_storage.get_latest_session.return_value = record
-        fake_storage.get_chunk_by_id.side_effect = lambda cid: {
-            "repo_id": 1 if cid == "local" else 2
-        }
-        fake_storage.lookup_by_chunk_id.side_effect = lambda cid: _Hit(chunk_id=cid)
-
-        with patch(
-            "stropha.server.get_config",
-            return_value=SimpleNamespace(target_repo=Path.cwd()),
-        ), patch("stropha.server.load_pipeline_config", return_value={}), patch(
-            "stropha.server.build_stages", return_value=MagicMock(storage=fake_storage)
-        ):
-            markdown = working_set_resource()
-
-        assert "local" in markdown
-        assert "foreign" not in markdown
-
-    def test_resource_fails_closed_when_repo_is_unresolved(self) -> None:
-        from stropha.server import working_set_resource
-
-        fake_storage = MagicMock()
-        fake_storage.__enter__.return_value = fake_storage
-        fake_storage.__exit__.return_value = None
-        fake_storage.lookup_repo_id.return_value = None
-
-        with patch(
-            "stropha.server.get_config",
-            return_value=SimpleNamespace(target_repo=Path.cwd()),
-        ), patch("stropha.server.load_pipeline_config", return_value={}), patch(
-            "stropha.server.build_stages", return_value=MagicMock(storage=fake_storage)
-        ):
-            markdown = working_set_resource()
-
-        assert "current repository unavailable" in markdown
-        fake_storage.get_latest_session.assert_not_called()

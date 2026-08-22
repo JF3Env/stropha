@@ -13,6 +13,7 @@ Covers every branch of ``evaluate_candidate``:
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -39,6 +40,10 @@ from stropha.meta.evaluator import (
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _fingerprint(value: str) -> str:
+    return f"sha256:{hashlib.sha256(value.encode()).hexdigest()}"
 
 
 class _FakeHit:
@@ -290,7 +295,10 @@ class TestEvaluateCandidate:
         trace_files = list((candidate_dir / "traces").glob("trace-*.jsonl"))
         assert len(trace_files) == 1
         events = [json.loads(line) for line in trace_files[0].read_text().splitlines()]
-        assert [event["query"] for event in events] == ["q-search-1", "q-search-2"]
+        assert [event["query"] for event in events] == [
+            _fingerprint("q-search-1"),
+            _fingerprint("q-search-2"),
+        ]
         assert all(event["candidate_id"] == "cand-1" for event in events)
         assert all(event["run_id"] == "run-7" for event in events)
         assert all(event["session_id"] == "run-7" for event in events)
@@ -327,13 +335,11 @@ class TestEvaluateCandidate:
         assert len(trace_files) == 1
         events = [json.loads(line) for line in trace_files[0].read_text().splitlines()]
         assert len(events) == 1
-        assert events[0]["query"] == "broken"
+        assert events[0]["query"] == _fingerprint("broken")
         assert events[0]["results"] == []
         assert events[0]["returned_tokens"] == 0
-        assert events[0]["error"] == {
-            "type": "RuntimeError",
-            "message": "retrieval failed",
-        }
+        assert events[0]["error"] == {"type": "RuntimeError"}
+        assert events[0]["status"] == "error"
 
     @pytest.mark.parametrize("fail", [False, True])
     def test_injected_recorder_lifecycle(self, tmp_path: Path, fail: bool) -> None:
@@ -435,7 +441,7 @@ class TestEvaluateCandidate:
         trace_file = next(tmp_path.glob("trace-*.jsonl"))
         result = json.loads(trace_file.read_text())["results"][0]
         assert result["path"] == "a.py"
-        assert isinstance(result["cycle"], str)
+        assert "cycle" not in result
 
 
 class TestQueryCandidateConfig:

@@ -17,12 +17,14 @@ from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Barrier
+from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 import pytest
 
 psycopg = pytest.importorskip("psycopg")
 
+from stropha.adapters.storage import postgres as pg_mod  # noqa: E402
 from stropha.adapters.storage.postgres import (  # noqa: E402
     PostgresStorage,
     PostgresStorageConfig,
@@ -106,6 +108,150 @@ def _chunk(i: int, path: str, symbol: str, content: str) -> Chunk:
     )
 
 
+def _snapshot_write(chunk: Chunk, seed: int = 0) -> dict[str, Any]:
+    return {
+        "chunk": chunk,
+        "embedding": _emb(seed),
+        "embedding_text": f"enriched:{chunk.content}",
+    }
+
+
+def _replace_snapshot(
+    store: PostgresStorage,
+    *,
+    repo_id: int,
+    rel_path: str,
+    desired: list[str],
+    writes: list[dict[str, Any]],
+    file_hash: str = "file-hash",
+    size: int = 100,
+    mtime: float = 123.5,
+    reused: list[Chunk] | None = None,
+) -> None:
+    store.replace_file_snapshot(
+        repo_id=repo_id,
+        rel_path=rel_path,
+        desired_chunk_ids=desired,
+        chunk_writes=writes,
+        embedding_model="snapshot-primary:v1",
+        embedding_dim=DIM,
+        enricher_id="snapshot-enricher:v1",
+        file_content_hash=file_hash,
+        size_bytes=size,
+        mtime=mtime,
+        reused_chunks=reused,
+    )
+
+
+class _SnapshotResult:
+    def __init__(self, *, rowcount: int = 0) -> None:
+        self.rowcount = rowcount
+
+
+class _AbortingSnapshotRaw:
+    """Small psycopg transaction-state fake for savepoint recovery."""
+
+    def __init__(
+        self,
+        fail_prefix: str | None = "INSERT INTO files",
+        *,
+        transaction_status: Any = psycopg.pq.TransactionStatus.INTRANS,
+    ) -> None:
+        self.calls: list[str] = []
+        self.aborted = False
+        self.rolled_back = False
+        self.fail_prefix = fail_prefix
+        self.info = type(
+            "Info",
+            (),
+            {"transaction_status": transaction_status},
+        )()
+
+    def execute(self, sql: str, params: object = None) -> _SnapshotResult:
+        normalized = " ".join(sql.split())
+        self.calls.append(normalized)
+        if normalized == "BEGIN;":
+            self.info.transaction_status = psycopg.pq.TransactionStatus.INTRANS
+            return _SnapshotResult()
+        if normalized.startswith("ROLLBACK TO SAVEPOINT"):
+            self.aborted = False
+            return _SnapshotResult()
+        if self.aborted:
+            raise AssertionError("transaction remained aborted")
+        if self.fail_prefix is not None and normalized.startswith(self.fail_prefix):
+            self.aborted = True
+            raise RuntimeError("snapshot write failed")
+        return _SnapshotResult(rowcount=1 if normalized.startswith("DELETE FROM chunks") else 0)
+
+    def rollback(self) -> None:
+        self.aborted = False
+        self.rolled_back = True
+        self.info.transaction_status = psycopg.pq.TransactionStatus.IDLE
+
+
+def test_snapshot_fake_rolls_back_savepoint_and_keeps_transaction_usable() -> None:
+    store = PostgresStorage.__new__(PostgresStorage)
+    store._dim = DIM
+    raw = _AbortingSnapshotRaw()
+    store._raw = raw
+
+    with pytest.raises(RuntimeError, match="snapshot write failed"):
+        _replace_snapshot(
+            store,
+            repo_id=1,
+            rel_path="empty.py",
+            desired=[],
+            writes=[],
+        )
+
+    assert any(call.startswith("DELETE FROM chunks") for call in raw.calls)
+    assert raw.calls[-2:] == [
+        "ROLLBACK TO SAVEPOINT stropha_file_snapshot;",
+        "RELEASE SAVEPOINT stropha_file_snapshot;",
+    ]
+    assert raw.rolled_back is False
+    raw.execute("SELECT 1;")
+
+
+def test_snapshot_fake_delete_rolls_back_and_keeps_transaction_usable() -> None:
+    store = PostgresStorage.__new__(PostgresStorage)
+    raw = _AbortingSnapshotRaw(fail_prefix="DELETE FROM files")
+    store._raw = raw
+
+    with pytest.raises(RuntimeError, match="snapshot write failed"):
+        store.delete_file_snapshot(repo_id=1, rel_path="deleted.py")
+
+    assert raw.calls[-2:] == [
+        "ROLLBACK TO SAVEPOINT stropha_file_snapshot;",
+        "RELEASE SAVEPOINT stropha_file_snapshot;",
+    ]
+    assert raw.rolled_back is False
+    raw.execute("SELECT 1;")
+
+
+def test_snapshot_fake_starts_transaction_without_committing() -> None:
+    store = PostgresStorage.__new__(PostgresStorage)
+    store._dim = DIM
+    raw = _AbortingSnapshotRaw(
+        fail_prefix=None,
+        transaction_status=psycopg.pq.TransactionStatus.IDLE,
+    )
+    store._raw = raw
+
+    _replace_snapshot(
+        store,
+        repo_id=1,
+        rel_path="empty.py",
+        desired=[],
+        writes=[],
+    )
+
+    assert raw.calls[0:2] == ["BEGIN;", "SAVEPOINT stropha_file_snapshot;"]
+    assert raw.calls[-1] == "RELEASE SAVEPOINT stropha_file_snapshot;"
+    assert all("COMMIT" not in call for call in raw.calls)
+    assert raw.info.transaction_status == psycopg.pq.TransactionStatus.INTRANS
+
+
 @pytest.fixture(scope="module")
 def pg_dsn() -> Iterator[str]:
     try:
@@ -118,7 +264,10 @@ def pg_dsn() -> Iterator[str]:
             if cur.fetchone():
                 cur.execute(f'DROP DATABASE "{TEST_DB}";')
             cur.execute(f'CREATE DATABASE "{TEST_DB}";')
-        yield _swap_db(BASE_DSN, TEST_DB)
+        test_dsn = _swap_db(BASE_DSN, TEST_DB)
+        with psycopg.connect(test_dsn, autocommit=True) as test_admin:
+            test_admin.execute("CREATE EXTENSION IF NOT EXISTS vector;")
+        yield test_dsn
     finally:
         with admin.cursor() as cur:
             cur.execute(
@@ -134,6 +283,9 @@ def pg_dsn() -> Iterator[str]:
 def store(pg_dsn: str) -> Iterator[PostgresStorage]:
     st = PostgresStorage(PostgresStorageConfig(dsn=pg_dsn), embedding_dim=DIM)
     st.clear()
+    for table in ("graph_edges", "graph_nodes", "graph_meta"):
+        st._raw.execute(f"DELETE FROM {table};")
+    st.commit()
     yield st
     st.close()
 
@@ -232,6 +384,50 @@ def test_schema_v14_updates_existing_version_and_has_hnsw(
     assert vector_type is not None and vector_type["type"] == "vector(256)"
 
 
+def test_legacy_aux_columns_migrate_forward(store: PostgresStorage, pg_dsn: str) -> None:
+    legacy_columns = (
+        ("sessions", "scratchpad"),
+        ("project_memory", "provenance_commit"),
+        ("episodes", "provenance_commit"),
+    )
+    for table, column in legacy_columns:
+        store._raw.execute(f"ALTER TABLE {table} DROP COLUMN {column};")
+    store._raw.execute(
+        """
+        INSERT INTO sessions(
+            session_id, client_id, created_at, updated_at,
+            seen_chunk_ids, pinned_chunk_ids, meta
+        ) VALUES ('legacy-session', NULL, 'now', 'now', '[]', '[]', '{}');
+        """
+    )
+    store.set_meta("schema_version", "10")
+    store.commit()
+    pg_mod._MIGRATED_DSNS.discard(pg_dsn)
+
+    store._migrate()
+    store._run_migration_ddl()  # A verified migration remains idempotent.
+
+    for table, column in legacy_columns:
+        row = store._raw.execute(
+            """
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = current_schema()
+              AND table_name = %s
+              AND column_name = %s;
+            """,
+            (table, column),
+        ).fetchone()
+        assert row is not None
+    assert store.get_meta("schema_version") == "14"
+    scratchpad = store._raw.execute(
+        "SELECT scratchpad FROM sessions WHERE session_id = 'legacy-session';"
+    ).fetchone()
+    assert scratchpad is not None and scratchpad["scratchpad"] == ""
+    store._raw.execute("DELETE FROM sessions WHERE session_id = 'legacy-session';")
+    store.commit()
+
+
 def test_secondary_embedding_freshness_search_and_lifecycle(
     store: PostgresStorage,
 ) -> None:
@@ -258,6 +454,7 @@ def test_secondary_embedding_freshness_search_and_lifecycle(
     assert store.search_secondary_embeddings(_secondary_emb(0), "model2vec:v2") == []
 
     assert store.rename_chunks(repo_id, "auth.py", "renamed_auth.py") == 2
+    store.commit()
     assert store.count_secondary_embeddings("model2vec:v1") == 4
     assert any(
         hit.rel_path == "renamed_auth.py"
@@ -294,6 +491,283 @@ def test_load_file_meta_map_roundtrip(store: PostgresStorage) -> None:
     assert m["auth.py"].enricher_id == "noop"
     assert m["auth.py"].embedder_model == "m1"
     assert store.load_file_meta_map(999999) == {}  # unknown repo -> empty
+
+
+def test_atomic_file_snapshot_contract_live(
+    store: PostgresStorage,
+    pg_dsn: str,
+) -> None:
+    local_repo = store.register_repo(
+        RepoIdentity(
+            normalized_key="local:/tmp/snapshot-local",
+            remote_url=None,
+            root_path=Path("/tmp/snapshot-local"),
+            default_branch="main",
+            head_commit="snapshot-local",
+        )
+    )
+    foreign_repo = store.register_repo(
+        RepoIdentity(
+            normalized_key="local:/tmp/snapshot-foreign",
+            remote_url=None,
+            root_path=Path("/tmp/snapshot-foreign"),
+            default_branch="main",
+            head_commit="snapshot-foreign",
+        )
+    )
+    rel_path = "shared_snapshot.py"
+    local = [
+        _chunk(600, rel_path, "retained", "def retained(): pass"),
+        _chunk(601, rel_path, "old_token", "def old_token(): pass"),
+        _chunk(602, rel_path, "stale", "def stale(): pass"),
+    ]
+    foreign = _chunk(603, rel_path, "foreign", "def foreign(): pass")
+    _replace_snapshot(
+        store,
+        repo_id=local_repo,
+        rel_path=rel_path,
+        desired=[chunk.chunk_id for chunk in local],
+        writes=[_snapshot_write(chunk, index) for index, chunk in enumerate(local)],
+        file_hash="local-v1",
+    )
+    with psycopg.connect(pg_dsn) as reader:
+        assert reader.execute(
+            "SELECT COUNT(*) FROM chunks WHERE repo_id = %s;", (local_repo,)
+        ).fetchone()[0] == 0
+    _replace_snapshot(
+        store,
+        repo_id=foreign_repo,
+        rel_path=rel_path,
+        desired=[foreign.chunk_id],
+        writes=[_snapshot_write(foreign)],
+        file_hash="foreign-v1",
+    )
+    store.commit()
+
+    retained_rowid = int(
+        store._raw.execute(
+            "SELECT id FROM chunks WHERE chunk_id = %s;", (local[0].chunk_id,)
+        ).fetchone()["id"]
+    )
+    retained_embedding = store._raw.execute(
+        "SELECT embedding::text AS embedding FROM chunks WHERE id = %s;",
+        (retained_rowid,),
+    ).fetchone()["embedding"]
+    store.upsert_secondary_embeddings(
+        [
+            {
+                "chunk_id": local[0].chunk_id,
+                "content_hash": local[0].content_hash,
+                "embedding": _secondary_emb(0),
+            },
+            {
+                "chunk_id": foreign.chunk_id,
+                "content_hash": foreign.content_hash,
+                "embedding": _secondary_emb(1),
+            },
+        ],
+        "snapshot-secondary:v1",
+    )
+    store.commit()
+
+    with pytest.raises(StorageError, match="outside repo_id"):
+        _replace_snapshot(
+            store,
+            repo_id=local_repo,
+            rel_path=rel_path,
+            desired=[foreign.chunk_id],
+            writes=[],
+        )
+
+    retained = local[0].model_copy(
+        update={"symbol": "retained_renamed", "parent_chunk_id": "new-parent"}
+    )
+    dirty = _chunk(601, rel_path, "replacement_token", "def replacement_token(): pass")
+    _replace_snapshot(
+        store,
+        repo_id=local_repo,
+        rel_path=rel_path,
+        desired=[retained.chunk_id, dirty.chunk_id],
+        writes=[_snapshot_write(dirty, 3)],
+        reused=[retained],
+        file_hash="local-v2",
+        size=222,
+        mtime=456.25,
+    )
+    local_rows = store._raw.execute(
+        "SELECT id, chunk_id FROM chunks WHERE repo_id = %s AND rel_path = %s "
+        "ORDER BY chunk_id;",
+        (local_repo, rel_path),
+    ).fetchall()
+    assert [row["chunk_id"] for row in local_rows] == ["sha256:t600", "sha256:t601"]
+    assert int(local_rows[0]["id"]) == retained_rowid
+    retained_row = store._raw.execute(
+        "SELECT symbol, parent_chunk_id, embedding::text AS embedding "
+        "FROM chunks WHERE id = %s;",
+        (retained_rowid,),
+    ).fetchone()
+    assert retained_row["symbol"] == "retained_renamed"
+    assert retained_row["parent_chunk_id"] == "new-parent"
+    assert retained_row["embedding"] == retained_embedding
+    assert store._raw.execute(
+        "SELECT COUNT(*) AS n FROM chunks WHERE repo_id = %s AND rel_path = %s;",
+        (foreign_repo, rel_path),
+    ).fetchone()["n"] == 1
+    assert store.count_secondary_embeddings("snapshot-secondary:v1") == 2
+    assert [
+        hit.chunk_id
+        for hit in store.search_bm25("replacement token", repo_id=local_repo)
+    ] == [dirty.chunk_id]
+    assert [
+        hit.chunk_id
+        for hit in store.search_bm25("retained renamed", repo_id=local_repo)
+    ] == [retained.chunk_id]
+    file_row = store._raw.execute(
+        """SELECT content_hash, size_bytes, mtime, last_chunk_count,
+                  last_enricher_id, last_embedder_model
+           FROM files WHERE repo_id = %s AND rel_path = %s;""",
+        (local_repo, rel_path),
+    ).fetchone()
+    assert dict(file_row) == {
+        "content_hash": "local-v2",
+        "size_bytes": 222,
+        "mtime": 456.25,
+        "last_chunk_count": 2,
+        "last_enricher_id": "snapshot-enricher:v1",
+        "last_embedder_model": "snapshot-primary:v1",
+    }
+
+    store.commit()
+    assert store.delete_file_snapshot(repo_id=local_repo, rel_path=rel_path) == 2
+    with psycopg.connect(pg_dsn) as reader:
+        assert reader.execute(
+            "SELECT COUNT(*) FROM chunks WHERE repo_id = %s AND rel_path = %s;",
+            (local_repo, rel_path),
+        ).fetchone()[0] == 2
+    assert store.count_secondary_embeddings("snapshot-secondary:v1") == 1
+    assert store._raw.execute(
+        "SELECT 1 FROM files WHERE repo_id = %s AND rel_path = %s;",
+        (local_repo, rel_path),
+    ).fetchone() is None
+    store.commit()
+
+    empty_source = _chunk(604, rel_path, "empty_source", "pass")
+    _replace_snapshot(
+        store,
+        repo_id=local_repo,
+        rel_path=rel_path,
+        desired=[empty_source.chunk_id],
+        writes=[_snapshot_write(empty_source)],
+    )
+    store.commit()
+    _replace_snapshot(
+        store,
+        repo_id=local_repo,
+        rel_path=rel_path,
+        desired=[],
+        writes=[],
+        file_hash="empty-file",
+        size=0,
+        mtime=999.0,
+    )
+    assert store._raw.execute(
+        "SELECT COUNT(*) AS n FROM chunks WHERE repo_id = %s AND rel_path = %s;",
+        (local_repo, rel_path),
+    ).fetchone()["n"] == 0
+    empty_meta = store._raw.execute(
+        "SELECT content_hash, size_bytes, mtime, last_chunk_count FROM files "
+        "WHERE repo_id = %s AND rel_path = %s;",
+        (local_repo, rel_path),
+    ).fetchone()
+    assert dict(empty_meta) == {
+        "content_hash": "empty-file",
+        "size_bytes": 0,
+        "mtime": 999.0,
+        "last_chunk_count": 0,
+    }
+
+
+def test_atomic_file_snapshot_rollback_keeps_postgres_usable(
+    store: PostgresStorage,
+) -> None:
+    repo_id = store.register_repo(
+        RepoIdentity(
+            normalized_key="local:/tmp/snapshot-rollback",
+            remote_url=None,
+            root_path=Path("/tmp/snapshot-rollback"),
+            default_branch="main",
+            head_commit="snapshot-rollback",
+        )
+    )
+    rel_path = "rollback_snapshot.py"
+    retained = _chunk(700, rel_path, "retained", "def retained(): pass")
+    stale = _chunk(701, rel_path, "stale", "def stale(): pass")
+    _replace_snapshot(
+        store,
+        repo_id=repo_id,
+        rel_path=rel_path,
+        desired=[retained.chunk_id, stale.chunk_id],
+        writes=[_snapshot_write(retained), _snapshot_write(stale, 1)],
+        file_hash="before",
+    )
+    store.upsert_secondary_embeddings(
+        [
+            {
+                "chunk_id": retained.chunk_id,
+                "content_hash": retained.content_hash,
+                "embedding": _secondary_emb(0),
+            }
+        ],
+        "snapshot-secondary:v1",
+    )
+    store.commit()
+    constraint = "snapshot_reject_content_hash"
+    store._raw.execute(f"ALTER TABLE files DROP CONSTRAINT IF EXISTS {constraint};")
+    store._raw.execute(
+        f"ALTER TABLE files ADD CONSTRAINT {constraint} "
+        "CHECK (content_hash <> 'reject');"
+    )
+    store.commit()
+
+    try:
+        pending = _chunk(702, "unrelated_snapshot.py", "pending", "pass")
+        store.upsert_chunk(
+            pending,
+            _emb(2),
+            "snapshot-primary:v1",
+            DIM,
+            repo_id=repo_id,
+        )
+        replacement = _chunk(703, rel_path, "replacement", "def replacement(): pass")
+        with pytest.raises(psycopg.errors.CheckViolation):
+            _replace_snapshot(
+                store,
+                repo_id=repo_id,
+                rel_path=rel_path,
+                desired=[retained.chunk_id, replacement.chunk_id],
+                writes=[_snapshot_write(replacement, 3)],
+                file_hash="reject",
+            )
+
+        rows = store._raw.execute(
+            "SELECT chunk_id FROM chunks WHERE repo_id = %s AND rel_path = %s "
+            "ORDER BY chunk_id;",
+            (repo_id, rel_path),
+        ).fetchall()
+        assert [row["chunk_id"] for row in rows] == [retained.chunk_id, stale.chunk_id]
+        assert store.chunk_exists(replacement.chunk_id) is False
+        assert store.chunk_exists(pending.chunk_id) is True
+        assert store.count_secondary_embeddings("snapshot-secondary:v1") == 1
+        assert store._raw.execute(
+            "SELECT content_hash FROM files WHERE repo_id = %s AND rel_path = %s;",
+            (repo_id, rel_path),
+        ).fetchone()["content_hash"] == "before"
+        assert store._raw.execute("SELECT 1 AS n;").fetchone()["n"] == 1
+        store.commit()
+    finally:
+        store._raw.rollback()
+        store._raw.execute(f"ALTER TABLE files DROP CONSTRAINT IF EXISTS {constraint};")
+        store.commit()
 
 
 def test_storage_target_is_redacted_dsn(store: PostgresStorage) -> None:
@@ -607,9 +1081,7 @@ def test_graph_stats_multi_repo_suffixed_meta_keys(store: PostgresStorage) -> No
     """
     repo_id = _seed(store)
     conn = store._conn  # the compatibility shim
-    # Start from a clean graph mirror: the module-scoped DB is shared across
-    # tests and ``store.clear()`` does not wipe the graph tables, so an earlier
-    # test may have left a bare ``last_loaded_at`` row that would mask the bug.
+    # Keep this regression independent if the fixture's isolation policy changes.
     for tbl in ("graph_meta", "graph_nodes", "graph_edges"):
         store._raw.execute(f"DELETE FROM {tbl};")
     store._raw.commit()

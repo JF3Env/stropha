@@ -646,6 +646,7 @@ def _to_result(hit) -> SearchResult:  # type: ignore[no-untyped-def]
         snippet=hit.snippet,
         chunk_id=hit.chunk_id,
         repo=repo,
+        source=getattr(hit, "source", None),
         # WIN-214: pass through per-stream RRF contributions so the
         # agent can self-audit which retrieval lanes contributed.
         streams=hit.streams,
@@ -1894,6 +1895,11 @@ def report_bad_result(
             "error": "bad_result_store unavailable on this server "
             "(check mcp.bad_result_store.disabled in logs)",
         }
+    if trace_id not in app.recent_trace_ids:
+        return {
+            "ok": False,
+            "error": "trace_id was not issued in the current MCP session",
+        }
     try:
         record = store.report(  # type: ignore[attr-defined]
             trace_id=trace_id,
@@ -1962,6 +1968,17 @@ class AssembleContextResponse(BaseModel):
             "True when the single top hit exceeds the budget and was "
             "included anyway as an escape hatch."
         ),
+    )
+    graph_status: str | None = Field(
+        default=None,
+        description=(
+            "Graph extension source status: not_requested, available, "
+            "unavailable, or degraded. None when the producer does not report it."
+        ),
+    )
+    notes: list[str] = Field(
+        default_factory=list,
+        description="Graph extension failures or malformed-response diagnostics.",
     )
 
 
@@ -2104,6 +2121,8 @@ def assemble_context(
         budget_tokens=result.budget_tokens,
         spilled_count=result.spilled_count,
         truncated_oversize=result.truncated_oversize,
+        graph_status=getattr(result, "graph_status", None),
+        notes=getattr(result, "notes", []),
     )
 
 
@@ -2719,6 +2738,10 @@ def suggest_next_tool_mcp(
         has_rationale=has_rationale,
         max_suggestions=max_suggestions,
     )
+    registered_args = {
+        tool.name: set(tool.parameters.get("properties", {}))
+        for tool in mcp._tool_manager.list_tools()
+    }
 
     return SuggestNextResponse(
         query=query,
@@ -2726,7 +2749,10 @@ def suggest_next_tool_mcp(
             SuggestionEntry(
                 tool=s.tool,
                 args=(dict(s.args) | {"include_other_repos": True})
-                if include_other_repos
+                if (
+                    include_other_repos
+                    and "include_other_repos" in registered_args.get(s.tool, set())
+                )
                 else dict(s.args),
                 reason=s.reason,
                 confidence=s.confidence,
@@ -2831,8 +2857,7 @@ def list_task_recipes(*, ctx: Context) -> ListRecipesResponse:
     description=(
         "WIN-240 — materialise a recipe with the caller's context. "
         "Returns a list of concrete tool invocations (with args + "
-        "reason + budget) ready to execute one-by-one or hand to "
-        "execute_plan for server-side DAG execution. Missing "
+        "reason + budget) for the caller to execute one-by-one. Missing "
         "placeholders are surfaced in ``missing_placeholders`` "
         "rather than failing the call — caller decides whether to "
         "fill them and retry."
@@ -3006,7 +3031,7 @@ def blast_radius_tool(
         "remembers; the response tells you whether the chunk still "
         "exists and whether its content has drifted. Defensive — "
         "lookup exceptions surface as fresh=null with a reason. "
-        "Use strict=true for byte-exact comparison; default is "
+        "Use strict=true for exact text comparison; default is "
         "whitespace-normalised. Defaults to the current repository; "
         "include_other_repos=True permits any indexed chunk."
     ),
@@ -3211,7 +3236,7 @@ class WorkingSetEntryModel(BaseModel):
 
 
 class WorkingSetResponse(BaseModel):
-    """Outcome of ``working_set_tool`` / ``working_set_resource``."""
+    """Outcome of ``working_set_tool``."""
 
     session_id: str
     entries: list[WorkingSetEntryModel] = Field(default_factory=list)
@@ -3237,8 +3262,9 @@ class WorkingSetResponse(BaseModel):
         "recent chunks) into a markdown bundle ready to plug into "
         "the next LLM prompt. Pinned chunks are always included; "
         "recent chunks are packed under budget_tokens. Defaults to "
-        "the current session and current repository; pass session_id "
-        "to query another session. include_other_repos=True broadens hydration."
+        "the current session and current repository. An explicit session_id "
+        "must identify the current session. include_other_repos=True broadens "
+        "hydration."
     ),
 )
 @traced("working_set")
@@ -3250,11 +3276,18 @@ def working_set_tool(
     *,
     ctx: Context,
 ) -> WorkingSetResponse:
-    """Assemble the working set for the current (or given) session."""
+    """Assemble the working set for the current session."""
     from .retrieval.working_set import build_working_set
 
     app = _ctx(ctx)
-    sid = (session_id or "").strip() or app.session_id
+    requested_session_id = (session_id or "").strip()
+    sid = app.session_id
+    if requested_session_id and requested_session_id != sid:
+        return WorkingSetResponse(
+            session_id=sid,
+            budget_tokens=max(0, int(budget_tokens)),
+            notes=["Working sets are isolated to the current MCP session."],
+        )
     repo_id = None if include_other_repos else _resolve_target_repo_id(app)
     if repo_id is None and not include_other_repos:
         return WorkingSetResponse(
@@ -3263,20 +3296,8 @@ def working_set_tool(
             notes=["Current repository could not be resolved; working set was not built."],
         )
 
-    if session_id:
-        # Pull pinned + seen from the sessions table via SessionRecord.
-        pinned = []
-        seen = []
-        try:
-            record = app.storage.get_session(session_id)
-        except Exception:
-            record = None
-        if record is not None:
-            pinned = list(record.pinned_chunk_ids)
-            seen = list(record.seen_chunk_ids)
-    else:
-        pinned = list(app.pinned_chunk_ids)
-        seen = list(app.seen_chunk_ids)
+    pinned = list(app.pinned_chunk_ids)
+    seen = list(app.seen_chunk_ids)
 
     def _lookup(cid: str):
         try:
@@ -3319,59 +3340,6 @@ def working_set_tool(
         markdown=ws.markdown,
         notes=list(ws.notes),
     )
-
-
-@mcp.resource("stropha://working-set")
-def working_set_resource() -> str:
-    """Resource view of the most-recently-updated session's working
-    set, rendered as markdown.
-
-    FastMCP resources can't read the AppContext, so this opens its
-    own Storage handle (same pattern as ``index_stats_resource``)
-    and pulls the latest session row from the v8 ``sessions``
-    table. Returns a plain markdown string suitable for the
-    ``contents`` field of an MCP resource response.
-    """
-    from .retrieval.working_set import build_working_set
-
-    cfg = get_config()
-    target_repo = cfg.target_repo
-    if target_repo is None:
-        return "# Working set\n\n_current repository unavailable._\n"
-    resolved = load_pipeline_config()
-    built = build_stages(resolved)
-    with built.storage as storage:
-        try:
-            from .ingest.git_meta import detect
-
-            identity = detect(target_repo)
-            repo_id = storage.lookup_repo_id(identity.normalized_key)
-        except Exception:
-            repo_id = None
-        if repo_id is None:
-            return "# Working set\n\n_current repository unavailable._\n"
-        try:
-            record = storage.get_latest_session()
-        except Exception:
-            record = None
-        if record is None:
-            return "# Working set\n\n_no session state yet._\n"
-
-        def _lookup(cid: str):
-            try:
-                if chunk_belongs_to_repo(storage, cid, repo_id):
-                    return storage.lookup_by_chunk_id(cid)
-                return None
-            except Exception:
-                return None
-
-        ws = build_working_set(
-            list(record.pinned_chunk_ids),
-            list(record.seen_chunk_ids),
-            lookup_fn=_lookup,
-            session_id=record.session_id,
-        )
-    return ws.markdown
 
 
 # ---- recipe prompts (WIN-254) ---------------------------------------------

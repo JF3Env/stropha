@@ -18,7 +18,7 @@ The logic is pure heuristics — no LLM call, no I/O. The signal comes
 from three sources:
 
 1. **Query shape** — empty results plus "X and Y" → suggest
-   ``plan_investigation``; question-words → suggest HyDE rewrite.
+   ``plan_investigation``; question-words → retry hybrid search.
 2. **Hit composition** — top-ranked class/function with graph
    available → ``find_callers`` + ``find_tests_for``; doc/heading
    in the top hits → ``find_rationale``.
@@ -134,7 +134,7 @@ def suggest_next_tool(
         if query and _looks_compound(query):
             suggestions.append(Suggestion(
                 tool="plan_investigation",
-                args={"query": query},
+                args={"task": query},
                 reason=(
                     "No results and the query looks compound — "
                     "plan_investigation orders sub-steps over the graph."
@@ -144,10 +144,10 @@ def suggest_next_tool(
         if query and _looks_question(query):
             suggestions.append(Suggestion(
                 tool="search_code",
-                args={"query": query, "use_hyde": True},
+                args={"query": query},
                 reason=(
-                    "No results — try HyDE-rewritten dense query for "
-                    "conceptual match."
+                    "No results — retry hybrid search with the full "
+                    "conceptual question."
                 ),
                 confidence=0.60,
             ))
@@ -234,7 +234,7 @@ def suggest_next_tool(
     if query and _looks_compound(query):
         suggestions.append(Suggestion(
             tool="plan_investigation",
-            args={"query": query},
+            args={"task": query},
             reason=(
                 "Query mentions multiple clauses — plan_investigation "
                 "orders the retrieval steps so nothing is missed."
@@ -245,7 +245,7 @@ def suggest_next_tool(
     if hits and len(hits) >= 8:
         suggestions.append(Suggestion(
             tool="assemble_context",
-            args={"query": query} if query else {},
+            args={"task": query} if query else {},
             reason=(
                 f"Returned {len(hits)} hits — assemble_context packs "
                 "the top ones into a token-budgeted bundle."

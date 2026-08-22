@@ -12,7 +12,13 @@ from unittest.mock import patch
 
 import pytest
 
-from stropha.models import Chunk, RepoRef, SearchHit
+from stropha.models import (
+    Chunk,
+    RepoRef,
+    SearchHit,
+    SourceEvidenceRef,
+    SourceVersion,
+)
 from stropha.retrieval.hyde import generate_hypothetical, maybe_hyde_rewrite
 from stropha.retrieval.recursive import (
     DEFAULT_ADJACENCY_LINES,
@@ -308,6 +314,36 @@ def test_adjacent_hits_in_same_file_merge(storage: Storage) -> None:
     assert "snippet A" in merged.snippet
     assert "snippet B" in merged.snippet
     assert merged.score == 0.8  # max of the two
+
+
+def test_recursive_merge_updates_source_evidence_range(storage: Storage) -> None:
+    evidence = SourceEvidenceRef(
+        source_version=SourceVersion(
+            repository="local:test",
+            path="x.py",
+            layer="saved_worktree",
+            file_sha256="file-hash",
+            observed_at="2026-08-21T00:00:00+00:00",
+        ),
+        start_line=1,
+        end_line=5,
+        chunk_id="a",
+        source_slice_sha256="old-slice-hash",
+        indexed_file_sha256="file-hash",
+        freshness="unknown",
+    )
+    hits = [
+        _hit(chunk_id="a", rel_path="x.py", start=1, end=5).model_copy(
+            update={"source": evidence}
+        ),
+        _hit(chunk_id="b", rel_path="x.py", start=9, end=15),
+    ]
+
+    merged = merge_hits(hits, storage, enabled=True, adjacency_lines=5)[0]
+
+    assert merged.source is not None
+    assert (merged.source.start_line, merged.source.end_line) == (1, 15)
+    assert merged.source.source_slice_sha256 is None
 
 
 def test_distant_hits_not_merged(storage: Storage) -> None:

@@ -7,7 +7,7 @@ import os
 import uuid
 from collections import deque
 from collections.abc import AsyncIterator, Callable
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
@@ -81,6 +81,7 @@ class AppContext:
     pinned_chunk_ids: set[str] = field(default_factory=set)
     client_id: str | None = None
     recent_queries: deque[str] = field(default_factory=lambda: deque(maxlen=5))
+    recent_trace_ids: deque[str] = field(default_factory=lambda: deque(maxlen=256))
     scratchpad: str = ""
 
 
@@ -165,12 +166,17 @@ async def _shared_runtime(
         watcher: Any = None
         try:
             if cfg.mcp_watch:
-                watcher = watch_controller_cls(
+                watcher_kwargs: dict[str, Any] = dict(
                     repo=cfg.target_repo,
                     interval_s=cfg.mcp_watch_interval,
                     debounce_s=cfg.mcp_watch_debounce,
                     full_refresh=False,
                 )
+                if hasattr(cfg, "max_file_bytes"):
+                    watcher_kwargs["max_file_bytes"] = cfg.max_file_bytes
+                if getattr(built, "walker", None) is not None:
+                    watcher_kwargs["walker"] = built.walker
+                watcher = watch_controller_cls(**watcher_kwargs)
                 watcher.start()
         except Exception:
             SharedRuntime(config=cfg, built=built, watcher=watcher).close()
@@ -233,13 +239,17 @@ async def reload_shared_runtime(
         watcher: Any = None
         try:
             if cfg.mcp_watch:
-                watcher = watch_controller_cls(
+                watcher_kwargs: dict[str, Any] = dict(
                     repo=cfg.target_repo,
                     interval_s=cfg.mcp_watch_interval,
                     debounce_s=cfg.mcp_watch_debounce,
                     full_refresh=False,
                 )
-                watcher.start()
+                if hasattr(cfg, "max_file_bytes"):
+                    watcher_kwargs["max_file_bytes"] = cfg.max_file_bytes
+                if getattr(built, "walker", None) is not None:
+                    watcher_kwargs["walker"] = built.walker
+                watcher = watch_controller_cls(**watcher_kwargs)
         except Exception:
             SharedRuntime(config=cfg, built=built, watcher=watcher).close()
             raise
@@ -252,14 +262,52 @@ async def reload_shared_runtime(
 
         previous = getattr(app, _SHARED_RUNTIME_ATTR, None)
         retired: list[BuiltStages] = []
-        if previous is not None and not previous.closed:
-            if previous.watcher is not None:
+        retire_previous = previous is not None and not previous.closed
+        previous_watcher: Any = None
+        if retire_previous:
+            assert previous is not None
+            previous_watcher = previous.watcher
+            if previous_watcher is not None:
+                stop_task = asyncio.create_task(
+                    asyncio.to_thread(previous_watcher.stop)
+                )
                 try:
-                    previous.watcher.stop()
-                except Exception as exc:
-                    log.warning("mcp.watcher.stop_failed", error=str(exc))
-                previous.watcher = None
+                    await asyncio.shield(stop_task)
+                except BaseException:
+                    # asyncio.to_thread cannot cancel the underlying thread.
+                    # Wait for stop to finish before restoring the old watcher
+                    # so cancellation cannot leave two watchers active.
+                    if not stop_task.done():
+                        with suppress(BaseException):
+                            await asyncio.shield(stop_task)
+                    try:
+                        previous_watcher.start()
+                    except Exception as restart_exc:
+                        log.error(
+                            "mcp.watcher.restart_failed",
+                            error=str(restart_exc),
+                        )
+                    SharedRuntime(config=cfg, built=built, watcher=watcher).close()
+                    raise
             retired = [previous.built, *previous.retired]
+
+        try:
+            if watcher is not None:
+                watcher.start()
+        except Exception:
+            if previous_watcher is not None:
+                try:
+                    previous_watcher.start()
+                except Exception as restart_exc:
+                    log.error(
+                        "mcp.watcher.restart_failed",
+                        error=str(restart_exc),
+                    )
+            SharedRuntime(config=cfg, built=built, watcher=watcher).close()
+            raise
+        if retire_previous:
+            assert previous is not None
+            previous.watcher = None
             previous.closed = True
 
         runtime = SharedRuntime(

@@ -667,19 +667,36 @@ Comentários explicam intenção; código explica mecanismo. Indexar como chunks
 ### 8.1 Detecção de mudança
 
 Fonte de verdade: **hash de conteúdo** (WIN-425). O modo `auto` (default)
-reconcilia o working tree contra o cache `files` (`content_hash`, via
-fast-path `mtime`+`size`), independente do Git:
+reconcilia o working tree salvo contra o cache `files` usando SHA-256 dos
+bytes completos, independente do Git:
 
 - Caminha o conjunto atual de arquivos (walker configurado).
-- (Re)indexa arquivo novo, com `(mtime,size)` alterado, OU cujo par de
+- Lê um snapshot imutável por tentativa; o chunker nunca relê o path mutável.
+- (Re)indexa arquivo novo, com hash completo alterado, snapshot incompleto, OU cujo par de
   drift ativo `(enricher_id, embedder_model)` difere do que o indexou
   (ver §3.1 / ADR-004 — troca de config força reprocessamento).
-- Evicta arquivos presentes no índice mas ausentes em disco.
+- Calcula enrichment e embeddings antes da transação, relê/recalcula o hash e
+  descarta a tentativa se o arquivo mudou durante o processamento.
+- Publica chunks, vetores, FTS e metadados de um path atomicamente via
+  `replace_file_snapshot`; arquivos removidos usam `delete_file_snapshot`.
+- Chunks cujo conteúdo permanece idêntico reutilizam os dois espaços vetoriais,
+  mas atualizam metadados estruturais e FTS dentro do mesmo snapshot atômico.
+- Publica `head_commit` e `last_indexed_at` apenas após completar o repositório.
 
-Propriedades: resiliente a índice interrompido (arquivos sem linha `files`
-fresca são re-pegos no próximo run, **sem** `--rebuild`), enxerga edições
-não-commitadas e funciona em diretórios não-git. Implementação:
-`Pipeline._index_one_repo_reconcile()` + `Storage.load_file_meta_map()`.
+Propriedades: uma falha expõe o snapshot completo anterior ou o novo, nunca uma
+mistura; arquivos com zero chunks continuam versionados; edições de mesmo
+tamanho com mtime preservado são detectadas. Um marcador de contrato força a
+reconciliação automática de índices produzidos pela semântica antiga. O
+marcador é scoped por repositório, portanto atualizar um checkout não promove
+hashes legados de outros repositórios que compartilham o mesmo storage.
+Leituras estáveis validam inode, tamanho, mtime, ctime e o target de symlink
+antes/depois da leitura para não publicar bytes de duas versões diferentes.
+
+Mudanças de código também persistem `graph_dirty:<repo_id>`. O marcador
+permanece ativo em runs com graphify desabilitado, sem binário ou com falha
+parcial; somente o lifecycle completo `graphify update` → mirror → graph vectors
+→ FTS o limpa. Assim uma passagem rápida do watcher não perde trabalho de grafo
+que deve ser retomado pela próxima indexação completa.
 
 Git é uma **otimização opt-in** (`--incremental`), não a fronteira de
 correção:
@@ -701,12 +718,18 @@ Para cada arquivo (caminho git-diff):
 |---|---|---|
 | Commit local | Git hook `post-commit` (silencioso, em background) | <5 s |
 | Pull / merge | Git hook `post-merge` | <30 s |
-| Edição não-commitada | File watcher (chokidar/notify-rs), debounce 2 s | <2 s para "soft index" em RAM |
+| Edição salva não-commitada | Polling stdlib por hash completo, debounce 2 s | Intervalo de polling + debounce |
 | Deploy CI | GitHub Actions step | OK ser lento |
 
-### 8.3 Soft index (working tree)
+### 8.3 Working tree salvo
 
-Edições não-commitadas vivem em "overlay" em RAM. Queries consultam overlay + base. Quando commit acontece, overlay é compactado para o índice base. Garante que o RAG sempre reflete o que o dev está vendo, não o último commit.
+O índice persistente representa o working tree **salvo**, incluindo edições não
+commitadas. `HEAD` é metadado Git, não prova dos bytes indexados. O watcher faz
+reconciliação inicial e retries com backoff para não depender de um novo evento
+após falha. Seu snapshot usa o path lógico relativo retornado pelo walker, mesmo
+quando o path físico foi canonicalizado, e valida o target de symlink ao ler.
+Buffers ainda não salvos não entram no índice persistente; overlays de sessão
+explícitos são uma extensão futura e separada.
 
 ### 8.4 Compactação e rebuild
 
@@ -727,6 +750,7 @@ Schema migrations + lazy backfill: adicionar coluna nullable, preencher em backg
 | **B** | — | Git-diff aware ingestion. `git diff --name-status <last_indexed_sha>..HEAD` drives the walker; only touched files re-chunked/embedded. `FileDelta` dataclass with `action: add|modify|delete|rename`. Hook v=4 passes `--incremental`. Auto-fallback to full walk when no checkpoint. |
 | **C** | — | Rename-resilient `chunk_id`. `Storage.rename_chunks()` recomputes `chunk_id` via `make_chunk_id(new_path, ...)` + regenerates FTS5 rows. Zero re-embed cost for renames. `GraphifyLoader` diff-loads (deltas only, not full DELETE+INSERT). |
 | **D** | — | Hash-based reconcile (WIN-425, 2026-06-08). `auto` (default) diffs the working tree against the `files` cache via `Storage.load_file_meta_map()` — git-independent, crash-resilient (interrupted runs self-heal), sees uncommitted edits, works on non-git dirs. Git-diff (`--incremental`) demoted to an opt-in fast-path. `Pipeline._index_one_repo_reconcile()`. |
+| **E** | — | Trustworthy source snapshots (2026-08-21). Full raw-byte SHA-256, immutable chunker input, post-processing rehash, adapter-owned atomic replace/delete, vector-preserving structural refresh, zero-chunk support, completion-only repository watermarks, durable per-repo graph dirtiness, startup watcher reconciliation, retry backoff, and versioned source evidence on every retrieval stream. |
 
 CLI flags: `--full` (force full walk), `--incremental` (force git-diff fast-path, falls back to reconcile if no checkpoint), `--since <sha>` (override checkpoint). Default (no flag) = `auto` = hash reconcile.
 
@@ -858,6 +882,23 @@ Padrão para `search_code`:
       "symbol": "StudyService.submitAnswer",
       "kind": "method",
       "snippet": "public StudySubmissionResult submitAnswer(...) {\n    var enrollment = ...\n    // ~30 linhas\n}",
+      "source": {
+        "source_version": {
+          "repository": "github.com/acme/mimoria",
+          "path": "backend/src/main/java/com/mimoria/service/StudyService.java",
+          "layer": "saved_worktree",
+          "file_sha256": "...",
+          "observed_at": "2026-08-21T20:00:00+00:00",
+          "head_commit": "...",
+          "dirty": null
+        },
+        "start_line": 145,
+        "end_line": 187,
+        "chunk_id": "sha256:...",
+        "source_slice_sha256": null,
+        "indexed_file_sha256": "...",
+        "freshness": "unknown"
+      },
       "summary": "Submete resposta, atualiza streak, dispara FSRS em mastery.",
       "context": {
         "parent": "class StudyService",
@@ -873,6 +914,14 @@ Padrão para `search_code`:
   }
 }
 ```
+
+Resultados lidos apenas do índice carregam a versão completa do arquivo, mas
+deixam `source_slice_sha256` nulo porque o hash do conteúdo transformado do
+chunk não prova os bytes literais da faixa. Ferramentas que relêem o working
+tree salvo, como `assert_snippet_freshness_tool`, calculam esse hash da faixa e
+marcam a evidência como `fresh`, `stale` ou `missing`.
+Todos os streams, inclusive `graph-vec`, hidratam o resultado pelo lookup
+canônico para preservar `repo.local_path` e essa mesma evidência de fonte.
 
 ### 9.4 Implementação
 

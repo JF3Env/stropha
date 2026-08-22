@@ -23,7 +23,7 @@ import struct
 from pydantic import BaseModel, Field
 
 from ....logging import get_logger
-from ....models import RepoRef, SearchHit
+from ....models import SearchHit
 from ....pipeline.base import StageHealth
 from ....pipeline.registry import register_adapter
 from ....stages.storage import StorageStage
@@ -180,9 +180,8 @@ class GraphVecStream:
             if repo_id is not None:
                 params += (repo_id,)
             chunk = cur.execute(
-                f"""SELECT c.*, r.normalized_key, r.remote_url, r.default_branch,
-                           r.head_commit
-                   FROM chunks c LEFT JOIN repos r ON c.repo_id = r.id
+                f"""SELECT c.chunk_id
+                   FROM chunks c
                    WHERE c.rel_path = ?
                      AND c.start_line <= ? AND c.end_line >= ?
                      {repo_clause}
@@ -194,40 +193,20 @@ class GraphVecStream:
             if repo_id is not None:
                 params += (repo_id,)
             chunk = cur.execute(
-                f"""SELECT c.*, r.normalized_key, r.remote_url, r.root_path,
-                           r.default_branch, r.head_commit
-                   FROM chunks c LEFT JOIN repos r ON c.repo_id = r.id
+                f"""SELECT c.chunk_id
+                   FROM chunks c
                    WHERE c.rel_path = ? {repo_clause}
                    ORDER BY c.start_line ASC LIMIT 1""",
                 params,
             ).fetchone()
         if chunk is None:
             return None
-        # Build SearchHit. We intentionally use the cosine sim as score so
-        # downstream RRF treats higher values as better-ranked.
-        repo: RepoRef | None = None
-        if chunk["normalized_key"]:
-            repo = RepoRef(
-                normalized_key=chunk["normalized_key"],
-                url=chunk["remote_url"],
-                local_path=chunk["root_path"] if "root_path" in chunk.keys() else None,
-                default_branch=chunk["default_branch"],
-                head_commit=chunk["head_commit"],
-            )
-        snippet = (chunk["content"] or "")[:400]
-        return SearchHit(
-            rank=0,  # populated by the RRF fuser
-            score=sim,
-            rel_path=chunk["rel_path"],
-            language=chunk["language"],
-            kind=chunk["kind"],
-            symbol=chunk["symbol"],
-            start_line=int(chunk["start_line"]),
-            end_line=int(chunk["end_line"]),
-            snippet=snippet,
-            chunk_id=chunk["chunk_id"],
-            repo=repo,
-        )
+        hydrated = self._storage.lookup_by_chunk_id(str(chunk["chunk_id"]))
+        if hydrated is None:
+            return None
+        # Keep all standard repository and source-evidence hydration while
+        # replacing only the graph stream's ranking fields.
+        return hydrated.model_copy(update={"rank": 0, "score": sim})
 
     @staticmethod
     def _location_to_line(loc: str | None) -> int | None:

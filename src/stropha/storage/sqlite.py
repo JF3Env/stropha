@@ -12,6 +12,8 @@ import json
 import re
 import sqlite3
 import struct
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -21,7 +23,17 @@ import sqlite_vec  # type: ignore[import-untyped]
 from ..errors import StorageError
 from ..ingest.git_meta import RepoIdentity
 from ..logging import get_logger
-from ..models import Chunk, RepoRef, RepoStats, SearchHit, StoredFileMeta
+from ..models import (
+    SOURCE_SNAPSHOT_META_PREFIX,
+    SOURCE_SNAPSHOT_VERSION,
+    Chunk,
+    RepoRef,
+    RepoStats,
+    SearchHit,
+    SourceEvidenceRef,
+    SourceVersion,
+    StoredFileMeta,
+)
 from ..secondary_embeddings import SECONDARY_EMBEDDING_DIM
 
 if TYPE_CHECKING:
@@ -30,6 +42,7 @@ if TYPE_CHECKING:
     # annotations on the public storage methods resolve cleanly.
     from ..models import EpisodeRecord, ProjectMemoryRecord, SessionRecord
     from ..secondary_embeddings import SecondaryEmbeddingChunk, SecondaryEmbeddingVector
+    from ..stages.storage import FileSnapshotChunkWrite
 
 log = get_logger(__name__)
 
@@ -48,9 +61,8 @@ log = get_logger(__name__)
 #     graphs are typically <50K nodes so a single dense pass is sub-ms.
 # v6: file-level dirty cache (Phase A incremental). `files` table keyed by
 #     (repo_id, rel_path) with mtime + size + content_hash + chunk_count.
-#     Lets `Pipeline._index_files()` skip chunking entirely when a file is
-#     fresh — saves tree-sitter parse + chunk-fresh probes for typical
-#     no-op `stropha index` invocations.
+#     Lets `Pipeline._index_files()` skip chunking after verifying the full-file
+#     hash and stored snapshot integrity.
 # v7: multi-repo graphify support. Adds `repo_id` to `graph_nodes` and
 #     `graph_edges` tables to allow multiple repos with their own graphify
 #     graphs to share a single stropha index. Node IDs are prefixed with
@@ -223,13 +235,56 @@ def _repo_from_row(row: Any) -> RepoRef | None:
     )
 
 
+def _source_evidence_from_row(row: Any) -> SourceEvidenceRef | None:
+    """Build indexed saved-worktree provenance from a retrieval row."""
+    keys = row.keys()
+    required = {
+        "source_snapshot_version",
+        "source_file_sha256",
+        "source_observed_at",
+        "source_slice_sha256",
+        "repo_normalized_key",
+    }
+    if not required.issubset(keys):
+        return None
+    if row["source_snapshot_version"] != SOURCE_SNAPSHOT_VERSION:
+        return None
+    file_sha256 = row["source_file_sha256"]
+    observed_at = row["source_observed_at"]
+    repository = row["repo_normalized_key"]
+    if not (file_sha256 and observed_at and repository):
+        return None
+    return SourceEvidenceRef(
+        source_version=SourceVersion(
+            repository=repository,
+            path=row["rel_path"],
+            layer="saved_worktree",
+            file_sha256=file_sha256,
+            observed_at=observed_at,
+            head_commit=row["repo_head_commit"],
+        ),
+        start_line=int(row["start_line"]),
+        end_line=int(row["end_line"]),
+        chunk_id=row["chunk_id"],
+        source_slice_sha256=row["source_slice_sha256"],
+        indexed_file_sha256=file_sha256,
+        freshness="unknown",
+    )
+
+
 # Common SELECT clause emitting both chunk and repo columns. Reused by all
 # search_* paths. Aliases are stable so _repo_from_row can rely on them.
 # Includes both git origin URL (repo_url) and local path (repo_local_path)
 # so callers can access files via either method.
-_REPO_JOIN_COLUMNS = """
+_REPO_JOIN_COLUMNS = f"""
     c.chunk_id, c.rel_path, c.language, c.kind, c.symbol,
     c.start_line, c.end_line, c.content,
+    NULL              AS source_slice_sha256,
+    (SELECT value FROM meta
+      WHERE key = '{SOURCE_SNAPSHOT_META_PREFIX}' || c.repo_id)
+                       AS source_snapshot_version,
+    f.content_hash    AS source_file_sha256,
+    f.last_indexed_at AS source_observed_at,
     r.normalized_key  AS repo_normalized_key,
     r.remote_url      AS repo_url,
     r.root_path       AS repo_local_path,
@@ -482,9 +537,9 @@ class Storage:
         self._add_column_if_missing("graph_nodes", "embedding_dim", "INTEGER")
 
         # v6: file-level dirty cache (Phase A incremental).
-        # `mtime` + `size_bytes` are the fast-path keys; `content_hash` is
-        # the authoritative key set when the chunker actually reads the
-        # file. `last_chunk_count` is informational (sanity check + stats).
+        # `content_hash` is the authoritative full raw-byte hash; mtime/size
+        # are supporting metadata. `last_chunk_count` verifies that the
+        # published file snapshot is still complete.
         # `last_enricher_id` + `last_embedder_model` are denormalised so
         # `file_is_fresh()` can drop the skip when the active pipeline
         # config has drifted away from the values used at last index
@@ -815,12 +870,14 @@ class Storage:
 
     # ----- repos -----
 
-    def register_repo(self, identity: RepoIdentity) -> int:
+    def register_repo(
+        self, identity: RepoIdentity, *, publish_watermark: bool = True
+    ) -> int:
         """Insert or update a repo row keyed by ``normalized_key``. Returns its id.
 
-        Idempotent: re-running ``index`` against the same repo updates
-        ``last_indexed_at`` + ``head_commit`` + ``default_branch`` without
-        creating duplicates.
+        Pipeline callers pass ``publish_watermark=False`` while indexing so a
+        failed run cannot advertise its HEAD as complete. Direct callers retain
+        the historical insert-or-update behavior by default.
         """
         now = datetime.now(UTC).isoformat()
         cur = self._conn.cursor()
@@ -831,25 +888,40 @@ class Storage:
         row = cur.fetchone()
         if row is not None:
             repo_id = int(row["id"])
-            cur.execute(
-                """
-                UPDATE repos
-                   SET remote_url       = ?,
-                       root_path        = ?,
-                       default_branch   = ?,
-                       head_commit      = ?,
-                       last_indexed_at  = ?
-                 WHERE id = ?
-                """,
-                (
-                    identity.remote_url,
-                    str(identity.root_path),
-                    identity.default_branch,
-                    identity.head_commit,
-                    now,
-                    repo_id,
-                ),
-            )
+            if publish_watermark:
+                cur.execute(
+                    """
+                    UPDATE repos
+                       SET remote_url       = ?,
+                           root_path        = ?,
+                           default_branch   = ?,
+                           head_commit      = ?,
+                           last_indexed_at  = ?
+                     WHERE id = ?
+                    """,
+                    (
+                        identity.remote_url,
+                        str(identity.root_path),
+                        identity.default_branch,
+                        identity.head_commit,
+                        now,
+                        repo_id,
+                    ),
+                )
+            else:
+                cur.execute(
+                    """
+                    UPDATE repos
+                       SET remote_url = ?, root_path = ?, default_branch = ?
+                     WHERE id = ?
+                    """,
+                    (
+                        identity.remote_url,
+                        str(identity.root_path),
+                        identity.default_branch,
+                        repo_id,
+                    ),
+                )
             return repo_id
 
         cur.execute(
@@ -865,12 +937,22 @@ class Storage:
                 identity.remote_url,
                 str(identity.root_path),
                 identity.default_branch,
-                identity.head_commit,
+                identity.head_commit if publish_watermark else None,
                 now,
-                now,
+                now if publish_watermark else "",
             ),
         )
         return int(cur.lastrowid or 0)
+
+    def complete_repo_index(self, repo_id: int, head_commit: str | None) -> None:
+        """Publish the repository watermark after all source snapshots succeed."""
+        now = datetime.now(UTC).isoformat()
+        cur = self._conn.execute(
+            "UPDATE repos SET head_commit = ?, last_indexed_at = ? WHERE id = ?",
+            (head_commit, now, repo_id),
+        )
+        if cur.rowcount != 1:
+            raise StorageError(f"Unknown repo_id {repo_id} while completing index")
 
     def count_chunks_without_repo(self) -> int:
         row = self._conn.execute(
@@ -939,7 +1021,7 @@ class Storage:
                 head_commit=row["head_commit"],
                 files=int(row["files"]),
                 chunks=int(row["chunks"]),
-                last_indexed_at=row["last_indexed_at"],
+                last_indexed_at=row["last_indexed_at"] or None,
             )
             for row in rows
         ]
@@ -964,8 +1046,12 @@ class Storage:
         v0.1.0 with the default enricher does NOT cause a full re-embed.
         """
         row = self._conn.execute(
-            """SELECT content_hash, embedding_model, enricher_id
-               FROM chunks WHERE chunk_id = ?""",
+            """SELECT c.content_hash, c.embedding_model, c.enricher_id,
+                      EXISTS(SELECT 1 FROM vec_chunks v WHERE v.rowid = c.id)
+                          AS has_primary_vector,
+                      EXISTS(SELECT 1 FROM fts_chunks_docsize f WHERE f.id = c.id)
+                          AS has_fts
+               FROM chunks c WHERE c.chunk_id = ?""",
             (chunk_id,),
         ).fetchone()
         if row is None:
@@ -973,6 +1059,8 @@ class Storage:
         if row["content_hash"] != content_hash:
             return False
         if row["embedding_model"] != embedding_model:
+            return False
+        if not row["has_primary_vector"] or not row["has_fts"]:
             return False
         if enricher_id is not None:
             stored = row["enricher_id"] or "noop"
@@ -1010,13 +1098,15 @@ class Storage:
         repo_id: int,
         rel_path: str,
         *,
+        content_hash: str,
         mtime: float,
         size_bytes: int,
         enricher_id: str | None = None,
         embedder_model: str | None = None,
     ) -> bool:
         """True iff the stored ``files`` row for ``(repo_id, rel_path)``
-        matches ``(mtime, size_bytes)`` AND was last indexed by the same
+        matches the full-file hash, ``(mtime, size_bytes)``, actual chunk
+        count, AND was last indexed by the same
         ``(enricher_id, embedder_model)`` pair currently active.
 
         The pipeline config check honours the ADR-004 drift contract:
@@ -1027,19 +1117,38 @@ class Storage:
         Returns ``False`` for unknown files (treated as "needs indexing").
         """
         row = self._conn.execute(
-            """SELECT mtime, size_bytes, last_enricher_id, last_embedder_model
-               FROM files
-               WHERE repo_id = ? AND rel_path = ?""",
+            """SELECT f.content_hash, f.mtime, f.size_bytes, f.last_chunk_count,
+                      f.last_enricher_id, f.last_embedder_model,
+                       (SELECT COUNT(*) FROM chunks c
+                         WHERE c.repo_id = f.repo_id AND c.rel_path = f.rel_path)
+                           AS actual_chunk_count,
+                       (SELECT COUNT(*) FROM chunks c
+                          JOIN vec_chunks v ON v.rowid = c.id
+                         WHERE c.repo_id = f.repo_id AND c.rel_path = f.rel_path)
+                           AS actual_vector_count,
+                       (SELECT COUNT(*) FROM chunks c
+                          JOIN fts_chunks_docsize t ON t.id = c.id
+                         WHERE c.repo_id = f.repo_id AND c.rel_path = f.rel_path)
+                           AS actual_fts_count
+               FROM files f
+               WHERE f.repo_id = ? AND f.rel_path = ?""",
             (repo_id, rel_path),
         ).fetchone()
         if row is None:
             return False
-        # mtime comes from filesystem (float seconds). Allow exact match;
-        # rounding error is essentially impossible since we store what we
-        # read with no transformation.
+        if row["content_hash"] != content_hash:
+            return False
+        # mtime comes from filesystem (float seconds) and is stored without
+        # transformation. The full hash above remains the source of truth.
         if float(row["mtime"]) != float(mtime):
             return False
         if int(row["size_bytes"]) != int(size_bytes):
+            return False
+        if int(row["last_chunk_count"]) != int(row["actual_chunk_count"]):
+            return False
+        if int(row["actual_vector_count"]) != int(row["actual_chunk_count"]):
+            return False
+        if int(row["actual_fts_count"]) != int(row["actual_chunk_count"]):
             return False
         if enricher_id is not None and row["last_enricher_id"] != enricher_id:
             return False
@@ -1057,20 +1166,261 @@ class Storage:
         stats + a dict lookup, no per-file SQL round-trip.
         """
         rows = self._conn.execute(
-            """SELECT rel_path, mtime, size_bytes,
-                      last_enricher_id, last_embedder_model
+            """SELECT rel_path, content_hash, mtime, size_bytes, last_chunk_count,
+                       last_enricher_id, last_embedder_model
                FROM files WHERE repo_id = ?""",
             (repo_id,),
         ).fetchall()
         return {
             r["rel_path"]: StoredFileMeta(
+                content_hash=r["content_hash"],
                 mtime=float(r["mtime"]),
                 size_bytes=int(r["size_bytes"]),
+                chunk_count=int(r["last_chunk_count"]),
                 enricher_id=r["last_enricher_id"],
                 embedder_model=r["last_embedder_model"],
             )
             for r in rows
         }
+
+    @contextmanager
+    def _file_snapshot_savepoint(self) -> Iterator[None]:
+        """Isolate one snapshot mutation without taking commit ownership."""
+        had_transaction = self._conn.in_transaction
+        if not had_transaction:
+            self._conn.execute("BEGIN")
+        self._conn.execute("SAVEPOINT stropha_file_snapshot")
+        try:
+            yield
+            self._conn.execute("RELEASE SAVEPOINT stropha_file_snapshot")
+        except BaseException:
+            try:
+                self._conn.execute("ROLLBACK TO SAVEPOINT stropha_file_snapshot")
+                self._conn.execute("RELEASE SAVEPOINT stropha_file_snapshot")
+            except sqlite3.Error:
+                self._conn.rollback()
+            else:
+                if not had_transaction:
+                    self._conn.rollback()
+            raise
+
+    def replace_file_snapshot(
+        self,
+        *,
+        repo_id: int,
+        rel_path: str,
+        desired_chunk_ids: list[str],
+        chunk_writes: list[FileSnapshotChunkWrite],
+        embedding_model: str,
+        embedding_dim: int,
+        enricher_id: str | None,
+        file_content_hash: str,
+        size_bytes: int,
+        mtime: float,
+        reused_chunks: list[Chunk] | None = None,
+    ) -> None:
+        """Atomically replace one repo/path's chunks and file metadata."""
+        desired_ids = set(desired_chunk_ids)
+        if len(desired_ids) != len(desired_chunk_ids):
+            raise StorageError("File snapshot desired_chunk_ids must be unique")
+        if embedding_dim != self._dim:
+            raise StorageError(
+                f"Snapshot embedding dim {embedding_dim} != index dim {self._dim}"
+            )
+
+        write_ids: set[str] = set()
+        for item in chunk_writes:
+            chunk = item["chunk"]
+            embedding = item["embedding"]
+            embedding_text = item["embedding_text"]
+            if chunk.chunk_id in write_ids:
+                raise StorageError(f"Duplicate snapshot write for chunk {chunk.chunk_id}")
+            write_ids.add(chunk.chunk_id)
+            if chunk.chunk_id not in desired_ids:
+                raise StorageError(
+                    f"Snapshot write {chunk.chunk_id} is not in desired_chunk_ids"
+                )
+            if chunk.rel_path != rel_path:
+                raise StorageError(
+                    f"Snapshot write {chunk.chunk_id} has path {chunk.rel_path!r}, "
+                    f"expected {rel_path!r}"
+                )
+            if len(embedding) != embedding_dim:
+                raise StorageError(
+                    f"Embedding dim mismatch for {chunk.chunk_id}: "
+                    f"got {len(embedding)}, expected {embedding_dim}"
+                )
+            if not isinstance(embedding_text, str):
+                raise StorageError(
+                    f"Snapshot embedding text for {chunk.chunk_id} must be a string"
+                )
+
+        reused = reused_chunks or []
+        reused_ids: set[str] = set()
+        for chunk in reused:
+            if chunk.chunk_id in reused_ids:
+                raise StorageError(f"Duplicate reused snapshot chunk {chunk.chunk_id}")
+            reused_ids.add(chunk.chunk_id)
+            if chunk.chunk_id in write_ids:
+                raise StorageError(
+                    f"Snapshot chunk {chunk.chunk_id} cannot be written and reused"
+                )
+            if chunk.chunk_id not in desired_ids:
+                raise StorageError(
+                    f"Reused snapshot chunk {chunk.chunk_id} is not desired"
+                )
+            if chunk.rel_path != rel_path:
+                raise StorageError(
+                    f"Reused snapshot chunk {chunk.chunk_id} has path "
+                    f"{chunk.rel_path!r}, expected {rel_path!r}"
+                )
+
+        with self._file_snapshot_savepoint():
+            existing_ids: set[str] = set()
+            existing_rows: dict[str, Any] = {}
+            if desired_chunk_ids:
+                placeholders = ",".join("?" for _ in desired_chunk_ids)
+                rows = self._conn.execute(
+                    f"""SELECT id, chunk_id, repo_id, rel_path, content_hash FROM chunks
+                        WHERE chunk_id IN ({placeholders})""",
+                    desired_chunk_ids,
+                ).fetchall()
+                for row in rows:
+                    chunk_id = str(row["chunk_id"])
+                    existing_ids.add(chunk_id)
+                    existing_rows[chunk_id] = row
+                    if row["repo_id"] != repo_id or row["rel_path"] != rel_path:
+                        raise StorageError(
+                            f"Snapshot chunk {chunk_id} is outside "
+                            f"repo_id={repo_id}, rel_path={rel_path!r}"
+                        )
+
+            missing_ids = desired_ids - existing_ids - write_ids
+            if missing_ids:
+                missing = ", ".join(sorted(missing_ids))
+                raise StorageError(f"Snapshot desired chunks have no stored row or write: {missing}")
+            missing_reused = reused_ids - existing_ids
+            if missing_reused:
+                missing = ", ".join(sorted(missing_reused))
+                raise StorageError(f"Reused snapshot chunks have no stored row: {missing}")
+
+            for item in chunk_writes:
+                self.upsert_chunk(
+                    item["chunk"],
+                    item["embedding"],
+                    embedding_model,
+                    embedding_dim,
+                    repo_id=repo_id,
+                    embedding_text=item["embedding_text"],
+                    enricher_id=enricher_id,
+                )
+
+            now = datetime.now(UTC).isoformat()
+            for chunk in reused:
+                row = existing_rows[chunk.chunk_id]
+                if row["content_hash"] != chunk.content_hash:
+                    raise StorageError(
+                        f"Reused snapshot chunk {chunk.chunk_id} changed content"
+                    )
+                rowid = int(row["id"])
+                self._conn.execute(
+                    """UPDATE chunks SET
+                           rel_path=?, language=?, kind=?, symbol=?, parent_chunk_id=?,
+                           start_line=?, end_line=?, content=?, content_hash=?, indexed_at=?
+                       WHERE id=?""",
+                    (
+                        chunk.rel_path,
+                        chunk.language,
+                        chunk.kind,
+                        chunk.symbol,
+                        chunk.parent_chunk_id,
+                        chunk.start_line,
+                        chunk.end_line,
+                        chunk.content,
+                        chunk.content_hash,
+                        now,
+                        rowid,
+                    ),
+                )
+                # fts_chunks is contentless-with-external-content: replace,
+                # never UPDATE, while retaining both vector spaces.
+                self._conn.execute("DELETE FROM fts_chunks WHERE rowid = ?", (rowid,))
+                self._conn.execute(
+                    "INSERT INTO fts_chunks(rowid, content, rel_path) VALUES (?, ?, ?)",
+                    (
+                        rowid,
+                        _fts_text(chunk.content, chunk.rel_path, chunk.symbol),
+                        chunk.rel_path,
+                    ),
+                )
+
+            stale_rows = self._conn.execute(
+                "SELECT id, chunk_id FROM chunks WHERE repo_id = ? AND rel_path = ?",
+                (repo_id, rel_path),
+            ).fetchall()
+            stale_rowids = [
+                int(row["id"])
+                for row in stale_rows
+                if row["chunk_id"] not in desired_ids
+            ]
+            if stale_rowids:
+                placeholders = ",".join("?" for _ in stale_rowids)
+                cur = self._conn.cursor()
+                cur.execute(
+                    f"DELETE FROM vec_chunks WHERE rowid IN ({placeholders})",
+                    stale_rowids,
+                )
+                cur.execute(
+                    f"DELETE FROM vec_chunks_secondary WHERE rowid IN ({placeholders})",
+                    stale_rowids,
+                )
+                cur.execute(
+                    f"DELETE FROM fts_chunks WHERE rowid IN ({placeholders})",
+                    stale_rowids,
+                )
+                cur.execute(
+                    f"DELETE FROM chunks WHERE id IN ({placeholders})",
+                    stale_rowids,
+                )
+
+            self.upsert_file_meta(
+                repo_id=repo_id,
+                rel_path=rel_path,
+                content_hash=file_content_hash,
+                size_bytes=size_bytes,
+                mtime=mtime,
+                chunk_count=len(desired_chunk_ids),
+                enricher_id=enricher_id,
+                embedder_model=embedding_model,
+            )
+
+    def delete_file_snapshot(self, *, repo_id: int, rel_path: str) -> int:
+        """Atomically remove all chunk and metadata state for one repo/path."""
+        with self._file_snapshot_savepoint():
+            rows = self._conn.execute(
+                "SELECT id FROM chunks WHERE repo_id = ? AND rel_path = ?",
+                (repo_id, rel_path),
+            ).fetchall()
+            rowids = [int(row["id"]) for row in rows]
+            if rowids:
+                placeholders = ",".join("?" for _ in rowids)
+                cur = self._conn.cursor()
+                cur.execute(
+                    f"DELETE FROM vec_chunks WHERE rowid IN ({placeholders})", rowids
+                )
+                cur.execute(
+                    f"DELETE FROM vec_chunks_secondary WHERE rowid IN ({placeholders})",
+                    rowids,
+                )
+                cur.execute(
+                    f"DELETE FROM fts_chunks WHERE rowid IN ({placeholders})", rowids
+                )
+                cur.execute(f"DELETE FROM chunks WHERE id IN ({placeholders})", rowids)
+            self._conn.execute(
+                "DELETE FROM files WHERE repo_id = ? AND rel_path = ?",
+                (repo_id, rel_path),
+            )
+            return len(rowids)
 
     def upsert_file_meta(
         self,
@@ -1551,6 +1901,7 @@ class Storage:
             FROM vec_chunks_secondary v
             JOIN chunks c ON c.id = v.rowid
             LEFT JOIN repos r ON r.id = c.repo_id
+            LEFT JOIN files f ON f.repo_id = c.repo_id AND f.rel_path = c.rel_path
             WHERE v.embedding MATCH ?
               AND v.embedder_id = ?
               AND v.embedding_dim = ?
@@ -1579,6 +1930,7 @@ class Storage:
                     snippet=_snippet(row["content"]),
                     chunk_id=row["chunk_id"],
                     repo=_repo_from_row(row),
+                    source=_source_evidence_from_row(row),
                 )
             )
         return hits
@@ -1831,6 +2183,7 @@ class Storage:
             FROM vec_chunks v
             JOIN chunks c ON c.id = v.rowid
             LEFT JOIN repos r ON r.id = c.repo_id
+            LEFT JOIN files f ON f.repo_id = c.repo_id AND f.rel_path = c.rel_path
             WHERE v.embedding MATCH ? AND k = ?
               {repo_clause}
             ORDER BY v.distance
@@ -1856,6 +2209,7 @@ class Storage:
                     snippet=_snippet(row["content"]),
                     chunk_id=row["chunk_id"],
                     repo=_repo_from_row(row),
+                    source=_source_evidence_from_row(row),
                 )
             )
         return hits
@@ -1885,6 +2239,7 @@ class Storage:
                 FROM fts_chunks
                 JOIN chunks c ON c.id = fts_chunks.rowid
                 LEFT JOIN repos r ON r.id = c.repo_id
+                LEFT JOIN files f ON f.repo_id = c.repo_id AND f.rel_path = c.rel_path
                 WHERE fts_chunks MATCH ?
                   {repo_clause}
                 ORDER BY score
@@ -1914,6 +2269,7 @@ class Storage:
                     snippet=_snippet(row["content"]),
                     chunk_id=row["chunk_id"],
                     repo=_repo_from_row(row),
+                    source=_source_evidence_from_row(row),
                 )
             )
         return hits
@@ -1954,6 +2310,7 @@ class Storage:
                    ({score_terms}) AS match_count
             FROM chunks c
             LEFT JOIN repos r ON r.id = c.repo_id
+            LEFT JOIN files f ON f.repo_id = c.repo_id AND f.rel_path = c.rel_path
             WHERE ({like_clauses.replace("symbol", "c.symbol")})
               AND c.symbol IS NOT NULL
               {repo_clause}
@@ -1975,6 +2332,7 @@ class Storage:
                 snippet=_snippet(row["content"]),
                 chunk_id=row["chunk_id"],
                 repo=_repo_from_row(row),
+                source=_source_evidence_from_row(row),
             )
             for rank, row in enumerate(rows, start=1)
         ]
@@ -2032,11 +2390,6 @@ class Storage:
     def get_latest_session(self) -> SessionRecord | None:
         """Return the most-recently-updated session row, or ``None``
         when the table is empty.
-
-        Backs WIN-253's ``stropha://working-set`` resource — that
-        FastMCP resource can't access the lifespan AppContext, so
-        we surface the freshest session row from the v8 ``sessions``
-        table instead.
         """
         row = self._conn.execute(
             """SELECT session_id FROM sessions
@@ -2617,6 +2970,7 @@ class Storage:
             SELECT {_REPO_JOIN_COLUMNS}
             FROM chunks c
             LEFT JOIN repos r ON r.id = c.repo_id
+            LEFT JOIN files f ON f.repo_id = c.repo_id AND f.rel_path = c.rel_path
             WHERE c.chunk_id = ?
             """,
             (chunk_id,),
@@ -2635,6 +2989,7 @@ class Storage:
             snippet=_snippet(row["content"]),
             chunk_id=row["chunk_id"],
             repo=_repo_from_row(row),
+            source=_source_evidence_from_row(row),
         )
 
     def lookup_by_symbol(
@@ -2658,6 +3013,7 @@ class Storage:
             SELECT {_REPO_JOIN_COLUMNS}
             FROM chunks c
             LEFT JOIN repos r ON r.id = c.repo_id
+            LEFT JOIN files f ON f.repo_id = c.repo_id AND f.rel_path = c.rel_path
             WHERE (c.symbol = ?
                OR c.symbol LIKE ? COLLATE NOCASE
                OR c.symbol LIKE ? COLLATE NOCASE
@@ -2685,6 +3041,7 @@ class Storage:
                 snippet=_snippet(row["content"]),
                 chunk_id=row["chunk_id"],
                 repo=_repo_from_row(row),
+                source=_source_evidence_from_row(row),
             )
             for rank, row in enumerate(rows, start=1)
         ]

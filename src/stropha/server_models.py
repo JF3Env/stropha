@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
+from .models import SourceEvidenceRef
+
 
 class RepoInfo(BaseModel):
     """Source-repo identity attached to every search result."""
@@ -37,6 +39,10 @@ class SearchResult(BaseModel):
     repo: RepoInfo | None = Field(
         default=None,
         description="Source repository identity (URL, branch, HEAD).",
+    )
+    source: SourceEvidenceRef | None = Field(
+        default=None,
+        description="Versioned saved-source hash and line-range provenance.",
     )
     streams: dict[str, float] | None = Field(
         default=None,
@@ -512,6 +518,7 @@ class FreshnessResponse(BaseModel):
     current_snippet: str | None = Field(default=None)
     expected_snippet: str = Field(default="")
     drift_details: list[str] = Field(default_factory=list)
+    source: SourceEvidenceRef | None = Field(default=None)
 
 
 class ImpactedTestEntry(BaseModel):

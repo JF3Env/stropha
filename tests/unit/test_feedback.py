@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import threading
+from collections import deque
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -291,6 +292,7 @@ class TestReportBadResultTool:
             bad_result_store=store,
             trace_recorder=None,
             session_id="s-test",
+            recent_trace_ids=deque(["t-1"]),
         )
         out = report_bad_result(
             trace_id="t-1",
@@ -321,7 +323,12 @@ class TestReportBadResultTool:
         from stropha.server import report_bad_result
 
         store = BadResultStore(tmp_path)
-        app = MagicMock(bad_result_store=store, trace_recorder=None, session_id="s")
+        app = MagicMock(
+            bad_result_store=store,
+            trace_recorder=None,
+            session_id="s",
+            recent_trace_ids=deque(["t-1"]),
+        )
         out = report_bad_result(
             trace_id="t-1", reason="typo", ctx=self._ctx(app),
         )
@@ -330,13 +337,41 @@ class TestReportBadResultTool:
         # The bad record was NOT persisted.
         assert store.list_all() == []
 
+    def test_rejects_trace_from_another_session(self, tmp_path: Path) -> None:
+        from stropha.server import report_bad_result
+
+        store = BadResultStore(tmp_path)
+        app = MagicMock(
+            bad_result_store=store,
+            trace_recorder=None,
+            session_id="s",
+            recent_trace_ids=deque(["owned-trace"]),
+        )
+
+        out = report_bad_result(
+            trace_id="foreign-trace",
+            reason="irrelevant",
+            ctx=self._ctx(app),
+        )
+
+        assert out == {
+            "ok": False,
+            "error": "trace_id was not issued in the current MCP session",
+        }
+        assert store.list_all() == []
+
     def test_empty_session_id_passed_as_none(self, tmp_path: Path) -> None:
         """A blank session_id (default for non-MCP callers) must become None
         on disk, not the literal empty string."""
         from stropha.server import report_bad_result
 
         store = BadResultStore(tmp_path)
-        app = MagicMock(bad_result_store=store, trace_recorder=None, session_id="")
+        app = MagicMock(
+            bad_result_store=store,
+            trace_recorder=None,
+            session_id="",
+            recent_trace_ids=deque(["t-1"]),
+        )
         report_bad_result(
             trace_id="t-1", reason="other", ctx=self._ctx(app),
         )

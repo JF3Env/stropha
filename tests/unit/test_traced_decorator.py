@@ -21,6 +21,9 @@ Plus a couple of integration-flavoured tests:
 from __future__ import annotations
 
 import dataclasses
+import hashlib
+import json
+from collections import deque
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -46,6 +49,10 @@ def _ctx_with(app: Any) -> Any:
     ctx = MagicMock()
     ctx.request_context.lifespan_context = app
     return ctx
+
+
+def _fingerprint(value: str) -> str:
+    return f"sha256:{hashlib.sha256(value.encode()).hexdigest()}"
 
 
 class _FakeRecorder:
@@ -160,16 +167,27 @@ class TestRecordSafely:
 
     def test_records_full_event(self) -> None:
         rec = _FakeRecorder()
-        _record_safely(rec, "search_code", "q1", {"top_k": 5}, [{"a": 1}], 2.5, 12, "s")
+        _record_safely(
+            rec,
+            "search_code",
+            "q1",
+            {"top_k": 5},
+            [{"chunk_id": "sha256:abc", "score": 0.9}],
+            2.5,
+            12,
+            "s",
+        )
         assert len(rec.calls) == 1
         e = rec.calls[0]
         assert e["tool"] == "search_code"
-        assert e["query"] == "q1"
+        assert e["query"] == _fingerprint("q1")
         assert e["params"] == {"top_k": 5}
         assert e["latency_ms"] == 2.5
         assert e["returned_tokens"] == 12
         assert e["session_id"] == "s"
-        assert e["results"] == [{"a": 1}]
+        assert e["results"] == [{"chunk_id": "sha256:abc", "score": 0.9}]
+        assert e["result_count"] == 1
+        assert e["status"] == "ok"
 
     def test_omits_session_id_when_none(self) -> None:
         rec = _FakeRecorder()
@@ -200,23 +218,23 @@ class TestAttachTraceId:
         from stropha.server_models import SearchResponse
 
         r = SearchResponse(results=[], total_candidates=0, query="q")
-        _attach_trace_id(r, "tid")
+        assert _attach_trace_id(r, "tid") is True
         assert r.trace_id == "tid"
 
     def test_ignores_model_without_field(self) -> None:
         from stropha.server_models import ResetDedupResponse
 
         r = ResetDedupResponse(cleared=0)
-        _attach_trace_id(r, "tid")  # must not raise
+        assert _attach_trace_id(r, "tid") is False
         assert not hasattr(r, "trace_id")
 
     def test_sets_on_dict_with_key(self) -> None:
         d: dict[str, Any] = {"trace_id": None, "ok": True}
-        _attach_trace_id(d, "tid")
+        assert _attach_trace_id(d, "tid") is True
         assert d["trace_id"] == "tid"
 
     def test_ignores_none(self) -> None:
-        _attach_trace_id(None, "tid")  # must not raise
+        assert _attach_trace_id(None, "tid") is False
 
 
 class TestResolveApp:
@@ -271,9 +289,10 @@ class TestTracedDecoratorHappyPath:
         f("Order", ctx=_ctx_with(app))
         assert len(rec.calls) == 2
         assert rec.calls[0]["tool"] == "get_symbol"
-        assert rec.calls[0]["params"] == {"arg0": "UserService"}
+        assert rec.calls[0]["params"] == {}
         assert rec.calls[0]["session_id"] == "sess-42"
         assert rec.calls[0]["results"] == [{"symbol": "UserService"}]
+        assert rec.calls[0]["result_count"] == 1
 
     def test_promotes_query_to_top_level(self) -> None:
         @traced("search_code")
@@ -284,9 +303,73 @@ class TestTracedDecoratorHappyPath:
         app = MagicMock(trace_recorder=rec, session_id="s")
         f(query="hello world", top_k=20, ctx=_ctx_with(app))
         e = rec.calls[0]
-        assert e["query"] == "hello world"
+        assert e["query"] == _fingerprint("hello world")
         assert "query" not in e["params"]
         assert e["params"]["top_k"] == 20
+
+    def test_sensitive_arguments_and_results_are_not_recorded(self) -> None:
+        canary = "STROPHA_TRACE_SECRET_CANARY_9f72c1"
+
+        @traced("search_code")
+        def f(
+            query: str,
+            *,
+            ctx: Any,
+            top_k: int,
+            card_level: str,
+            memory_value: str,
+            scratchpad: str,
+            episode_summary: str,
+            feedback_detail: str,
+            runtime_evidence: str,
+            api_key: str,
+            path_prefix: str,
+        ) -> dict:
+            return {
+                "results": [
+                    {
+                        "chunk_id": "sha256:abc123",
+                        "rank": 1,
+                        "score": 0.9,
+                        "streams": {"dense": 0.8, canary: 0.2},
+                        "snippet": canary,
+                        "rel_path": f"/Users/private/{canary}.py",
+                        "symbol": "Search.run",
+                        "evidence": canary,
+                    }
+                ]
+            }
+
+        rec = _FakeRecorder()
+        app = MagicMock(trace_recorder=rec, session_id="s")
+        f(
+            query=canary,
+            top_k=7,
+            card_level="line",
+            memory_value=canary,
+            scratchpad=canary,
+            episode_summary=canary,
+            feedback_detail=canary,
+            runtime_evidence=canary,
+            api_key=canary,
+            path_prefix=f"/Users/private/{canary}",
+            ctx=_ctx_with(app),
+        )
+
+        event = rec.calls[0]
+        assert canary not in json.dumps(event)
+        assert event["query"] == _fingerprint(canary)
+        assert event["params"] == {"top_k": 7, "card_level": "line"}
+        assert event["result_count"] == 1
+        assert event["results"] == [
+            {
+                "chunk_id": "sha256:abc123",
+                "rank": 1,
+                "score": 0.9,
+                "symbol": "Search.run",
+                "streams": {"dense": 0.8},
+            }
+        ]
 
     def test_latency_is_measured(self) -> None:
         import time as _time
@@ -317,11 +400,17 @@ class TestTracedTraceIdSurfacing:
             return SearchResponse(results=[], total_candidates=0, query=query)
 
         rec = _FakeRecorder()
-        app = MagicMock(trace_recorder=rec, session_id="s")
+        recent_trace_ids: deque[str] = deque(maxlen=256)
+        app = MagicMock(
+            trace_recorder=rec,
+            session_id="s",
+            recent_trace_ids=recent_trace_ids,
+        )
         resp = f(query="q", ctx=_ctx_with(app))
         assert resp.trace_id is not None
         # The id on the response equals the id written to the trace stream.
         assert rec.calls[0]["trace_id"] == resp.trace_id
+        assert list(recent_trace_ids) == [resp.trace_id]
 
     def test_response_without_field_untouched_but_still_traced(self) -> None:
         @traced("noop")
@@ -329,10 +418,16 @@ class TestTracedTraceIdSurfacing:
             return {"value": 1}
 
         rec = _FakeRecorder()
-        app = MagicMock(trace_recorder=rec, session_id="s")
+        recent_trace_ids: deque[str] = deque(maxlen=256)
+        app = MagicMock(
+            trace_recorder=rec,
+            session_id="s",
+            recent_trace_ids=recent_trace_ids,
+        )
         out = f(ctx=_ctx_with(app))
         assert out == {"value": 1}  # plain dict not mutated
         assert "trace_id" in rec.calls[0]  # but server-side trace still has one
+        assert list(recent_trace_ids) == []
 
 
 class TestTracedDecoratorDegradation:
@@ -383,13 +478,21 @@ class TestTracedDecoratorDegradation:
             raise ValueError("simulated tool failure")
 
         rec = _FakeRecorder()
-        app = MagicMock(trace_recorder=rec, session_id="s")
+        recent_trace_ids: deque[str] = deque(maxlen=256)
+        app = MagicMock(
+            trace_recorder=rec,
+            session_id="s",
+            recent_trace_ids=recent_trace_ids,
+        )
         with pytest.raises(ValueError, match="simulated tool failure"):
             f(ctx=_ctx_with(app))
         # The trace event was still emitted (with empty results).
         assert len(rec.calls) == 1
         assert rec.calls[0]["results"] == []
         assert rec.calls[0]["latency_ms"] >= 0.0
+        assert rec.calls[0]["status"] == "error"
+        assert rec.calls[0]["error"] == {"type": "ValueError"}
+        assert list(recent_trace_ids) == []
 
     def test_exception_when_no_app_does_not_crash_trace_path(self) -> None:
         @traced("raise_no_ctx")
@@ -414,6 +517,7 @@ class TestAppContextExtensions:
         fields = {f.name for f in dataclasses.fields(AppContext)}
         assert "session_id" in fields
         assert "trace_recorder" in fields
+        assert "recent_trace_ids" in fields
 
     def test_appcontext_session_id_has_default(self) -> None:
         """The dataclass must instantiate with only the legacy required args
@@ -429,6 +533,7 @@ class TestAppContextExtensions:
         )
         assert app.session_id == ""
         assert app.trace_recorder is None
+        assert app.recent_trace_ids.maxlen == 256
 
 
 class TestCtxBindsSessionId:
