@@ -99,6 +99,10 @@ from .server_graph_tools import (
     default_spec_loader as server_default_spec_loader,
 )
 from .server_http import RestartTolerantFastMCP
+from .server_instruction_tools import (
+    DEFAULT_INSTRUCTION_CHARS,
+    resolve_agent_instructions_impl,
+)
 from .server_memory_tools import (
     bootstrap_environment_impl,
     cache_prune_impl,
@@ -148,6 +152,7 @@ from .server_models import (
     FreshnessResponse,
     HallucinationGuardResponse,
     IndexHealthResponse,
+    InstructionContextResponse,
     ListPinsResponse,
     MemoryEntry,
     OutlineEntry,
@@ -776,6 +781,33 @@ def record_runtime_artifact(
     ctx: Context,
 ) -> RuntimeArtifactResponse:
     return record_runtime_artifact_impl(artifact, _ctx(ctx))
+
+
+@mcp.tool(
+    title="Resolve repository agent instructions",
+    description=(
+        "WIN-431 — resolve saved-worktree AGENTS.md and CLAUDE.md files from the "
+        "current repository root through an active path. Sources are ordered from "
+        "general to specific, carry SHA-256 provenance, and share a hard character "
+        "budget. Defaults to this session's repository and observed active file; "
+        "explicit path/repo selectors win. Returns observed changed paths for use with "
+        "blast-radius, test-impact, and spec-consistency tools. Does not interpret or "
+        "execute instructions, read unsaved buffers, persist content, or trace content."
+    ),
+)
+def resolve_agent_instructions(
+    path: str | None = None,
+    repo: str | None = None,
+    max_chars: int = DEFAULT_INSTRUCTION_CHARS,
+    *,
+    ctx: Context,
+) -> InstructionContextResponse:
+    return resolve_agent_instructions_impl(
+        app=_ctx(ctx),
+        path=path,
+        repo=repo,
+        max_chars=max_chars,
+    )
 
 
 @mcp.tool(

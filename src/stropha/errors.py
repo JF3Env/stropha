@@ -47,6 +47,10 @@ class ObservationError(StrophaError):
     """Invalid or over-quota ephemeral agent observation."""
 
 
+class InstructionResolutionError(StrophaError):
+    """Invalid or unsafe repository instruction context request."""
+
+
 class PipelineError(StrophaError):
     """Failure assembling or running the pipeline."""
 

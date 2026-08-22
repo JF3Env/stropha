@@ -52,8 +52,8 @@ unchanged.
 | Profile | Contract |
 |---|---|
 | `core` | Small retrieval and orientation surface; 13 tools |
-| `standard` | `core` plus observations, session ergonomics, investigations, and change intelligence; 38 tools |
-| `full` | Complete compatibility surface; 53 tools including `capabilities` |
+| `standard` | `core` plus observations, session ergonomics, investigations, and change intelligence; 39 tools |
+| `full` | Complete compatibility surface; 54 tools including `capabilities` |
 
 `core` contains:
 
@@ -63,8 +63,9 @@ unchanged.
 
 `standard` adds:
 
-`observe_agent_state`, `record_runtime_artifact`, `reset_dedup`, `pin_chunks`,
-`unpin_chunks`, `list_pins`, `smart_search_tool`, `expand_chunk`,
+`observe_agent_state`, `record_runtime_artifact`, `resolve_agent_instructions`,
+`reset_dedup`, `pin_chunks`, `unpin_chunks`, `list_pins`, `smart_search_tool`,
+`expand_chunk`,
 `expand_chunks`, `plan_investigation`, `get_community`, `trace_feature`,
 `execute_investigation`, `suggest_next_tool_mcp`, `list_task_recipes`,
 `apply_task_recipe`, `verify_claim_tool`, `check_symbols_tool`,
@@ -141,6 +142,36 @@ memory, the index, artifact storage, or traces. Session shutdown clears both
 collections and artifact-ID tombstones, so a reconnect starts empty and the host
 must resend its state.
 
+## Instruction And Change Context
+
+`resolve_agent_instructions` reads saved-worktree `AGENTS.md` and `CLAUDE.md`
+files that apply to one repository-relative active path. It checks only the
+repository root and each ancestor directory through the active file's directory;
+unrelated subtrees are never scanned. Results are ordered from general to
+specific, with `AGENTS.md` before `CLAUDE.md` at the same scope. Root sources
+apply repository-wide and nested sources apply only within their subtree.
+
+The tool defaults to the session repository and observed active file. Explicit
+repository and path selectors win. Observed `changed_paths` are returned only
+when the snapshot belongs to the resolved repository, ready for the existing
+blast-radius, test-impact, and spec-consistency tools.
+
+Every source carries its repository-relative path, scope depth, SHA-256 over the
+complete saved bytes, full and included character counts, and truncation state.
+Sources share a deterministic fair character budget (16,000 by default, 32,768
+maximum). Any individual source above 256 KiB or applicable source set above 1
+MiB or 64 files is rejected before unbounded allocation. Instruction files must
+be UTF-8 regular files opened through no-follow directory descriptors beneath
+the indexed repository root; Windows validates normalized root and file handles.
+Absolute active paths, traversal, inaccessible roots, symlink escapes, and
+path-replacement races fail explicitly.
+
+This is evidence resolution, not prompt construction: stropha neither interprets
+nor executes instruction content. It does not read unsaved buffers, persist
+resolved content, write the index, enter tracing, or alter session observations.
+Unsaved overlay ingestion remains a Phase 8 concern and final context assembly
+remains a Phase 5 concern.
+
 ## Phase Boundary
 
 Phases delivered so far:
@@ -149,9 +180,10 @@ Phases delivered so far:
 - **Phase 1:** trustworthy saved-source snapshots.
 - **Phase 2:** canonical compact MCP profiles and structured tool contracts.
 - **Phase 3:** ephemeral agent observations and bounded runtime artifacts.
+- **Phase 4:** deterministic saved-worktree instruction and change-context resolution.
 
-Phase 4 may add instruction resolution and change intelligence. Unsaved-buffer
-overlays remain deferred to Phase 8.
+Phase 5 may assemble final agent context from these evidence primitives.
+Unsaved-buffer overlays remain deferred to Phase 8.
 
 ## Non-Negotiable Invariants
 
