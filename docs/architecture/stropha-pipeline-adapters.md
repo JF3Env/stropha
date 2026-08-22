@@ -775,7 +775,10 @@ fonte persistente única; CLI overrides ficam no topo. Não há projeto
 
 **Contexto**: Quando usuário troca de adapter (ex: `hierarchical` → `ollama`), como saber o que re-processar?
 
-**Decisão**: `chunks.enricher_id` armazena qual adapter gerou cada chunk. Pipeline em modo incremental compara `current_adapter.adapter_id` vs `chunk.enricher_id` — mismatch dispara re-enrichment + re-embed automaticamente. Cache `enrichments(content_hash, adapter_id)` torna re-enrichment barato em repeat scenarios.
+**Decisão**: `chunks.enricher_id` armazena qual adapter gerou cada chunk. Pipeline em modo incremental compara `current_adapter.adapter_id` vs `chunk.enricher_id` — mismatch dispara re-enrichment + re-embed automaticamente. Cache `enrichments(content_hash, adapter_id)` torna re-enrichment barato em repeat scenarios. Para o chunker, o pipeline persiste
+`active_chunker_id:<repo_id>` em metadata; ID ausente em índice legado ou
+diferente do adapter ativo força reconciliação completa por hash. O novo ID só
+é publicado depois que a indexação do repositório termina com sucesso.
 
 **Justificativa**: UX trivial — usuário só troca config e roda `stropha index`. Sem necessidade de lembrar de `--rebuild`. Adapter_id inclui modelo (ex: `ollama:qwen2.5-coder:14b`) — trocar de modelo também invalida.
 

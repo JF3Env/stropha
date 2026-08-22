@@ -47,7 +47,7 @@ class AstGenericLanguageChunker:
 
     @property
     def adapter_id(self) -> str:
-        return f"ast-generic:span-v2:{self._config.language}"
+        return f"ast-generic:span-v3:{self._config.language}"
 
     @property
     def config_schema(self) -> type[BaseModel]:
