@@ -27,7 +27,6 @@ from .base import (
     count_lines,
     make_chunk_id,
     sha256_hex,
-    slice_lines,
 )
 
 log = get_logger(__name__)
@@ -57,6 +56,24 @@ def _qualified_name(stack: list[str], name: str | None) -> str | None:
     if not name:
         return None
     return ".".join([*stack, name]) if stack else name
+
+
+def _slice_ast_span(content: str, span: Any) -> str:
+    """Return one tree-sitter byte span without unrelated same-line syntax."""
+    raw = content.encode("utf-8")
+    start = max(0, min(len(raw), int(span.start_byte)))
+    end = max(start, min(len(raw), int(span.end_byte)))
+
+    line_start = raw.rfind(b"\n", 0, start) + 1
+    if not raw[line_start:start].strip(b" \t\r"):
+        start = line_start
+
+    line_end = raw.find(b"\n", end)
+    line_end = len(raw) if line_end < 0 else line_end
+    if not raw[end:line_end].strip(b" \t\r"):
+        end = line_end
+
+    return raw[start:end].decode("utf-8")
 
 
 class AstGenericChunker:
@@ -141,9 +158,14 @@ class AstGenericChunker:
         kind: str,
         symbol: str | None = None,
         parent_chunk_id: str | None = None,
+        span_content: str | None = None,
     ) -> Iterator[Chunk]:
         """Split an oversized span on line boundaries."""
-        lines = content.splitlines(keepends=True)[start_line - 1 : end_line]
+        lines = (
+            span_content.splitlines(keepends=True)
+            if span_content is not None
+            else content.splitlines(keepends=True)[start_line - 1 : end_line]
+        )
         buf: list[str] = []
         buf_len = 0
         s = start_line
@@ -203,9 +225,9 @@ class AstGenericChunker:
         end = max(start, int(span.end_line) + 1)
         name = item.name
         qualified = _qualified_name(parent_stack, name)
-        body = slice_lines(content, start, end).rstrip("\n") + "\n"
 
         if kind in _LEAF_KINDS:
+            body = _slice_ast_span(content, span).rstrip("\n") + "\n"
             if len(body.strip()) < MIN_CHARS_PER_CHUNK:
                 return
             chunk_kind = "method" if kind in {"Method", "Constructor", "Getter", "Setter"} else "function"
@@ -229,6 +251,7 @@ class AstGenericChunker:
                     kind=f"{chunk_kind}_part",
                     symbol=qualified,
                     parent_chunk_id=parent_chunk_id,
+                    span_content=body,
                 )
             return
 
