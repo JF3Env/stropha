@@ -800,8 +800,8 @@ divergirem.
 | Perfil | Escopo |
 |---|---|
 | `core` | 13 tools de seleção de repositório, orientação, busca, símbolos, grafo, contexto e saúde do índice |
-| `standard` | 39 tools: `core` mais observações efêmeras, instruções salvas por escopo, ergonomia de sessão, investigações compostas e inteligência de mudança |
-| `full` | 54 tools: `standard` mais memória, scratchpad, episódios, feedback, cache e diagnóstico de runtime |
+| `standard` | 40 tools: `core` mais observações efêmeras, instruções salvas por escopo, montagem de contexto do agente, ergonomia de sessão, investigações compostas e inteligência de mudança |
+| `full` | 55 tools: `standard` mais memória, scratchpad, episódios, feedback, cache e diagnóstico de runtime |
 
 Os perfis são aninhados (`core` ⊂ `standard` ⊂ `full`) e `full` é o default de
 compatibilidade. `capabilities` pertence a `core`, portanto está sempre visível,
@@ -822,6 +822,13 @@ ativo, em ordem geral → específica. Cada fonte inclui hash SHA-256 do conteú
 completo e excerpt limitado por orçamento; caminhos alterados vêm apenas do
 snapshot da mesma sessão e repositório. O tool não interpreta instruções, não lê
 buffers não salvos e não monta prompt final.
+
+`assemble_agent_context` compõe o resultado acima com o `assemble_context`
+existente, sempre passando a chave canônica do mesmo repositório. Instruções e
+evidência recuperada têm orçamentos independentes; a resposta mantém as duas
+estruturas com proveniência e adiciona Markdown determinístico na ordem
+instruções → evidência. O envelope combinado não entra em tracing nem
+persistência e não interpreta as instruções.
 
 ### 9.3 Formato de resposta
 

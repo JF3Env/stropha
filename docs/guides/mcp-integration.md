@@ -71,17 +71,17 @@ canonical full inventory and minimum profile for each tool are declared in
   `get_symbol`, `list_repos`, `get_file_outline`, `bootstrap_environment`,
   `find_callers`, `find_related`, `find_rationale`, `find_tests_for`,
   `assemble_context`, and `index_health`.
-- **standard (39 tools):** core plus `observe_agent_state`,
+- **standard (40 tools):** core plus `observe_agent_state`,
   `record_runtime_artifact`, `resolve_agent_instructions`, `reset_dedup`,
   `pin_chunks`, `unpin_chunks`,
   `list_pins`, `smart_search_tool`, `expand_chunk`, `expand_chunks`,
   `plan_investigation`, `get_community`, `trace_feature`,
-  `execute_investigation`, `suggest_next_tool_mcp`, `list_task_recipes`,
+  `assemble_agent_context`, `execute_investigation`, `suggest_next_tool_mcp`, `list_task_recipes`,
   `apply_task_recipe`, `verify_claim_tool`, `check_symbols_tool`,
   `blast_radius_tool`, `assert_snippet_freshness_tool`, `test_impact_tool`,
   `audit_citations_tool`, `spec_consistency_tool`, `contract_tests_tool`, and
   `working_set_tool`.
-- **full (54 tools):** standard plus `remember`, `recall`, `forget`,
+- **full (55 tools):** standard plus `remember`, `recall`, `forget`,
   `cache_stats`, `cache_prune`, `scratchpad_read`, `scratchpad_write`,
   `scratchpad_append`, `scratchpad_clear`, `check_staleness`, `record_episode`,
   `recall_episodes`, `co_occurrence`, `report_bad_result`, and `get_config`.
@@ -99,6 +99,7 @@ These are the main public entry points:
 | `observe_agent_state` | standard | Replace or retrieve ephemeral editor state and runtime evidence |
 | `record_runtime_artifact` | standard | Attach a bounded diagnostic or failing-test artifact |
 | `resolve_agent_instructions` | standard | Resolve bounded saved-worktree instructions and observed changed paths |
+| `assemble_agent_context` | standard | Compose scoped instructions and retrieved evidence under separate budgets |
 | `search_code` | core | Conceptual or free-text code search |
 | `smart_search_tool` | standard | Route an ambiguous request to semantic, symbol, or graph retrieval |
 | `get_symbol` | core | Look up a known class, function, or method |
@@ -120,6 +121,7 @@ find_callers("FsrsCalculator", depth=2)
 find_tests_for("submitAnswer")
 trace_feature("user submits an answer and mastery is updated")
 resolve_agent_instructions(path="src/stropha/server.py")
+assemble_agent_context(task="explain MCP repository scoping", path="src/stropha/server.py")
 ```
 
 Search, symbol, graph, and composed tools default to the current repository.
@@ -151,6 +153,19 @@ shared character budget. The tool does not interpret instructions, read unsaved
 buffers, persist or trace content, or assemble a final prompt. Secure no-follow
 reads reject path-replacement races, sources above 256 KiB, and applicable source
 sets above 1 MiB or 64 files.
+
+`assemble_agent_context` composes that instruction response with the existing
+repository-scoped `assemble_context` result. Its `instruction_chars` and
+`retrieval_tokens` inputs are independent hard budgets, defaulting to 4,000 each.
+The response returns bounded nested sections plus deterministic markdown ordered
+as instructions then evidence. It safely re-renders structured retrieval hits
+instead of exposing the raw retrieval bundle in either nested or combined
+Markdown. It canonicalizes the repository once and passes that key explicitly
+to retrieval, preventing cross-repository drift. The combined instruction-bearing
+response is not traced or persisted;
+the nested retrieval result may retain its normal retrieval-only trace ID. When
+WIN-209's first-hit escape exceeds the declared hard budget, the nested evidence
+is emptied and `retrieval_oversize_omitted` reports that composition decision.
 
 Repository keys must match an indexed repository. Active, recent, changed,
 selection, and artifact source paths must be repository-relative and may not
