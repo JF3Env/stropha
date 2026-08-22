@@ -67,6 +67,7 @@ MCP_TOOL_MANIFEST: tuple[ToolManifestEntry, ...] = (
     ToolManifestEntry("trace_feature", "standard"),
     ToolManifestEntry("report_bad_result", "full"),
     ToolManifestEntry("assemble_context", "core"),
+    ToolManifestEntry("assemble_agent_context", "standard"),
     ToolManifestEntry("execute_investigation", "standard"),
     ToolManifestEntry("get_config", "full"),
     ToolManifestEntry("index_health", "core"),

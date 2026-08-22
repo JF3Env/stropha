@@ -14,6 +14,7 @@ from stropha.server_tool_manifest import MCP_TOOL_MANIFEST, tool_names_for_profi
 
 _FULL_COMPATIBILITY_TOOLS = {
     "apply_task_recipe",
+    "assemble_agent_context",
     "assemble_context",
     "assert_snippet_freshness_tool",
     "audit_citations_tool",
@@ -86,6 +87,7 @@ _CORE_TOOLS = {
 
 _STANDARD_ADDITIONAL_TOOLS = {
     "apply_task_recipe",
+    "assemble_agent_context",
     "assert_snippet_freshness_tool",
     "audit_citations_tool",
     "blast_radius_tool",
@@ -118,6 +120,7 @@ _NEW_STRUCTURED_TOOLS = {
     "select_repository": "RepoRef",
     "record_runtime_artifact": "RuntimeArtifactResponse",
     "resolve_agent_instructions": "InstructionContextResponse",
+    "assemble_agent_context": "AgentContextResponse",
     "find_callers": "FindCallersResponse",
     "find_related": "FindRelatedResponse",
     "get_community": "CommunityResponse",
@@ -146,6 +149,16 @@ _STRUCTURED_REQUIRED_KEYS = {
         "total_chars",
         "included_chars",
         "truncated",
+    },
+    "assemble_agent_context": {
+        "task",
+        "repository",
+        "active_path",
+        "changed_paths",
+        "instructions",
+        "retrieval",
+        "retrieval_oversize_omitted",
+        "bundle",
     },
     "find_callers": {"symbol"},
     "find_related": {"symbol"},
@@ -239,6 +252,7 @@ def test_every_registered_tool_has_a_structured_output_schema() -> None:
     for name, required in _STRUCTURED_REQUIRED_KEYS.items():
         assert set(tools[name].outputSchema.get("required", [])) == required
     assert tools["resolve_agent_instructions"].outputSchema["additionalProperties"] is False
+    assert tools["assemble_agent_context"].outputSchema["additionalProperties"] is False
 
 
 def test_manifest_profile_helper_matches_discovery() -> None:

@@ -51,6 +51,10 @@ class InstructionResolutionError(StrophaError):
     """Invalid or unsafe repository instruction context request."""
 
 
+class AgentContextError(StrophaError):
+    """Invalid bounded agent-context assembly request."""
+
+
 class PipelineError(StrophaError):
     """Failure assembling or running the pipeline."""
 

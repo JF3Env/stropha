@@ -25,17 +25,18 @@ indexing or the post-commit hook is sufficient.
 
 from __future__ import annotations
 
+import json
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any, cast
 
 from mcp.server.fastmcp import Context
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from . import __version__
 from .config import MCP_PROFILES, Config, get_config, get_config_info, reset_config
-from .errors import ConfigError, EmbeddingDimensionMismatchError, StrophaError
+from .errors import AgentContextError, ConfigError, EmbeddingDimensionMismatchError, StrophaError
 from .logging import configure_logging, get_logger
 from .meta.decorator import traced
 from .models import AgentStateSnapshotV1, RepoRef, RuntimeArtifactV1
@@ -153,6 +154,7 @@ from .server_models import (
     HallucinationGuardResponse,
     IndexHealthResponse,
     InstructionContextResponse,
+    InstructionSourceEntry,
     ListPinsResponse,
     MemoryEntry,
     OutlineEntry,
@@ -2130,8 +2132,140 @@ class AssembleContextResponse(BaseModel):
     )
     notes: list[str] = Field(
         default_factory=list,
-        description="Graph extension failures or malformed-response diagnostics.",
+        description=(
+            "Graph extension failures, malformed-response diagnostics, or bounded "
+            "composition notes."
+        ),
     )
+
+
+class AgentContextResponse(BaseModel):
+    """Bounded instructions and retrieved evidence for one agent task."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    task: str
+    repository: str
+    active_path: str | None
+    changed_paths: list[str]
+    instructions: InstructionContextResponse
+    retrieval: AssembleContextResponse
+    retrieval_oversize_omitted: bool = Field(
+        description=(
+            "True when WIN-209's oversized first-hit escape was omitted from this "
+            "hard-bounded response. retrieval.spilled_count remains tail-only."
+        )
+    )
+    bundle: str
+
+
+MAX_AGENT_CONTEXT_RETRIEVAL_TOKENS = 32_000
+
+
+def _markdown_fence(content: str) -> str:
+    fence = "```"
+    while fence in content:
+        fence += "`"
+    return fence
+
+
+def _single_line(value: str) -> str:
+    return " ".join(value.split())
+
+
+def _instruction_markdown(source: InstructionSourceEntry) -> str:
+    fence = _markdown_fence(source.content)
+    return (
+        "### Instruction source\n\n"
+        f"> path: {json.dumps(source.path)} | scope: {json.dumps(source.scope)} | "
+        f"precedence: {source.precedence}\n"
+        f"> sha256: `{source.sha256}` | chars: "
+        f"{source.included_chars}/{source.full_chars} | truncated: "
+        f"{str(source.truncated).lower()}\n\n"
+        f"{fence}markdown\n{source.content}\n{fence}"
+    )
+
+
+def _retrieval_hit_markdown(hit: SearchResult) -> str:
+    fence = _markdown_fence(hit.snippet)
+    language = "".join(
+        character for character in hit.language.lower() if character.isalnum() or character in "_+-"
+    )[:32]
+    metadata = (
+        f"> path: {json.dumps(hit.path)} | lines: {hit.start_line}-{hit.end_line} | "
+        f"chunk_id: {json.dumps(hit.chunk_id)}"
+    )
+    if hit.symbol:
+        metadata += f" | symbol: {json.dumps(hit.symbol)}"
+    if hit.repo is not None:
+        metadata += f" | repo: {json.dumps(hit.repo.normalized_key)}"
+    if hit.streams:
+        metadata += f"\n> streams: {json.dumps(hit.streams, sort_keys=True)}"
+    return f"### Retrieved span\n\n{metadata}\n\n{fence}{language}\n{hit.snippet}\n{fence}"
+
+
+def _retrieval_markdown(retrieval: AssembleContextResponse) -> str:
+    parts: list[str] = []
+    for section in retrieval.sections:
+        if not section.hits:
+            continue
+        span_count = len(section.hits)
+        span_label = "span" if span_count == 1 else "spans"
+        parts.append(f"### {_single_line(section.title)} ({span_count} {span_label})")
+        parts.extend(_retrieval_hit_markdown(hit) for hit in section.hits)
+    return "\n\n".join(parts)
+
+
+def _render_retrieval_bundle(retrieval: AssembleContextResponse) -> str:
+    parts = [f"# Context for: {_single_line(retrieval.task)}"]
+    retrieval_markdown = _retrieval_markdown(retrieval)
+    if retrieval_markdown:
+        parts.append(retrieval_markdown)
+    return "\n\n".join(parts).rstrip() + "\n"
+
+
+def _render_agent_context(
+    task: str,
+    instructions: InstructionContextResponse,
+    retrieval: AssembleContextResponse,
+) -> str:
+    parts = [f"# Agent context for: {_single_line(task)}"]
+    if instructions.sources:
+        parts.extend(
+            [
+                "## Applicable instructions",
+                *[_instruction_markdown(source) for source in instructions.sources],
+            ]
+        )
+    retrieval_markdown = _retrieval_markdown(retrieval)
+    if retrieval_markdown:
+        parts.extend(["## Retrieved evidence", retrieval_markdown])
+    return "\n\n".join(parts).rstrip() + "\n"
+
+
+def _hard_bound_retrieval(
+    retrieval: AssembleContextResponse,
+    budget_tokens: int,
+) -> tuple[AssembleContextResponse, bool]:
+    if retrieval.total_tokens <= budget_tokens:
+        return retrieval.model_copy(
+            update={"bundle": _render_retrieval_bundle(retrieval)}
+        ), False
+    bounded = retrieval.model_copy(
+        update={
+            "bundle": f"# Context for: {_single_line(retrieval.task)}\n",
+            "sections": [section.model_copy(update={"hits": []}) for section in retrieval.sections],
+            "total_tokens": 0,
+            "budget_tokens": budget_tokens,
+            "truncated_oversize": False,
+            "notes": [
+                *retrieval.notes,
+                "Oversized first retrieval hit was omitted to preserve the hard "
+                f"{budget_tokens}-token agent-context budget.",
+            ],
+        }
+    )
+    return bounded, True
 
 
 @mcp.tool(
@@ -2266,6 +2400,67 @@ def assemble_context(
         truncated_oversize=result.truncated_oversize,
         graph_status=getattr(result, "graph_status", None),
         notes=getattr(result, "notes", []),
+    )
+
+
+@mcp.tool(
+    title="Assemble bounded agent context",
+    description=(
+        "WIN-432 — compose applicable saved-worktree AGENTS.md/CLAUDE.md sources "
+        "with repository-scoped retrieved evidence in one deterministic response. "
+        "Instruction characters and retrieval tokens have independent hard budgets, "
+        "and explicit repository/path selectors override session defaults. Returns "
+        "strict structured sections plus markdown ordered as instructions then "
+        "evidence. Does not interpret instructions, read unsaved buffers, persist "
+        "content, or trace the instruction-bearing combined response."
+    ),
+)
+def assemble_agent_context(
+    task: str,
+    path: str | None = None,
+    instruction_chars: int = 4000,
+    retrieval_tokens: int = 4000,
+    top_k: int = 10,
+    include_callers: bool = False,
+    include_tests: bool = False,
+    include_rationale: bool = False,
+    *,
+    repo: str | None = None,
+    ctx: Context,
+) -> AgentContextResponse:
+    """Compose instruction context with the existing retrieval assembler."""
+    if not 1 <= retrieval_tokens <= MAX_AGENT_CONTEXT_RETRIEVAL_TOKENS:
+        raise AgentContextError(
+            f"retrieval_tokens must be between 1 and {MAX_AGENT_CONTEXT_RETRIEVAL_TOKENS}"
+        )
+
+    app = _ctx(ctx)
+    instructions = resolve_agent_instructions_impl(
+        app=app,
+        path=path,
+        repo=repo,
+        max_chars=instruction_chars,
+    )
+    retrieval = assemble_context(
+        task=task,
+        context_budget=retrieval_tokens,
+        top_k=top_k,
+        include_callers=include_callers,
+        include_tests=include_tests,
+        include_rationale=include_rationale,
+        repo=instructions.repository,
+        ctx=ctx,
+    )
+    retrieval, retrieval_oversize_omitted = _hard_bound_retrieval(retrieval, retrieval_tokens)
+    return AgentContextResponse(
+        task=task,
+        repository=instructions.repository,
+        active_path=instructions.active_path,
+        changed_paths=instructions.changed_paths,
+        instructions=instructions,
+        retrieval=retrieval,
+        retrieval_oversize_omitted=retrieval_oversize_omitted,
+        bundle=_render_agent_context(task, instructions, retrieval),
     )
 
 

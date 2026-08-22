@@ -52,8 +52,8 @@ unchanged.
 | Profile | Contract |
 |---|---|
 | `core` | Small retrieval and orientation surface; 13 tools |
-| `standard` | `core` plus observations, session ergonomics, investigations, and change intelligence; 39 tools |
-| `full` | Complete compatibility surface; 54 tools including `capabilities` |
+| `standard` | `core` plus observations, session ergonomics, investigations, and change intelligence; 40 tools |
+| `full` | Complete compatibility surface; 55 tools including `capabilities` |
 
 `core` contains:
 
@@ -67,7 +67,7 @@ unchanged.
 `reset_dedup`, `pin_chunks`, `unpin_chunks`, `list_pins`, `smart_search_tool`,
 `expand_chunk`,
 `expand_chunks`, `plan_investigation`, `get_community`, `trace_feature`,
-`execute_investigation`, `suggest_next_tool_mcp`, `list_task_recipes`,
+`assemble_agent_context`, `execute_investigation`, `suggest_next_tool_mcp`, `list_task_recipes`,
 `apply_task_recipe`, `verify_claim_tool`, `check_symbols_tool`,
 `blast_radius_tool`, `assert_snippet_freshness_tool`, `test_impact_tool`,
 `audit_citations_tool`, `spec_consistency_tool`, `contract_tests_tool`, and
@@ -169,8 +169,40 @@ path-replacement races fail explicitly.
 This is evidence resolution, not prompt construction: stropha neither interprets
 nor executes instruction content. It does not read unsaved buffers, persist
 resolved content, write the index, enter tracing, or alter session observations.
-Unsaved overlay ingestion remains a Phase 8 concern and final context assembly
-remains a Phase 5 concern.
+Unsaved overlay ingestion remains a Phase 8 concern; bounded context assembly is
+defined in the Phase 5 slice below.
+
+## Bounded Agent Context Assembly
+
+`assemble_agent_context` is the first bounded assembly slice for the agent
+exoskeleton. It resolves the applicable saved-worktree instructions first, then
+passes that response's canonical repository key explicitly into the existing
+`assemble_context` retrieval pipeline. One repository therefore scopes both
+sections even if session state changes between the two operations.
+
+Instruction content and retrieved snippets retain independent budgets: 4,000
+characters and 4,000 estimated tokens by default, with hard maxima of 32,768
+characters and 32,000 tokens. The existing retrieval packer's oversized-first-hit
+escape remains unchanged for its current callers; this composition omits that hit
+when it exceeds the declared retrieval budget, reports the decision through
+`retrieval_oversize_omitted`, and still returns any applicable instructions.
+`retrieval.spilled_count` remains reserved for hits that fell off the tail.
+
+The response preserves bounded structured inputs inside a strict outer model and
+adds deterministic markdown ordered as applicable instructions followed by
+retrieved evidence. It renders structured retrieval hits with content-sized
+fences rather than exposing the older raw retrieval bundle in either nested or
+combined Markdown.
+Instruction sources retain path, scope, SHA-256, and truncation provenance;
+retrieval retains chunk provenance, graph status, notes, and its retrieval-only
+trace ID. The outer composition is deliberately not traced, so instruction
+content never enters the trace stream.
+
+This slice does not interpret instructions or change retrieval ranking/packing.
+It excludes runtime artifacts, pinned/recent working-set fusion, unsaved buffers,
+LLM routing, persistence, migrations, and index writes. Other documents in this
+repository use "Phase 5" for unrelated historical initiatives; this phase number
+belongs specifically to the agent-exoskeleton sequence in this document.
 
 ## Phase Boundary
 
@@ -181,8 +213,9 @@ Phases delivered so far:
 - **Phase 2:** canonical compact MCP profiles and structured tool contracts.
 - **Phase 3:** ephemeral agent observations and bounded runtime artifacts.
 - **Phase 4:** deterministic saved-worktree instruction and change-context resolution.
+- **Phase 5:** bounded instruction and retrieved-evidence assembly.
 
-Phase 5 may assemble final agent context from these evidence primitives.
+Runtime-artifact and working-set fusion remain future assembly slices.
 Unsaved-buffer overlays remain deferred to Phase 8.
 
 ## Non-Negotiable Invariants
