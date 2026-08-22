@@ -133,3 +133,30 @@ def test_ensure_connected_skips_while_index_lock_held() -> None:
     st.ensure_connected()
 
     assert alive.rolled_back is False  # skipped entirely (no ping)
+
+
+def test_release_index_lock_rolls_back_aborted_transaction_first() -> None:
+    calls: list[str] = []
+
+    class _UnlockResult:
+        def fetchone(self) -> dict[str, bool]:
+            return {"ok": True}
+
+    class _AbortedRaw(_FakeRaw):
+        def rollback(self) -> None:
+            calls.append("rollback")
+
+        def execute(self, _sql: str, _params: object) -> _UnlockResult:
+            calls.append("unlock")
+            return _UnlockResult()
+
+        def commit(self) -> None:
+            calls.append("commit")
+
+    storage = _bare_storage(_AbortedRaw())
+    storage._index_lock_held = True
+
+    storage.release_index_lock()
+
+    assert calls == ["rollback", "unlock", "commit"]
+    assert storage._index_lock_held is False

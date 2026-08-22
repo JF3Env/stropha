@@ -19,7 +19,7 @@ must depend only on the protocol surface listed above.
 from __future__ import annotations
 
 from types import TracebackType
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol, TypedDict, runtime_checkable
 
 from pydantic import BaseModel
 
@@ -31,6 +31,14 @@ from ..secondary_embeddings import (
     SecondaryEmbeddingChunk,
     SecondaryEmbeddingVector,
 )
+
+
+class FileSnapshotChunkWrite(TypedDict):
+    """Dirty/new primary-vector state for one chunk in a file snapshot."""
+
+    chunk: Chunk
+    embedding: list[float]
+    embedding_text: str
 
 
 @runtime_checkable
@@ -72,7 +80,11 @@ class StorageStage(Protocol):
 
     # ----- Writes ---------------------------------------------------------
 
-    def register_repo(self, identity: RepoIdentity) -> int: ...
+    def register_repo(
+        self, identity: RepoIdentity, *, publish_watermark: bool = True
+    ) -> int: ...
+
+    def complete_repo_index(self, repo_id: int, head_commit: str | None) -> None: ...
 
     def upsert_chunk(
         self,
@@ -114,6 +126,7 @@ class StorageStage(Protocol):
         repo_id: int,
         rel_path: str,
         *,
+        content_hash: str,
         mtime: float,
         size_bytes: int,
         enricher_id: str | None = None,
@@ -121,6 +134,24 @@ class StorageStage(Protocol):
     ) -> bool: ...
 
     def load_file_meta_map(self, repo_id: int) -> dict[str, StoredFileMeta]: ...
+
+    def replace_file_snapshot(
+        self,
+        *,
+        repo_id: int,
+        rel_path: str,
+        desired_chunk_ids: list[str],
+        chunk_writes: list[FileSnapshotChunkWrite],
+        embedding_model: str,
+        embedding_dim: int,
+        enricher_id: str | None,
+        file_content_hash: str,
+        size_bytes: int,
+        mtime: float,
+        reused_chunks: list[Chunk] | None = None,
+    ) -> None: ...
+
+    def delete_file_snapshot(self, *, repo_id: int, rel_path: str) -> int: ...
 
     def upsert_file_meta(
         self,

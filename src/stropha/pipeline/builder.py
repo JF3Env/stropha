@@ -13,7 +13,7 @@ Every listed stage is constructed from the resolved adapter configuration.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from .. import adapters  # noqa: F401  — side-effect: populate registry
 from ..errors import ConfigError
@@ -113,7 +113,7 @@ def build_stages(
     Caller is responsible for actually triggering ``Pipeline.run(rebuild=True)``
     after — passing this flag without the rebuild leaves the index empty.
     """
-    walker = _build_simple(resolved_config, "walker")
+    walker = build_walker(resolved_config)
     chunker = _build_simple(resolved_config, "chunker")
     enricher = _build_simple(resolved_config, "enricher")
     embedder = _build_simple(resolved_config, "embedder")
@@ -229,6 +229,11 @@ def build_stages(
         router=router,
         secondary_embedder=secondary_embedder,
     )
+
+
+def build_walker(resolved_config: dict[str, Any]) -> WalkerStage:
+    """Build only the configured walker without loading model-backed stages."""
+    return cast(WalkerStage, _build_simple(resolved_config, "walker"))
 
 
 def _build_simple(resolved_config: dict[str, Any], stage: str) -> Any:

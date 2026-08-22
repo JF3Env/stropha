@@ -13,23 +13,80 @@ same content+adapter combo has been seen before in this DB.
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ..errors import StrophaError
+from ..errors import PipelineError, StrophaError
 from ..ingest.git_meta import detect as detect_repo
 from ..logging import get_logger
-from ..models import Chunk
+from ..models import SOURCE_SNAPSHOT_VERSION, Chunk, source_snapshot_meta_key
 from ..stages.chunker import ChunkerStage
 from ..stages.embedder import EmbedderStage
 from ..stages.enricher import EnricherStage, effective_enricher_id
-from ..stages.storage import StorageStage
+from ..stages.storage import FileSnapshotChunkWrite, StorageStage
 from ..stages.walker import WalkerStage
 from .base import StageContext
 
 log = get_logger(__name__)
+
+_SOURCE_SNAPSHOT_ATTEMPTS = 3
+_INCOMPLETE_ENRICHER_ID = "__stropha_incomplete__"
+_GRAPH_DIRTY_META_PREFIX = "graph_dirty:"
+
+
+def _graph_dirty_meta_key(repo_id: int) -> str:
+    return f"{_GRAPH_DIRTY_META_PREFIX}{repo_id}"
+
+
+@dataclass(frozen=True)
+class _SourceSnapshot:
+    """One stable read of a saved working-tree file."""
+
+    content: str
+    content_hash: str
+    size_bytes: int
+    mtime: float
+
+
+def _capture_source_snapshot(path: Path) -> _SourceSnapshot | None:
+    """Read bytes only when path identity and metadata stay stable."""
+    try:
+        read_path = path.resolve()
+        before = read_path.stat()
+        raw = read_path.read_bytes()
+        after = read_path.stat()
+        resolved_after = path.resolve()
+    except OSError:
+        return None
+    before_identity = (
+        before.st_dev,
+        before.st_ino,
+        before.st_size,
+        before.st_mtime_ns,
+        before.st_ctime_ns,
+    )
+    after_identity = (
+        after.st_dev,
+        after.st_ino,
+        after.st_size,
+        after.st_mtime_ns,
+        after.st_ctime_ns,
+    )
+    if (
+        before_identity != after_identity
+        or len(raw) != after.st_size
+        or resolved_after != read_path
+    ):
+        return None
+    return _SourceSnapshot(
+        content=raw.decode("utf-8", errors="replace"),
+        content_hash=hashlib.sha256(raw).hexdigest(),
+        size_bytes=len(raw),
+        mtime=after.st_mtime,
+    )
 
 
 @dataclass
@@ -42,9 +99,8 @@ class RepoStats:
     """Whether source files were added, modified, renamed, or deleted."""
     files_visited: int = 0
     files_skipped_fresh: int = 0
-    """Files whose stored ``(mtime, size_bytes)`` matched the on-disk
-    state — the chunker + enricher + embedder were skipped entirely.
-    Phase A incremental win."""
+    """Files whose full raw-byte hash, metadata, chunk count, and active
+    adapters matched the saved source snapshot."""
     files_evicted: int = 0
     """Files that disappeared from the working tree since last index;
     their chunks have been dropped."""
@@ -177,6 +233,7 @@ class Pipeline:
         )
         self._graphify = graphify
         self._graph_fts_augment = graph_fts_augment
+        self._force_file_snapshot_refresh = False
 
         # Pre-warm the enricher's lazy state (e.g. inference backend
         # singleton) so the first batch of N parallel enrichment calls
@@ -211,6 +268,30 @@ class Pipeline:
         mode: str = "auto",
         since_sha: str | None = None,
     ) -> PipelineStats:
+        """Execute one index pass while always releasing the writer lock."""
+        acquire_lock = getattr(self._storage, "try_acquire_index_lock", None)
+        if acquire_lock is not None and not acquire_lock():
+            raise StrophaError(
+                "Another `stropha index` run is already writing to this index "
+                "(advisory lock held). Wait for it to finish — or stop it — "
+                "before starting another. Tip: a `git commit` triggers the "
+                "post-commit hook's index, which can collide with a manual "
+                "`--rebuild`."
+            )
+        try:
+            return self._run_once(rebuild=rebuild, mode=mode, since_sha=since_sha)
+        finally:
+            release_lock = getattr(self._storage, "release_index_lock", None)
+            if release_lock is not None:
+                release_lock()
+
+    def _run_once(
+        self,
+        *,
+        rebuild: bool = False,
+        mode: str = "auto",
+        since_sha: str | None = None,
+    ) -> PipelineStats:
         """Execute the pipeline.
 
         Args:
@@ -223,8 +304,8 @@ class Pipeline:
                 - ``auto`` — hash-based reconcile (WIN-425). The default.
                   Git-independent and crash-resilient.
                 - ``reconcile`` — walk the full file set and (re)index only
-                  files whose content hash (via mtime+size fast-path) changed
-                  vs the ``files`` cache; evict deleted. Source of truth is
+                  files whose full raw-byte hash changed vs the ``files``
+                  cache; evict deleted. Source of truth is
                   the content hash, not git, so uncommitted edits and files
                   left behind by an interrupted index are always caught.
                 - ``full`` — walk every file via the configured walker; the
@@ -241,22 +322,6 @@ class Pipeline:
         if mode not in ("auto", "full", "incremental", "reconcile"):
             raise ValueError(f"unknown pipeline mode: {mode!r}")
 
-        # Serialize concurrent index writers. Two `stropha index` runs writing
-        # to chunks/files at once can deadlock on Postgres (SQLite serialized
-        # writers implicitly). The storage advisory lock makes the second run
-        # abort cleanly instead of deadlocking. No-op for backends that don't
-        # implement it; released in the matching block before ``return`` and
-        # by ``storage.close()`` on the error path.
-        _acquire_lock = getattr(self._storage, "try_acquire_index_lock", None)
-        if _acquire_lock is not None and not _acquire_lock():
-            raise StrophaError(
-                "Another `stropha index` run is already writing to this index "
-                "(advisory lock held). Wait for it to finish — or stop it — "
-                "before starting another. Tip: a `git commit` triggers the "
-                "post-commit hook's index, which can collide with a manual "
-                "`--rebuild`."
-            )
-
         stats = PipelineStats(
             enricher_id=self._effective_enricher_id,
             embedder_id=self._embedder.adapter_id,
@@ -266,7 +331,6 @@ class Pipeline:
                 else None
             ),
         )
-
         # Drift detection: compare the stored adapter ids (written by the
         # previous run at the bottom of this method) against the current
         # ones. When they differ, every per-chunk freshness check that
@@ -304,7 +368,9 @@ class Pipeline:
         if not rebuild and self._storage.count_chunks_without_repo() > 0:
             if len(self._repos) == 1:
                 identity = detect_repo(self._repos[0])
-                repo_id = self._storage.register_repo(identity)
+                repo_id = self._storage.register_repo(
+                    identity, publish_watermark=False
+                )
                 n = self._storage.backfill_chunks_to_repo(repo_id, self._repos[0])
                 if n > 0:
                     log.info("pipeline.chunks_backfilled", count=n)
@@ -318,13 +384,16 @@ class Pipeline:
         if rebuild:
             for repo_path in self._repos:
                 identity = detect_repo(repo_path)
-                repo_id = self._storage.register_repo(identity)
+                repo_id = self._storage.register_repo(
+                    identity, publish_watermark=False
+                )
                 log.info(
                     "pipeline.rebuild_clear_repo",
                     repo=identity.normalized_key,
                     repo_id=repo_id,
                 )
                 self._storage.clear_repo(repo_id)
+                self._storage.set_meta(_graph_dirty_meta_key(repo_id), "1")
 
         for repo_path in self._repos:
             rstats = self._index_one_repo(
@@ -361,34 +430,43 @@ class Pipeline:
         # backends (sqlite-vec, postgres) support it; this is a framework hook.
         graph_capable = getattr(self._storage, "graph_capable", True)
         if self._graphify and graph_capable:
-            self._run_graphify(stats.repos)
+            failed_repos = self._run_graphify(stats.repos)
             # Refreshing the mirror also embeds graph nodes and augments FTS.
             # Keep the entire lifecycle behind --graphify/--no-graphify so a
             # caller can explicitly avoid expensive post-index graph work.
-            self._refresh_graphify_mirror()
+            mirrored_repo_ids = self._refresh_graphify_mirror(
+                skip_repos=failed_repos
+            )
+            for repo_id in mirrored_repo_ids:
+                if self._storage.get_meta(_graph_dirty_meta_key(repo_id)) == "1":
+                    self._storage.set_meta(_graph_dirty_meta_key(repo_id), "0")
+            if mirrored_repo_ids:
+                self._storage.commit()
 
-        _release_lock = getattr(self._storage, "release_index_lock", None)
-        if _release_lock is not None:
-            _release_lock()
         return stats
 
-    def _run_graphify(self, repo_stats: Sequence[RepoStats]) -> None:
+    def _run_graphify(self, repo_stats: Sequence[RepoStats]) -> set[Path]:
         """Invoke ``graphify update`` for repos whose graph may be outdated.
 
         Creates ``graphify-out/graph.json`` on first run; refreshes it
         after source changes. Unchanged repos are skipped only when their
-        existing graph has already been imported. Skipped silently when
-        the ``graphify`` binary is not installed (no hard dependency).
+        existing graph has already been imported. Repositories skipped or
+        failed by graphify are returned so their dirty markers remain set.
         """
         from ..ingest.graphify_loader import GraphifyLoader
         from .graphify_runner import run_graphify_multi
 
         repos_to_update: list[Path] = []
         for repo_path, rstats in zip(self._repos, repo_stats, strict=True):
-            if not rstats.code_changed:
+            identity = detect_repo(repo_path)
+            repo_id = self._storage.register_repo(
+                identity, publish_watermark=False
+            )
+            graph_dirty = (
+                self._storage.get_meta(_graph_dirty_meta_key(repo_id)) == "1"
+            )
+            if not rstats.code_changed and not graph_dirty:
                 try:
-                    identity = detect_repo(repo_path)
-                    repo_id = self._storage.register_repo(identity)
                     loader = GraphifyLoader(
                         self._storage, repo_path, repo_id=repo_id,
                     )  # type: ignore[arg-type]
@@ -410,18 +488,22 @@ class Pipeline:
             repos_to_update.append(repo_path)
 
         if not repos_to_update:
-            return
+            return set()
 
         results = run_graphify_multi(repos_to_update)
+        failed_repos = {repo.resolve() for repo in repos_to_update}
         for r in results:
-            if r.error:
+            repo = r.repo.resolve()
+            if r.error or r.skipped:
                 log.warning(
                     "pipeline.graphify_error",
                     repo=str(r.repo),
-                    error=r.error,
+                    error=r.error or "graphify skipped without refreshing graph.json",
                     elapsed_s=round(r.elapsed_s, 2),
                 )
-            elif r.created:
+                continue
+            failed_repos.discard(repo)
+            if r.created:
                 log.info(
                     "pipeline.graphify_created",
                     repo=str(r.repo),
@@ -433,8 +515,11 @@ class Pipeline:
                     repo=str(r.repo),
                     elapsed_s=round(r.elapsed_s, 2),
                 )
+        return failed_repos
 
-    def _refresh_graphify_mirror(self) -> None:
+    def _refresh_graphify_mirror(
+        self, *, skip_repos: set[Path] | None = None
+    ) -> set[int]:
         """Reload the graphify mirror tables if the on-disk graph is newer.
 
         After the structural mirror is refreshed, embed graph node labels
@@ -454,11 +539,17 @@ class Pipeline:
             from ..ingest.graph_vec_loader import GraphVecLoader
             from ..ingest.graphify_loader import GraphifyLoader
         except ImportError:  # pragma: no cover — defensive
-            return
+            return set()
+        skipped = {path.resolve() for path in (skip_repos or set())}
+        mirrored_repo_ids: set[int] = set()
         for repo_path in self._repos:
+            if repo_path.resolve() in skipped:
+                continue
             # Get repo_id for this repo (required for multi-repo isolation)
             identity = detect_repo(repo_path)
-            repo_id = self._storage.register_repo(identity)
+            repo_id = self._storage.register_repo(
+                identity, publish_watermark=False
+            )
 
             try:
                 loader = GraphifyLoader(
@@ -469,25 +560,26 @@ class Pipeline:
                 continue
             if not loader.exists():
                 continue
-            if not loader.is_stale():
-                log.debug(
-                    "graphify_loader.fresh",
-                    path=str(loader.graph_path),
-                    repo_id=repo_id,
-                )
-                # Even if the structural graph is fresh, the embedder may have
-                # changed since last index — let the vec loader decide.
-            else:
-                try:
-                    loader.load()
-                except Exception as exc:
-                    log.warning(
-                        "graphify_loader.load_failed",
+            try:
+                if not loader.is_stale():
+                    log.debug(
+                        "graphify_loader.fresh",
                         path=str(loader.graph_path),
                         repo_id=repo_id,
-                        error=str(exc),
                     )
-                    continue
+                    # Even if the structural graph is fresh, the embedder may have
+                    # changed since last index — let the vec loader decide.
+                else:
+                    loader.load()
+            except Exception as exc:
+                log.warning(
+                    "graphify_loader.load_failed",
+                    path=str(loader.graph_path),
+                    repo_id=repo_id,
+                    error=str(exc),
+                )
+                continue
+            mirrored_repo_ids.add(repo_id)
 
         # Embed any node whose stored model is not the active embedder.
         try:
@@ -496,6 +588,7 @@ class Pipeline:
                 vec_loader.load()
         except Exception as exc:
             log.warning("graph_vec_loader.failed", error=str(exc))
+            return set()
 
         # L2 retroactive FTS augmentation. Toggle via graph.fts_augment in
         # ~/.stropha/config.yaml (default true). The augmentation is a no-op when
@@ -510,6 +603,8 @@ class Pipeline:
                 self._storage.augment_fts_with_graph()  # type: ignore[attr-defined]
             except Exception as exc:
                 log.warning("fts_augment.failed", error=str(exc))
+                return set()
+        return mirrored_repo_ids
 
     # --------------------------------------------------------------- internals
     def _index_one_repo(
@@ -520,7 +615,11 @@ class Pipeline:
         since_sha_override: str | None = None,
     ) -> RepoStats:
         identity = detect_repo(repo_path)
-        repo_id = self._storage.register_repo(identity)
+        repo_id = self._storage.register_repo(identity, publish_watermark=False)
+        snapshot_meta_key = source_snapshot_meta_key(repo_id)
+        self._force_file_snapshot_refresh = (
+            self._storage.get_meta(snapshot_meta_key) != SOURCE_SNAPSHOT_VERSION
+        )
         # A checkout may first be indexed before it is a Git repo or before an
         # origin is configured. Once its stable remote identity is available,
         # those fallback identities are never selected again and cannot
@@ -557,10 +656,17 @@ class Pipeline:
         head_sha = identity.head_commit
 
         effective_mode = mode
-        if mode == "auto":
+        if self._force_file_snapshot_refresh and mode == "incremental":
+            log.info(
+                "pipeline.incremental_snapshot_upgrade",
+                repo=identity.normalized_key,
+                action="forcing complete hash reconciliation",
+            )
+            effective_mode = "reconcile"
+        elif mode == "auto":
             # WIN-425: hash-based reconcile is the default change detector.
-            # Git is no longer the source of truth — content hashes (via the
-            # mtime+size fast-path) are — so uncommitted edits and files left
+            # Git is no longer the source of truth — full-file hashes are — so
+            # uncommitted edits and files left
             # behind by an interrupted index are always picked up, and a
             # non-git directory still indexes incrementally.
             effective_mode = "reconcile"
@@ -594,9 +700,18 @@ class Pipeline:
         else:
             self._index_one_repo_full(repo_path, identity, repo_id, rstats)
 
+        if rstats.chunks_enriched_failed:
+            raise PipelineError(
+                f"Index incomplete: {rstats.chunks_enriched_failed} chunks "
+                "failed enrichment"
+            )
+
+        self._storage.set_meta(snapshot_meta_key, SOURCE_SNAPSHOT_VERSION)
         # Record the new checkpoint when we have a HEAD sha (real git repo).
         if head_sha:
             self._storage.set_meta(meta_key, head_sha)
+        self._storage.complete_repo_index(repo_id, head_sha)
+        self._storage.commit()
 
         log.info(
             "pipeline.repo_done",
@@ -619,21 +734,7 @@ class Pipeline:
         # Materialise the walker output so we can both index it and use
         # it for stale-file detection.
         source_files = list(self._walker.discover(repo_path))
-        stored = self._storage.load_file_meta_map(repo_id)
-        for sf in source_files:
-            try:
-                st = sf.path.stat()
-            except OSError:
-                continue
-            meta = stored.get(sf.rel_path)
-            if (
-                meta is None
-                or meta.mtime != st.st_mtime
-                or meta.size_bytes != st.st_size
-            ):
-                rstats.code_changed = True
-                break
-        self._index_files(
+        current_paths = self._index_files(
             source_files,
             rstats,
             repo_id=repo_id,
@@ -642,12 +743,11 @@ class Pipeline:
         # Passive stale cleanup: files that were tracked in a previous
         # run but no longer appear in the walker output get their
         # chunks AND file_meta evicted.
-        current_paths = [sf.rel_path for sf in source_files]
-        stale = self._storage.list_stale_files(repo_id, current_paths)
+        stale = self._storage.list_stale_files(repo_id, sorted(current_paths))
         if stale:
             rstats.code_changed = True
-            evicted = self._storage.delete_chunks_by_repo_paths(repo_id, stale)
-            self._storage.delete_file_meta(repo_id, stale)
+            evicted = self._delete_file_snapshots(repo_id, stale)
+            self._storage.set_meta(_graph_dirty_meta_key(repo_id), "1")
             rstats.files_evicted = len(stale)
             log.info(
                 "pipeline.stale_files_evicted",
@@ -661,81 +761,33 @@ class Pipeline:
     def _index_one_repo_reconcile(
         self, repo_path: Path, identity, repo_id: int, rstats: RepoStats,
     ) -> None:
-        """Hash-based reconciliation (WIN-425) — git-independent change
-        detection that is crash-resilient by construction.
-
-        Walk the full current file set, then diff each file against the
-        stored ``files`` cache in memory (one bulk read, not one SELECT
-        per file). A file is (re)indexed when it is new OR its
-        ``(mtime, size)`` changed OR — honouring the ADR-004 / CLAUDE.md
-        §3.1 drift contract — the active ``(enricher_id, embedder_model)``
-        differs from what last indexed it. So a config change that alters
-        the enricher ``adapter_id`` or the embedder ``model_name`` forces
-        every file to be reprocessed, exactly like ``file_is_fresh``.
-
-        Crash-resilience: a run interrupted mid-pass leaves changed/new
-        files without a fresh ``files`` row, so the next reconcile picks
-        them up — regardless of the git checkpoint. Uncommitted edits are
-        seen too, because detection never consults git.
-        """
+        """Reconcile every saved file against its full raw-byte SHA-256."""
         source_files = list(self._walker.discover(repo_path))
-        stored = self._storage.load_file_meta_map(repo_id)
-        # Same identifiers file_is_fresh / _index_files use, so the drift
-        # contract is enforced identically on the reconcile fast-path.
-        # Batched enrichers use a different prompt shape, so the effective
-        # runtime batch size is part of freshness even when supplied by CLI.
-        enricher_id = self._effective_enricher_id
-        embedder_model = self._embedder.model_name
-
-        changed: list = []
-        for sf in source_files:
-            try:
-                st = sf.path.stat()
-            except OSError:
-                # Vanished between walk and stat — stale-cleanup evicts it.
-                continue
-            meta = stored.get(sf.rel_path)
-            source_is_fresh = (
-                meta is not None
-                and meta.mtime == st.st_mtime
-                and meta.size_bytes == st.st_size
-            )
-            if not source_is_fresh:
-                rstats.code_changed = True
-            if (
-                meta is not None
-                and source_is_fresh
-                and meta.enricher_id == enricher_id
-                and meta.embedder_model == embedder_model
-            ):
-                rstats.files_skipped_fresh += 1
-                continue
-            changed.append(sf)
+        skipped_before = rstats.files_skipped_fresh
+        visited_before = rstats.files_visited
+        current_paths = self._index_files(
+            source_files,
+            rstats,
+            repo_id=repo_id,
+            repo_key=identity.normalized_key,
+        )
+        visited = rstats.files_visited - visited_before
+        fresh = rstats.files_skipped_fresh - skipped_before
 
         log.info(
             "pipeline.reconcile_scan",
             repo=identity.normalized_key,
             total=len(source_files),
-            changed=len(changed),
-            fresh=rstats.files_skipped_fresh,
+            changed=visited - fresh,
+            fresh=fresh,
         )
 
-        # Index new/changed files. ``_index_files`` re-checks chunk-level
-        # freshness, so unchanged chunks inside a touched file are not
-        # re-embedded.
-        if changed:
-            self._index_files(
-                changed, rstats,
-                repo_id=repo_id, repo_key=identity.normalized_key,
-            )
-
         # Deletions: files tracked in the index but no longer on disk.
-        current_paths = [sf.rel_path for sf in source_files]
-        stale = self._storage.list_stale_files(repo_id, current_paths)
+        stale = self._storage.list_stale_files(repo_id, sorted(current_paths))
         if stale:
             rstats.code_changed = True
-            evicted = self._storage.delete_chunks_by_repo_paths(repo_id, stale)
-            self._storage.delete_file_meta(repo_id, stale)
+            evicted = self._delete_file_snapshots(repo_id, stale)
+            self._storage.set_meta(_graph_dirty_meta_key(repo_id), "1")
             rstats.files_evicted = len(stale)
             log.info(
                 "pipeline.reconcile_evicted",
@@ -780,6 +832,8 @@ class Pipeline:
             return
 
         rstats.code_changed = bool(deltas)
+        if deltas:
+            self._storage.set_meta(_graph_dirty_meta_key(repo_id), "1")
 
         adds_modifies: list[str] = []
         deletes: list[str] = []
@@ -816,8 +870,7 @@ class Pipeline:
 
         # ---- Apply deletes ------------------------------------------------
         if deletes:
-            evicted = self._storage.delete_chunks_by_repo_paths(repo_id, deletes)
-            self._storage.delete_file_meta(repo_id, deletes)
+            evicted = self._delete_file_snapshots(repo_id, deletes)
             rstats.files_evicted = len(deletes)
             log.info(
                 "pipeline.incremental_deletes",
@@ -838,6 +891,12 @@ class Pipeline:
                 repo_id=repo_id, repo_key=identity.normalized_key,
             )
 
+    def _delete_file_snapshots(self, repo_id: int, rel_paths: Sequence[str]) -> int:
+        return sum(
+            self._storage.delete_file_snapshot(repo_id=repo_id, rel_path=rel_path)
+            for rel_path in rel_paths
+        )
+
     def _index_files(
         self,
         files: Iterable,
@@ -845,201 +904,209 @@ class Pipeline:
         *,
         repo_id: int,
         repo_key: str,
-    ) -> None:
+    ) -> set[str]:
         batch_size = self._embedder.batch_size
-        batch_texts: list[str] = []
-        batch_chunks: list[Chunk] = []
-        batch_embed_texts: list[str] = []
-        seen_paths: set[str] = set()
+        current_paths: set[str] = set()
+        stored_files = self._storage.load_file_meta_map(repo_id)
         enricher_id = self._effective_enricher_id
         embedder_model = self._embedder.model_name
 
-        def flush() -> None:
-            if not batch_texts:
-                return
-            batch_n = len(batch_chunks)
-            vectors = self._embedder.embed_documents(batch_texts)
-            for chunk, vec, embedded_text in zip(
-                batch_chunks, vectors, batch_embed_texts, strict=True
-            ):
-                self._storage.upsert_chunk(
-                    chunk,
-                    vec,
-                    embedder_model,
-                    self._embedder.dim,
-                    repo_id=repo_id,
-                    embedding_text=embedded_text,
-                    enricher_id=enricher_id,
-                )
-                stats.chunks_embedded += 1
-            self._storage.commit()
-            # Periodic progress signal. Each batch = 32-64 chunks ≈ a few
-            # seconds of work (slower with the contextual enricher hitting
-            # a remote LLM). Tail this with:
-            #   tail -f /tmp/stropha.log | grep pipeline.batch_flushed
-            log.info(
-                "pipeline.batch_flushed",
-                repo=repo_key,
-                batch_size=batch_n,
-                files_visited=stats.files_visited,
-                chunks_seen=stats.chunks_seen,
-                chunks_embedded=stats.chunks_embedded,
-                enriched_fresh=stats.chunks_enriched_fresh,
-                enriched_cached=stats.chunks_enriched_from_cache,
-                skipped_fresh=stats.chunks_skipped_fresh,
-            )
-            batch_texts.clear()
-            batch_chunks.clear()
-            batch_embed_texts.clear()
-
         for sf in files:
             log.debug("pipeline.file_start", repo=repo_key, rel_path=sf.rel_path)
-            seen_paths.add(sf.rel_path)
             stats.files_visited += 1
+            published = False
+            vanished = False
+            for attempt in range(1, _SOURCE_SNAPSHOT_ATTEMPTS + 1):
+                source = _capture_source_snapshot(sf.path)
+                if source is None:
+                    vanished = not sf.path.exists()
+                    if vanished:
+                        break
+                    if attempt < _SOURCE_SNAPSHOT_ATTEMPTS:
+                        continue
+                    break
 
-            # --- Phase A early-skip: file-level dirty cache ----------------
-            # mtime + size_bytes are a cheap O(1) check that skips the
-            # chunker + enricher + embedder entirely for files that did
-            # not change since the last index. The chunk_is_fresh layer
-            # below still catches the edge case where a file was touched
-            # but its content (hash) stayed identical.
-            try:
-                fs_mtime = sf.path.stat().st_mtime
-                fs_size = sf.path.stat().st_size
-            except OSError:
-                # File vanished between walker and pipeline — skip silently
-                # and let the stale-cleanup pass evict its chunks.
-                continue
-            if self._storage.file_is_fresh(
-                repo_id=repo_id,
-                rel_path=sf.rel_path,
-                mtime=fs_mtime,
-                size_bytes=fs_size,
-                enricher_id=enricher_id,
-                embedder_model=embedder_model,
-            ):
-                stats.files_skipped_fresh += 1
-                continue
-
-            # Build a per-file index of chunks for parent-chunk lookup in
-            # the hierarchical enricher. Cheap — chunker emits ≤ ~tens per file.
-            file_chunks: list[Chunk] = list(
-                self._chunker.chunk([sf], repo_key=repo_key)
-            )
-            by_id: dict[str, Chunk] = {c.chunk_id: c for c in file_chunks}
-            # Capture the file-level content hash for the file_meta upsert.
-            # Same hash function chunks use — guarantees a single read of
-            # the file content is sufficient. We use the first chunk's
-            # content_hash as a proxy when the chunker emits a file-level
-            # chunk; otherwise we hash the on-disk content here.
-            file_content_hash: str | None = None
-
-            # Two-pass split to enable parallel enrichment:
-            #   pass 1 (serial, fast): chunk freshness + enrichment cache
-            #     checks. These are cheap SQL queries; running them in
-            #     parallel would just contend on the SQLite connection.
-            #   pass 2 (parallel-able): LLM enrichment for chunks that
-            #     missed the cache. Each call waits ~250-500ms on network
-            #     for cloud backends; ThreadPoolExecutor lets N requests
-            #     fly concurrently. Order is preserved by ``map()``.
-            pending_chunks: list[Chunk] = []
-            pending_embed_text_indices: list[int] = []
-            # ``staged`` is the per-file workbench: each entry is the chunk
-            # plus its eventual embed_text (None when still to enrich).
-            staged: list[tuple[Chunk, str | None]] = []
-            for chunk in file_chunks:
-                stats.chunks_seen += 1
-                if self._storage.chunk_is_fresh(
-                    chunk.chunk_id,
-                    chunk.content_hash,
-                    embedder_model,
-                    enricher_id=enricher_id,
-                ):
-                    stats.chunks_skipped_fresh += 1
-                    continue
-
-                cached = self._storage.get_enrichment(chunk.content_hash, enricher_id)
-                if cached is not None:
-                    stats.chunks_enriched_from_cache += 1
-                    staged.append((chunk, cached))
-                else:
-                    # Mark for the parallel enrichment pass.
-                    pending_embed_text_indices.append(len(staged))
-                    staged.append((chunk, None))
-                    pending_chunks.append(chunk)
-
-            # Pass 2: enrich the pending chunks (parallel when concurrency>1
-            # and there are 2+ to amortize the executor overhead).
-            if pending_chunks:
-                # Build StageContext per chunk now — context construction is
-                # local + serial, no benefit in parallelizing it.
-                contexts = [
-                    StageContext(
-                        repo_key=repo_key,
-                        parent_chunk=(
-                            by_id.get(c.parent_chunk_id) if c.parent_chunk_id else None
-                        ),
+                if (
+                    not self._force_file_snapshot_refresh
+                    and self._storage.file_is_fresh(
+                        repo_id=repo_id,
+                        rel_path=sf.rel_path,
+                        content_hash=source.content_hash,
+                        mtime=source.mtime,
+                        size_bytes=source.size_bytes,
+                        enricher_id=enricher_id,
+                        embedder_model=embedder_model,
                     )
-                    for c in pending_chunks
-                ]
-                results = self._enrich_chunks(pending_chunks, contexts)
-                # Splice results back into ``staged`` (order-preserving) and
-                # cache each *successful* result. Failed enrichments stage
-                # raw content but skip the cache write — see ``enrich_with_status``
-                # in ``stropha.stages.enricher`` for why poisoning the cache
-                # is worse than re-attempting next run.
-                for idx, (embed_text, success) in zip(
-                    pending_embed_text_indices, results, strict=False
                 ):
-                    chunk = staged[idx][0]
-                    staged[idx] = (chunk, embed_text)
-                    if success:
-                        self._storage.put_enrichment(
-                            chunk.content_hash, enricher_id, embed_text
-                        )
-                        stats.chunks_enriched_fresh += 1
-                    else:
-                        stats.chunks_enriched_failed += 1
+                    current_paths.add(sf.rel_path)
+                    stats.files_skipped_fresh += 1
+                    published = True
+                    break
 
-            # Drain ``staged`` into the embedder batch (order-preserving).
-            for chunk, maybe_embed_text in staged:
-                assert maybe_embed_text is not None  # set by pass 2 if previously None
-                # Shadow with a non-Optional alias so the embedder typing is
-                # satisfied without rebinding ``embed_text`` from the outer
-                # ``zip(...)`` loop above (mypy ``no-redef``).
-                drained_embed_text: str = maybe_embed_text
-                batch_texts.append(drained_embed_text)
-                batch_chunks.append(chunk)
-                batch_embed_texts.append(drained_embed_text)
-                if len(batch_texts) >= batch_size:
-                    flush()
-            # Record file_meta after the file is fully processed. We use
-            # the content hash of the FIRST chunk as a stable proxy; for
-            # multi-chunk files the (mtime, size) primary key is what
-            # triggers freshness anyway. If chunking emitted zero chunks
-            # (e.g. binary slipped through filter, parser crash) we still
-            # record the visit so we don't re-attempt every run.
-            if file_chunks:
-                file_content_hash = file_chunks[0].content_hash
-            else:
-                import hashlib as _hashlib
-                try:
-                    file_content_hash = _hashlib.sha256(
-                        sf.path.read_bytes()
-                    ).hexdigest()
-                except OSError:
-                    file_content_hash = "(unreadable)"
-            self._storage.upsert_file_meta(
-                repo_id=repo_id,
-                rel_path=sf.rel_path,
-                content_hash=file_content_hash,
-                size_bytes=fs_size,
-                mtime=fs_mtime,
-                chunk_count=len(file_chunks),
-                enricher_id=enricher_id,
-                embedder_model=embedder_model,
-            )
-        flush()
+                snapshot_file = sf.model_copy(
+                    update={
+                        "snapshot_content": source.content,
+                        "size_bytes": source.size_bytes,
+                    }
+                )
+                file_chunks = list(
+                    self._chunker.chunk([snapshot_file], repo_key=repo_key)
+                )
+                desired_chunk_ids = [chunk.chunk_id for chunk in file_chunks]
+                if len(desired_chunk_ids) != len(set(desired_chunk_ids)):
+                    raise PipelineError(
+                        f"Chunker emitted duplicate IDs for {sf.rel_path!r}"
+                    )
+                by_id = {chunk.chunk_id: chunk for chunk in file_chunks}
+
+                chunks_skipped = 0
+                reused_chunks: list[Chunk] = []
+                enriched_cached = 0
+                enriched_fresh = 0
+                enriched_failed = 0
+                pending_chunks: list[Chunk] = []
+                pending_indices: list[int] = []
+                staged: list[tuple[Chunk, str | None]] = []
+                enrichment_writes: list[tuple[str, str]] = []
+                for chunk in file_chunks:
+                    if self._storage.chunk_is_fresh(
+                        chunk.chunk_id,
+                        chunk.content_hash,
+                        embedder_model,
+                        enricher_id=enricher_id,
+                    ):
+                        chunks_skipped += 1
+                        reused_chunks.append(chunk)
+                        continue
+                    cached = self._storage.get_enrichment(
+                        chunk.content_hash, enricher_id
+                    )
+                    if cached is not None:
+                        enriched_cached += 1
+                        staged.append((chunk, cached))
+                    else:
+                        pending_indices.append(len(staged))
+                        staged.append((chunk, None))
+                        pending_chunks.append(chunk)
+
+                if pending_chunks:
+                    contexts = [
+                        StageContext(
+                            repo_key=repo_key,
+                            parent_chunk=(
+                                by_id.get(chunk.parent_chunk_id)
+                                if chunk.parent_chunk_id
+                                else None
+                            ),
+                        )
+                        for chunk in pending_chunks
+                    ]
+                    results = self._enrich_chunks(pending_chunks, contexts)
+                    for idx, (embedding_text, success) in zip(
+                        pending_indices, results, strict=True
+                    ):
+                        chunk = staged[idx][0]
+                        staged[idx] = (chunk, embedding_text)
+                        if success:
+                            enrichment_writes.append(
+                                (chunk.content_hash, embedding_text)
+                            )
+                            enriched_fresh += 1
+                        else:
+                            enriched_failed += 1
+
+                chunk_writes: list[FileSnapshotChunkWrite] = []
+                for offset in range(0, len(staged), batch_size):
+                    batch = staged[offset : offset + batch_size]
+                    texts = [text for _chunk, text in batch]
+                    if any(text is None for text in texts):
+                        raise PipelineError(
+                            f"Enricher returned incomplete results for {sf.rel_path!r}"
+                        )
+                    embedding_texts = [text for text in texts if text is not None]
+                    vectors = self._embedder.embed_documents(embedding_texts)
+                    for (chunk, _text), vector, embedding_text in zip(
+                        batch, vectors, embedding_texts, strict=True
+                    ):
+                        chunk_writes.append(
+                            {
+                                "chunk": chunk,
+                                "embedding": vector,
+                                "embedding_text": embedding_text,
+                            }
+                        )
+
+                confirmed = _capture_source_snapshot(sf.path)
+                if confirmed is None or confirmed.content_hash != source.content_hash:
+                    vanished = confirmed is None and not sf.path.exists()
+                    if vanished:
+                        break
+                    log.info(
+                        "pipeline.file_changed_during_index",
+                        repo=repo_key,
+                        rel_path=sf.rel_path,
+                        attempt=attempt,
+                    )
+                    if attempt < _SOURCE_SNAPSHOT_ATTEMPTS:
+                        continue
+                    break
+
+                for content_hash, embedding_text in enrichment_writes:
+                    self._storage.put_enrichment(
+                        content_hash, enricher_id, embedding_text
+                    )
+                self._storage.replace_file_snapshot(
+                    repo_id=repo_id,
+                    rel_path=sf.rel_path,
+                    desired_chunk_ids=desired_chunk_ids,
+                    chunk_writes=chunk_writes,
+                    embedding_model=embedder_model,
+                    embedding_dim=self._embedder.dim,
+                    enricher_id=(
+                        enricher_id
+                        if enriched_failed == 0
+                        else _INCOMPLETE_ENRICHER_ID
+                    ),
+                    file_content_hash=confirmed.content_hash,
+                    size_bytes=confirmed.size_bytes,
+                    mtime=confirmed.mtime,
+                    reused_chunks=reused_chunks,
+                )
+                self._storage.set_meta(_graph_dirty_meta_key(repo_id), "1")
+                self._storage.commit()
+
+                previous = stored_files.get(sf.rel_path)
+                if (
+                    previous is None
+                    or previous.content_hash != confirmed.content_hash
+                    or previous.enricher_id == _INCOMPLETE_ENRICHER_ID
+                ):
+                    stats.code_changed = True
+                stats.chunks_seen += len(file_chunks)
+                stats.chunks_embedded += len(chunk_writes)
+                stats.chunks_skipped_fresh += chunks_skipped
+                stats.chunks_enriched_from_cache += enriched_cached
+                stats.chunks_enriched_fresh += enriched_fresh
+                stats.chunks_enriched_failed += enriched_failed
+                current_paths.add(sf.rel_path)
+                published = True
+                log.info(
+                    "pipeline.file_snapshot_replaced",
+                    repo=repo_key,
+                    rel_path=sf.rel_path,
+                    chunks=len(file_chunks),
+                    embedded=len(chunk_writes),
+                    attempt=attempt,
+                )
+                break
+
+            if not published and not vanished:
+                raise PipelineError(
+                    f"Could not capture a stable source snapshot for {sf.rel_path!r} "
+                    f"after {_SOURCE_SNAPSHOT_ATTEMPTS} attempts"
+                )
+
+        return current_paths
 
     def _enrich_chunks(
         self,

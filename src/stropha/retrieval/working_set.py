@@ -8,20 +8,9 @@ on every turn. WIN-253 exposes it as a first-class artefact —
 returned by an MCP tool and rendered as a markdown bundle that
 can be plugged straight into the next LLM prompt.
 
-Resource vs. tool
------------------
-
-MCP gives us two shapes:
-
-- **Tool** — explicit request/response. Useful when the agent
-  wants to query a specific session.
-- **Resource** — URI-addressable read. Lower per-call overhead;
-  the agent can subscribe to ``stropha://working-set`` and watch
-  for updates.
-
-WIN-253 ships both. The primitive in this module is the assembler
-both shapes call into; ``server.py`` registers the wrapper tool +
-the resource.
+WIN-253 exposes this through an MCP tool scoped to the caller's
+session. The primitive in this module assembles the response; the
+session boundary is enforced by the wrapper in ``server.py``.
 """
 
 from __future__ import annotations

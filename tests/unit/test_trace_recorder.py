@@ -16,8 +16,10 @@ regression that pushes p95 over the threshold is a real signal.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import stat
 import threading
 import time
 from pathlib import Path
@@ -53,6 +55,10 @@ def _all_jsonl(base_dir: Path) -> list[dict]:
     for p in sorted(base_dir.glob("trace-*.jsonl")):
         items.extend(_read_jsonl(p))
     return items
+
+
+def _fingerprint(value: str) -> str:
+    return f"sha256:{hashlib.sha256(value.encode()).hexdigest()}"
 
 
 # ---------------------------------------------------------------------------
@@ -109,6 +115,9 @@ class TestTraceRecord:
         assert d["run_id"] == "run-001"
         assert d["results"][0]["chunk_id"] == "abc"
         assert d["latency_ms"] == 12.4
+        assert d["query"] == _fingerprint("foo")
+        assert d["result_count"] == 1
+        assert d["status"] == "ok"
 
 
 # ---------------------------------------------------------------------------
@@ -129,7 +138,7 @@ class TestRecorderFunctional:
         assert len(lines) == 1
         event = lines[0]
         assert event["tool"] == "search_code"
-        assert event["query"] == "hi"
+        assert event["query"] == _fingerprint("hi")
 
     def test_record_autofills_identity_fields(self, tmp_path: Path) -> None:
         """trace_id, session_id, ts must always be present in the on-disk record."""
@@ -191,15 +200,74 @@ class TestRecorderFunctional:
             })
 
         e = _all_jsonl(tmp_path)[0]
-        # Every field in the ticket schema landed unchanged.
+        # Safe fields in the ticket schema retain their shape.
         assert e["tool"] == "search_code"
-        assert e["query"] == "what calls foo"
+        assert e["query"] == _fingerprint("what calls foo")
         assert e["params"]["top_k"] == 10
+        assert e["params"]["language"] == ["python"]
         assert e["candidate_id"] == "cand-42"
         assert e["results"][0]["chunk_id"] == "sha256:abc"
         assert e["results"][0]["streams"]["dense"] == 0.8
         assert e["latency_ms"] == 47.3
         assert e["returned_tokens"] == 312
+        assert e["result_count"] == 1
+
+    def test_secret_canary_is_not_serialized(self, tmp_path: Path) -> None:
+        canary = "STROPHA_TRACE_SECRET_CANARY_9f72c1"
+        with TraceRecorder(base_dir=tmp_path) as rec:
+            rec.record({
+                "tool": "search_code",
+                "query": canary,
+                "params": {
+                    "top_k": 10,
+                    "memory_value": canary,
+                    "scratchpad": canary,
+                    "episode_summary": canary,
+                    "feedback_detail": canary,
+                    "api_key": canary,
+                    "path_prefix": f"/Users/private/{canary}",
+                },
+                "results": [
+                    {
+                        "chunk_id": "sha256:abc123",
+                        "rank": 1,
+                        "score": 0.9,
+                        "snippet": canary,
+                        "rel_path": f"/Users/private/{canary}.py",
+                        "runtime_evidence": canary,
+                    },
+                    {"path": f"C:\\private\\{canary}.py", "snippet": canary},
+                ],
+                "error": {"type": "ValueError", "message": canary},
+                "runtime_evidence": canary,
+            })
+
+        trace_file = next(tmp_path.glob("trace-*.jsonl"))
+        raw = trace_file.read_text()
+        assert canary not in raw
+        event = json.loads(raw)
+        assert event["query"] == _fingerprint(canary)
+        assert event["params"] == {"top_k": 10}
+        assert event["results"] == [{"chunk_id": "sha256:abc123", "rank": 1, "score": 0.9}]
+        assert event["result_count"] == 2
+        assert event["error"] == {"type": "ValueError"}
+        assert event["status"] == "error"
+
+    def test_trace_paths_use_private_permissions(self, tmp_path: Path) -> None:
+        traces_dir = tmp_path / "traces"
+        traces_dir.mkdir(mode=0o755)
+        traces_dir.chmod(0o755)
+        existing = traces_dir / "trace-2000-01-01.jsonl"
+        existing.write_text('{"tool": "old"}\n')
+        existing.chmod(0o644)
+
+        with TraceRecorder(base_dir=traces_dir) as rec:
+            assert stat.S_IMODE(traces_dir.stat().st_mode) == 0o700
+            assert stat.S_IMODE(existing.stat().st_mode) == 0o600
+            rec.record({"tool": "search_code", "query": "permissions"})
+
+        assert rec.current_path is not None
+        assert stat.S_IMODE(rec.current_path.stat().st_mode) == 0o600
 
     def test_current_path_reflects_active_file(self, tmp_path: Path) -> None:
         with TraceRecorder(base_dir=tmp_path) as rec:
@@ -216,18 +284,16 @@ class TestRecorderFunctional:
 # ---------------------------------------------------------------------------
 
 class TestRecorderErrorHandling:
-    def test_non_serialisable_payload_does_not_crash(self, tmp_path: Path) -> None:
-        """A value that ``json.dumps`` cannot represent must drop, not raise.
-
-        We use ``default=str`` so most exotic values still serialise; this
-        test forces a true failure by passing a self-referential dict.
-        """
+    def test_non_serialisable_payload_is_removed_not_stringified(self, tmp_path: Path) -> None:
+        """Unsafe values are omitted while safe event metadata still lands."""
         with TraceRecorder(base_dir=tmp_path) as rec:
             cycle: dict = {}
-            cycle["self"] = cycle  # recursive -> json.dumps RecursionError -> ValueError-ish
-            ok = rec.record({"tool": "x", "params": cycle})
-            assert ok is False
-            assert rec.dropped == 1
+            cycle["self"] = cycle
+            ok = rec.record({"tool": "x", "params": {"top_k": cycle}})
+            assert ok is True
+            assert rec.dropped == 0
+
+        assert _all_jsonl(tmp_path)[0]["params"] == {}
 
     def test_drop_on_full_queue(self, tmp_path: Path) -> None:
         """When the queue saturates, ``record`` returns False and counts the drop."""
@@ -322,13 +388,13 @@ class TestRecorderConcurrency:
         """Records put just before close() must reach disk."""
         rec = TraceRecorder(base_dir=tmp_path)
         for i in range(100):
-            rec.record({"tool": "x", "seq": i})
+            rec.record({"tool": "x", "params": {"top_k": i}})
         rec.close()  # MUST drain
 
         events = _all_jsonl(tmp_path)
         assert len(events) == 100
         # Order is preserved because there is one producer and one consumer.
-        assert [e["seq"] for e in events] == list(range(100))
+        assert [e["params"]["top_k"] for e in events] == list(range(100))
 
 
 # ---------------------------------------------------------------------------

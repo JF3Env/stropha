@@ -580,11 +580,16 @@ class TestEvalSplit:
         import hashlib
         import json
 
-        baseline = json.loads(
+        golden_sha256 = hashlib.sha256(golden.read_bytes()).hexdigest()
+        assert golden_sha256 == "bde07d1e9525a34f69c1c7fc91b14ac440761c6a404cc8c70f16398d321f6832"
+
+        archived_baseline = json.loads(
             (root / "tests/eval/baseline-c61c5fef.json").read_text(encoding="utf-8")
         )
-        assert baseline["golden_sha256"] == hashlib.sha256(golden.read_bytes()).hexdigest()
-        assert baseline["index"]["comparable"] is True
+        assert archived_baseline["golden_sha256"] == (
+            "c61c5fef05bd3f2f0f67e3da425d3bd46d79c2bca9b779aa135187c4c5e01b1b"
+        )
+        assert archived_baseline["index"]["comparable"] is True
         cases = load_golden(golden)
         counts = split_counts(cases)
         total = counts["search"] + counts["holdout"]

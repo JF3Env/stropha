@@ -8,6 +8,14 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+SOURCE_SNAPSHOT_VERSION = "1"
+SOURCE_SNAPSHOT_META_PREFIX = "source_snapshot_version:"
+
+
+def source_snapshot_meta_key(repo_id: int) -> str:
+    """Return the repository-scoped source snapshot contract key."""
+    return f"{SOURCE_SNAPSHOT_META_PREFIX}{repo_id}"
+
 
 class SourceFile(BaseModel):
     """A file discovered by the walker, ready to be chunked."""
@@ -16,6 +24,8 @@ class SourceFile(BaseModel):
     rel_path: str
     language: str
     size_bytes: int
+    snapshot_content: str | None = Field(default=None, exclude=True, repr=False)
+    """Immutable text captured by the pipeline for this indexing attempt."""
 
 
 @dataclass(frozen=True)
@@ -46,17 +56,49 @@ class StoredFileMeta:
     """The freshness-relevant columns of one ``files`` row.
 
     Returned in bulk by ``Storage.load_file_meta_map`` so the hash-based
-    reconcile path (WIN-425) can decide which files changed with a single
-    query + in-memory comparison, instead of one ``file_is_fresh`` SELECT
-    per file. Mirrors the comparison done by ``file_is_fresh``:
-    ``(mtime, size_bytes)`` plus the ADR-004 drift pair
-    ``(enricher_id, embedder_model)``.
+    reconcile path (WIN-425) can compare the saved source snapshot and active
+    adapter identities without loading chunk bodies.
     """
 
+    content_hash: str
     mtime: float
     size_bytes: int
+    chunk_count: int
     enricher_id: str | None = None
     embedder_model: str | None = None
+
+
+class SourceVersion(BaseModel):
+    """Observed version of one repository-relative source file."""
+
+    repository: str
+    path: str
+    layer: Literal["saved_worktree", "committed", "session_overlay"]
+    file_sha256: str | None = None
+    observed_at: str
+    head_commit: str | None = None
+    dirty: bool | None = Field(
+        default=None,
+        description="Whether live bytes differ from the persistent indexed snapshot.",
+    )
+
+
+class SourceEvidenceRef(BaseModel):
+    """Line-range evidence tied to an explicitly versioned source file."""
+
+    source_version: SourceVersion
+    start_line: int
+    end_line: int
+    chunk_id: str | None = None
+    source_slice_sha256: str | None = Field(
+        default=None,
+        description=(
+            "SHA-256 of the literal source bytes in this line range; null when "
+            "those bytes were not available to the evidence producer."
+        ),
+    )
+    indexed_file_sha256: str | None = None
+    freshness: Literal["fresh", "stale", "missing", "unknown"]
 
 
 class Chunk(BaseModel):
@@ -147,6 +189,10 @@ class SearchHit(BaseModel):
     repo: RepoRef | None = Field(
         default=None,
         description="Source repository identity when available.",
+    )
+    source: SourceEvidenceRef | None = Field(
+        default=None,
+        description="Versioned saved-source evidence for this indexed chunk.",
     )
     streams: dict[str, float] | None = Field(
         default=None,

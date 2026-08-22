@@ -29,6 +29,11 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from ..models import SourceEvidenceRef
+from .source_view import read_saved_worktree_source
+
+_INDEX_SNIPPET_LIMIT = 480
+
 
 @dataclass(frozen=True)
 class FreshnessVerdict:
@@ -45,6 +50,7 @@ class FreshnessVerdict:
     current_snippet: str | None = None
     expected_snippet: str = ""
     drift_details: list[str] = field(default_factory=list)
+    source: SourceEvidenceRef | None = None
 
 
 def _normalise(text: str) -> str:
@@ -81,34 +87,11 @@ def _diff_lines(expected: str, current: str, *, limit: int = 5) -> list[str]:
     return out
 
 
-def _source_from_hit(hit: Any) -> str | None:
-    """Read the chunk's current source slice from disk, or ``None``.
-
-    Uses the hit's ``rel_path`` + ``start_line``/``end_line`` + the repo's
-    local path (``local_path`` or ``root_path``). Returns ``None`` when any
-    piece is missing or the file can't be read — callers then fall back to the
-    stored snippet/card. This is what lets freshness verify against real source
-    rather than a structural card.
-    """
-    from pathlib import Path
-
-    rel = getattr(hit, "rel_path", None)
-    start = getattr(hit, "start_line", None)
-    end = getattr(hit, "end_line", None)
-    repo = getattr(hit, "repo", None)
-    local = None
-    if repo is not None:
-        local = getattr(repo, "local_path", None) or getattr(repo, "root_path", None)
-    if not (rel and local and isinstance(start, int) and isinstance(end, int) and start >= 1):
-        return None
-    try:
-        text = Path(local).joinpath(rel).read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return None
-    lines = text.splitlines()
-    if start > len(lines):
-        return None
-    return "\n".join(lines[start - 1 : end])
+def _index_snippet(text: str) -> str:
+    """Render source with the storage lookup snippet contract."""
+    return text[:_INDEX_SNIPPET_LIMIT].rstrip() + (
+        "…" if len(text) > _INDEX_SNIPPET_LIMIT else ""
+    )
 
 
 def assert_snippet_freshness(
@@ -117,6 +100,7 @@ def assert_snippet_freshness(
     *,
     lookup_fn: Callable[[str], Any | None],
     strict: bool = False,
+    indexed_file_sha256: str | None = None,
 ) -> FreshnessVerdict:
     """Verify the cached snippet against the live index.
 
@@ -155,43 +139,53 @@ def assert_snippet_freshness(
         )
 
     current_card = str(getattr(hit, "snippet", "") or "")
-    current_source = _source_from_hit(hit)
+    source_view = read_saved_worktree_source(
+        hit, indexed_file_sha256=indexed_file_sha256
+    )
+    current_source = source_view.text
 
     def _matches(cur: str) -> bool:
         if not cur:
             return False
+        candidates = (cur, _index_snippet(cur))
         if strict:
-            return cur == expected_snippet
-        exp_n, cur_n = _normalise(expected_snippet), _normalise(cur)
+            return expected_snippet in candidates
+        exp_n = _normalise(expected_snippet)
         # Equality OR containment: a cached snippet (leaf body, sub-span, or
         # the structural card itself) is still fresh as long as it appears
         # verbatim in the current source or card.
-        return bool(exp_n) and (exp_n == cur_n or exp_n in cur_n)
+        return bool(exp_n) and any(
+            exp_n == (candidate_n := _normalise(candidate))
+            or exp_n in candidate_n
+            for candidate in candidates
+        )
 
-    # Compare against BOTH the real source slice (ground truth, read from disk)
-    # and the stored snippet/card. Whatever representation the agent cached,
-    # it's fresh if it still matches either. This fixes the container-chunk
-    # false-drift: a class/file chunk's stored snippet is an outline CARD, not
-    # source, so comparing only against it reported drift on unchanged files.
-    if _matches(current_source or "") or _matches(current_card):
+    source_matches = _matches(current_source or "")
+    index_matches_source = (
+        source_view.evidence is not None
+        and source_view.evidence.freshness == "fresh"
+    )
+    card_matches = index_matches_source and _matches(current_card)
+    if source_matches or card_matches:
         return FreshnessVerdict(
             chunk_id=chunk_id,
             fresh=True,
-            reason="Snippet still present in current source/index.",
-            current_snippet=current_source or current_card,
+            reason="Snippet still present in current saved source.",
+            current_snippet=current_source if source_matches else current_card,
             expected_snippet=expected_snippet,
+            source=source_view.evidence,
         )
 
-    if not (current_source or current_card):
-        # Nothing to compare against — undetermined, not drift.
+    if not current_source:
         return FreshnessVerdict(
             chunk_id=chunk_id,
             fresh=None,
-            reason="chunk has no source or stored snippet to compare against.",
+            reason="chunk has no readable live source slice to compare against.",
             expected_snippet=expected_snippet,
+            source=source_view.evidence,
         )
 
-    canonical = current_source or current_card
+    canonical = current_source
     return FreshnessVerdict(
         chunk_id=chunk_id,
         fresh=False,
@@ -203,6 +197,7 @@ def assert_snippet_freshness(
         current_snippet=canonical,
         expected_snippet=expected_snippet,
         drift_details=_diff_lines(expected_snippet, canonical),
+        source=source_view.evidence,
     )
 
 

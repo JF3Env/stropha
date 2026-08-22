@@ -6,7 +6,7 @@ materialized files under `.stropha/bench/batches/`.
 The production golden contains 124 source-reviewed cases: 87 search and 37
 holdout, with 72 graded or multi-entity cases and every major category represented
 in both splits. SHA-256:
-`c61c5fef05bd3f2f0f67e3da425d3bd46d79c2bca9b779aa135187c4c5e01b1b`.
+`bde07d1e9525a34f69c1c7fc91b14ac440761c6a404cc8c70f16398d321f6832`.
 `tests/eval/golden.jsonl` is an answer catalog and must remain excluded from
 indexing.
 
@@ -25,10 +25,12 @@ identity drift. The one-time clean run at commit `245b3c3` passed and is archive
 in `tests/eval/routing-baseline-997e15e9.json`. The catalog is now exposed and
 must be replaced rather than tuned or rerun.
 
-The comparable production baseline for this hash is archived in
-`tests/eval/baseline-c61c5fef.json` with exact pipeline and index provenance.
-That checked-in all-case report is distinct from the Meta-Harness promotion
-baseline, which records same-run search and holdout evidence under
+`tests/eval/baseline-c61c5fef.json` remains the comparable historical baseline
+for the superseded `c61c5fef...` catalog. The current hash corrects the working-set
+case after removal of the request-context-free resource and needs a new baseline
+after this checkout is indexed. Do not relabel the historical metrics. That
+checked-in all-case report is distinct from the Meta-Harness promotion baseline,
+which records same-run search and holdout evidence under
 `<meta>/runs/<run-id>/validation.json`.
 
 ## Workflow

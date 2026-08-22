@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock, call
@@ -245,6 +246,119 @@ async def test_reload_shared_runtime_swaps_without_closing_active_sessions(tmp_p
     close_shared_runtime(owner)
     first_storage.close.assert_called_once_with()
     second_storage.close.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_failed_reload_restarts_previous_watcher(tmp_path) -> None:
+    from stropha.server_runtime import (
+        close_shared_runtime,
+        get_shared_runtime,
+        reload_shared_runtime,
+    )
+
+    owner = SimpleNamespace()
+    first_storage = MagicMock(adapter_name="first")
+    second_storage = MagicMock(adapter_name="second")
+    first_built = SimpleNamespace(
+        embedder=MagicMock(), storage=first_storage, retrieval=MagicMock()
+    )
+    second_built = SimpleNamespace(
+        embedder=MagicMock(), storage=second_storage, retrieval=MagicMock()
+    )
+    first_watcher = MagicMock()
+    second_watcher = MagicMock()
+    second_watcher.start.side_effect = RuntimeError("replacement watch failed")
+    first_config = _config(tmp_path)
+    first_config.mcp_watch = True
+    second_config = _config(tmp_path)
+    second_config.mcp_watch = True
+    configs = iter([first_config, second_config])
+    builds = MagicMock(side_effect=[first_built, second_built])
+    watcher_cls = MagicMock(side_effect=[first_watcher, second_watcher])
+    kwargs = {
+        "get_config_fn": lambda: next(configs),
+        "configure_logging_fn": lambda _level: None,
+        "load_pipeline_config_fn": lambda: {},
+        "build_stages_fn": builds,
+        "watch_controller_cls": watcher_cls,
+    }
+
+    active = await get_shared_runtime(owner, version="test", **kwargs)
+    with pytest.raises(RuntimeError, match="replacement watch failed"):
+        await reload_shared_runtime(owner, **kwargs)
+
+    assert owner._stropha_shared_runtime is active
+    assert active.closed is False
+    assert active.watcher is first_watcher
+    assert first_watcher.start.call_count == 2
+    first_watcher.stop.assert_called_once_with()
+    second_watcher.start.assert_called_once_with()
+    second_watcher.stop.assert_called_once_with()
+    first_storage.close.assert_not_called()
+    second_storage.close.assert_called_once_with()
+
+    close_shared_runtime(owner)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_reload_restores_previous_watcher(tmp_path) -> None:
+    from stropha.server_runtime import (
+        close_shared_runtime,
+        get_shared_runtime,
+        reload_shared_runtime,
+    )
+
+    owner = SimpleNamespace()
+    first_storage = MagicMock(adapter_name="first")
+    second_storage = MagicMock(adapter_name="second")
+    first_built = SimpleNamespace(
+        embedder=MagicMock(), storage=first_storage, retrieval=MagicMock()
+    )
+    second_built = SimpleNamespace(
+        embedder=MagicMock(), storage=second_storage, retrieval=MagicMock()
+    )
+    stop_entered = threading.Event()
+    allow_stop = threading.Event()
+    first_watcher = MagicMock()
+
+    def blocking_stop() -> None:
+        stop_entered.set()
+        allow_stop.wait(timeout=2)
+
+    first_watcher.stop.side_effect = blocking_stop
+    second_watcher = MagicMock()
+    first_config = _config(tmp_path)
+    first_config.mcp_watch = True
+    second_config = _config(tmp_path)
+    second_config.mcp_watch = True
+    configs = iter([first_config, second_config])
+    builds = MagicMock(side_effect=[first_built, second_built])
+    watcher_cls = MagicMock(side_effect=[first_watcher, second_watcher])
+    kwargs = {
+        "get_config_fn": lambda: next(configs),
+        "configure_logging_fn": lambda _level: None,
+        "load_pipeline_config_fn": lambda: {},
+        "build_stages_fn": builds,
+        "watch_controller_cls": watcher_cls,
+    }
+
+    active = await get_shared_runtime(owner, version="test", **kwargs)
+    reload_task = asyncio.create_task(reload_shared_runtime(owner, **kwargs))
+    assert await asyncio.to_thread(stop_entered.wait, 1)
+    reload_task.cancel()
+    allow_stop.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await reload_task
+
+    assert owner._stropha_shared_runtime is active
+    assert active.closed is False
+    assert active.watcher is first_watcher
+    assert first_watcher.start.call_count == 2
+    second_watcher.start.assert_not_called()
+    second_storage.close.assert_called_once_with()
+
+    close_shared_runtime(owner)
 
 
 @pytest.mark.asyncio

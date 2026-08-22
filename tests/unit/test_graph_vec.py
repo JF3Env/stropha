@@ -21,7 +21,11 @@ from stropha.adapters.retrieval.streams.graph_vec import (
 from stropha.ingest.git_meta import RepoIdentity
 from stropha.ingest.graph_vec_loader import GraphVecLoader, _pack_vec, _unpack_vec
 from stropha.ingest.graphify_loader import GraphifyLoader
-from stropha.models import Chunk
+from stropha.models import (
+    SOURCE_SNAPSHOT_VERSION,
+    Chunk,
+    source_snapshot_meta_key,
+)
 from stropha.storage import Storage
 
 # --------------------------------------------------------------------------- helpers
@@ -264,6 +268,15 @@ def test_stream_scopes_graph_nodes_and_path_hydration_by_repo(storage: Storage) 
             content=f"repo {label}",
             repo_id=repo_id,
         )
+        storage.upsert_file_meta(
+            repo_id=repo_id,
+            rel_path="src/shared.py",
+            content_hash=f"file-{label}",
+            size_bytes=6,
+            mtime=1.0,
+            chunk_count=1,
+        )
+        storage.set_meta(source_snapshot_meta_key(repo_id), SOURCE_SNAPSHOT_VERSION)
         storage._conn.execute(
             """INSERT INTO graph_nodes
                (node_id, label, source_file, source_location, embedding,
@@ -288,6 +301,9 @@ def test_stream_scopes_graph_nodes_and_path_hydration_by_repo(storage: Storage) 
     assert len(hits) == 1
     assert hits[0].repo is not None
     assert hits[0].repo.normalized_key == "github.com/example/b"
+    assert hits[0].repo.local_path == "/tmp/b"
+    assert hits[0].source is not None
+    assert hits[0].source.indexed_file_sha256 == "file-B"
     assert hits[0].snippet == "repo B"
 
 

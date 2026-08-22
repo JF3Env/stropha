@@ -1397,7 +1397,7 @@ Delivered for distributed monorepo architecture where multiple repositories with
 - Graph tools query ALL repos by default (cross-repo `find_callers`, `find_related`)
 - GraphVecLoader unchanged (already works cross-repo)
 
-### 21.10 Current operational state — audited 2026-08-11
+### 21.10 Current operational state — audited 2026-08-21
 
 - **Transport:** MCP is HTTP-only at `http://<host>:<port>/mcp`; all clients use
   one shared daemon. stdio, SSE, subprocess-spawning client configs, and
@@ -1412,7 +1412,10 @@ Delivered for distributed monorepo architecture where multiple repositories with
   lexical augmentation replaces contentless FTS5 rows with `DELETE` + explicit
   `INSERT`; PostgreSQL updates `chunks.fts` instead.
 - **Lifecycle:** only `Pipeline.run()` may order graphify update, graph mirror,
-  graph-vector load, and lexical augmentation. The post-commit hook returns from
+  graph-vector load, and lexical augmentation. Source mutations persist a
+  per-repository `graph_dirty:<repo_id>` marker, including graph-disabled runs;
+  failed/skipped graphify repositories are not mirrored and the marker clears
+  only after the complete lifecycle succeeds. The post-commit hook returns from
   foreground within 100 ms and delegates all work to its detached process.
 - **Graph tools:** tools remain registered and return a structured
   `graph_loaded=false` response when no graph is available; they never fail with

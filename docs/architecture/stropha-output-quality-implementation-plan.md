@@ -576,6 +576,13 @@ active contextual-enricher identity drift at commit `c22a556`. The comparable pr
 was archived in `tests/eval/baseline-c61c5fef.json`: Success@10 `0.9032`,
 Recall@10 `0.8199`, MRR `0.8224`, and NDCG@10 `0.7810` at `rrf_k=60`.
 
+On 2026-08-21, the working-set source-contract case was corrected after the
+request-context-free MCP resource was removed. The resulting catalog hash is
+`bde07d1e9525a34f69c1c7fc91b14ac440761c6a404cc8c70f16398d321f6832`.
+The `c61c5fef...` baseline remains historical and must not be treated as a
+baseline for the corrected catalog; a replacement requires an index tied to the
+current checkout.
+
 ## 10. Phase 4: Feedback-Driven Stream Learning
 
 ### Goal

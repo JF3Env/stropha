@@ -115,19 +115,19 @@ class TestEmptyHits:
         assert "plan_investigation" in tools
         # plan ranks above bootstrap (higher confidence).
         plan = next(s for s in out if s.tool == "plan_investigation")
-        assert plan.args == {"query": "find X and Y"}
+        assert plan.args == {"task": "find X and Y"}
 
-    def test_empty_and_question_returns_hyde(self) -> None:
+    def test_empty_and_question_returns_search(self) -> None:
         out = suggest_next_tool("how does X work", [])
         tools = [s.tool for s in out]
         assert "search_code" in tools
         sc = next(s for s in out if s.tool == "search_code")
-        assert sc.args["use_hyde"] is True
+        assert sc.args == {"query": "how does X work"}
 
     def test_empty_and_compound_question_returns_both(self) -> None:
         out = suggest_next_tool("how does X work and what is Y", [])
         tools = [s.tool for s in out]
-        # Compound triggers plan_investigation; question triggers hyde.
+        # Compound triggers plan_investigation; question triggers search.
         assert "plan_investigation" in tools
         assert "search_code" in tools
 
@@ -247,7 +247,8 @@ class TestCompoundWithResults:
             [_Hit()],
             has_graph=True,
         )
-        assert "plan_investigation" in [s.tool for s in out]
+        plan = next(s for s in out if s.tool == "plan_investigation")
+        assert plan.args == {"task": "find X and Y"}
 
 
 # ---------------------------------------------------------------------------
@@ -259,7 +260,8 @@ class TestManyHits:
     def test_eight_or_more_hits_suggests_assemble(self) -> None:
         hits = [_Hit(chunk_id=str(i)) for i in range(10)]
         out = suggest_next_tool("query", hits, has_graph=True)
-        assert "assemble_context" in [s.tool for s in out]
+        assemble = next(s for s in out if s.tool == "assemble_context")
+        assert assemble.args == {"task": "query"}
 
     def test_few_hits_no_assemble(self) -> None:
         out = suggest_next_tool("query", [_Hit(), _Hit()], has_graph=True)
@@ -336,6 +338,57 @@ class TestDedupe:
         out = _dedupe_suggestions([s1, s2])
         assert len(out) == 1
         assert out[0].confidence == 0.8
+
+
+# ---------------------------------------------------------------------------
+# Registered MCP schema contract
+# ---------------------------------------------------------------------------
+
+
+class TestRegisteredToolContract:
+    def test_every_suggestion_matches_registered_tool_schema(self) -> None:
+        from stropha.server import mcp
+
+        suggestions = [
+            *suggest_next_tool("", [], max_suggestions=20),
+            *suggest_next_tool(
+                "how does X work and what is Y", [], max_suggestions=20,
+            ),
+            *suggest_next_tool(
+                "find X and Y",
+                [
+                    _Hit(chunk_id=str(i), symbol="X", rel_path=f"src/p{i}.py")
+                    for i in range(10)
+                ],
+                max_suggestions=20,
+            ),
+            *suggest_next_tool(
+                "design",
+                [_Hit(symbol="Design", kind="doc", rel_path="docs/design.md")],
+                has_rationale=True,
+                max_suggestions=20,
+            ),
+        ]
+        schemas = {
+            tool.name: tool.parameters
+            for tool in mcp._tool_manager.list_tools()
+        }
+        assert {suggestion.tool for suggestion in suggestions} == {
+            "assemble_context",
+            "bootstrap_environment",
+            "find_callers",
+            "find_rationale",
+            "find_related",
+            "find_tests_for",
+            "get_file_outline",
+            "plan_investigation",
+            "search_code",
+        }
+        for suggestion in suggestions:
+            schema = schemas[suggestion.tool]
+            supplied = set(suggestion.args)
+            assert supplied <= set(schema["properties"])
+            assert set(schema.get("required", [])) <= supplied
 
 
 # ---------------------------------------------------------------------------
@@ -510,3 +563,31 @@ class TestSuggestNextToolMCP:
 
         assert out.suggestions == []
         assert out.graph_loaded is False
+
+    def test_cross_repo_scope_only_added_to_supported_tools(
+        self, patch_graph: None,
+    ) -> None:
+        from stropha.server import mcp, suggest_next_tool_mcp
+
+        schemas = {
+            tool.name: tool.parameters
+            for tool in mcp._tool_manager.list_tools()
+        }
+        empty = suggest_next_tool_mcp(
+            "", [], include_other_repos=True, ctx=_make_ctx(_make_app({})),
+        )
+        bootstrap = next(s for s in empty.suggestions if s.tool == "bootstrap_environment")
+        assert bootstrap.args == {}
+
+        app = _make_app({"c1": _Hit(symbol="FooClass", kind="class")})
+        scoped = suggest_next_tool_mcp(
+            "FooClass",
+            ["c1"],
+            include_other_repos=True,
+            ctx=_make_ctx(app),
+        )
+        for suggestion in scoped.suggestions:
+            schema = schemas[suggestion.tool]
+            assert set(suggestion.args) <= set(schema["properties"])
+            if "include_other_repos" in schema["properties"]:
+                assert suggestion.args["include_other_repos"] is True

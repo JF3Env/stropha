@@ -58,6 +58,14 @@ def _engine(hits: list[SearchHit]) -> MagicMock:
     return eng
 
 
+@pytest.fixture(autouse=True)
+def _loaded_graph(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "stropha.retrieval.graph.graph_loaded",
+        lambda storage, **kwargs: True,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Argument validation
 # ---------------------------------------------------------------------------
@@ -196,14 +204,25 @@ class TestAssembleHappyPath:
 class TestGraphExtensions:
     def test_include_callers_adds_caller_hits(self) -> None:
         primary = _hit("def f(): pass", chunk_id="c1", symbol="f")
-        caller_hit = _hit(
-            "def caller(): f()",
-            chunk_id="c2",
-            symbol="caller",
-            rel_path="src/uses_f.py",
-        )
+        payload = {
+            "symbol": "f",
+            "resolved_node": "f",
+            "callers": [
+                {
+                    "node_id": "caller-node",
+                    "label": "caller",
+                    "file_type": "function",
+                    "chunk": {
+                        "rel_path": "src/uses_f.py",
+                        "start_line": 10,
+                        "end_line": 20,
+                        "snippet": "def caller(): f()",
+                    },
+                },
+            ],
+        }
         with patch(
-            "stropha.retrieval.graph.find_callers", return_value=[caller_hit]
+            "stropha.retrieval.graph.find_callers", return_value=payload,
         ):
             result = assemble_context(
                 "task",
@@ -214,20 +233,31 @@ class TestGraphExtensions:
             )
         callers = next(s for s in result.sections if s.key == "callers")
         assert len(callers.hits) == 1
-        assert callers.hits[0].chunk_id == "c2"
+        assert callers.hits[0].chunk_id == "graph:caller-node"
+        assert callers.hits[0].rel_path == "src/uses_f.py"
+        assert callers.hits[0].snippet == "def caller(): f()"
+        assert result.graph_status == "available"
+        assert result.notes == []
         # The bundle now has the Callers section header.
         assert "## Callers" in result.bundle
 
     def test_include_tests_adds_test_hits(self) -> None:
         primary = _hit("def f(): pass", chunk_id="c1", symbol="f")
-        test_hit = _hit(
-            "def test_f(): assert f()",
-            chunk_id="c2",
-            symbol="test_f",
-            rel_path="tests/test_f.py",
-        )
+        payload = {
+            "symbol": "f",
+            "resolved_node": "f",
+            "tests": [
+                {
+                    "node_id": "test-node",
+                    "label": "test_f",
+                    "source_file": "tests/test_f.py",
+                    "source_location": "L10",
+                    "edge": {"confidence_score": 0.9},
+                },
+            ],
+        }
         with patch(
-            "stropha.retrieval.graph.find_tests_for", return_value=[test_hit]
+            "stropha.retrieval.graph.find_tests_for", return_value=payload,
         ):
             result = assemble_context(
                 "task",
@@ -238,11 +268,13 @@ class TestGraphExtensions:
             )
         tests = next(s for s in result.sections if s.key == "tests")
         assert len(tests.hits) == 1
-        assert tests.hits[0].chunk_id == "c2"
+        assert tests.hits[0].chunk_id == "graph:test-node"
+        assert tests.hits[0].rel_path == "tests/test_f.py"
+        assert tests.hits[0].start_line == 10
+        assert tests.hits[0].score == 0.9
 
     def test_extensions_skipped_when_no_storage(self) -> None:
-        """Without a storage handle the graph helpers can't run.
-        ``include_callers=True`` must NOT crash — silently skip."""
+        """Without storage, graph extensions are explicitly unavailable."""
         primary = _hit("def f(): pass", chunk_id="c1", symbol="f")
         result = assemble_context(
             "task",
@@ -259,6 +291,48 @@ class TestGraphExtensions:
         assert len(primary_sec.hits) == 1
         assert callers_sec.hits == []
         assert tests_sec.hits == []
+        assert result.graph_status == "unavailable"
+        assert result.notes
+
+    def test_graph_unavailable_skips_helpers(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        primary = _hit("def f(): pass", chunk_id="c1", symbol="f")
+        monkeypatch.setattr(
+            "stropha.retrieval.graph.graph_loaded",
+            lambda storage, **kwargs: False,
+        )
+        with patch("stropha.retrieval.graph.find_callers") as mock_callers:
+            result = assemble_context(
+                "task",
+                search_engine=_engine([primary]),
+                storage=MagicMock(),
+                include_callers=True,
+                context_budget=4000,
+            )
+
+        mock_callers.assert_not_called()
+        assert result.graph_status == "unavailable"
+        assert any("graph is unavailable" in note for note in result.notes)
+
+    def test_malformed_graph_payload_is_reported_as_degraded(self) -> None:
+        primary = _hit("def f(): pass", chunk_id="c1", symbol="f")
+        with patch(
+            "stropha.retrieval.graph.find_callers",
+            return_value=[{"node_id": "legacy-list"}],
+        ):
+            result = assemble_context(
+                "task",
+                search_engine=_engine([primary]),
+                storage=MagicMock(),
+                include_callers=True,
+                context_budget=4000,
+            )
+
+        callers = next(s for s in result.sections if s.key == "callers")
+        assert callers.hits == []
+        assert result.graph_status == "degraded"
+        assert any("malformed response" in note for note in result.notes)
 
     def test_extensions_skipped_when_primary_hit_has_no_symbol(
         self,
@@ -299,6 +373,8 @@ class TestGraphExtensions:
         callers_sec = next(s for s in result.sections if s.key == "callers")
         assert len(primary_sec.hits) == 1
         assert callers_sec.hits == []
+        assert result.graph_status == "degraded"
+        assert any("find_callers" in note for note in result.notes)
 
     def test_find_tests_exception_caught(self) -> None:
         """Same defensive contract for find_tests_for: graph helper
@@ -317,6 +393,8 @@ class TestGraphExtensions:
             )
         tests_sec = next(s for s in result.sections if s.key == "tests")
         assert tests_sec.hits == []
+        assert result.graph_status == "degraded"
+        assert any("find_tests_for" in note for note in result.notes)
 
     def test_include_tests_skipped_when_primary_hit_has_no_symbol(
         self,
@@ -360,7 +438,12 @@ class TestRationaleSection:
                         "node_id": "adr-0042",
                         "label": "ADR-0042: JWT auth decision",
                         "kind": "adr",
-                        "source_file": "docs/adr/0042.md",
+                        "chunk": {
+                            "rel_path": "docs/adr/0042.md",
+                            "start_line": 4,
+                            "end_line": 12,
+                            "snippet": "JWT auth decision",
+                        },
                         "edge": {"confidence_score": 0.92},
                     },
                 ],
@@ -376,10 +459,12 @@ class TestRationaleSection:
         rationale = next(s for s in result.sections if s.key == "rationale")
         assert len(rationale.hits) == 1
         assert "ADR-0042" in rationale.hits[0].symbol
+        assert rationale.hits[0].rel_path == "docs/adr/0042.md"
+        assert rationale.hits[0].snippet == "JWT auth decision"
         # Rationale section header rendered.
         assert "Rationale" in result.bundle
 
-    def test_rationale_without_storage_silently_skips(self) -> None:
+    def test_rationale_without_storage_reports_unavailable(self) -> None:
         primary = _hit("def auth(): pass", chunk_id="c1", symbol="auth")
         result = assemble_context(
             "task",
@@ -390,6 +475,8 @@ class TestRationaleSection:
         )
         rationale = next(s for s in result.sections if s.key == "rationale")
         assert rationale.hits == []
+        assert result.graph_status == "unavailable"
+        assert result.notes
 
     def test_rationale_skipped_when_primary_has_no_symbol(self) -> None:
         primary = _hit("contents", chunk_id="c1", symbol=None)
@@ -423,6 +510,8 @@ class TestRationaleSection:
             )
         rationale = next(s for s in result.sections if s.key == "rationale")
         assert rationale.hits == []
+        assert result.graph_status == "degraded"
+        assert any("find_rationale" in note for note in result.notes)
 
     def test_rationale_node_without_label_dropped(self) -> None:
         """A node without a ``label`` field can't be acted on by the
@@ -589,7 +678,18 @@ class TestDeduplication:
         primary = _hit("def f(): pass", chunk_id="c1", symbol="f")
         # The "caller" is actually the same chunk as primary.
         with patch(
-            "stropha.retrieval.graph.find_callers", return_value=[primary]
+            "stropha.retrieval.graph.find_callers",
+            return_value={
+                "symbol": "f",
+                "callers": [
+                    {
+                        "node_id": "primary-node",
+                        "chunk_id": "c1",
+                        "label": "f",
+                        "source_file": "src/foo.py",
+                    },
+                ],
+            },
         ):
             result = assemble_context(
                 "task",
@@ -707,6 +807,13 @@ class TestRendering:
         with pytest.raises((AttributeError, TypeError)):
             result.task = "other"  # type: ignore[misc]
 
+    def test_no_graph_request_reports_not_requested(self) -> None:
+        result = assemble_context(
+            "task", search_engine=_engine([]), context_budget=4000,
+        )
+        assert result.graph_status == "not_requested"
+        assert result.notes == []
+
 
 # ---------------------------------------------------------------------------
 # Public symbols
@@ -720,3 +827,10 @@ class TestPublicSymbols:
             AssembleSection,
             assemble_context,
         )
+
+    def test_mcp_response_schema_exposes_graph_source_status(self) -> None:
+        from stropha.server import AssembleContextResponse
+
+        properties = AssembleContextResponse.model_json_schema()["properties"]
+        assert "graph_status" in properties
+        assert "notes" in properties

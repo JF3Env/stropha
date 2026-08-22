@@ -77,6 +77,20 @@ class TestRegistry:
     def test_get_recipe_unknown_returns_none(self) -> None:
         assert get_recipe("nonexistent") is None
 
+    def test_recipe_steps_match_registered_tool_schemas(self) -> None:
+        from stropha.server import mcp
+
+        schemas = {
+            tool.name: tool.parameters
+            for tool in mcp._tool_manager.list_tools()
+        }
+        for recipe in list_recipes():
+            for step in recipe.steps:
+                schema = schemas[step.tool]
+                supplied = set(step.args_template)
+                assert supplied <= set(schema["properties"])
+                assert set(schema.get("required", [])) <= supplied
+
 
 # ---------------------------------------------------------------------------
 # Placeholder helpers
@@ -117,10 +131,10 @@ class TestResolveArgs:
 
     def test_non_string_values_pass_through(self) -> None:
         out = _resolve_args(
-            {"top_k": 10, "use_hyde": True, "tags": ["a", "b"]},
+            {"top_k": 10, "enabled": True, "tags": ["a", "b"]},
             {"symbol": "Foo"},
         )
-        assert out == {"top_k": 10, "use_hyde": True, "tags": ["a", "b"]}
+        assert out == {"top_k": 10, "enabled": True, "tags": ["a", "b"]}
 
 
 class TestRequiredPlaceholders:
@@ -310,6 +324,17 @@ class TestMCPApplyRecipe:
 
         tool_names = [t.name for t in mcp._tool_manager.list_tools()]
         assert "apply_task_recipe" in tool_names
+
+    def test_registration_does_not_advertise_private_executor(self) -> None:
+        from stropha.server import mcp
+
+        tool = next(
+            tool
+            for tool in mcp._tool_manager.list_tools()
+            if tool.name == "apply_task_recipe"
+        )
+        assert "execute_plan" not in tool.description
+        assert "execute one-by-one" in tool.description
 
     def test_known_recipe_returns_steps(self) -> None:
         from stropha.server import apply_task_recipe

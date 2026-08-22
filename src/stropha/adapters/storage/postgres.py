@@ -49,6 +49,7 @@ from pydantic import BaseModel, Field
 from ...errors import EmbeddingDimensionMismatchError, StorageError
 from ...logging import get_logger
 from ...models import (
+    SOURCE_SNAPSHOT_META_PREFIX,
     Chunk,
     EpisodeRecord,
     ProjectMemoryRecord,
@@ -70,11 +71,13 @@ from ...storage.sqlite import (
     _identifier_tokens,
     _repo_from_row,
     _snippet,
+    _source_evidence_from_row,
 )
 
 if TYPE_CHECKING:
     from ...ingest.git_meta import RepoIdentity
     from ...secondary_embeddings import SecondaryEmbeddingChunk, SecondaryEmbeddingVector
+    from ...stages.storage import FileSnapshotChunkWrite
 
 log = get_logger(__name__)
 
@@ -83,9 +86,15 @@ _HNSW_HALFVEC_MAX_DIM = 4000
 
 # Shared SELECT list: chunk columns + repo_* aliases consumed by
 # ``_repo_from_row``. Mirrors ``_REPO_JOIN_COLUMNS`` in storage/sqlite.py.
-_REPO_COLS = """
+_REPO_COLS = f"""
     c.chunk_id, c.rel_path, c.language, c.kind, c.symbol,
     c.start_line, c.end_line, c.content,
+    NULL::text        AS source_slice_sha256,
+    (SELECT value FROM meta
+      WHERE key = '{SOURCE_SNAPSHOT_META_PREFIX}' || c.repo_id::text)
+                      AS source_snapshot_version,
+    f.content_hash    AS source_file_sha256,
+    f.last_indexed_at AS source_observed_at,
     r.normalized_key AS repo_normalized_key,
     r.remote_url     AS repo_url,
     r.root_path      AS repo_local_path,
@@ -185,12 +194,52 @@ _UPSERT_PK: dict[str, list[str]] = {
 _INDEX_LOCK_KEY = 0x53545250  # "STRP"
 _FTS_AUGMENT_BATCH_SIZE = 1_000
 
-# DSNs whose schema this process has already ensured. The MCP daemon builds a
-# fresh Storage per transport session; without this memo every session re-runs
-# ~25 idempotent DDL statements, and CREATE INDEX IF NOT EXISTS takes a SHARE
-# lock on its table *even when the index already exists* — queueing behind any
-# in-flight `stropha index` write transaction and wedging session creation
-# until the indexer commits.
+# Columns introduced after their tables first shipped. PostgreSQL's
+# CREATE TABLE IF NOT EXISTS does not add them to an existing table, so mirror
+# SQLite's guarded forward migrations explicitly.
+_FORWARD_COLUMN_MIGRATIONS: dict[str, tuple[tuple[str, str], ...]] = {
+    "chunks": (
+        ("repo_id", "bigint REFERENCES repos(id)"),
+        ("embedding_text", "text"),
+        ("enricher_id", "text"),
+    ),
+    "files": (
+        ("last_enricher_id", "text"),
+        ("last_embedder_model", "text"),
+    ),
+    "sessions": (("scratchpad", "text NOT NULL DEFAULT ''"),),
+    "project_memory": (("provenance_commit", "text"),),
+    "episodes": (("provenance_commit", "text"),),
+    "graph_nodes": (
+        ("embedding", "bytea"),
+        ("embedding_model", "text"),
+        ("embedding_dim", "integer"),
+        ("repo_id", "bigint REFERENCES repos(id)"),
+    ),
+    "graph_edges": (("repo_id", "bigint REFERENCES repos(id)"),),
+}
+
+# The additive migration columns plus the table introduced in v14 must exist
+# before schema_version can advertise the current shape.
+_REQUIRED_SCHEMA_COLUMNS = (
+    *(
+        (table, column)
+        for table, columns in _FORWARD_COLUMN_MIGRATIONS.items()
+        for column, _declaration in columns
+    ),
+    ("secondary_embeddings", "chunk_rowid"),
+    ("secondary_embeddings", "content_hash"),
+    ("secondary_embeddings", "embedder_id"),
+    ("secondary_embeddings", "embedding_dim"),
+    ("secondary_embeddings", "embedding"),
+)
+
+# DSNs whose schema this process has already migrated and structurally
+# verified. The MCP daemon builds a fresh Storage per transport session;
+# without this memo every session re-runs ~25 idempotent DDL statements, and
+# CREATE INDEX IF NOT EXISTS takes a SHARE lock on its table *even when the
+# index already exists* — queueing behind any in-flight `stropha index` write
+# transaction and wedging session creation until the indexer commits.
 _MIGRATED_DSNS: set[str] = set()
 
 # A cold-start migration can still collide with a concurrent indexing run, so
@@ -579,6 +628,9 @@ class PostgresStorage:
                     retries=_MIGRATE_LOCK_RETRIES,
                 )
                 time.sleep(_MIGRATE_LOCK_RETRY_DELAY_S)
+            except StorageError:
+                self._raw.rollback()
+                raise
         _MIGRATED_DSNS.add(self._dsn)
 
     def _run_migration_ddl(self) -> None:
@@ -612,6 +664,7 @@ class PostgresStorage:
             )
             self._create_chunk_tables(cur)
             self._create_aux_tables(cur)
+            self._verify_schema_columns(cur)
             cur.execute(
                 "INSERT INTO meta(key, value) VALUES ('schema_version', %s) "
                 "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value "
@@ -624,6 +677,43 @@ class PostgresStorage:
                 (str(self._dim),),
             )
         self._raw.commit()
+
+    @staticmethod
+    def _add_forward_columns(cur: Any, table: str) -> None:
+        for column, declaration in _FORWARD_COLUMN_MIGRATIONS.get(table, ()):
+            cur.execute(
+                f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {declaration};"
+            )
+
+    @staticmethod
+    def _verify_schema_columns(cur: Any) -> None:
+        tables = [table for table, _column in _REQUIRED_SCHEMA_COLUMNS]
+        columns = [column for _table, column in _REQUIRED_SCHEMA_COLUMNS]
+        cur.execute(
+            """
+            SELECT required.table_name, required.column_name
+            FROM unnest(%s::text[], %s::text[])
+                AS required(table_name, column_name)
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM information_schema.columns AS actual
+                WHERE actual.table_schema = current_schema()
+                  AND actual.table_name = required.table_name
+                  AND actual.column_name = required.column_name
+            )
+            ORDER BY required.table_name, required.column_name;
+            """,
+            (tables, columns),
+        )
+        missing = cur.fetchall()
+        if missing:
+            names = ", ".join(
+                f"{row['table_name']}.{row['column_name']}" for row in missing
+            )
+            raise StorageError(
+                f"PostgreSQL schema v{SCHEMA_VERSION} verification failed; "
+                f"missing required columns: {names}"
+            )
 
     def _create_chunk_tables(self, cur: Any) -> None:
         """Create chunks/files/enrichments + indexes. Idempotent."""
@@ -652,6 +742,7 @@ class PostgresStorage:
             );
             """
         )
+        self._add_forward_columns(cur, "chunks")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_chunks_rel_path ON chunks(rel_path);")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_chunks_content_hash ON chunks(content_hash);")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_chunks_language ON chunks(language);")
@@ -706,6 +797,7 @@ class PostgresStorage:
             );
             """
         )
+        self._add_forward_columns(cur, "files")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_files_repo_path ON files(repo_id, rel_path);")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_files_content_hash ON files(content_hash);")
         cur.execute(
@@ -743,6 +835,7 @@ class PostgresStorage:
             );
             """
         )
+        self._add_forward_columns(cur, "sessions")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_sessions_client_id ON sessions(client_id);")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions(updated_at);")
 
@@ -764,6 +857,7 @@ class PostgresStorage:
             );
             """
         )
+        self._add_forward_columns(cur, "project_memory")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_pm_repo ON project_memory(repo_id);")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_pm_repo_kind ON project_memory(repo_id, kind);")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_pm_expires ON project_memory(expires_at);")
@@ -785,6 +879,7 @@ class PostgresStorage:
             );
             """
         )
+        self._add_forward_columns(cur, "episodes")
         cur.execute(
             "CREATE INDEX IF NOT EXISTS idx_episodes_repo_created "
             "ON episodes(repo_id, created_at DESC);"
@@ -839,6 +934,7 @@ class PostgresStorage:
             );
             """
         )
+        self._add_forward_columns(cur, "graph_nodes")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_graph_nodes_label ON graph_nodes(label);")
         cur.execute(
             "CREATE INDEX IF NOT EXISTS idx_graph_nodes_source_file ON graph_nodes(source_file);"
@@ -864,6 +960,7 @@ class PostgresStorage:
             );
             """
         )
+        self._add_forward_columns(cur, "graph_edges")
         cur.execute(
             "CREATE INDEX IF NOT EXISTS idx_graph_edges_target_relation "
             "ON graph_edges(target, relation, confidence);"
@@ -1051,11 +1148,25 @@ class PostgresStorage:
         if not self._index_lock_held:
             return
         try:
+            # A failed write leaves psycopg in an aborted transaction, where
+            # even pg_advisory_unlock is rejected until rollback. Successful
+            # pipeline writes are already committed before lock release.
+            self._raw.rollback()
             self._raw.execute("SELECT pg_advisory_unlock(%s);", (_INDEX_LOCK_KEY,))
             self._raw.commit()
-        except Exception:  # pragma: no cover - defensive
-            pass
-        self._index_lock_held = False
+        except Exception as exc:  # pragma: no cover - defensive
+            # Closing the session releases every session advisory lock. Reopen
+            # it so a failed unlock does not also poison later requests.
+            log.warning("postgres.index_lock_release_failed", error=str(exc))
+            try:
+                self._reconnect()
+            except Exception as reconnect_exc:
+                log.warning(
+                    "postgres.index_lock_release_reconnect_failed",
+                    error=str(reconnect_exc),
+                )
+        finally:
+            self._index_lock_held = False
 
     def close(self) -> None:
         import contextlib
@@ -1069,7 +1180,9 @@ class PostgresStorage:
 
     # ----- Writes ---------------------------------------------------------
 
-    def register_repo(self, identity: RepoIdentity) -> int:
+    def register_repo(
+        self, identity: RepoIdentity, *, publish_watermark: bool = True
+    ) -> int:
         now = datetime.now(UTC).isoformat()
         row = self._raw.execute(
             """
@@ -1081,8 +1194,10 @@ class PostgresStorage:
                 remote_url      = EXCLUDED.remote_url,
                 root_path       = EXCLUDED.root_path,
                 default_branch  = EXCLUDED.default_branch,
-                head_commit     = EXCLUDED.head_commit,
-                last_indexed_at = EXCLUDED.last_indexed_at
+                head_commit     = CASE WHEN %s THEN EXCLUDED.head_commit
+                                       ELSE repos.head_commit END,
+                last_indexed_at = CASE WHEN %s THEN EXCLUDED.last_indexed_at
+                                       ELSE repos.last_indexed_at END
             RETURNING id;
             """,
             (
@@ -1090,13 +1205,25 @@ class PostgresStorage:
                 identity.remote_url,
                 str(identity.root_path),
                 identity.default_branch,
-                identity.head_commit,
+                identity.head_commit if publish_watermark else None,
                 now,
-                now,
+                now if publish_watermark else "",
+                publish_watermark,
+                publish_watermark,
             ),
         ).fetchone()
         self._raw.commit()
         return int(row["id"]) if row else 0
+
+    def complete_repo_index(self, repo_id: int, head_commit: str | None) -> None:
+        """Publish the repository watermark after all source snapshots succeed."""
+        now = datetime.now(UTC).isoformat()
+        cur = self._raw.execute(
+            "UPDATE repos SET head_commit = %s, last_indexed_at = %s WHERE id = %s;",
+            (head_commit, now, repo_id),
+        )
+        if cur.rowcount != 1:
+            raise StorageError(f"Unknown repo_id {repo_id} while completing index")
 
     def upsert_chunk(
         self,
@@ -1304,6 +1431,7 @@ class PostgresStorage:
                 FROM secondary_embeddings s
                 JOIN chunks c ON c.id = s.chunk_rowid
                 LEFT JOIN repos r ON r.id = c.repo_id
+                LEFT JOIN files f ON f.repo_id = c.repo_id AND f.rel_path = c.rel_path
                 WHERE s.content_hash = c.content_hash
                   AND s.embedder_id = %s
                   AND s.embedding_dim = %s
@@ -1329,7 +1457,10 @@ class PostgresStorage:
         enricher_id: str | None = None,
     ) -> bool:
         row = self._raw.execute(
-            "SELECT content_hash, embedding_model, enricher_id FROM chunks WHERE chunk_id = %s;",
+            "SELECT content_hash, embedding_model, enricher_id, "
+            "embedding IS NOT NULL AS has_primary_vector, "
+            "fts IS NOT NULL AS has_fts "
+            "FROM chunks WHERE chunk_id = %s;",
             (chunk_id,),
         ).fetchone()
         if row is None:
@@ -1337,6 +1468,8 @@ class PostgresStorage:
         if row["content_hash"] != content_hash:
             return False
         if row["embedding_model"] != embedding_model:
+            return False
+        if not row["has_primary_vector"] or not row["has_fts"]:
             return False
         if enricher_id is not None:
             stored = row["enricher_id"] or "noop"
@@ -1408,21 +1541,39 @@ class PostgresStorage:
         repo_id: int,
         rel_path: str,
         *,
+        content_hash: str,
         mtime: float,
         size_bytes: int,
         enricher_id: str | None = None,
         embedder_model: str | None = None,
     ) -> bool:
         row = self._raw.execute(
-            "SELECT mtime, size_bytes, last_enricher_id, last_embedder_model "
-            "FROM files WHERE repo_id = %s AND rel_path = %s;",
+            "SELECT f.content_hash, f.mtime, f.size_bytes, f.last_chunk_count, "
+            "f.last_enricher_id, f.last_embedder_model, "
+            "(SELECT COUNT(*) FROM chunks c WHERE c.repo_id = f.repo_id "
+            "AND c.rel_path = f.rel_path) AS actual_chunk_count, "
+            "(SELECT COUNT(*) FROM chunks c WHERE c.repo_id = f.repo_id "
+            "AND c.rel_path = f.rel_path AND c.embedding IS NOT NULL) "
+            "AS actual_vector_count, "
+            "(SELECT COUNT(*) FROM chunks c WHERE c.repo_id = f.repo_id "
+            "AND c.rel_path = f.rel_path AND c.fts IS NOT NULL) "
+            "AS actual_fts_count "
+            "FROM files f WHERE f.repo_id = %s AND f.rel_path = %s;",
             (repo_id, rel_path),
         ).fetchone()
         if row is None:
             return False
+        if row["content_hash"] != content_hash:
+            return False
         if float(row["mtime"]) != float(mtime):
             return False
         if int(row["size_bytes"]) != int(size_bytes):
+            return False
+        if int(row["last_chunk_count"]) != int(row["actual_chunk_count"]):
+            return False
+        if int(row["actual_vector_count"]) != int(row["actual_chunk_count"]):
+            return False
+        if int(row["actual_fts_count"]) != int(row["actual_chunk_count"]):
             return False
         if enricher_id is not None and row["last_enricher_id"] != enricher_id:
             return False
@@ -1437,19 +1588,215 @@ class PostgresStorage:
         tree in memory instead of one ``file_is_fresh`` SELECT per file.
         """
         rows = self._raw.execute(
-            "SELECT rel_path, mtime, size_bytes, last_enricher_id, last_embedder_model "
+            "SELECT rel_path, content_hash, mtime, size_bytes, last_chunk_count, "
+            "last_enricher_id, last_embedder_model "
             "FROM files WHERE repo_id = %s;",
             (repo_id,),
         ).fetchall()
         return {
             r["rel_path"]: StoredFileMeta(
+                content_hash=r["content_hash"],
                 mtime=float(r["mtime"]),
                 size_bytes=int(r["size_bytes"]),
+                chunk_count=int(r["last_chunk_count"]),
                 enricher_id=r["last_enricher_id"],
                 embedder_model=r["last_embedder_model"],
             )
             for r in rows
         }
+
+    @contextmanager
+    def _file_snapshot_savepoint(self) -> Iterator[None]:
+        """Isolate one snapshot mutation without taking commit ownership."""
+        from psycopg.pq import TransactionStatus
+
+        had_transaction = self._raw.info.transaction_status != TransactionStatus.IDLE
+        if not had_transaction:
+            self._raw.execute("BEGIN;")
+        self._raw.execute("SAVEPOINT stropha_file_snapshot;")
+        try:
+            yield
+            self._raw.execute("RELEASE SAVEPOINT stropha_file_snapshot;")
+        except BaseException:
+            try:
+                self._raw.execute("ROLLBACK TO SAVEPOINT stropha_file_snapshot;")
+                self._raw.execute("RELEASE SAVEPOINT stropha_file_snapshot;")
+            except Exception:
+                self._raw.rollback()
+            else:
+                if not had_transaction:
+                    self._raw.rollback()
+            raise
+
+    def replace_file_snapshot(
+        self,
+        *,
+        repo_id: int,
+        rel_path: str,
+        desired_chunk_ids: list[str],
+        chunk_writes: list[FileSnapshotChunkWrite],
+        embedding_model: str,
+        embedding_dim: int,
+        enricher_id: str | None,
+        file_content_hash: str,
+        size_bytes: int,
+        mtime: float,
+        reused_chunks: list[Chunk] | None = None,
+    ) -> None:
+        """Atomically replace one repo/path's chunks and file metadata."""
+        desired_ids = set(desired_chunk_ids)
+        if len(desired_ids) != len(desired_chunk_ids):
+            raise StorageError("File snapshot desired_chunk_ids must be unique")
+        if embedding_dim != self._dim:
+            raise StorageError(
+                f"Snapshot embedding dim {embedding_dim} != index dim {self._dim}"
+            )
+
+        write_ids: set[str] = set()
+        for item in chunk_writes:
+            chunk = item["chunk"]
+            embedding = item["embedding"]
+            embedding_text = item["embedding_text"]
+            if chunk.chunk_id in write_ids:
+                raise StorageError(f"Duplicate snapshot write for chunk {chunk.chunk_id}")
+            write_ids.add(chunk.chunk_id)
+            if chunk.chunk_id not in desired_ids:
+                raise StorageError(
+                    f"Snapshot write {chunk.chunk_id} is not in desired_chunk_ids"
+                )
+            if chunk.rel_path != rel_path:
+                raise StorageError(
+                    f"Snapshot write {chunk.chunk_id} has path {chunk.rel_path!r}, "
+                    f"expected {rel_path!r}"
+                )
+            if len(embedding) != embedding_dim:
+                raise StorageError(
+                    f"Embedding dim mismatch for {chunk.chunk_id}: "
+                    f"got {len(embedding)}, expected {embedding_dim}"
+                )
+            if not isinstance(embedding_text, str):
+                raise StorageError(
+                    f"Snapshot embedding text for {chunk.chunk_id} must be a string"
+                )
+
+        reused = reused_chunks or []
+        reused_ids: set[str] = set()
+        for chunk in reused:
+            if chunk.chunk_id in reused_ids:
+                raise StorageError(f"Duplicate reused snapshot chunk {chunk.chunk_id}")
+            reused_ids.add(chunk.chunk_id)
+            if chunk.chunk_id in write_ids:
+                raise StorageError(
+                    f"Snapshot chunk {chunk.chunk_id} cannot be written and reused"
+                )
+            if chunk.chunk_id not in desired_ids:
+                raise StorageError(
+                    f"Reused snapshot chunk {chunk.chunk_id} is not desired"
+                )
+            if chunk.rel_path != rel_path:
+                raise StorageError(
+                    f"Reused snapshot chunk {chunk.chunk_id} has path "
+                    f"{chunk.rel_path!r}, expected {rel_path!r}"
+                )
+
+        with self._file_snapshot_savepoint():
+            existing_ids: set[str] = set()
+            existing_rows: dict[str, Any] = {}
+            if desired_chunk_ids:
+                rows = self._raw.execute(
+                    """SELECT id, chunk_id, repo_id, rel_path, content_hash FROM chunks
+                       WHERE chunk_id = ANY(%s::text[]) FOR UPDATE;""",
+                    (desired_chunk_ids,),
+                ).fetchall()
+                for row in rows:
+                    chunk_id = str(row["chunk_id"])
+                    existing_ids.add(chunk_id)
+                    existing_rows[chunk_id] = row
+                    if row["repo_id"] != repo_id or row["rel_path"] != rel_path:
+                        raise StorageError(
+                            f"Snapshot chunk {chunk_id} is outside "
+                            f"repo_id={repo_id}, rel_path={rel_path!r}"
+                        )
+
+            missing_ids = desired_ids - existing_ids - write_ids
+            if missing_ids:
+                missing = ", ".join(sorted(missing_ids))
+                raise StorageError(f"Snapshot desired chunks have no stored row or write: {missing}")
+            missing_reused = reused_ids - existing_ids
+            if missing_reused:
+                missing = ", ".join(sorted(missing_reused))
+                raise StorageError(f"Reused snapshot chunks have no stored row: {missing}")
+
+            for item in chunk_writes:
+                self.upsert_chunk(
+                    item["chunk"],
+                    item["embedding"],
+                    embedding_model,
+                    embedding_dim,
+                    repo_id=repo_id,
+                    embedding_text=item["embedding_text"],
+                    enricher_id=enricher_id,
+                )
+
+            now = datetime.now(UTC).isoformat()
+            for chunk in reused:
+                row = existing_rows[chunk.chunk_id]
+                if row["content_hash"] != chunk.content_hash:
+                    raise StorageError(
+                        f"Reused snapshot chunk {chunk.chunk_id} changed content"
+                    )
+                self._raw.execute(
+                    """UPDATE chunks SET
+                           rel_path=%s, language=%s, kind=%s, symbol=%s,
+                           parent_chunk_id=%s, start_line=%s, end_line=%s,
+                           content=%s, content_hash=%s, indexed_at=%s,
+                           fts=to_tsvector('simple', %s)
+                       WHERE id=%s;""",
+                    (
+                        chunk.rel_path,
+                        chunk.language,
+                        chunk.kind,
+                        chunk.symbol,
+                        chunk.parent_chunk_id,
+                        chunk.start_line,
+                        chunk.end_line,
+                        chunk.content,
+                        chunk.content_hash,
+                        now,
+                        _fts_text(chunk.content, chunk.rel_path, chunk.symbol),
+                        row["id"],
+                    ),
+                )
+
+            self._raw.execute(
+                """DELETE FROM chunks
+                   WHERE repo_id = %s AND rel_path = %s
+                     AND NOT (chunk_id = ANY(%s::text[]));""",
+                (repo_id, rel_path, desired_chunk_ids),
+            )
+            self.upsert_file_meta(
+                repo_id=repo_id,
+                rel_path=rel_path,
+                content_hash=file_content_hash,
+                size_bytes=size_bytes,
+                mtime=mtime,
+                chunk_count=len(desired_chunk_ids),
+                enricher_id=enricher_id,
+                embedder_model=embedding_model,
+            )
+
+    def delete_file_snapshot(self, *, repo_id: int, rel_path: str) -> int:
+        """Atomically remove all chunk and metadata state for one repo/path."""
+        with self._file_snapshot_savepoint():
+            cur = self._raw.execute(
+                "DELETE FROM chunks WHERE repo_id = %s AND rel_path = %s;",
+                (repo_id, rel_path),
+            )
+            self._raw.execute(
+                "DELETE FROM files WHERE repo_id = %s AND rel_path = %s;",
+                (repo_id, rel_path),
+            )
+            return max(0, int(cur.rowcount or 0))
 
     def upsert_file_meta(
         self,
@@ -1583,6 +1930,7 @@ class PostgresStorage:
             f"""
             SELECT {_REPO_COLS}
             FROM chunks c LEFT JOIN repos r ON r.id = c.repo_id
+            LEFT JOIN files f ON f.repo_id = c.repo_id AND f.rel_path = c.rel_path
             WHERE c.chunk_id = %s;
             """,
             (chunk_id,),
@@ -2155,6 +2503,7 @@ class PostgresStorage:
                 f"""
                 SELECT {_REPO_COLS}, {distance_expression} AS distance
                 FROM chunks c LEFT JOIN repos r ON r.id = c.repo_id
+                LEFT JOIN files f ON f.repo_id = c.repo_id AND f.rel_path = c.rel_path
                 WHERE c.embedding IS NOT NULL
                   {repo_clause}
                 ORDER BY {distance_expression}
@@ -2191,6 +2540,7 @@ class PostgresStorage:
                     SELECT {_REPO_COLS},
                            ts_rank_cd(c.fts, to_tsquery('simple', %s)) AS score
                     FROM chunks c LEFT JOIN repos r ON r.id = c.repo_id
+                    LEFT JOIN files f ON f.repo_id = c.repo_id AND f.rel_path = c.rel_path
                     WHERE c.fts @@ to_tsquery('simple', %s)
                       {repo_clause}
                     ORDER BY score DESC
@@ -2231,6 +2581,7 @@ class PostgresStorage:
                 f"""
                 SELECT {_REPO_COLS}, ({score_terms}) AS match_count
                 FROM chunks c LEFT JOIN repos r ON r.id = c.repo_id
+                LEFT JOIN files f ON f.repo_id = c.repo_id AND f.rel_path = c.rel_path
                 WHERE ({where_clause}) AND c.symbol IS NOT NULL
                   {repo_clause}
                 ORDER BY match_count DESC, char_length(c.symbol) ASC
@@ -2260,6 +2611,7 @@ class PostgresStorage:
             f"""
             SELECT {_REPO_COLS}
             FROM chunks c LEFT JOIN repos r ON r.id = c.repo_id
+            LEFT JOIN files f ON f.repo_id = c.repo_id AND f.rel_path = c.rel_path
             WHERE (c.symbol = %s
                OR c.symbol ILIKE %s
                OR c.symbol ILIKE %s
@@ -2314,7 +2666,7 @@ class PostgresStorage:
                 head_commit=row["head_commit"],
                 files=int(row["files"]),
                 chunks=int(row["chunks"]),
-                last_indexed_at=row["last_indexed_at"],
+                last_indexed_at=row["last_indexed_at"] or None,
             )
             for row in rows
         ]
@@ -2372,6 +2724,7 @@ class PostgresStorage:
             snippet=_snippet(row["content"]),
             chunk_id=row["chunk_id"],
             repo=_repo_from_row(row),
+            source=_source_evidence_from_row(row),
         )
 
     # ----- context manager ------------------------------------------------

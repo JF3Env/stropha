@@ -38,6 +38,7 @@ end-to-end.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
@@ -83,7 +84,8 @@ class AssembleContextResult:
     bypass the rendered text. ``total_tokens`` is the packer's
     measurement of what landed in ``bundle`` (sum across sections).
     ``spilled_count`` is the tail dropped because the budget ran out
-    across all sections.
+    across all sections. ``graph_status`` and ``notes`` distinguish a
+    valid empty graph result from unavailable or malformed graph data.
     """
 
     task: str
@@ -93,6 +95,8 @@ class AssembleContextResult:
     budget_tokens: int
     spilled_count: int
     truncated_oversize: bool = False
+    graph_status: str | None = None
+    notes: list[str] = field(default_factory=list)
 
 
 def _format_span(hit: SearchHit) -> str:
@@ -165,6 +169,106 @@ def _dedupe_in_order(seen: set[str], hits: Iterable[SearchHit]) -> list[SearchHi
     return fresh
 
 
+def _graph_entries(
+    payload: Any,
+    key: str,
+    *,
+    source: str,
+    symbol: str,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Validate a graph helper response and return its node list."""
+    if not isinstance(payload, dict):
+        return [], [
+            f"{source}({symbol!r}) returned a malformed response; expected an object."
+        ]
+    if payload.get("graph_loaded") is False:
+        message = payload.get("message") or "graphify graph is unavailable"
+        return [], [f"{source}({symbol!r}) unavailable: {message}"]
+    entries = payload.get(key)
+    if not isinstance(entries, list):
+        return [], [
+            f"{source}({symbol!r}) returned a malformed response; "
+            f"expected a '{key}' list."
+        ]
+    nodes = [entry for entry in entries if isinstance(entry, dict)]
+    dropped = len(entries) - len(nodes)
+    notes = []
+    if dropped:
+        notes.append(
+            f"{source}({symbol!r}) dropped {dropped} malformed '{key}' entr"
+            f"{'y' if dropped == 1 else 'ies'}."
+        )
+    return nodes, notes
+
+
+def _coerce_line(value: Any, default: int) -> int:
+    try:
+        return max(1, int(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _graph_node_to_hit(node: dict[str, Any], rank: int) -> SearchHit | None:
+    """Convert a caller/test graph node into a bundle-compatible hit."""
+    raw_chunk = node.get("chunk")
+    chunk = raw_chunk if isinstance(raw_chunk, dict) else {}
+    rel_path = (
+        chunk.get("rel_path")
+        or node.get("chunk_rel_path")
+        or node.get("source_file")
+    )
+    if not rel_path:
+        return None
+
+    location = node.get("source_location")
+    location_match = (
+        re.search(r"(?:^|:|L)(\d+)", location)
+        if isinstance(location, str)
+        else None
+    )
+    location_line = location_match.group(1) if location_match else None
+    start_line = _coerce_line(
+        chunk.get("start_line") or node.get("chunk_start_line") or location_line,
+        1,
+    )
+    end_line = max(
+        start_line,
+        _coerce_line(
+            chunk.get("end_line") or node.get("chunk_end_line"), start_line,
+        ),
+    )
+    label = str(node.get("symbol") or node.get("label") or "")
+    node_id = str(node.get("node_id") or f"{rel_path}:{start_line}:{label}")
+    raw_edge = node.get("edge")
+    edge: dict[str, Any] = raw_edge if isinstance(raw_edge, dict) else {}
+    raw_score = edge.get("confidence_score")
+    try:
+        score = float(raw_score) if raw_score is not None else None
+    except (TypeError, ValueError):
+        score = None
+    if score is None:
+        score = max(0.0, 1.0 - (rank * 0.05))
+    return SearchHit(
+        chunk_id=str(
+            node.get("chunk_id") or chunk.get("chunk_id") or f"graph:{node_id}"
+        ),
+        rel_path=str(rel_path),
+        start_line=start_line,
+        end_line=end_line,
+        score=score,
+        rank=rank,
+        snippet=str(
+            chunk.get("snippet")
+            or node.get("chunk_snippet")
+            or node.get("label")
+            or ""
+        ),
+        language=str(node.get("language") or ""),
+        kind=str(node.get("kind") or node.get("file_type") or "symbol"),
+        symbol=label or None,
+    )
+
+
 def _rationale_node_to_hit(node: dict[str, Any]) -> SearchHit | None:
     """Convert a ``find_rationale`` graph node dict into a SearchHit.
 
@@ -181,14 +285,21 @@ def _rationale_node_to_hit(node: dict[str, Any]) -> SearchHit | None:
     if not label:
         return None
     node_id = node.get("node_id") or label
+    raw_chunk = node.get("chunk")
+    chunk = raw_chunk if isinstance(raw_chunk, dict) else {}
     rel_path = (
-        node.get("chunk_rel_path")
+        chunk.get("rel_path")
+        or node.get("chunk_rel_path")
         or node.get("source_file")
         or "<rationale>"
     )
-    start_line = int(node.get("chunk_start_line") or 1)
-    end_line = int(node.get("chunk_end_line") or start_line)
-    snippet = node.get("chunk_snippet") or label
+    start_line = _coerce_line(
+        chunk.get("start_line") or node.get("chunk_start_line"), 1,
+    )
+    end_line = _coerce_line(
+        chunk.get("end_line") or node.get("chunk_end_line"), start_line,
+    )
+    snippet = chunk.get("snippet") or node.get("chunk_snippet") or label
     # graphify nodes carry a "kind" like "doc" / "adr" / "rationale";
     # default to "rationale" when missing so the bundle's per-hit
     # header shows the provenance even on partial data.
@@ -348,12 +459,34 @@ def assemble_context(
     primary_unique = _dedupe_in_order(seen_chunk_ids, primary_hits)
 
     # 2. Optional graph extensions — pulled in score-rank order from the
-    #    primary hits. The graph helpers return their own ranked lists
-    #    so we extend per-primary-hit with simple concatenation; the
+    #    primary hits. The graph helper response dictionaries contain
+    #    ranked node lists, which we convert before concatenation; the
     #    final packer will trim anyway.
     caller_hits: list[SearchHit] = []
     test_hits: list[SearchHit] = []
-    if include_callers and storage is not None:
+    notes: list[str] = []
+    graph_requested = include_callers or include_tests or include_rationale
+    graph_available = False
+    graph_status = "not_requested"
+    if graph_requested:
+        if storage is None:
+            graph_status = "unavailable"
+            notes.append("Graph extensions were requested without a storage handle.")
+        else:
+            from .graph import graph_loaded as _graph_loaded
+
+            try:
+                graph_available = _graph_loaded(storage, repo_id=repo_id)
+            except Exception as exc:
+                graph_status = "degraded"
+                notes.append(f"Graph availability check failed: {exc}")
+                log.warning("assemble.graph_check_failed", error=str(exc))
+            else:
+                graph_status = "available" if graph_available else "unavailable"
+                if not graph_available:
+                    notes.append("Graph extensions were skipped because the graph is unavailable.")
+
+    if include_callers and graph_available:
         from .graph import find_callers as _find_callers
 
         for hit in primary_unique:
@@ -369,20 +502,28 @@ def assemble_context(
                     "assemble.find_callers_failed",
                     symbol=hit.symbol, error=str(exc),
                 )
+                graph_status = "degraded"
+                notes.append(f"find_callers({hit.symbol!r}) failed: {exc}")
                 continue
-            # ``find_callers`` returns a dict (``{"symbol", "callers", "edges",
-            # "provenance", ...}``) — iterating it yields the keys (strings),
-            # so the ``isinstance`` filter has always evaluated to an empty
-            # list here. Mypy now surfaces the silent bug; preserved as-is
-            # while the typing pass lands. TODO: walk ``extras["callers"]``
-            # and convert graph nodes into SearchHits before extending.
-            normalised: list[SearchHit] = [
-                h for h in extras  # type: ignore[misc]
-                if isinstance(h, SearchHit)
+            entries, response_notes = _graph_entries(
+                extras, "callers", source="find_callers", symbol=hit.symbol,
+            )
+            if response_notes:
+                graph_status = "degraded"
+                notes.extend(response_notes)
+            normalised = [
+                converted
+                for rank, node in enumerate(entries)
+                if (converted := _graph_node_to_hit(node, rank)) is not None
             ]
+            if len(normalised) != len(entries):
+                graph_status = "degraded"
+                notes.append(
+                    f"find_callers({hit.symbol!r}) returned graph nodes without paths."
+                )
             caller_hits.extend(_dedupe_in_order(seen_chunk_ids, normalised))
 
-    if include_tests and storage is not None:
+    if include_tests and graph_available:
         from .graph import find_tests_for as _find_tests_for
 
         for hit in primary_unique:
@@ -398,12 +539,25 @@ def assemble_context(
                     "assemble.find_tests_failed",
                     symbol=hit.symbol, error=str(exc),
                 )
+                graph_status = "degraded"
+                notes.append(f"find_tests_for({hit.symbol!r}) failed: {exc}")
                 continue
-            # Same dict-vs-list silent bug as the callers branch above.
+            entries, response_notes = _graph_entries(
+                extras, "tests", source="find_tests_for", symbol=hit.symbol,
+            )
+            if response_notes:
+                graph_status = "degraded"
+                notes.extend(response_notes)
             normalised = [
-                h for h in extras  # type: ignore[misc]
-                if isinstance(h, SearchHit)
+                converted
+                for rank, node in enumerate(entries)
+                if (converted := _graph_node_to_hit(node, rank)) is not None
             ]
+            if len(normalised) != len(entries):
+                graph_status = "degraded"
+                notes.append(
+                    f"find_tests_for({hit.symbol!r}) returned graph nodes without paths."
+                )
             test_hits.extend(_dedupe_in_order(seen_chunk_ids, normalised))
 
     # WIN-219 — fold rationale nodes (docs / ADRs that explain each
@@ -411,7 +565,7 @@ def assemble_context(
     # budget pack pipeline; the rendering layer treats them like any
     # other section.
     rationale_hits: list[SearchHit] = []
-    if include_rationale and storage is not None:
+    if include_rationale and graph_available:
         from .graph import find_rationale as _find_rationale
 
         for hit in primary_unique:
@@ -427,15 +581,22 @@ def assemble_context(
                     "assemble.find_rationale_failed",
                     symbol=hit.symbol, error=str(exc),
                 )
+                graph_status = "degraded"
+                notes.append(f"find_rationale({hit.symbol!r}) failed: {exc}")
                 continue
-            entries = resp.get("rationale") or []
-            converted = [
+            entries, response_notes = _graph_entries(
+                resp, "rationale", source="find_rationale", symbol=hit.symbol,
+            )
+            if response_notes:
+                graph_status = "degraded"
+                notes.extend(response_notes)
+            rationale_converted = [
                 synth
                 for synth in (_rationale_node_to_hit(n) for n in entries)
                 if synth is not None
             ]
             rationale_hits.extend(
-                _dedupe_in_order(seen_chunk_ids, converted)
+                _dedupe_in_order(seen_chunk_ids, rationale_converted)
             )
 
     # Filter near-misses out of seen_chunk_ids' positive side too —
@@ -507,6 +668,8 @@ def assemble_context(
         budget_tokens=context_budget,
         spilled_count=spilled,
         truncated_oversize=truncated,
+        graph_status=graph_status,
+        notes=notes,
     )
 
 
