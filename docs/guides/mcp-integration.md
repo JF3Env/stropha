@@ -67,11 +67,11 @@ The active MCP `tools/list` response is the authoritative live inventory. The
 canonical full inventory and minimum profile for each tool are declared in
 `src/stropha/server_tool_manifest.py`. Profiles are nested:
 
-- **core (12 tools):** `capabilities`, `search_code`, `get_symbol`,
-  `list_repos`, `get_file_outline`, `bootstrap_environment`, `find_callers`,
-  `find_related`, `find_rationale`, `find_tests_for`, `assemble_context`, and
-  `index_health`.
-- **standard (37 tools):** core plus `observe_agent_state`,
+- **core (13 tools):** `capabilities`, `select_repository`, `search_code`,
+  `get_symbol`, `list_repos`, `get_file_outline`, `bootstrap_environment`,
+  `find_callers`, `find_related`, `find_rationale`, `find_tests_for`,
+  `assemble_context`, and `index_health`.
+- **standard (38 tools):** core plus `observe_agent_state`,
   `record_runtime_artifact`, `reset_dedup`, `pin_chunks`, `unpin_chunks`,
   `list_pins`, `smart_search_tool`, `expand_chunk`, `expand_chunks`,
   `plan_investigation`, `get_community`, `trace_feature`,
@@ -80,7 +80,7 @@ canonical full inventory and minimum profile for each tool are declared in
   `blast_radius_tool`, `assert_snippet_freshness_tool`, `test_impact_tool`,
   `audit_citations_tool`, `spec_consistency_tool`, `contract_tests_tool`, and
   `working_set_tool`.
-- **full (52 tools):** standard plus `remember`, `recall`, `forget`,
+- **full (53 tools):** standard plus `remember`, `recall`, `forget`,
   `cache_stats`, `cache_prune`, `scratchpad_read`, `scratchpad_write`,
   `scratchpad_append`, `scratchpad_clear`, `check_staleness`, `record_episode`,
   `recall_episodes`, `co_occurrence`, `report_bad_result`, and `get_config`.
@@ -94,6 +94,7 @@ These are the main public entry points:
 | Tool | Minimum profile | Best use |
 |---|---|---|
 | `capabilities` | core | Inspect the active profile and tool inventory |
+| `select_repository` | core | Bind the current session to an indexed repository |
 | `observe_agent_state` | standard | Replace or retrieve ephemeral editor state and runtime evidence |
 | `record_runtime_artifact` | standard | Attach a bounded diagnostic or failing-test artifact |
 | `search_code` | core | Conceptual or free-text code search |
@@ -132,6 +133,11 @@ and runtime artifacts. `record_runtime_artifact` accepts up to 16 immutable
 diagnostic, test-failure, stack-frame, or log-excerpt IDs over a session's
 lifetime, with a 32 KiB per-item and 128 KiB active-content limit. Expiry removes
 content but does not permit an ID to be rebound before reconnect.
+
+Call `select_repository` before repository-local tools. Standard and full hosts
+may instead use `observe_agent_state`; its validated repository updates the same
+session default. Explicit repository arguments take precedence. Sessions that do
+not select or report a repository retain the daemon target as a legacy fallback.
 
 Repository keys must match an indexed repository. Active, recent, changed,
 selection, and artifact source paths must be repository-relative and may not

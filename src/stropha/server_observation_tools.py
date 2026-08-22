@@ -175,6 +175,7 @@ def observe_agent_state_impl(
                     f"the current revision {current.revision}"
                 )
             response = _observation_response(app, snapshot=canonical, roots=roots)
+            app.selected_repository = canonical.repository
             app.agent_state = canonical
             return response
         return _observation_response(app)

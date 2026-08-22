@@ -85,6 +85,7 @@ class AppContext:
     recent_queries: deque[str] = field(default_factory=lambda: deque(maxlen=5))
     recent_trace_ids: deque[str] = field(default_factory=lambda: deque(maxlen=256))
     scratchpad: str = ""
+    selected_repository: str | None = None
     agent_state: AgentStateSnapshotV1 | None = None
     runtime_artifacts: dict[str, RuntimeArtifactV1] = field(default_factory=dict)
     runtime_artifact_ids_seen: set[str] = field(default_factory=set)
@@ -93,6 +94,7 @@ class AppContext:
     def clear_observations(self) -> None:
         """Discard host-provided state without touching durable session fields."""
         with self.observation_lock:
+            self.selected_repository = None
             self.agent_state = None
             self.runtime_artifacts.clear()
             self.runtime_artifact_ids_seen.clear()

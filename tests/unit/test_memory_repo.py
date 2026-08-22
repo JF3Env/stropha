@@ -22,6 +22,7 @@ from stropha.server_memory_tools import (
     recall_impl,
     record_episode_impl,
     remember_impl,
+    select_repository_impl,
 )
 
 REPO = "github.com/org/mimoria"
@@ -289,9 +290,9 @@ def test_check_staleness_no_repo() -> None:
 def test_resolve_repo_by_key() -> None:
     app = MagicMock()
     app.storage.lookup_repo_id.return_value = 5
-    app.storage._conn.execute.return_value.fetchone.return_value = {
-        "root_path": "/tmp/mimoria"
-    }
+    app.storage.list_repos.return_value = [
+        SimpleNamespace(normalized_key=REPO, local_path="/tmp/mimoria")
+    ]
 
     repo_id, local = _resolve_repo(app, REPO)
 
@@ -341,6 +342,78 @@ def test_resolve_repo_defaults_to_target() -> None:
 
     assert repo_id == 3
     assert local == Path("/tmp/target")
+
+
+def test_resolve_repo_defaults_to_observed_session_repository() -> None:
+    app = MagicMock()
+    app.agent_state = SimpleNamespace(repository=REPO)
+    app.config.target_repo = "/tmp/target"
+    app.storage.lookup_repo_id.return_value = 5
+    app.storage.list_repos.return_value = [
+        SimpleNamespace(normalized_key=REPO, local_path="/tmp/mimoria")
+    ]
+
+    with patch("stropha.ingest.git_meta.detect") as detect:
+        repo_id, local = _resolve_repo(app, None)
+
+    assert repo_id == 5
+    assert local == Path("/tmp/mimoria")
+    detect.assert_not_called()
+    app.storage.lookup_repo_id.assert_called_once_with(REPO)
+
+
+def test_resolve_repo_defaults_to_selected_session_repository() -> None:
+    app = MagicMock()
+    app.selected_repository = REPO
+    app.agent_state = None
+    app.config.target_repo = "/tmp/target"
+    app.storage.lookup_repo_id.return_value = 5
+    app.storage.list_repos.return_value = [
+        SimpleNamespace(normalized_key=REPO, local_path="/tmp/mimoria")
+    ]
+
+    with patch("stropha.ingest.git_meta.detect") as detect:
+        repo_id, local = _resolve_repo(app, None)
+
+    assert repo_id == 5
+    assert local == Path("/tmp/mimoria")
+    detect.assert_not_called()
+
+
+def test_resolve_repo_explicit_selector_wins_over_observed_repository() -> None:
+    app = MagicMock()
+    app.selected_repository = "github.com/org/selected"
+    app.agent_state = SimpleNamespace(repository="github.com/org/other")
+    app.storage.lookup_repo_id.return_value = 5
+    app.storage.list_repos.return_value = [
+        SimpleNamespace(normalized_key=REPO, local_path="/tmp/mimoria")
+    ]
+
+    repo_id, local = _resolve_repo(app, REPO)
+
+    assert repo_id == 5
+    assert local == Path("/tmp/mimoria")
+    app.storage.lookup_repo_id.assert_called_once_with(REPO)
+
+
+def test_select_repository_binds_canonical_session_scope() -> None:
+    app = MagicMock()
+    app.selected_repository = None
+    app.storage.lookup_repo_id.return_value = 5
+    repository = SimpleNamespace(
+        normalized_key=REPO,
+        url="https://github.com/org/mimoria.git",
+        local_path="/tmp/mimoria",
+        default_branch="main",
+        head_commit="abc123",
+    )
+    app.storage.list_repos.return_value = [repository]
+
+    selected = select_repository_impl(REPO, app)
+
+    assert app.selected_repository == REPO
+    assert selected.normalized_key == REPO
+    assert selected.local_path == "/tmp/mimoria"
 
 
 def test_resolve_repo_no_target() -> None:

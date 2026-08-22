@@ -56,6 +56,7 @@ _FULL_COMPATIBILITY_TOOLS = {
     "scratchpad_read",
     "scratchpad_write",
     "search_code",
+    "select_repository",
     "smart_search_tool",
     "spec_consistency_tool",
     "suggest_next_tool_mcp",
@@ -79,6 +80,7 @@ _CORE_TOOLS = {
     "index_health",
     "list_repos",
     "search_code",
+    "select_repository",
 }
 
 _STANDARD_ADDITIONAL_TOOLS = {
@@ -111,6 +113,7 @@ _STANDARD_ADDITIONAL_TOOLS = {
 
 _NEW_STRUCTURED_TOOLS = {
     "observe_agent_state": "AgentObservationResponse",
+    "select_repository": "RepoRef",
     "record_runtime_artifact": "RuntimeArtifactResponse",
     "find_callers": "FindCallersResponse",
     "find_related": "FindRelatedResponse",
@@ -125,6 +128,7 @@ _NEW_STRUCTURED_TOOLS = {
 
 _STRUCTURED_REQUIRED_KEYS = {
     "observe_agent_state": {"snapshot", "runtime_artifacts"},
+    "select_repository": {"normalized_key"},
     "record_runtime_artifact": {
         "artifact",
         "stored_artifacts",

@@ -7,7 +7,7 @@ MCP ``bootstrap_environment`` tool wrapper.
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -228,6 +228,25 @@ class TestMCPBootstrapEnvironment:
         result = bootstrap_environment(ctx=_ctx(tmp_path))
         assert result.repo_path.endswith(str(tmp_path.name)) or str(tmp_path) in result.repo_path
         assert any(s.language == "python" for s in result.stacks)
+
+    def test_session_repository_wins_over_configured_target(self, tmp_path: Path) -> None:
+        from stropha.server import bootstrap_environment
+
+        target = tmp_path / "target"
+        selected = tmp_path / "selected"
+        target.mkdir()
+        selected.mkdir()
+        (target / "go.mod").write_text("module target\n")
+        (selected / "pyproject.toml").write_text("[project]\nname='selected'")
+
+        with patch(
+            "stropha.server_memory_tools._resolve_repo",
+            return_value=(7, selected),
+        ):
+            result = bootstrap_environment(ctx=_ctx(target))
+
+        assert any(stack.language == "python" for stack in result.stacks)
+        assert all(stack.language != "go" for stack in result.stacks)
 
     def test_no_target_repo_uses_cwd(
         self, tmp_path: Path, monkeypatch,

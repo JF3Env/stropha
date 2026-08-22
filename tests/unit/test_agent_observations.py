@@ -95,6 +95,7 @@ def test_agent_state_is_strict_and_replaces_only_with_higher_revision(tmp_path) 
     assert first.snapshot is not None
     assert first.snapshot.active_file == "src/current.py"
     assert first.snapshot.recent_files == ("src/recent.py",)
+    assert app.selected_repository == _REPOSITORY
 
     second = observe_agent_state_impl(
         _snapshot(

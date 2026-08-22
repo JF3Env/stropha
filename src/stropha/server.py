@@ -38,7 +38,7 @@ from .config import MCP_PROFILES, Config, get_config, get_config_info, reset_con
 from .errors import ConfigError, EmbeddingDimensionMismatchError, StrophaError
 from .logging import configure_logging, get_logger
 from .meta.decorator import traced
-from .models import AgentStateSnapshotV1, RuntimeArtifactV1
+from .models import AgentStateSnapshotV1, RepoRef, RuntimeArtifactV1
 from .pipeline import build_stages, load_pipeline_config
 from .retrieval.graph import (
     find_callers as graph_find_callers,
@@ -116,6 +116,7 @@ from .server_memory_tools import (
     scratchpad_clear_impl,
     scratchpad_read_impl,
     scratchpad_write_impl,
+    select_repository_impl,
 )
 from .server_memory_tools import (
     current_head_commit as server_current_head_commit,
@@ -247,10 +248,12 @@ TOOL SELECTION GUIDE (use the most specific tool):
 
 WORKFLOW TIPS:
 1. Call capabilities to inspect the active static tool profile
-2. Start with search_code or get_symbol to find entry points
-3. Use get_file_outline before reading a full file — saves context tokens
-4. Use find_callers/find_related to understand dependencies
-5. Results include repo.local_path + rel_path for direct file access
+2. Call select_repository with the current indexed repository before repository-local tools
+3. Standard/full hosts may instead report the repository through observe_agent_state
+4. Start with search_code or get_symbol to find entry points
+5. Use get_file_outline before reading a full file — saves context tokens
+6. Use find_callers/find_related to understand dependencies
+7. Results include repo.local_path + rel_path for direct file access
 
 The find_* and trace_* tools require a graphify graph in `graphify-out/graph.json`.
 When the graph is missing they return {"graph_loaded": false, ...} —
@@ -726,13 +729,27 @@ def capabilities() -> CapabilitiesResponse:
 
 
 @mcp.tool(
+    title="Select session repository",
+    description=(
+        "Bind this MCP session's default repository using an exact indexed normalized "
+        "key or absolute local path. Call once at session start before repository-local "
+        "tools. Explicit per-call repository selectors still win, and reconnecting clears "
+        "the selection. Available in every profile."
+    ),
+)
+def select_repository(repository: str, *, ctx: Context) -> RepoRef:
+    return select_repository_impl(repository, _ctx(ctx))
+
+
+@mcp.tool(
     title="Observe agent state",
     description=(
         "Attach or retrieve the current host editor state for this MCP session. "
         "Pass a complete AgentStateSnapshotV1 to replace the prior snapshot with "
         "a higher revision, or omit snapshot to read back the current snapshot and "
         "runtime artifacts. Paths must stay within an indexed repository. State is "
-        "bounded, never traced or persisted, and must be resent after reconnect."
+        "bounded, never traced or persisted, and must be resent after reconnect. The "
+        "reported repository becomes the default scope for repository-local tools."
     ),
 )
 def observe_agent_state(
@@ -1267,7 +1284,7 @@ def remember(
 
     ``repo`` (normalized key like ``github.com/org/name`` or a local path)
     anchors the entry to a specific repo in a multi-repo index; defaults to
-    the server's configured target repo.
+    the current session repository, then the daemon target for legacy clients.
     """
     return remember_impl(
         kind,
@@ -1449,7 +1466,7 @@ def plan_investigation(
 )
 @traced("cache_stats")
 def cache_stats(*, ctx: Context) -> CrossSessionCacheStats:
-    """Inspect the cross-session cache for the configured target repo."""
+    """Inspect the cross-session cache for the current repository."""
     return cache_stats_impl(
         _ctx(ctx),
         resolve_target_repo_id_fn=_resolve_target_repo_id,
@@ -1611,8 +1628,7 @@ def check_staleness(
 )
 @traced("bootstrap_environment")
 def bootstrap_environment(*, ctx: Context) -> BootstrapResponse:
-    """Detect language / build / test / entry-point hints for the
-    configured ``target_repo``."""
+    """Detect language / build / test / entry-point hints for this repo."""
     return bootstrap_environment_impl(_ctx(ctx))
 
 
@@ -2144,7 +2160,7 @@ def assemble_context(
         diff_scope: WIN-211 — when True, filter the primary results
             to only chunks in files touched by the current git diff.
             Use for PR-review workflows where the global top-K is too
-            noisy. Diff is computed against the configured target_repo.
+            noisy. Diff is computed against the selected repository.
         diff_ref_a: starting git ref. None = working tree diff.
         diff_ref_b: ending git ref. None + diff_ref_a set = HEAD.
         include_other_repos: Search every indexed repository. False scopes
@@ -2173,15 +2189,10 @@ def assemble_context(
             total_tokens=0,
             budget_tokens=context_budget,
         )
-    selected_repo_path = None
-    if include_other_repos:
-        repo_id = None
-    elif repo_selector:
-        from .server_memory_tools import _resolve_repo
+    from .server_memory_tools import _resolve_repo
 
-        repo_id, selected_repo_path = _resolve_repo(app, repo_selector, log=log)
-    else:
-        repo_id = _resolve_target_repo_id(app)
+    resolved_repo_id, selected_repo_path = _resolve_repo(app, repo_selector, log=log)
+    repo_id = None if include_other_repos else resolved_repo_id
     if repo_id is None and not include_other_repos:
         return AssembleContextResponse(
             task=task,
@@ -2190,11 +2201,7 @@ def assemble_context(
             total_tokens=0,
             budget_tokens=context_budget,
         )
-    # When diff_scope is requested, the target repo for the diff is
-    # the configured ``target_repo`` so the agent doesn't have to
-    # remember the path. The library function falls back gracefully
-    # when the repo is missing or git fails.
-    diff_repo = (selected_repo_path or app.config.target_repo) if diff_scope else None
+    diff_repo = selected_repo_path if diff_scope else None
     result = _assemble(
         task,
         search_engine=app.search_engine,
@@ -3264,7 +3271,7 @@ def _default_spec_loader(repo_root: str) -> dict[str, str]:
         "Helps avoid silently violating an undocumented contract. "
         "Severity: HIGH (MUST/NEVER) / MEDIUM (should/avoid) / "
         "LOW (note). This tool is repository-local and reads specs only "
-        "from the configured current target repository."
+        "from the current session repository."
     ),
 )
 @traced("spec_consistency")
@@ -3276,7 +3283,9 @@ def spec_consistency_tool(
 ) -> SpecConsistencyResponse:
     """Check the changes against documented invariants."""
     app = _ctx(ctx)
-    target_repo = app.config.target_repo
+    from .server_memory_tools import _resolve_repo
+
+    _, target_repo = _resolve_repo(app, None, log=log)
     if target_repo is None:
         return SpecConsistencyResponse(
             invariants_found=0,

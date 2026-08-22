@@ -51,15 +51,15 @@ unchanged.
 
 | Profile | Contract |
 |---|---|
-| `core` | Small retrieval and orientation surface; 12 tools |
-| `standard` | `core` plus observations, session ergonomics, investigations, and change intelligence; 37 tools |
-| `full` | Complete compatibility surface; 52 tools including `capabilities` |
+| `core` | Small retrieval and orientation surface; 13 tools |
+| `standard` | `core` plus observations, session ergonomics, investigations, and change intelligence; 38 tools |
+| `full` | Complete compatibility surface; 53 tools including `capabilities` |
 
 `core` contains:
 
-`capabilities`, `search_code`, `get_symbol`, `list_repos`, `get_file_outline`,
-`bootstrap_environment`, `find_callers`, `find_related`, `find_rationale`,
-`find_tests_for`, `assemble_context`, and `index_health`.
+`capabilities`, `select_repository`, `search_code`, `get_symbol`, `list_repos`,
+`get_file_outline`, `bootstrap_environment`, `find_callers`, `find_related`,
+`find_rationale`, `find_tests_for`, `assemble_context`, and `index_health`.
 
 `standard` adds:
 
@@ -111,6 +111,17 @@ have a revision greater than the current revision and replaces the prior
 snapshot. The contract carries the canonical repository key, active and recent
 files, optional line selection, changed paths, referenced runtime artifact IDs,
 and an offset-aware observation timestamp.
+
+The validated snapshot repository becomes the default scope for repository-local
+tools in that MCP session. An explicit tool repository selector still wins. A
+session without a selection or snapshot retains the daemon target as a
+compatibility fallback; session scope never changes the daemon-wide watcher or
+pipeline target.
+
+`select_repository` provides the same session-local default with a compact schema
+available in `core`. It accepts an exact indexed normalized key or absolute local
+path and is cleared on reconnect. Standard and full hosts may use the richer
+snapshot instead; its repository updates the same selection.
 
 `record_runtime_artifact` accepts diagnostics, test failures, stack frames, and
 log excerpts as either `text/plain` or `application/json`. Every artifact has an

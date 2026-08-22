@@ -799,7 +799,7 @@ divergirem.
 
 | Perfil | Escopo |
 |---|---|
-| `core` | 12 tools de orientação, busca, símbolos, grafo, contexto e saúde do índice |
+| `core` | 13 tools de seleção de repositório, orientação, busca, símbolos, grafo, contexto e saúde do índice |
 | `standard` | `core` mais observações efêmeras, ergonomia de sessão, investigações compostas e inteligência de mudança |
 | `full` | `standard` mais memória, scratchpad, episódios, feedback, cache e diagnóstico de runtime |
 
