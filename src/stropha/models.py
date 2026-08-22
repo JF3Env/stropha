@@ -4,12 +4,35 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal, Self
 
-from pydantic import BaseModel, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
 SOURCE_SNAPSHOT_VERSION = "1"
 SOURCE_SNAPSHOT_META_PREFIX = "source_snapshot_version:"
+
+MAX_AGENT_PATH_CHARS = 1024
+MAX_AGENT_RECENT_FILES = 20
+MAX_AGENT_CHANGED_PATHS = 128
+MAX_RUNTIME_ARTIFACTS = 16
+MAX_RUNTIME_ARTIFACT_ID_CHARS = 128
+MAX_RUNTIME_ARTIFACT_CONTENT_BYTES = 32 * 1024
+MAX_RUNTIME_ARTIFACT_TOTAL_BYTES = 128 * 1024
+MAX_RUNTIME_SOURCE_LOCATIONS = 16
+
+_RUNTIME_ARTIFACT_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+_AgentPath = Annotated[
+    str,
+    Field(min_length=1, max_length=MAX_AGENT_PATH_CHARS),
+]
+_RuntimeArtifactId = Annotated[
+    str,
+    Field(
+        min_length=1,
+        max_length=MAX_RUNTIME_ARTIFACT_ID_CHARS,
+        pattern=_RUNTIME_ARTIFACT_ID_PATTERN,
+    ),
+]
 
 
 def source_snapshot_meta_key(repo_id: int) -> str:
@@ -99,6 +122,76 @@ class SourceEvidenceRef(BaseModel):
     )
     indexed_file_sha256: str | None = None
     freshness: Literal["fresh", "stale", "missing", "unknown"]
+
+
+class _StrictObservationModel(BaseModel):
+    """Immutable, closed model for session-local host observations."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class AgentSelectionV1(_StrictObservationModel):
+    """Repository-relative line selection reported by the host editor."""
+
+    path: _AgentPath
+    start_line: int = Field(ge=1, strict=True)
+    end_line: int = Field(ge=1, strict=True)
+
+    @model_validator(mode="after")
+    def _validate_range(self) -> Self:
+        if self.end_line < self.start_line:
+            raise ValueError("selection end_line must be greater than or equal to start_line")
+        return self
+
+
+class AgentStateSnapshotV1(_StrictObservationModel):
+    """Complete replacement snapshot of one host agent's current editor state."""
+
+    revision: int = Field(ge=1, strict=True)
+    repository: str = Field(min_length=1, max_length=512)
+    active_file: _AgentPath | None
+    recent_files: tuple[_AgentPath, ...] = Field(max_length=MAX_AGENT_RECENT_FILES)
+    selection: AgentSelectionV1 | None = None
+    changed_paths: tuple[_AgentPath, ...] = Field(max_length=MAX_AGENT_CHANGED_PATHS)
+    runtime_artifact_ids: tuple[_RuntimeArtifactId, ...] = Field(
+        max_length=MAX_RUNTIME_ARTIFACTS
+    )
+    observed_at: AwareDatetime
+
+
+class RuntimeSourceLocationV1(_StrictObservationModel):
+    """Repository-relative source range associated with a runtime artifact."""
+
+    repository: str = Field(min_length=1, max_length=512)
+    path: _AgentPath
+    start_line: int = Field(ge=1, strict=True)
+    end_line: int = Field(ge=1, strict=True)
+
+    @model_validator(mode="after")
+    def _validate_range(self) -> Self:
+        if self.end_line < self.start_line:
+            raise ValueError("source end_line must be greater than or equal to start_line")
+        return self
+
+
+class RuntimeArtifactV1(_StrictObservationModel):
+    """Bounded, session-local runtime evidence reported by an MCP host."""
+
+    artifact_id: _RuntimeArtifactId
+    kind: Literal["diagnostic", "test_failure", "stack_frame", "log_excerpt"]
+    media_type: Literal["text/plain", "application/json"]
+    producer: str = Field(min_length=1, max_length=128)
+    trust_class: Literal["host_reported"] = "host_reported"
+    content: str = Field(
+        min_length=1,
+        max_length=MAX_RUNTIME_ARTIFACT_CONTENT_BYTES,
+        description="Runtime-limited to 32768 UTF-8 bytes.",
+    )
+    source_locations: tuple[RuntimeSourceLocationV1, ...] = Field(
+        max_length=MAX_RUNTIME_SOURCE_LOCATIONS
+    )
+    redaction_status: Literal["unknown", "redacted", "not_required"]
+    expires_at: AwareDatetime
 
 
 class Chunk(BaseModel):

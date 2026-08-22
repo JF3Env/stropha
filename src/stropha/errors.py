@@ -43,6 +43,10 @@ class RetrievalError(StrophaError):
     """Failure during query execution."""
 
 
+class ObservationError(StrophaError):
+    """Invalid or over-quota ephemeral agent observation."""
+
+
 class PipelineError(StrophaError):
     """Failure assembling or running the pipeline."""
 

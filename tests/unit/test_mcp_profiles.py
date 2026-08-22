@@ -41,11 +41,13 @@ _FULL_COMPATIBILITY_TOOLS = {
     "list_pins",
     "list_repos",
     "list_task_recipes",
+    "observe_agent_state",
     "pin_chunks",
     "plan_investigation",
     "recall",
     "recall_episodes",
     "record_episode",
+    "record_runtime_artifact",
     "remember",
     "report_bad_result",
     "reset_dedup",
@@ -92,9 +94,11 @@ _STANDARD_ADDITIONAL_TOOLS = {
     "get_community",
     "list_pins",
     "list_task_recipes",
+    "observe_agent_state",
     "pin_chunks",
     "plan_investigation",
     "reset_dedup",
+    "record_runtime_artifact",
     "smart_search_tool",
     "spec_consistency_tool",
     "suggest_next_tool_mcp",
@@ -106,6 +110,8 @@ _STANDARD_ADDITIONAL_TOOLS = {
 }
 
 _NEW_STRUCTURED_TOOLS = {
+    "observe_agent_state": "AgentObservationResponse",
+    "record_runtime_artifact": "RuntimeArtifactResponse",
     "find_callers": "FindCallersResponse",
     "find_related": "FindRelatedResponse",
     "get_community": "CommunityResponse",
@@ -118,6 +124,12 @@ _NEW_STRUCTURED_TOOLS = {
 }
 
 _STRUCTURED_REQUIRED_KEYS = {
+    "observe_agent_state": {"snapshot", "runtime_artifacts"},
+    "record_runtime_artifact": {
+        "artifact",
+        "stored_artifacts",
+        "stored_content_bytes",
+    },
     "find_callers": {"symbol"},
     "find_related": {"symbol"},
     "get_community": {"query"},

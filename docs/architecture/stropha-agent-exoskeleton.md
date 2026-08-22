@@ -1,7 +1,7 @@
 # Stropha Agent Exoskeleton
 
-> **Status:** Phases 0-2 implemented. Dynamic agent observations and runtime
-> artifacts remain deferred to Phase 3.
+> **Status:** Phases 0-3 implemented. Agent observations and runtime artifacts
+> are bounded, ephemeral, and isolated by MCP session.
 
 ## Purpose
 
@@ -11,8 +11,8 @@ and lets clients choose a compact static MCP surface without creating a
 different server process per client.
 
 It does not generate code, ingest unsaved editor buffers, or accept arbitrary
-per-session tool registration. Those host-facing observation APIs remain a
-separate future layer.
+per-session tool registration. Hosts may report editor metadata and runtime
+evidence, but Stropha never becomes the agent runtime.
 
 ## Source Evidence
 
@@ -52,8 +52,8 @@ unchanged.
 | Profile | Contract |
 |---|---|
 | `core` | Small retrieval and orientation surface; 12 tools |
-| `standard` | `core` plus session ergonomics, investigations, and change intelligence; 35 tools |
-| `full` | Complete compatibility surface; 50 tools including `capabilities` |
+| `standard` | `core` plus observations, session ergonomics, investigations, and change intelligence; 37 tools |
+| `full` | Complete compatibility surface; 52 tools including `capabilities` |
 
 `core` contains:
 
@@ -63,13 +63,14 @@ unchanged.
 
 `standard` adds:
 
-`reset_dedup`, `pin_chunks`, `unpin_chunks`, `list_pins`, `smart_search_tool`,
-`expand_chunk`, `expand_chunks`, `plan_investigation`, `get_community`,
-`trace_feature`, `execute_investigation`, `suggest_next_tool_mcp`,
-`list_task_recipes`, `apply_task_recipe`, `verify_claim_tool`,
-`check_symbols_tool`, `blast_radius_tool`, `assert_snippet_freshness_tool`,
-`test_impact_tool`, `audit_citations_tool`, `spec_consistency_tool`,
-`contract_tests_tool`, and `working_set_tool`.
+`observe_agent_state`, `record_runtime_artifact`, `reset_dedup`, `pin_chunks`,
+`unpin_chunks`, `list_pins`, `smart_search_tool`, `expand_chunk`,
+`expand_chunks`, `plan_investigation`, `get_community`, `trace_feature`,
+`execute_investigation`, `suggest_next_tool_mcp`, `list_task_recipes`,
+`apply_task_recipe`, `verify_claim_tool`, `check_symbols_tool`,
+`blast_radius_tool`, `assert_snippet_freshness_tool`, `test_impact_tool`,
+`audit_citations_tool`, `spec_consistency_tool`, `contract_tests_tool`, and
+`working_set_tool`.
 
 `full` adds:
 
@@ -102,6 +103,33 @@ environment, client, or session override. A dashboard patch can save a new
 value, but reports `restart_required: true` and leaves the active surface
 unchanged until `bin/stropha-mcp-ensure` is restarted.
 
+## Ephemeral Agent Observations
+
+`observe_agent_state` accepts a complete `AgentStateSnapshotV1` or, with no
+snapshot argument, returns the current session view. Every accepted update must
+have a revision greater than the current revision and replaces the prior
+snapshot. The contract carries the canonical repository key, active and recent
+files, optional line selection, changed paths, referenced runtime artifact IDs,
+and an offset-aware observation timestamp.
+
+`record_runtime_artifact` accepts diagnostics, test failures, stack frames, and
+log excerpts as either `text/plain` or `application/json`. Every artifact has an
+immutable ID, a host producer, server-constrained `host_reported` trust, source
+locations, redaction status, and an offset-aware expiry. A session may hold at
+most 32 KiB of UTF-8 content per artifact and 128 KiB total, and may accept at
+most 16 unique artifact IDs over its lifetime. Expired artifact content is
+removed on the next observation or record call, but its ID cannot be rebound in
+that session.
+
+All paths are canonical repository-relative paths resolved against an indexed
+local repository root. Absolute paths, parent traversal, inaccessible roots,
+unknown repositories, and symlink escapes are rejected. Snapshots and artifacts
+are revalidated on readback so a path cannot become trusted after a symlink
+change. They live only in `AppContext`; they are not written to session metadata,
+memory, the index, artifact storage, or traces. Session shutdown clears both
+collections and artifact-ID tombstones, so a reconnect starts empty and the host
+must resend its state.
+
 ## Phase Boundary
 
 Phases delivered so far:
@@ -109,17 +137,17 @@ Phases delivered so far:
 - **Phase 0:** baseline hardening and green repository contracts.
 - **Phase 1:** trustworthy saved-source snapshots.
 - **Phase 2:** canonical compact MCP profiles and structured tool contracts.
+- **Phase 3:** ephemeral agent observations and bounded runtime artifacts.
 
-Phase 3 may add bounded, session-local agent observations and runtime artifacts.
-It must not put observation content in persistent session metadata or traces,
-and it must not weaken the static daemon profile contract.
+Phase 4 may add instruction resolution and change intelligence. Unsaved-buffer
+overlays remain deferred to Phase 8.
 
 ## Non-Negotiable Invariants
 
 - Streamable HTTP is the only MCP transport.
 - One daemon owns one warm pipeline/storage runtime.
-- Heavy adapters are shared; dedup, pins, scratchpad, recent queries, and traces
-  remain session-local.
+- Heavy adapters are shared; dedup, pins, scratchpad, recent queries, traces,
+  agent observations, and runtime artifacts remain session-local.
 - Graph-gated tools explicitly report unavailable graph data.
 - Source and index writes remain adapter-owned and forward-only.
 - Local-only operation remains the default.

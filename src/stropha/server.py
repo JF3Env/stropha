@@ -38,6 +38,7 @@ from .config import MCP_PROFILES, Config, get_config, get_config_info, reset_con
 from .errors import ConfigError, EmbeddingDimensionMismatchError, StrophaError
 from .logging import configure_logging, get_logger
 from .meta.decorator import traced
+from .models import AgentStateSnapshotV1, RuntimeArtifactV1
 from .pipeline import build_stages, load_pipeline_config
 from .retrieval.graph import (
     find_callers as graph_find_callers,
@@ -123,6 +124,7 @@ from .server_memory_tools import (
     resolve_target_repo_id as server_resolve_target_repo_id,
 )
 from .server_models import (
+    AgentObservationResponse,
     BadResultResponse,
     BlastRadiusResponse,
     BootstrapResponse,
@@ -156,6 +158,7 @@ from .server_models import (
     RepoInfo,
     RepoSummary,
     ResetDedupResponse,
+    RuntimeArtifactResponse,
     RuntimeConfigResponse,
     ScratchpadResponse,
     SearchResponse,
@@ -167,6 +170,10 @@ from .server_models import (
     TestImpactResponse,
     TraceFeatureResponse,
     VerdictResponse,
+)
+from .server_observation_tools import (
+    observe_agent_state_impl,
+    record_runtime_artifact_impl,
 )
 from .server_runtime import (
     AppContext,
@@ -716,6 +723,42 @@ def capabilities() -> CapabilitiesResponse:
         tool_count=len(tools),
         tools=tools,
     )
+
+
+@mcp.tool(
+    title="Observe agent state",
+    description=(
+        "Attach or retrieve the current host editor state for this MCP session. "
+        "Pass a complete AgentStateSnapshotV1 to replace the prior snapshot with "
+        "a higher revision, or omit snapshot to read back the current snapshot and "
+        "runtime artifacts. Paths must stay within an indexed repository. State is "
+        "bounded, never traced or persisted, and must be resent after reconnect."
+    ),
+)
+def observe_agent_state(
+    snapshot: AgentStateSnapshotV1 | None = None,
+    *,
+    ctx: Context,
+) -> AgentObservationResponse:
+    return observe_agent_state_impl(snapshot, _ctx(ctx))
+
+
+@mcp.tool(
+    title="Record runtime artifact",
+    description=(
+        "Record a bounded diagnostic, test failure, stack frame, or log excerpt in "
+        "this MCP session. Artifact IDs are immutable per session; content is capped "
+        "at 32 KiB each and 128 KiB total across 16 unique IDs per session. Source paths "
+        "must stay within indexed repositories. Artifacts expire in-session and are "
+        "never traced or persisted."
+    ),
+)
+def record_runtime_artifact(
+    artifact: RuntimeArtifactV1,
+    *,
+    ctx: Context,
+) -> RuntimeArtifactResponse:
+    return record_runtime_artifact_impl(artifact, _ctx(ctx))
 
 
 @mcp.tool(

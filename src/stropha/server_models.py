@@ -5,7 +5,7 @@ from typing import Any, NotRequired, TypedDict
 from pydantic import BaseModel, Field
 
 from .config.models import McpProfile
-from .models import SourceEvidenceRef
+from .models import AgentStateSnapshotV1, RuntimeArtifactV1, SourceEvidenceRef
 
 
 class CapabilitiesResponse(BaseModel):
@@ -16,6 +16,21 @@ class CapabilitiesResponse(BaseModel):
     tool_count: int
     tools: list[str]
     profile_is_static: bool = True
+
+
+class AgentObservationResponse(BaseModel):
+    """Current ephemeral host state and artifacts for this MCP session."""
+
+    snapshot: AgentStateSnapshotV1 | None
+    runtime_artifacts: list[RuntimeArtifactV1]
+
+
+class RuntimeArtifactResponse(BaseModel):
+    """Confirmation and current quota usage for one recorded artifact."""
+
+    artifact: RuntimeArtifactV1
+    stored_artifacts: int
+    stored_content_bytes: int
 
 
 class FindCallersResponse(TypedDict):

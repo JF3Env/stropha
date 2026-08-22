@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
+from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from starlette.testclient import TestClient
@@ -77,6 +80,18 @@ def _call_tool(
 def _read_sse_json(response) -> dict:
     payload = response.text.split("data: ", 1)[1].split("\r\n\r\n", 1)[0]
     return json.loads(payload)
+
+
+def _delete_session(client: TestClient, session_id: str):
+    return client.delete(
+        "/mcp",
+        headers={
+            "host": "127.0.0.1",
+            "accept": "application/json, text/event-stream",
+            "mcp-protocol-version": "2025-11-25",
+            "mcp-session-id": session_id,
+        },
+    )
 
 
 def test_streamable_http_recovers_from_stale_session_id_after_restart() -> None:
@@ -168,6 +183,134 @@ def test_streamable_http_recovers_from_stale_session_id_after_restart() -> None:
             # requests in app2 reuse its warm runtime instead of rebuilding.
             assert build_stages.call_count == 2
             assert fake_storage.close.call_count == 2
+        finally:
+            mcp._session_manager = None
+            mcp.set_tool_profile(original_profile)
+            mcp.settings.transport_security = original_security
+
+
+def test_agent_observations_are_session_local_and_cleared_on_reconnect(tmp_path) -> None:
+    from stropha.server import mcp
+
+    repository = "local:protocol-observations"
+    fake_storage = MagicMock()
+    fake_storage.list_sessions.return_value = []
+    fake_storage.list_repos.return_value = [
+        SimpleNamespace(normalized_key=repository, local_path=str(tmp_path))
+    ]
+    fake_built = MagicMock(
+        storage=fake_storage,
+        embedder=MagicMock(),
+        retrieval=MagicMock(),
+    )
+    config = SimpleNamespace(
+        log_level="INFO",
+        target_repo=tmp_path,
+        mcp_watch=False,
+        mcp_watch_interval=1.0,
+        mcp_watch_debounce=1.0,
+        resolve_index_path=lambda: tmp_path / "index.db",
+    )
+    traces_dir = tmp_path / "traces"
+    canary = "SESSION-ONLY-FAILURE-CANARY"
+    observed_at = datetime.now(UTC).isoformat()
+    expires_at = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
+
+    with (
+        patch("stropha.server.get_config", return_value=config),
+        patch("stropha.server.load_pipeline_config", return_value={}),
+        patch("stropha.server.build_stages", return_value=fake_built),
+        patch.dict(os.environ, {"STROPHA_TRACES_DIR": str(traces_dir)}),
+    ):
+        original_security = mcp.settings.transport_security
+        original_profile = mcp.tool_profile
+        mcp._session_manager = None
+        mcp.set_tool_profile("standard")
+        mcp.settings.transport_security = None
+        try:
+            app = mcp.streamable_http_app()
+            with TestClient(app) as client:
+                init_first = _initialize(client)
+                init_second = _initialize(client)
+                first_session = init_first.headers["mcp-session-id"]
+                second_session = init_second.headers["mcp-session-id"]
+
+                state = _call_tool(
+                    client,
+                    first_session,
+                    "observe_agent_state",
+                    "observe-1",
+                    {
+                        "snapshot": {
+                            "revision": 1,
+                            "repository": repository,
+                            "active_file": "src/current.py",
+                            "recent_files": [],
+                            "selection": None,
+                            "changed_paths": ["src/current.py"],
+                            "runtime_artifact_ids": ["pytest-failure"],
+                            "observed_at": observed_at,
+                        }
+                    },
+                )
+                artifact = _call_tool(
+                    client,
+                    first_session,
+                    "record_runtime_artifact",
+                    "artifact-1",
+                    {
+                        "artifact": {
+                            "artifact_id": "pytest-failure",
+                            "kind": "test_failure",
+                            "media_type": "text/plain",
+                            "producer": "pytest",
+                            "content": canary,
+                            "source_locations": [
+                                {
+                                    "repository": repository,
+                                    "path": "tests/test_current.py",
+                                    "start_line": 5,
+                                    "end_line": 7,
+                                }
+                            ],
+                            "redaction_status": "not_required",
+                            "expires_at": expires_at,
+                        }
+                    },
+                )
+                first_view = _call_tool(
+                    client, first_session, "observe_agent_state", "observe-2"
+                )
+                second_view = _call_tool(
+                    client, second_session, "observe_agent_state", "observe-3"
+                )
+
+                assert _read_sse_json(state)["result"].get("isError", False) is False
+                assert _read_sse_json(artifact)["result"].get("isError", False) is False
+                first_structured = _read_sse_json(first_view)["result"]["structuredContent"]
+                assert first_structured["snapshot"]["active_file"] == "src/current.py"
+                assert first_structured["runtime_artifacts"][0]["content"] == canary
+                second_structured = _read_sse_json(second_view)["result"]["structuredContent"]
+                assert second_structured == {"snapshot": None, "runtime_artifacts": []}
+
+                assert _delete_session(client, first_session).status_code == 200
+                reconnected = _initialize(client)
+                reconnected_view = _call_tool(
+                    client,
+                    reconnected.headers["mcp-session-id"],
+                    "observe_agent_state",
+                    "observe-4",
+                )
+                assert _read_sse_json(reconnected_view)["result"]["structuredContent"] == {
+                    "snapshot": None,
+                    "runtime_artifacts": [],
+                }
+
+            trace_text = "".join(
+                path.read_text(encoding="utf-8") for path in traces_dir.glob("*.jsonl")
+            )
+            assert canary not in trace_text
+            assert canary not in repr(fake_storage.upsert_session.call_args_list)
         finally:
             mcp._session_manager = None
             mcp.set_tool_profile(original_profile)

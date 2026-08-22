@@ -800,7 +800,7 @@ divergirem.
 | Perfil | Escopo |
 |---|---|
 | `core` | 12 tools de orientação, busca, símbolos, grafo, contexto e saúde do índice |
-| `standard` | `core` mais ergonomia de sessão, investigações compostas e inteligência de mudança |
+| `standard` | `core` mais observações efêmeras, ergonomia de sessão, investigações compostas e inteligência de mudança |
 | `full` | `standard` mais memória, scratchpad, episódios, feedback, cache e diagnóstico de runtime |
 
 Os perfis são aninhados (`core` ⊂ `standard` ⊂ `full`) e `full` é o default de
@@ -877,9 +877,13 @@ canônico para preservar `repo.local_path` e essa mesma evidência de fonte.
 **Lifecycle do runtime**: o primeiro MCP session inicializa os adapters pesados
 sob lock assíncrono e os associa ao `FastMCP` process-wide. Sessions seguintes
 reutilizam esse runtime, inclusive no recovery de session id obsoleto. Apenas
-estado mutável de cliente (`seen_chunk_ids`, pins, scratchpad, queries recentes
-e trace recorder) vive no `AppContext` por session. No shutdown ASGI, o session
-manager encerra as tasks antes de parar watcher e fechar storage.
+estado mutável de cliente (`seen_chunk_ids`, pins, scratchpad, queries recentes,
+trace recorder, estado observado do agente e artifacts de runtime) vive no
+`AppContext` por session. Observações e artifacts têm quotas fixas, paths
+validados contra a raiz local do repositório tanto na entrada quanto na leitura,
+e são limpos ao encerrar a session; IDs expirados não podem ser reutilizados na
+mesma session. Eles nunca entram em metadata persistente nem traces. No shutdown
+ASGI, o session manager encerra as tasks antes de parar watcher e fechar storage.
 
 O perfil MCP é selecionado de `~/.stropha/config.yaml` antes de iniciar o
 transport HTTP e permanece fixo por toda a vida do daemon. Não existem

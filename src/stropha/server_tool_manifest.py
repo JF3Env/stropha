@@ -29,6 +29,8 @@ class ToolManifestEntry:
 # Registration order is intentional: ``tools/list`` follows this sequence.
 MCP_TOOL_MANIFEST: tuple[ToolManifestEntry, ...] = (
     ToolManifestEntry("capabilities", "core"),
+    ToolManifestEntry("observe_agent_state", "standard"),
+    ToolManifestEntry("record_runtime_artifact", "standard"),
     ToolManifestEntry("search_code", "core"),
     ToolManifestEntry("reset_dedup", "standard"),
     ToolManifestEntry("pin_chunks", "standard"),

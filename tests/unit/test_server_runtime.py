@@ -52,6 +52,9 @@ async def test_lifespan_reuses_heavy_runtime_and_isolates_session_state(tmp_path
         first.pinned_chunk_ids.add("pin-first")
         first.scratchpad = "first"
         first.recent_queries.append("query-first")
+        first.agent_state = MagicMock(name="first-agent-state")
+        first.runtime_artifacts["first-artifact"] = MagicMock(name="first-artifact")
+        first.runtime_artifact_ids_seen.add("first-artifact")
 
         async with lifespan(owner, **kwargs) as second:
             assert first.storage is second.storage is storage
@@ -61,9 +64,25 @@ async def test_lifespan_reuses_heavy_runtime_and_isolates_session_state(tmp_path
             assert second.pinned_chunk_ids == set()
             assert second.scratchpad == ""
             assert list(second.recent_queries) == []
+            assert second.agent_state is None
+            assert second.runtime_artifacts == {}
+            assert second.runtime_artifact_ids_seen == set()
             second.seen_chunk_ids.add("second-only")
 
         assert first.seen_chunk_ids == {"first-only"}
+        assert first.agent_state is not None
+        assert set(first.runtime_artifacts) == {"first-artifact"}
+        assert first.runtime_artifact_ids_seen == {"first-artifact"}
+
+    assert first.agent_state is None
+    assert first.runtime_artifacts == {}
+    assert first.runtime_artifact_ids_seen == set()
+    assert all(
+        "agent_state" not in call_.kwargs
+        and "runtime_artifacts" not in call_.kwargs
+        and "runtime_artifact_ids_seen" not in call_.kwargs
+        for call_ in storage.upsert_session.call_args_list
+    )
 
     build_stages.assert_called_once_with({})
     get_config.assert_called_once_with()

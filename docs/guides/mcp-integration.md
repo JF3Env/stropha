@@ -71,15 +71,16 @@ canonical full inventory and minimum profile for each tool are declared in
   `list_repos`, `get_file_outline`, `bootstrap_environment`, `find_callers`,
   `find_related`, `find_rationale`, `find_tests_for`, `assemble_context`, and
   `index_health`.
-- **standard (35 tools):** core plus `reset_dedup`, `pin_chunks`,
-  `unpin_chunks`, `list_pins`, `smart_search_tool`, `expand_chunk`,
-  `expand_chunks`, `plan_investigation`, `get_community`, `trace_feature`,
+- **standard (37 tools):** core plus `observe_agent_state`,
+  `record_runtime_artifact`, `reset_dedup`, `pin_chunks`, `unpin_chunks`,
+  `list_pins`, `smart_search_tool`, `expand_chunk`, `expand_chunks`,
+  `plan_investigation`, `get_community`, `trace_feature`,
   `execute_investigation`, `suggest_next_tool_mcp`, `list_task_recipes`,
   `apply_task_recipe`, `verify_claim_tool`, `check_symbols_tool`,
   `blast_radius_tool`, `assert_snippet_freshness_tool`, `test_impact_tool`,
   `audit_citations_tool`, `spec_consistency_tool`, `contract_tests_tool`, and
   `working_set_tool`.
-- **full (50 tools):** standard plus `remember`, `recall`, `forget`,
+- **full (52 tools):** standard plus `remember`, `recall`, `forget`,
   `cache_stats`, `cache_prune`, `scratchpad_read`, `scratchpad_write`,
   `scratchpad_append`, `scratchpad_clear`, `check_staleness`, `record_episode`,
   `recall_episodes`, `co_occurrence`, `report_bad_result`, and `get_config`.
@@ -93,6 +94,8 @@ These are the main public entry points:
 | Tool | Minimum profile | Best use |
 |---|---|---|
 | `capabilities` | core | Inspect the active profile and tool inventory |
+| `observe_agent_state` | standard | Replace or retrieve ephemeral editor state and runtime evidence |
+| `record_runtime_artifact` | standard | Attach a bounded diagnostic or failing-test artifact |
 | `search_code` | core | Conceptual or free-text code search |
 | `smart_search_tool` | standard | Route an ambiguous request to semantic, symbol, or graph retrieval |
 | `get_symbol` | core | Look up a known class, function, or method |
@@ -119,6 +122,22 @@ Search, symbol, graph, and composed tools default to the current repository.
 Pass `include_other_repos=true` only when cross-repository results are intended.
 Graph tools return `graph_loaded: false` with guidance when the graph mirror is
 not available.
+
+## Ephemeral Host Context
+
+Hosts using `standard` or `full` may call `observe_agent_state` with a complete
+snapshot. Revisions must increase and each accepted snapshot replaces the prior
+one. Calling the tool without `snapshot` returns that session's current snapshot
+and runtime artifacts. `record_runtime_artifact` accepts up to 16 immutable
+diagnostic, test-failure, stack-frame, or log-excerpt IDs over a session's
+lifetime, with a 32 KiB per-item and 128 KiB active-content limit. Expiry removes
+content but does not permit an ID to be rebound before reconnect.
+
+Repository keys must match an indexed repository. Active, recent, changed,
+selection, and artifact source paths must be repository-relative and may not
+escape through `..`, absolute paths, or symlinks. Paths are checked again on
+readback. Observation content is never persisted or traced. It is cleared when
+the MCP session ends, so reconnecting hosts must resend it.
 
 ## Configuration And Reloading
 
