@@ -68,6 +68,10 @@ class _StubEmbedder(Embedder):
 class _LineChunker:
     """Deterministic test chunker that consumes the captured source text."""
 
+    @property
+    def adapter_id(self) -> str:
+        return "test-line:v1"
+
     def chunk(
         self,
         files: Iterable[SourceFile],
@@ -93,6 +97,33 @@ class _LineChunker:
                     content=line,
                     content_hash=content_hash,
                 )
+
+
+class _ConflictingChunker:
+    @property
+    def adapter_id(self) -> str:
+        return "test-conflicting:v1"
+
+    def chunk(
+        self,
+        files: Iterable[SourceFile],
+        *,
+        repo_key: str | None = None,
+    ) -> Iterator[Chunk]:
+        for source in files:
+            first = Chunk(
+                chunk_id="same-id",
+                rel_path=source.rel_path,
+                language=source.language,
+                kind="function",
+                symbol="first",
+                start_line=1,
+                end_line=1,
+                content="first",
+                content_hash="first-hash",
+            )
+            yield first
+            yield first.model_copy(update={"symbol": "second"})
 
 
 class _MutatingEmbedder(_StubEmbedder):
@@ -547,6 +578,27 @@ def test_pipeline_invalidates_skip_when_file_changes(tmp_path: Path) -> None:
         assert s2.files_skipped_fresh == 0
         assert s2.chunks_seen >= 1
         assert s2.repos[0].code_changed is True
+
+
+def test_pipeline_rejects_conflicting_duplicate_chunk_ids(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _git_init_with_file(repo, "main.py", "x = 1\n")
+
+    with (
+        Storage(tmp_path / "idx.db", embedding_dim=4) as storage,
+        pytest.raises(
+            PipelineError,
+            match=r"Chunker emitted duplicate IDs for 'main\.py'",
+        ),
+    ):
+        Pipeline(
+            storage=storage,
+            embedder=_StubEmbedder(),
+            enricher=NoopEnricher(),
+            repos=[repo],
+            chunker=_ConflictingChunker(),
+            graphify=False,
+        ).run()
 
 
 def test_graph_dirty_survives_graph_disabled_run(tmp_path: Path) -> None:
@@ -1400,6 +1452,49 @@ def test_snapshot_upgrade_forces_reconcile_in_incremental_mode(tmp_path: Path) -
         )
 
 
+@pytest.mark.parametrize("stored_chunker_id", [None, "tree-sitter-dispatch:stale"])
+def test_chunker_drift_forces_reconcile_in_incremental_mode(
+    tmp_path: Path,
+    stored_chunker_id: str | None,
+) -> None:
+    repo = tmp_path / "repo"
+    _git_init_with_file(repo, "main.py", "x = 1\n")
+
+    with Storage(tmp_path / "idx.db", embedding_dim=4) as storage:
+        first_pipeline = Pipeline(
+            storage=storage,
+            embedder=_StubEmbedder(),
+            enricher=NoopEnricher(),
+            repos=[repo],
+            graphify=False,
+        )
+        first_pipeline.run()
+        repo_id = int(
+            storage._conn.execute("SELECT id FROM repos LIMIT 1").fetchone()["id"]
+        )
+        chunker_meta_key = f"active_chunker_id:{repo_id}"
+        active_chunker_id = storage.get_meta(chunker_meta_key)
+        assert active_chunker_id is not None
+        if stored_chunker_id is None:
+            storage._conn.execute("DELETE FROM meta WHERE key = ?", (chunker_meta_key,))
+        else:
+            storage.set_meta(chunker_meta_key, stored_chunker_id)
+        storage.commit()
+
+        stats = Pipeline(
+            storage=storage,
+            embedder=_StubEmbedder(),
+            enricher=NoopEnricher(),
+            repos=[repo],
+            graphify=False,
+        ).run(mode="incremental")
+
+        assert stats.files_visited == 1
+        assert stats.files_skipped_fresh == 0
+        assert stats.chunks_seen >= 1
+        assert storage.get_meta(chunker_meta_key) == active_chunker_id
+
+
 def test_failed_enrichment_stays_retryable_and_defers_watermark(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     _git_init_with_file(repo, "main.py", "x = 1\n")
@@ -1424,6 +1519,7 @@ def test_failed_enrichment_stays_retryable_and_defers_watermark(tmp_path: Path) 
         )
         assert failed_meta["last_enricher_id"] == "__stropha_incomplete__"
         assert storage.get_meta(source_snapshot_meta_key(repo_id)) is None
+        assert storage.get_meta(f"active_chunker_id:{repo_id}") is None
         assert storage.list_repos()[0].last_indexed_at is None
 
         retry_stats = Pipeline(
@@ -1444,5 +1540,6 @@ def test_failed_enrichment_stays_retryable_and_defers_watermark(tmp_path: Path) 
             storage.get_meta(source_snapshot_meta_key(repo_id))
             == SOURCE_SNAPSHOT_VERSION
         )
+        assert storage.get_meta(f"active_chunker_id:{repo_id}") == "test-line:v1"
         assert storage.list_repos()[0].last_indexed_at is not None
         assert retry_stats.repos[0].code_changed is True

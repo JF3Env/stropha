@@ -35,10 +35,15 @@ log = get_logger(__name__)
 _SOURCE_SNAPSHOT_ATTEMPTS = 3
 _INCOMPLETE_ENRICHER_ID = "__stropha_incomplete__"
 _GRAPH_DIRTY_META_PREFIX = "graph_dirty:"
+_CHUNKER_ID_META_PREFIX = "active_chunker_id:"
 
 
 def _graph_dirty_meta_key(repo_id: int) -> str:
     return f"{_GRAPH_DIRTY_META_PREFIX}{repo_id}"
+
+
+def _chunker_id_meta_key(repo_id: int) -> str:
+    return f"{_CHUNKER_ID_META_PREFIX}{repo_id}"
 
 
 @dataclass(frozen=True)
@@ -617,9 +622,24 @@ class Pipeline:
         identity = detect_repo(repo_path)
         repo_id = self._storage.register_repo(identity, publish_watermark=False)
         snapshot_meta_key = source_snapshot_meta_key(repo_id)
-        self._force_file_snapshot_refresh = (
-            self._storage.get_meta(snapshot_meta_key) != SOURCE_SNAPSHOT_VERSION
+        stored_snapshot_version = self._storage.get_meta(snapshot_meta_key)
+        source_snapshot_changed = stored_snapshot_version != SOURCE_SNAPSHOT_VERSION
+        chunker_meta_key = _chunker_id_meta_key(repo_id)
+        stored_chunker_id = self._storage.get_meta(chunker_meta_key)
+        active_chunker_id = self._chunker.adapter_id
+        chunker_changed = stored_chunker_id != active_chunker_id and (
+            stored_chunker_id is not None
+            or stored_snapshot_version == SOURCE_SNAPSHOT_VERSION
         )
+        self._force_file_snapshot_refresh = source_snapshot_changed or chunker_changed
+        if chunker_changed:
+            log.warning(
+                "pipeline.chunker_drift_detected",
+                repo=identity.normalized_key,
+                stored_chunker_id=stored_chunker_id,
+                active_chunker_id=active_chunker_id,
+                action="forcing complete hash reconciliation",
+            )
         # A checkout may first be indexed before it is a Git repo or before an
         # origin is configured. Once its stable remote identity is available,
         # those fallback identities are never selected again and cannot
@@ -707,6 +727,7 @@ class Pipeline:
             )
 
         self._storage.set_meta(snapshot_meta_key, SOURCE_SNAPSHOT_VERSION)
+        self._storage.set_meta(chunker_meta_key, active_chunker_id)
         # Record the new checkpoint when we have a HEAD sha (real git repo).
         if head_sha:
             self._storage.set_meta(meta_key, head_sha)

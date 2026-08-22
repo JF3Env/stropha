@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -21,7 +22,8 @@ from stropha.adapters.chunker.tree_sitter_dispatch import (
 )
 from stropha.errors import ChunkerError
 from stropha.ingest.chunker import Chunker as LegacyChunker
-from stropha.models import SourceFile
+from stropha.ingest.chunkers.ast_generic import AstGenericChunker
+from stropha.models import Chunk, SourceFile
 from stropha.pipeline.registry import all_adapters
 
 # ---------------------------------------------------------------------------
@@ -235,6 +237,71 @@ def test_typescript_same_line_callbacks_emit_distinct_chunks(tmp_path: Path) -> 
         "(value) => value.coco_index",
     }
     assert len({chunk.chunk_id for chunk in chunks}) == len(chunks)
+
+
+def test_typescript_identical_same_line_callbacks_emit_one_chunk(tmp_path: Path) -> None:
+    callback = "(value: any) => value.created_at"
+    callback_line = (
+        f"const dates = [assets.map({callback}), "
+        f"assets.map({callback}).sort()];"
+    )
+    content = "\n".join([*["// padding"] * 16, callback_line, ""])
+    path = tmp_path / "asset-collection.steps.ts"
+    path.write_text(content, encoding="utf-8")
+    source = SourceFile(
+        path=path,
+        rel_path="testing/src/bindings/asset-collection.steps.ts",
+        language="typescript",
+        size_bytes=len(content.encode("utf-8")),
+    )
+
+    chunks = list(TreeSitterDispatchChunker().chunk([source]))
+    callbacks = [chunk for chunk in chunks if chunk.content.strip() == callback]
+
+    assert len(callbacks) == 1
+    assert len({chunk.chunk_id for chunk in chunks}) == len(chunks)
+
+
+def test_ast_chunker_preserves_conflicting_same_id_chunks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import stropha.ingest.chunkers.ast_generic as ast_generic
+
+    content = "\n".join([*["// padding"] * 16, "const value = 1;", ""])
+    path = tmp_path / "conflict.ts"
+    path.write_text(content, encoding="utf-8")
+    source = SourceFile(
+        path=path,
+        rel_path="conflict.ts",
+        language="typescript",
+        size_bytes=len(content),
+    )
+    first = Chunk(
+        chunk_id="same-id",
+        rel_path="conflict.ts",
+        language="typescript",
+        kind="function",
+        symbol="first",
+        start_line=17,
+        end_line=17,
+        content="const value = 1;\n",
+        content_hash="same-hash",
+    )
+    second = first.model_copy(update={"symbol": "second"})
+    chunker = AstGenericChunker("typescript")
+    monkeypatch.setattr(
+        ast_generic.tslp,
+        "process",
+        lambda *_args, **_kwargs: SimpleNamespace(structure=[object()]),
+    )
+    monkeypatch.setattr(
+        chunker,
+        "_walk",
+        lambda *_args, **_kwargs: iter([first, second]),
+    )
+
+    assert list(chunker.chunk(source, content)) == [first, second]
 
 
 def test_dispatcher_falls_back_to_file_level_for_unknown_language(

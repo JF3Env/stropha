@@ -120,8 +120,16 @@ class AstGenericChunker:
 
         # Walk structure: emit container chunks + leaf chunks; track parent.
         emitted = 0
+        emitted_by_id: dict[str, Chunk] = {}
         for item in result.structure:
             for chunk in self._walk(file, content, item, parent_stack=[], parent_chunk_id=None):
+                previous = emitted_by_id.get(chunk.chunk_id)
+                # Distinct byte spans can normalize to the same persisted
+                # line/content chunk. Keep one copy, but leave conflicting
+                # same-ID chunks visible to the pipeline's duplicate guard.
+                if previous is not None and previous == chunk:
+                    continue
+                emitted_by_id.setdefault(chunk.chunk_id, chunk)
                 emitted += 1
                 yield chunk
 
