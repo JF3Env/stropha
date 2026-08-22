@@ -71,8 +71,9 @@ canonical full inventory and minimum profile for each tool are declared in
   `get_symbol`, `list_repos`, `get_file_outline`, `bootstrap_environment`,
   `find_callers`, `find_related`, `find_rationale`, `find_tests_for`,
   `assemble_context`, and `index_health`.
-- **standard (38 tools):** core plus `observe_agent_state`,
-  `record_runtime_artifact`, `reset_dedup`, `pin_chunks`, `unpin_chunks`,
+- **standard (39 tools):** core plus `observe_agent_state`,
+  `record_runtime_artifact`, `resolve_agent_instructions`, `reset_dedup`,
+  `pin_chunks`, `unpin_chunks`,
   `list_pins`, `smart_search_tool`, `expand_chunk`, `expand_chunks`,
   `plan_investigation`, `get_community`, `trace_feature`,
   `execute_investigation`, `suggest_next_tool_mcp`, `list_task_recipes`,
@@ -80,7 +81,7 @@ canonical full inventory and minimum profile for each tool are declared in
   `blast_radius_tool`, `assert_snippet_freshness_tool`, `test_impact_tool`,
   `audit_citations_tool`, `spec_consistency_tool`, `contract_tests_tool`, and
   `working_set_tool`.
-- **full (53 tools):** standard plus `remember`, `recall`, `forget`,
+- **full (54 tools):** standard plus `remember`, `recall`, `forget`,
   `cache_stats`, `cache_prune`, `scratchpad_read`, `scratchpad_write`,
   `scratchpad_append`, `scratchpad_clear`, `check_staleness`, `record_episode`,
   `recall_episodes`, `co_occurrence`, `report_bad_result`, and `get_config`.
@@ -97,6 +98,7 @@ These are the main public entry points:
 | `select_repository` | core | Bind the current session to an indexed repository |
 | `observe_agent_state` | standard | Replace or retrieve ephemeral editor state and runtime evidence |
 | `record_runtime_artifact` | standard | Attach a bounded diagnostic or failing-test artifact |
+| `resolve_agent_instructions` | standard | Resolve bounded saved-worktree instructions and observed changed paths |
 | `search_code` | core | Conceptual or free-text code search |
 | `smart_search_tool` | standard | Route an ambiguous request to semantic, symbol, or graph retrieval |
 | `get_symbol` | core | Look up a known class, function, or method |
@@ -117,6 +119,7 @@ get_symbol("FsrsCalculator")
 find_callers("FsrsCalculator", depth=2)
 find_tests_for("submitAnswer")
 trace_feature("user submits an answer and mastery is updated")
+resolve_agent_instructions(path="src/stropha/server.py")
 ```
 
 Search, symbol, graph, and composed tools default to the current repository.
@@ -138,6 +141,16 @@ Call `select_repository` before repository-local tools. Standard and full hosts
 may instead use `observe_agent_state`; its validated repository updates the same
 session default. Explicit repository arguments take precedence. Sessions that do
 not select or report a repository retain the daemon target as a legacy fallback.
+
+`resolve_agent_instructions` defaults to the session repository and observed
+active file, while explicit `repo` and `path` selectors take precedence. It
+returns only applicable saved-worktree `AGENTS.md` and `CLAUDE.md` sources in
+root-to-leaf order, plus changed paths from a snapshot for the same repository.
+Each source includes full-source SHA-256 provenance and bounded content under a
+shared character budget. The tool does not interpret instructions, read unsaved
+buffers, persist or trace content, or assemble a final prompt. Secure no-follow
+reads reject path-replacement races, sources above 256 KiB, and applicable source
+sets above 1 MiB or 64 files.
 
 Repository keys must match an indexed repository. Active, recent, changed,
 selection, and artifact source paths must be repository-relative and may not

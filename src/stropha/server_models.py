@@ -2,7 +2,7 @@
 
 from typing import Any, NotRequired, TypedDict
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from .config.models import McpProfile
 from .models import AgentStateSnapshotV1, RuntimeArtifactV1, SourceEvidenceRef
@@ -31,6 +31,36 @@ class RuntimeArtifactResponse(BaseModel):
     artifact: RuntimeArtifactV1
     stored_artifacts: int
     stored_content_bytes: int
+
+
+class InstructionSourceEntry(BaseModel):
+    """One saved-worktree instruction source applicable to an active path."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    path: str
+    scope: str
+    precedence: int
+    sha256: str
+    content: str
+    full_chars: int
+    included_chars: int
+    truncated: bool
+
+
+class InstructionContextResponse(BaseModel):
+    """Deterministic bounded instruction context for one repository path."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    repository: str
+    active_path: str | None
+    changed_paths: list[str]
+    sources: list[InstructionSourceEntry]
+    max_chars: int
+    total_chars: int
+    included_chars: int
+    truncated: bool
 
 
 class FindCallersResponse(TypedDict):

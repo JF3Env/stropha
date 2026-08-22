@@ -50,6 +50,7 @@ _FULL_COMPATIBILITY_TOOLS = {
     "record_runtime_artifact",
     "remember",
     "report_bad_result",
+    "resolve_agent_instructions",
     "reset_dedup",
     "scratchpad_append",
     "scratchpad_clear",
@@ -101,6 +102,7 @@ _STANDARD_ADDITIONAL_TOOLS = {
     "plan_investigation",
     "reset_dedup",
     "record_runtime_artifact",
+    "resolve_agent_instructions",
     "smart_search_tool",
     "spec_consistency_tool",
     "suggest_next_tool_mcp",
@@ -115,6 +117,7 @@ _NEW_STRUCTURED_TOOLS = {
     "observe_agent_state": "AgentObservationResponse",
     "select_repository": "RepoRef",
     "record_runtime_artifact": "RuntimeArtifactResponse",
+    "resolve_agent_instructions": "InstructionContextResponse",
     "find_callers": "FindCallersResponse",
     "find_related": "FindRelatedResponse",
     "get_community": "CommunityResponse",
@@ -133,6 +136,16 @@ _STRUCTURED_REQUIRED_KEYS = {
         "artifact",
         "stored_artifacts",
         "stored_content_bytes",
+    },
+    "resolve_agent_instructions": {
+        "repository",
+        "active_path",
+        "changed_paths",
+        "sources",
+        "max_chars",
+        "total_chars",
+        "included_chars",
+        "truncated",
     },
     "find_callers": {"symbol"},
     "find_related": {"symbol"},
@@ -225,6 +238,7 @@ def test_every_registered_tool_has_a_structured_output_schema() -> None:
         assert tools[name].outputSchema["title"] == title
     for name, required in _STRUCTURED_REQUIRED_KEYS.items():
         assert set(tools[name].outputSchema.get("required", [])) == required
+    assert tools["resolve_agent_instructions"].outputSchema["additionalProperties"] is False
 
 
 def test_manifest_profile_helper_matches_discovery() -> None:

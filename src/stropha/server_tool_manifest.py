@@ -32,6 +32,7 @@ MCP_TOOL_MANIFEST: tuple[ToolManifestEntry, ...] = (
     ToolManifestEntry("select_repository", "core"),
     ToolManifestEntry("observe_agent_state", "standard"),
     ToolManifestEntry("record_runtime_artifact", "standard"),
+    ToolManifestEntry("resolve_agent_instructions", "standard"),
     ToolManifestEntry("search_code", "core"),
     ToolManifestEntry("reset_dedup", "standard"),
     ToolManifestEntry("pin_chunks", "standard"),

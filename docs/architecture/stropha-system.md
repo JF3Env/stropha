@@ -800,8 +800,8 @@ divergirem.
 | Perfil | Escopo |
 |---|---|
 | `core` | 13 tools de seleção de repositório, orientação, busca, símbolos, grafo, contexto e saúde do índice |
-| `standard` | `core` mais observações efêmeras, ergonomia de sessão, investigações compostas e inteligência de mudança |
-| `full` | `standard` mais memória, scratchpad, episódios, feedback, cache e diagnóstico de runtime |
+| `standard` | 39 tools: `core` mais observações efêmeras, instruções salvas por escopo, ergonomia de sessão, investigações compostas e inteligência de mudança |
+| `full` | 54 tools: `standard` mais memória, scratchpad, episódios, feedback, cache e diagnóstico de runtime |
 
 Os perfis são aninhados (`core` ⊂ `standard` ⊂ `full`) e `full` é o default de
 compatibilidade. `capabilities` pertence a `core`, portanto está sempre visível,
@@ -815,6 +815,13 @@ Suggestions nunca recomendam tools ocultos, e recipes são validados contra os
 schemas dos tools que referenciam. O inventário completo e a composição atual
 dos três perfis estão documentados em
 `docs/architecture/stropha-agent-exoskeleton.md`.
+
+`resolve_agent_instructions` pertence a `standard`: resolve somente
+`AGENTS.md`/`CLAUDE.md` salvos entre a raiz indexada e o diretório do arquivo
+ativo, em ordem geral → específica. Cada fonte inclui hash SHA-256 do conteúdo
+completo e excerpt limitado por orçamento; caminhos alterados vêm apenas do
+snapshot da mesma sessão e repositório. O tool não interpreta instruções, não lê
+buffers não salvos e não monta prompt final.
 
 ### 9.3 Formato de resposta
 
