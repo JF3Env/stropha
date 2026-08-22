@@ -459,7 +459,7 @@
           <div class="settings-inner">
             <div class="settings-intro">
               <div><div class="eyebrow">Live daemon configuration</div><h1 id="settings-title">General services</h1></div>
-              <div id="save-state" class="save-state">Compatible PATCH changes hot-swap the warm runtime; embedding-dimension changes remain pending rebuild.</div>
+              <div id="save-state" class="save-state">Compatible PATCH changes hot-swap the warm runtime; MCP profile changes require a restart, and embedding-dimension changes remain pending rebuild.</div>
             </div>
             <nav class="settings-tabs" aria-label="Configuration groups" role="tablist">
               <button class="settings-tab active" type="button" data-settings-group="general" role="tab" aria-selected="true">General <span id="inference-use-count" class="tab-count">1</span></button>
@@ -1040,7 +1040,20 @@
         state.config = data.config || {};
         state.pendingSecrets = {};
         populateConfig();
-        if (notify) toast('Configuration reloaded');
+        const configuredProfile = pathValue(state.config, 'mcp.profile') || 'full';
+        if (configuredProfile !== data.active_profile) {
+          const label = $('#save-state');
+          label.className = 'save-state';
+          label.textContent = `Configuration is saved. Restart the daemon to activate MCP profile ${configuredProfile}.`;
+          if (notify) toast('Daemon restart required.');
+          return;
+        }
+        if (notify) {
+          const label = $('#save-state');
+          label.className = 'save-state good';
+          label.textContent = 'Configuration reloaded. Saved and active MCP profiles match.';
+          toast('Configuration reloaded');
+        }
       } catch (error) { toast(error.message, true); }
     }
 
@@ -1090,6 +1103,12 @@
           label.className = 'save-state';
           label.textContent = `${data.message} Configuration is saved and remains pending an index rebuild and restart.`;
           toast('Configuration saved. Index rebuild required.');
+          return;
+        }
+        if (data.restart_required) {
+          label.className = 'save-state';
+          label.textContent = `Configuration saved. Restart the daemon to activate MCP profile ${pathValue(data.config, 'mcp.profile') || 'full'}.`;
+          toast('Configuration saved. Daemon restart required.');
           return;
         }
         label.className = 'save-state good';

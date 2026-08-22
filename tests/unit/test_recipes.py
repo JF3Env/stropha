@@ -79,17 +79,22 @@ class TestRegistry:
 
     def test_recipe_steps_match_registered_tool_schemas(self) -> None:
         from stropha.server import mcp
+        from stropha.server_tool_manifest import tool_names_for_profile
 
-        schemas = {
-            tool.name: tool.parameters
+        tools = {
+            tool.name: tool
             for tool in mcp._tool_manager.list_tools()
         }
+        core_tools = set(tool_names_for_profile("core"))
         for recipe in list_recipes():
             for step in recipe.steps:
-                schema = schemas[step.tool]
+                assert step.tool in core_tools
+                tool = tools[step.tool]
+                schema = tool.parameters
                 supplied = set(step.args_template)
                 assert supplied <= set(schema["properties"])
                 assert set(schema.get("required", [])) <= supplied
+                tool.fn_metadata.arg_model.model_validate(step.args_template)
 
 
 # ---------------------------------------------------------------------------

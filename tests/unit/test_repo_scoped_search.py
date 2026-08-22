@@ -241,6 +241,23 @@ def test_direct_mcp_routes_scope_duplicate_symbols_and_community_ids(
     }
 
 
+def test_select_repository_scopes_subsequent_core_tools(tmp_path: Path) -> None:
+    from stropha.server import get_symbol, select_repository
+
+    storage, _, _ = _seed_direct_route_storage(tmp_path)
+    app = _mcp_app([], {})
+    app.storage = storage
+    try:
+        selected = select_repository("local:local", ctx=_ctx(app))
+        symbols = get_symbol("Shared", limit=10, ctx=_ctx(app))
+    finally:
+        storage.close()
+
+    assert selected.normalized_key == "local:local"
+    assert app.selected_repository == "local:local"
+    assert [hit.chunk_id for hit in symbols] == ["local-chunk"]
+
+
 def test_every_direct_symbol_and_graph_mcp_route_exposes_scope_opt_in() -> None:
     from stropha import server
 
@@ -406,6 +423,7 @@ def test_composed_tools_default_scoped_and_explicitly_broaden() -> None:
     app = _mcp_app([], {})
     with (
         patch("stropha.server._resolve_target_repo_id", return_value=7),
+        patch("stropha.server_memory_tools._resolve_repo", return_value=(7, None)),
         patch("stropha.retrieval.graph.graph_loaded", return_value=False),
     ):
         plan_investigation("task", ctx=_ctx(app))
@@ -505,6 +523,30 @@ def test_explicit_repo_drives_diff_scope_repository() -> None:
             ctx=_ctx(app),
         )
 
+    assert run.call_args.kwargs["diff_repo"] == selected
+
+
+def test_session_repo_drives_default_diff_scope_repository() -> None:
+    from stropha.server import assemble_context
+
+    app = _mcp_app([], {})
+    selected = Path("/tmp/session-repo")
+    assembled = SimpleNamespace(
+        task="task",
+        bundle="",
+        sections=[],
+        total_tokens=0,
+        budget_tokens=4000,
+        spilled_count=0,
+        truncated_oversize=False,
+    )
+    with (
+        patch("stropha.server_memory_tools._resolve_repo", return_value=(7, selected)),
+        patch("stropha.retrieval.assemble.assemble_context", return_value=assembled) as run,
+    ):
+        assemble_context("task", diff_scope=True, ctx=_ctx(app))
+
+    assert run.call_args.kwargs["repo_id"] == 7
     assert run.call_args.kwargs["diff_repo"] == selected
 
 

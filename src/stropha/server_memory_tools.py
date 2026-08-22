@@ -6,7 +6,9 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from .errors import ObservationError
 from .logging import get_logger
+from .models import RepoRef
 from .server_models import (
     BootstrapResponse,
     CoOccurrenceResponse,
@@ -28,8 +30,8 @@ from .server_runtime import AppContext
 _log = get_logger(__name__)
 
 # These accept an optional keyword ``repo`` (Problem 2): a normalized key, a
-# local path, or None (→ the configured target_repo). Typed loosely so the
-# server.py wrappers can forward ``repo``.
+# local path, or None (→ the session repository, then configured target_repo).
+# Typed loosely so the server.py wrappers can forward ``repo``.
 ResolveTargetRepoId = Callable[..., int | None]
 CurrentHeadCommit = Callable[..., str | None]
 PersistSessionState = Callable[[AppContext], None]
@@ -46,22 +48,47 @@ def _repo_root_path(storage: Any, repo_id: int) -> str | None:
         return None
 
 
+def _repo_root_path_by_key(storage: Any, repo_key: str) -> str | None:
+    """Resolve a local root through the storage adapter's public surface."""
+    try:
+        repositories = storage.list_repos()
+    except Exception:
+        return None
+    for repository in repositories:
+        if getattr(repository, "normalized_key", None) != repo_key:
+            continue
+        local_path = getattr(repository, "local_path", None)
+        return local_path if isinstance(local_path, str) and local_path else None
+    return None
+
+
 def _resolve_repo(
     app: AppContext, repo: str | None, *, log: Any = None
 ) -> tuple[int | None, Path | None]:
     """Resolve ``repo`` to ``(repo_id, local_path)``.
 
     ``repo`` may be a normalized key (``github.com/org/name``), an absolute
-    local path, or ``None`` → the server's configured ``target_repo`` (legacy single-repo
-    behaviour). An explicit ``repo`` lets multi-repo callers anchor memory to
-    the repo they're actually reasoning about, instead of always the server's
-    target (Problem 2 in docs/persisting-problems-2026-06-07.md).
+    local path, or ``None`` → the selected or observed session repository,
+    falling back to the server's configured ``target_repo`` for legacy clients.
+    An explicit ``repo`` always wins. This lets multi-repo callers anchor
+    operations to the repo they're actually reasoning about instead of the
+    daemon's startup repo.
     """
     log = log or _log
     from .ingest.git_meta import detect as detect_repo
 
-    if repo is not None:
-        cand = repo.strip()
+    selector = repo
+    if selector is None:
+        selected = getattr(app, "selected_repository", None)
+        if isinstance(selected, str):
+            selector = selected
+        else:
+            observed = getattr(getattr(app, "agent_state", None), "repository", None)
+            if isinstance(observed, str):
+                selector = observed
+
+    if selector is not None:
+        cand = selector.strip()
         if not cand:
             return None, None
         p = Path(cand).expanduser()
@@ -75,7 +102,7 @@ def _resolve_repo(
             return app.storage.lookup_repo_id(key), p
         # otherwise treat as an already-normalized key
         rid = app.storage.lookup_repo_id(cand)
-        root = _repo_root_path(app.storage, rid) if rid is not None else None
+        root = _repo_root_path_by_key(app.storage, cand) if rid is not None else None
         return rid, (Path(root) if root else None)
 
     # default: the configured target repo
@@ -88,6 +115,50 @@ def _resolve_repo(
         log.warning("mcp.memory.detect_repo_failed", error=str(exc))
         return None, None
     return app.storage.lookup_repo_id(key), Path(target)
+
+
+def select_repository_impl(repository: str, app: AppContext) -> RepoRef:
+    """Bind an indexed repository as this MCP session's default scope."""
+    candidate = repository.strip()
+    if not candidate:
+        raise ObservationError("Repository selector must not be empty")
+
+    repo_id, _ = _resolve_repo(app, candidate)
+    if repo_id is None:
+        raise ObservationError(f"Repository is not indexed: {candidate}")
+
+    path = Path(candidate).expanduser()
+    if path.is_absolute():
+        from .ingest.git_meta import detect as detect_repo
+
+        try:
+            repo_key = detect_repo(path).normalized_key
+        except Exception as exc:
+            raise ObservationError(f"Repository could not be resolved: {candidate}") from exc
+    else:
+        repo_key = candidate
+
+    try:
+        repositories = app.storage.list_repos()
+    except Exception as exc:
+        raise ObservationError(f"Repository metadata is unavailable: {repo_key}") from exc
+    repository_stats = next(
+        (repo for repo in repositories if repo.normalized_key == repo_key),
+        None,
+    )
+    if repository_stats is None:
+        raise ObservationError(f"Repository metadata is unavailable: {repo_key}")
+
+    with app.observation_lock:
+        app.selected_repository = repo_key
+
+    return RepoRef(
+        normalized_key=repository_stats.normalized_key,
+        url=repository_stats.url,
+        local_path=repository_stats.local_path,
+        default_branch=repository_stats.default_branch,
+        head_commit=repository_stats.head_commit,
+    )
 
 
 def resolve_target_repo_id(
@@ -347,10 +418,10 @@ def check_staleness_impl(
 def bootstrap_environment_impl(app: AppContext) -> BootstrapResponse:
     from .retrieval.bootstrap import detect_bootstrap
 
-    target = app.config.target_repo
+    _, target = _resolve_repo(app, None)
     if target is None:
         target = Path.cwd()
-    snapshot = detect_bootstrap(Path(target))
+    snapshot = detect_bootstrap(target)
     return BootstrapResponse(
         repo_path=snapshot.repo_path,
         stacks=[

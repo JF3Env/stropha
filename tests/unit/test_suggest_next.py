@@ -369,8 +369,8 @@ class TestRegisteredToolContract:
                 max_suggestions=20,
             ),
         ]
-        schemas = {
-            tool.name: tool.parameters
+        tools = {
+            tool.name: tool
             for tool in mcp._tool_manager.list_tools()
         }
         assert {suggestion.tool for suggestion in suggestions} == {
@@ -385,10 +385,12 @@ class TestRegisteredToolContract:
             "search_code",
         }
         for suggestion in suggestions:
-            schema = schemas[suggestion.tool]
+            tool = tools[suggestion.tool]
+            schema = tool.parameters
             supplied = set(suggestion.args)
             assert supplied <= set(schema["properties"])
             assert set(schema.get("required", [])) <= supplied
+            tool.fn_metadata.arg_model.model_validate(suggestion.args)
 
 
 # ---------------------------------------------------------------------------

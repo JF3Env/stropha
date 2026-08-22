@@ -790,82 +790,31 @@ Princípios:
 3. **Output enxuto**: nunca retornar conteúdo grande. Path + lines + snippet curto. Cliente lê arquivo se quiser.
 4. **Schemas estritos**: JSON Schema com `additionalProperties: false`, descrições ricas (LLM lê).
 
-#### Catálogo proposto
+#### Catálogo implementado e perfis estáticos
 
-```jsonc
-{
-  "tools": [
-    {
-      "name": "search_code",
-      "description": "Busca semântica + lexical (hybrid) no codebase. Retorna trechos com path, linhas e score. Use para 'onde está X', 'como funciona Y', 'mostre exemplos de Z'. Para nome exato de símbolo, prefira get_symbol.",
-      "input_schema": {
-        "type": "object",
-        "properties": {
-          "query": { "type": "string", "description": "Pergunta ou descrição em linguagem natural ou termos técnicos." },
-          "top_k": { "type": "integer", "default": 10, "minimum": 1, "maximum": 30 },
-          "filters": {
-            "type": "object",
-            "properties": {
-              "language": { "type": "array", "items": { "enum": ["java", "vue", "typescript", "yaml", "markdown", "gherkin"] } },
-              "path_glob": { "type": "string", "description": "Glob restritivo, ex.: 'backend/src/main/**'." },
-              "kind": { "type": "array", "items": { "enum": ["file", "class", "method", "component", "scenario", "section"] } },
-              "exclude_tests": { "type": "boolean", "default": false },
-              "modified_since": { "type": "string", "format": "date" }
-            }
-          },
-          "rerank": { "type": "boolean", "default": true }
-        },
-        "required": ["query"]
-      }
-    },
-    {
-      "name": "get_symbol",
-      "description": "Retorna a definição de um símbolo pelo nome qualificado. Mais barato e preciso que search_code para nomes conhecidos.",
-      "input_schema": {
-        "type": "object",
-        "properties": {
-          "symbol": { "type": "string", "description": "Nome qualificado, ex.: 'StudyService.submitAnswer' ou 'StudyView'." },
-          "include_callers": { "type": "boolean", "default": false },
-          "include_callees": { "type": "boolean", "default": false }
-        },
-        "required": ["symbol"]
-      }
-    },
-    {
-      "name": "find_callers",
-      "description": "Lista todos os locais que chamam o símbolo dado. Travessia direta no symbol graph.",
-      "input_schema": { "type": "object", "properties": { "symbol": { "type": "string" }, "depth": { "type": "integer", "default": 1 } }, "required": ["symbol"] }
-    },
-    {
-      "name": "get_file_outline",
-      "description": "Retorna a estrutura simbólica de um arquivo (classes, métodos, imports) sem ler o conteúdo completo.",
-      "input_schema": { "type": "object", "properties": { "path": { "type": "string" } }, "required": ["path"] }
-    },
-    {
-      "name": "find_tests_for",
-      "description": "Encontra testes (unit, BDD, E2E) que cobrem o símbolo dado.",
-      "input_schema": { "type": "object", "properties": { "symbol": { "type": "string" } }, "required": ["symbol"] }
-    },
-    {
-      "name": "trace_feature",
-      "description": "Para um scenario Gherkin, traça step defs → métodos chamados → entidades tocadas.",
-      "input_schema": { "type": "object", "properties": { "feature": { "type": "string" }, "scenario": { "type": "string" } }, "required": ["feature", "scenario"] }
-    },
-    {
-      "name": "explain_module",
-      "description": "Resumo gerado on-demand de um pacote/módulo (classes principais, responsabilidade, dependências).",
-      "input_schema": { "type": "object", "properties": { "path": { "type": "string" } }, "required": ["path"] }
-    }
-  ],
-  "resources": [
-    { "uri": "stropha://stats", "description": "Estatísticas do índice (chunks, última atualização, modelo)." },
-    { "uri": "stropha://files", "description": "Lista de arquivos indexados com hash." }
-  ],
-  "prompts": [
-    { "name": "investigate-bug", "description": "Template para investigar um bug usando os tools RAG.", "arguments": [{ "name": "symptom", "required": true }] }
-  ]
-}
-```
+`src/stropha/server_tool_manifest.py` é o inventário canônico. Cada entrada
+declara o menor perfil que pode descobrir e invocar o tool; a ordem do manifest
+é também a ordem de `tools/list`. O startup falha se registro e manifest
+divergirem.
+
+| Perfil | Escopo |
+|---|---|
+| `core` | 13 tools de seleção de repositório, orientação, busca, símbolos, grafo, contexto e saúde do índice |
+| `standard` | `core` mais observações efêmeras, ergonomia de sessão, investigações compostas e inteligência de mudança |
+| `full` | `standard` mais memória, scratchpad, episódios, feedback, cache e diagnóstico de runtime |
+
+Os perfis são aninhados (`core` ⊂ `standard` ⊂ `full`) e `full` é o default de
+compatibilidade. `capabilities` pertence a `core`, portanto está sempre visível,
+e retorna perfil ativo, perfis aceitos e nomes ordenados dos tools disponíveis.
+O filtro se aplica somente a tools; resources e prompts não mudam por perfil.
+
+Discovery e invocation usam a mesma política: `tools/list` omite tools acima do
+perfil ativo e `tools/call` rejeita explicitamente qualquer tentativa de chamar
+um tool oculto. Todos os tools registrados publicam output schema estruturado.
+Suggestions nunca recomendam tools ocultos, e recipes são validados contra os
+schemas dos tools que referenciam. O inventário completo e a composição atual
+dos três perfis estão documentados em
+`docs/architecture/stropha-agent-exoskeleton.md`.
 
 ### 9.3 Formato de resposta
 
@@ -928,9 +877,17 @@ canônico para preservar `repo.local_path` e essa mesma evidência de fonte.
 **Lifecycle do runtime**: o primeiro MCP session inicializa os adapters pesados
 sob lock assíncrono e os associa ao `FastMCP` process-wide. Sessions seguintes
 reutilizam esse runtime, inclusive no recovery de session id obsoleto. Apenas
-estado mutável de cliente (`seen_chunk_ids`, pins, scratchpad, queries recentes
-e trace recorder) vive no `AppContext` por session. No shutdown ASGI, o session
-manager encerra as tasks antes de parar watcher e fechar storage.
+estado mutável de cliente (`seen_chunk_ids`, pins, scratchpad, queries recentes,
+trace recorder, estado observado do agente e artifacts de runtime) vive no
+`AppContext` por session. Observações e artifacts têm quotas fixas, paths
+validados contra a raiz local do repositório tanto na entrada quanto na leitura,
+e são limpos ao encerrar a session; IDs expirados não podem ser reutilizados na
+mesma session. Eles nunca entram em metadata persistente nem traces. No shutdown
+ASGI, o session manager encerra as tasks antes de parar watcher e fechar storage.
+
+O perfil MCP é selecionado de `~/.stropha/config.yaml` antes de iniciar o
+transport HTTP e permanece fixo por toda a vida do daemon. Não existem
+overrides por CLI, ambiente ou session.
 
 #### 9.4.1 Frontend JSON API e live reload
 
@@ -959,6 +916,10 @@ o YAML anterior e mantém o runtime anterior publicado. Sessions MCP já abertas
 retêm seus adapters para não fechar uma conexão em uso; os runtimes aposentados
 são fechados no shutdown ASGI. Novas sessions e requests frontend observam o
 runtime substituto imediatamente.
+
+`mcp.profile` é a exceção ao live reload. O PATCH pode persistir o novo perfil,
+mas retorna `restart_required: true`; o manifest ativo continua filtrando
+discovery e invocation com o perfil anterior até o restart do daemon.
 
 O LLM nunca recebe acesso SQL nem escolhe queries arbitrárias. A rota de query
 fornece somente os chunks retornados pelo `RetrievalStage`, trata snippets como
@@ -1035,7 +996,9 @@ devem iniciar um subprocesso por projeto.
 
 stdio, SSE, `command`/`args`, and per-client `env` blocks are unsupported. The
 singleton owns one warm pipeline/storage runtime; client sessions isolate only
-their lightweight dedup, pins, scratchpad, recent-query, and trace state.
+their lightweight dedup, pins, scratchpad, recent-query, and trace state. Todos
+os clientes também compartilham o mesmo perfil MCP selecionado no startup;
+abrir uma nova session não altera o conjunto de tools.
 
 ### 9.6 Segurança do MCP
 

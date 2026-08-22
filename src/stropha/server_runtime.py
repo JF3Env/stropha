@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import threading
 import uuid
 from collections import deque
 from collections.abc import AsyncIterator, Callable
@@ -15,6 +16,7 @@ from typing import Any, cast
 from .config import Config
 from .embeddings.base import Embedder
 from .logging import get_logger
+from .models import AgentStateSnapshotV1, RuntimeArtifactV1
 from .pipeline import BuiltStages
 from .stages.retrieval import RetrievalStage
 from .storage import Storage
@@ -83,6 +85,19 @@ class AppContext:
     recent_queries: deque[str] = field(default_factory=lambda: deque(maxlen=5))
     recent_trace_ids: deque[str] = field(default_factory=lambda: deque(maxlen=256))
     scratchpad: str = ""
+    selected_repository: str | None = None
+    agent_state: AgentStateSnapshotV1 | None = None
+    runtime_artifacts: dict[str, RuntimeArtifactV1] = field(default_factory=dict)
+    runtime_artifact_ids_seen: set[str] = field(default_factory=set)
+    observation_lock: Any = field(default_factory=threading.Lock, repr=False)
+
+    def clear_observations(self) -> None:
+        """Discard host-provided state without touching durable session fields."""
+        with self.observation_lock:
+            self.selected_repository = None
+            self.agent_state = None
+            self.runtime_artifacts.clear()
+            self.runtime_artifact_ids_seen.clear()
 
 
 def chunk_belongs_to_repo(storage: Any, chunk_id: str, repo_id: int | None) -> bool:
@@ -430,6 +445,7 @@ async def lifespan(
     try:
         yield app_ctx
     finally:
+        app_ctx.clear_observations()
         if trace_recorder is not None:
             try:
                 trace_recorder.close()  # type: ignore[attr-defined]

@@ -181,12 +181,18 @@ Verify that the client uses server name `stropha_rag`, remote URL
 as `command`, `args`, and per-process `env`. Restart the client after changing
 its MCP configuration.
 
-The public router tool is named `smart_search_tool`.
+Call `capabilities` to inspect the daemon's active profile and tool names. The
+public router is named `smart_search_tool` and requires the `standard` or `full`
+profile. To expose a tool from a larger profile, change `mcp.profile` in
+`~/.stropha/config.yaml`, then stop and start the shared daemon. Restarting only
+the client does not change the daemon-wide tool surface.
 
 ### Configuration Change Is Not Active
 
 - Dashboard `PATCH /api/config` writes the YAML and replaces a compatible warm
   runtime immediately.
+- `mcp.profile` is static for the daemon lifetime. A dashboard change returns
+  `restart_required: true`; stop and start the daemon to activate it.
 - Direct file edits require a daemon restart.
 - Walker, chunker, enricher, and graph changes need a subsequent index pass to
   update stored content.

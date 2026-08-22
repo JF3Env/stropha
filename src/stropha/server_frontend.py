@@ -15,6 +15,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 import yaml  # type: ignore[import-untyped]
 
+from .config.models import MCP_PROFILES
 from .errors import ConfigError
 from .models import SearchHit
 from .server_runtime import SharedRuntime
@@ -207,6 +208,14 @@ def configuration_catalog() -> dict[str, Any]:
     ]
 
     service_fields = [
+        _catalog_field(
+            "mcp.profile",
+            "Tool profile",
+            "choice",
+            "full",
+            "Selects the static MCP tool surface. Restart the daemon after changing it.",
+            options=[{"value": profile, "label": profile.title()} for profile in MCP_PROFILES],
+        ),
         _catalog_field("mcp.watch", "File watcher", "boolean", True, "Polls the target repository and incrementally indexes edits.", enabled="Keeps results fresh automatically and consumes periodic filesystem/CPU work.", disabled="Relies on hooks or manual indexing; live edits are not discovered automatically."),
         _catalog_field("mcp.watch_interval", "Watch interval seconds", "number", 1, "Delay between repository change checks.", minimum=0.1, maximum=3600, step=0.1),
         _catalog_field("mcp.watch_debounce", "Watch debounce seconds", "number", 2, "Quiet period before a detected batch of edits is indexed.", minimum=0, maximum=3600, step=0.1),
@@ -302,6 +311,13 @@ def validate_config_document(document: dict[str, Any]) -> None:
     if backend is not None and backend not in _INFERENCE_BACKENDS:
         choices = ", ".join(sorted(_INFERENCE_BACKENDS))
         raise ConfigError(f"inference.backend must be one of: {choices}")
+    mcp = document.get("mcp") or {}
+    if not isinstance(mcp, dict):
+        raise ConfigError("mcp must be a mapping")
+    profile = mcp.get("profile", "full")
+    if profile not in MCP_PROFILES:
+        choices = ", ".join(MCP_PROFILES)
+        raise ConfigError(f"mcp.profile must be one of: {choices}")
     pipeline = document.get("pipeline")
     if pipeline is not None and not isinstance(pipeline, dict):
         raise ConfigError("pipeline must be a mapping")

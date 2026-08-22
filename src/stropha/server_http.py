@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import contextlib
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any
 from uuid import uuid4
 
 import anyio
 from anyio.abc import TaskStatus
+from mcp.server.fastmcp.exceptions import ToolError
 from mcp.server.fastmcp.server import FastMCP
 from mcp.server.streamable_http import StreamableHTTPServerTransport
 from mcp.server.streamable_http_manager import (
@@ -17,7 +18,18 @@ from mcp.server.streamable_http_manager import (
     StreamableHTTPSessionManager,
     logger,
 )
+from mcp.types import ContentBlock
+from mcp.types import Tool as MCPTool
 from starlette.applications import Starlette
+
+from .config.models import MCP_PROFILES, McpProfile
+from .errors import ConfigError
+from .server_tool_manifest import (
+    MCP_TOOL_MANIFEST,
+    ToolManifestEntry,
+    profile_allows_tool,
+    tool_names_for_profile,
+)
 
 
 class RestartTolerantTransport(StreamableHTTPServerTransport):
@@ -227,6 +239,70 @@ class RestartTolerantSessionManager(StreamableHTTPSessionManager):
 
 class RestartTolerantFastMCP(FastMCP[Any]):
     """FastMCP variant that tolerates stale HTTP session ids after restart."""
+
+    _tool_manifest: tuple[ToolManifestEntry, ...] = ()
+    _tool_profile: McpProfile = "full"
+
+    @property
+    def tool_profile(self) -> McpProfile:
+        return self._tool_profile
+
+    def set_tool_profile(self, profile: McpProfile) -> None:
+        """Select the daemon-lifetime MCP surface."""
+        if profile not in MCP_PROFILES:
+            choices = ", ".join(MCP_PROFILES)
+            raise ConfigError(f"mcp.profile must be one of: {choices}")
+        self._tool_profile = profile
+
+    def set_tool_manifest(self) -> None:
+        """Attach and validate the canonical tool inventory."""
+        names = tuple(entry.name for entry in MCP_TOOL_MANIFEST)
+        if len(names) != len(set(names)):
+            raise ConfigError("MCP tool manifest contains duplicate names")
+        self._tool_manifest = MCP_TOOL_MANIFEST
+        self.validate_tool_manifest()
+
+    def validate_tool_manifest(self) -> None:
+        """Fail startup when registration drifts from the manifest."""
+        registered = tuple(tool.name for tool in self._tool_manager.list_tools())
+        declared = tuple(entry.name for entry in self._tool_manifest)
+        if registered != declared:
+            missing = sorted(set(registered) - set(declared))
+            stale = sorted(set(declared) - set(registered))
+            raise ConfigError(
+                "MCP tool manifest does not match registration order "
+                f"(missing={missing}, stale={stale})"
+            )
+
+    def visible_tool_names(self) -> tuple[str, ...]:
+        """Return the names discoverable in the active profile."""
+        if not self._tool_manifest:
+            return tuple(tool.name for tool in self._tool_manager.list_tools())
+        return tool_names_for_profile(self._tool_profile)
+
+    def tool_is_available(self, name: str) -> bool:
+        """Return whether a tool may be discovered and invoked."""
+        if not self._tool_manifest:
+            return any(tool.name == name for tool in self._tool_manager.list_tools())
+        return profile_allows_tool(self._tool_profile, name)
+
+    async def list_tools(self) -> list[MCPTool]:
+        tools = await super().list_tools()
+        if not self._tool_manifest:
+            return tools
+        by_name = {tool.name: tool for tool in tools}
+        return [by_name[name] for name in self.visible_tool_names()]
+
+    async def call_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+    ) -> Sequence[ContentBlock] | dict[str, Any]:
+        if not self.tool_is_available(name):
+            raise ToolError(
+                f"Tool {name!r} is not available in MCP profile {self._tool_profile!r}"
+            )
+        return await super().call_tool(name, arguments)
 
     def streamable_http_app(self) -> Starlette:
         if self._session_manager is None:

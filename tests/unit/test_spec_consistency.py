@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -370,3 +370,26 @@ class TestSpecConsistencyMCP:
         )
         assert response.invariants_found == 1
         assert [conflict.matched for conflict in response.conflicts] == ["TargetRule"]
+
+    def test_session_repository_wins_over_configured_target(self, tmp_path: Path) -> None:
+        from stropha.server import spec_consistency_tool
+
+        target = tmp_path / "target"
+        selected = tmp_path / "selected"
+        target.mkdir()
+        selected.mkdir()
+        (target / "CLAUDE.md").write_text("TargetRule MUST do X.", encoding="utf-8")
+        (selected / "CLAUDE.md").write_text("SelectedRule MUST do Y.", encoding="utf-8")
+
+        with patch(
+            "stropha.server_memory_tools._resolve_repo",
+            return_value=(7, selected),
+        ):
+            response = spec_consistency_tool(
+                ["TargetRule", "SelectedRule"],
+                [],
+                ctx=_make_ctx(target),
+            )
+
+        assert response.invariants_found == 1
+        assert [conflict.matched for conflict in response.conflicts] == ["SelectedRule"]

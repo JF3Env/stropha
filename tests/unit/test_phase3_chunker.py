@@ -211,6 +211,32 @@ def test_dispatcher_routes_to_python_ast(py_file: SourceFile) -> None:
     assert symbols & {"Greeter", "Greeter.greet", "main", "make_greeter"}
 
 
+def test_typescript_same_line_callbacks_emit_distinct_chunks(tmp_path: Path) -> None:
+    callback_line = (
+        "const caf\u00e9Indexes = schemaFields"
+        ".filter((value) => value.level1 === 'E2E')"
+        ".map((value) => value.coco_index);"
+    )
+    content = "\n".join([*["// padding"] * 16, callback_line, ""])
+    path = tmp_path / "class-api.steps.ts"
+    path.write_text(content, encoding="utf-8")
+    source = SourceFile(
+        path=path,
+        rel_path="e2e/src/bindings/class-api.steps.ts",
+        language="typescript",
+        size_bytes=len(content.encode("utf-8")),
+    )
+
+    chunks = list(TreeSitterDispatchChunker().chunk([source]))
+    callbacks = [chunk for chunk in chunks if chunk.start_line == 17]
+
+    assert {chunk.content.strip() for chunk in callbacks} == {
+        "(value) => value.level1 === 'E2E'",
+        "(value) => value.coco_index",
+    }
+    assert len({chunk.chunk_id for chunk in chunks}) == len(chunks)
+
+
 def test_dispatcher_falls_back_to_file_level_for_unknown_language(
     txt_file: SourceFile,
 ) -> None:

@@ -63,22 +63,51 @@ the same. Do not add `command`, `args`, or a per-client `env` block for stropha.
 
 ## Tool Selection
 
-The MCP schema is the authoritative live inventory. These are the main public
-entry points:
+The active MCP `tools/list` response is the authoritative live inventory. The
+canonical full inventory and minimum profile for each tool are declared in
+`src/stropha/server_tool_manifest.py`. Profiles are nested:
 
-| Tool | Best use |
-|---|---|
-| `search_code` | Conceptual or free-text code search |
-| `smart_search_tool` | Route an ambiguous request to semantic, symbol, or graph retrieval |
-| `get_symbol` | Look up a known class, function, or method |
-| `get_file_outline` | Inspect symbols and line ranges before reading a file |
-| `find_callers` | Find callers through graph edges |
-| `find_tests_for` | Find tests associated with a symbol |
-| `find_related` | Traverse related symbols in either direction |
-| `get_community` | Inspect a graph community |
-| `find_rationale` | Find docs or ADRs linked to a symbol |
-| `trace_feature` | Trace a feature through graph call paths |
-| `assemble_context` | Retrieve and pack a bounded context bundle |
+- **core (13 tools):** `capabilities`, `select_repository`, `search_code`,
+  `get_symbol`, `list_repos`, `get_file_outline`, `bootstrap_environment`,
+  `find_callers`, `find_related`, `find_rationale`, `find_tests_for`,
+  `assemble_context`, and `index_health`.
+- **standard (38 tools):** core plus `observe_agent_state`,
+  `record_runtime_artifact`, `reset_dedup`, `pin_chunks`, `unpin_chunks`,
+  `list_pins`, `smart_search_tool`, `expand_chunk`, `expand_chunks`,
+  `plan_investigation`, `get_community`, `trace_feature`,
+  `execute_investigation`, `suggest_next_tool_mcp`, `list_task_recipes`,
+  `apply_task_recipe`, `verify_claim_tool`, `check_symbols_tool`,
+  `blast_radius_tool`, `assert_snippet_freshness_tool`, `test_impact_tool`,
+  `audit_citations_tool`, `spec_consistency_tool`, `contract_tests_tool`, and
+  `working_set_tool`.
+- **full (53 tools):** standard plus `remember`, `recall`, `forget`,
+  `cache_stats`, `cache_prune`, `scratchpad_read`, `scratchpad_write`,
+  `scratchpad_append`, `scratchpad_clear`, `check_staleness`, `record_episode`,
+  `recall_episodes`, `co_occurrence`, `report_bad_result`, and `get_config`.
+
+`full` is the compatibility default. Profiles filter tools only; resources and
+prompts are unchanged. `capabilities` is always visible and reports the active
+profile and its ordered tool names.
+
+These are the main public entry points:
+
+| Tool | Minimum profile | Best use |
+|---|---|---|
+| `capabilities` | core | Inspect the active profile and tool inventory |
+| `select_repository` | core | Bind the current session to an indexed repository |
+| `observe_agent_state` | standard | Replace or retrieve ephemeral editor state and runtime evidence |
+| `record_runtime_artifact` | standard | Attach a bounded diagnostic or failing-test artifact |
+| `search_code` | core | Conceptual or free-text code search |
+| `smart_search_tool` | standard | Route an ambiguous request to semantic, symbol, or graph retrieval |
+| `get_symbol` | core | Look up a known class, function, or method |
+| `get_file_outline` | core | Inspect symbols and line ranges before reading a file |
+| `find_callers` | core | Find callers through graph edges |
+| `find_tests_for` | core | Find tests associated with a symbol |
+| `find_related` | core | Traverse related symbols in either direction |
+| `get_community` | standard | Inspect a graph community |
+| `find_rationale` | core | Find docs or ADRs linked to a symbol |
+| `trace_feature` | standard | Trace a feature through graph call paths |
+| `assemble_context` | core | Retrieve and pack a bounded context bundle |
 
 Examples:
 
@@ -95,6 +124,27 @@ Pass `include_other_repos=true` only when cross-repository results are intended.
 Graph tools return `graph_loaded: false` with guidance when the graph mirror is
 not available.
 
+## Ephemeral Host Context
+
+Hosts using `standard` or `full` may call `observe_agent_state` with a complete
+snapshot. Revisions must increase and each accepted snapshot replaces the prior
+one. Calling the tool without `snapshot` returns that session's current snapshot
+and runtime artifacts. `record_runtime_artifact` accepts up to 16 immutable
+diagnostic, test-failure, stack-frame, or log-excerpt IDs over a session's
+lifetime, with a 32 KiB per-item and 128 KiB active-content limit. Expiry removes
+content but does not permit an ID to be rebound before reconnect.
+
+Call `select_repository` before repository-local tools. Standard and full hosts
+may instead use `observe_agent_state`; its validated repository updates the same
+session default. Explicit repository arguments take precedence. Sessions that do
+not select or report a repository retain the daemon target as a legacy fallback.
+
+Repository keys must match an indexed repository. Active, recent, changed,
+selection, and artifact source paths must be repository-relative and may not
+escape through `..`, absolute paths, or symlinks. Paths are checked again on
+readback. Observation content is never persisted or traced. It is cleared when
+the MCP session ends, so reconnecting hosts must resend it.
+
 ## Configuration And Reloading
 
 All settings and secrets live in `~/.stropha/config.yaml`. Project-level and
@@ -105,6 +155,7 @@ Example daemon settings:
 
 ```yaml
 mcp:
+  profile: full
   watch: true
   watch_interval: 1.0
   watch_debounce: 2.0
@@ -121,7 +172,11 @@ belong in the YAML file.
 The dashboard at `http://127.0.0.1:9741/dashboard` updates configuration through
 `PATCH /api/config`. A successful patch atomically replaces the warm runtime;
 new requests use the replacement while existing sessions can finish with their
-prior adapters.
+prior adapters. `mcp.profile` is the exception: profile membership is fixed for
+the daemon lifetime. A profile patch is saved and returns
+`restart_required: true`, but discovery and invocation keep using the old
+profile until the daemon restarts. There is no CLI, environment, or per-session
+profile override.
 
 Indexing-time changes still require an index pass. If a primary vector dimension
 change conflicts with the existing index, the endpoint returns HTTP 202 and
@@ -201,6 +256,14 @@ curl http://127.0.0.1:9741/health
 
 If status reports a live but unresponsive MCP endpoint, use the recovery command
 it prints, then inspect `~/.cache/stropha/mcp-server.log`.
+
+### Expected Tool Is Missing
+
+Call `capabilities` to inspect the daemon's active profile and ordered tool
+names. If the tool belongs to a larger profile, set `mcp.profile` in
+`~/.stropha/config.yaml`, then stop and start `bin/stropha-mcp-ensure`. Re-saving
+the client configuration or opening a new MCP session does not change the
+daemon-wide profile.
 
 ### No Results
 

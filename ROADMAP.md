@@ -36,6 +36,15 @@ The contextual enricher is shipped. It is not Ollama-only: it uses
 `inference.backend`, while the separate `ollama` enricher calls Ollama directly.
 No repository-independent recall improvement is claimed.
 
+### MCP Surface
+
+- One canonical tool manifest with structured output schemas
+- Nested daemon-wide `core`, `standard`, and `full` profiles
+- `full` compatibility default and always-visible `capabilities` inspection
+- Profile enforcement during both discovery and invocation
+- Static profile selection through `~/.stropha/config.yaml`; changes require a
+  daemon restart
+
 ### Storage And Operations
 
 - SQLite plus sqlite-vec as the default storage backend
