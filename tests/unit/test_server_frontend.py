@@ -75,6 +75,11 @@ def test_config_document_rejects_unknown_inference_backend() -> None:
         merge_config_document({}, {"inference": {"backend": "made-up"}})
 
 
+def test_config_document_rejects_unknown_mcp_profile() -> None:
+    with pytest.raises(ConfigError, match=r"mcp\.profile"):
+        merge_config_document({}, {"mcp": {"profile": "dynamic"}})
+
+
 def test_config_merge_preserves_redacted_dsn_password() -> None:
     current = {
         "pipeline": {
@@ -192,6 +197,11 @@ def test_configuration_catalog_exposes_options_schemas_and_toggle_impacts() -> N
     assert hyde["type"] == "boolean"
     assert "LLM call" in hyde["enabled"]
     assert "original query" in hyde["disabled"]
+
+    service = next(section for section in catalog["sections"] if section["id"] == "service")
+    profile = next(field for field in service["fields"] if field["path"] == "mcp.profile")
+    assert [option["value"] for option in profile["options"]] == ["core", "standard", "full"]
+    assert "Restart" in profile["help"]
 
     index = next(section for section in catalog["sections"] if section["id"] == "index")
     index_paths = {field["path"] for field in index["fields"]}
@@ -457,9 +467,13 @@ def test_frontend_dashboard_is_served_locally() -> None:
         assert "field.type = 'string-list'" in response.text
         assert "(unavailable)" in response.text
         assert "Compatible PATCH changes hot-swap the warm runtime" in response.text
+        assert "MCP profile changes require a restart" in response.text
         assert "embedding-dimension changes remain pending rebuild" in response.text
         assert "Validating configuration for a live hot-swap" in response.text
         assert "remains pending an index rebuild and restart" in response.text
+        assert "Restart the daemon to activate MCP profile" in response.text
+        assert "Configuration is saved. Restart the daemon to activate MCP profile" in response.text
+        assert "Saved and active MCP profiles match" in response.text
         assert "Runtime hot-swapped. New queries use this configuration." in response.text
         assert "Weights stay deferred until first indexing" in response.text
         assert "Model weights will load during first indexing" in response.text
@@ -556,6 +570,7 @@ def test_frontend_config_route_updates_live_runtime_and_redacts_secrets(tmp_path
     write_config_document(
         {
             "inference": {"backend": "ollama"},
+            "mcp": {"profile": "full"},
             "secrets": {"anthropic_api_key": "real-secret"},
             "pipeline": {
                 "embedder": {
@@ -575,12 +590,15 @@ def test_frontend_config_route_updates_live_runtime_and_redacts_secrets(tmp_path
         ),
     )
     original_security = mcp.settings.transport_security
+    original_profile = mcp.tool_profile
+    mcp.set_tool_profile("full")
     mcp.settings.transport_security = None
     mcp._session_manager = None
     try:
         app = mcp.streamable_http_app()
         with (
             patch("stropha.server.config_path", return_value=path),
+            patch("stropha.server_frontend.config_path", return_value=path),
             patch(
                 "stropha.server._frontend_reload_runtime",
                 new=AsyncMock(return_value=runtime),
@@ -596,6 +614,7 @@ def test_frontend_config_route_updates_live_runtime_and_redacts_secrets(tmp_path
                 headers={"origin": "http://localhost:5173"},
                 json={
                     "inference": {"backend": "anthropic"},
+                    "mcp": {"profile": "core"},
                     "secrets": {"anthropic_api_key": "(set)"},
                     "pipeline": {
                         "embedder": {
@@ -605,6 +624,7 @@ def test_frontend_config_route_updates_live_runtime_and_redacts_secrets(tmp_path
                     },
                 },
             )
+            loaded = client.get("/api/config")
 
         assert response.status_code == 200
         assert response.headers["access-control-allow-origin"] == "http://localhost:5173"
@@ -614,6 +634,12 @@ def test_frontend_config_route_updates_live_runtime_and_redacts_secrets(tmp_path
             "config": {"model": "bge-m3", "batch_size": 32},
         }
         assert response.json()["active"]["retrieval"] == "retrieval:test"
+        assert response.json()["active"]["mcp_profile"] == "full"
+        assert response.json()["restart_required"] is True
+        assert response.json()["config"]["mcp"]["profile"] == "core"
+        assert loaded.status_code == 200
+        assert loaded.json()["active_profile"] == "full"
+        assert loaded.json()["config"]["mcp"]["profile"] == "core"
         assert read_config_document(path)["secrets"]["anthropic_api_key"] == "real-secret"
         assert read_config_document(path)["pipeline"]["embedder"]["config"] == {
             "model": "bge-m3",
@@ -622,6 +648,7 @@ def test_frontend_config_route_updates_live_runtime_and_redacts_secrets(tmp_path
         reload_runtime.assert_awaited_once_with()
     finally:
         mcp._session_manager = None
+        mcp.set_tool_profile(original_profile)
         mcp.settings.transport_security = original_security
 
 

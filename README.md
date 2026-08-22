@@ -151,6 +151,13 @@ pipeline runtime is built lazily on the first MCP or frontend request and then
 shared. The file watcher starts with that runtime when `mcp.watch` is enabled,
 which is the default, and stops with the daemon.
 
+`mcp.profile` selects one daemon-wide static tool surface: `core`, `standard`,
+or `full`. `full` is the compatibility default. `core` keeps only the primary
+retrieval and orientation tools, while `standard` adds investigation and
+change-intelligence workflows. Call `capabilities` from any profile to inspect
+the active tool names. Every client connected to the daemon sees the same
+profile, and changing it requires a daemon restart.
+
 The launcher can optionally manage a local pgvector Docker container when
 started with `STROPHA_USE_POSTGRES=1`. Without that explicit launcher flag it
 does not start or stop PostgreSQL; a configured PostgreSQL adapter connects to
@@ -165,13 +172,15 @@ routes include:
 | `GET /api/status` | Active runtime and index status |
 | `GET /api/config` | Redacted user configuration |
 | `GET /api/config/schema` | Editable configuration schema |
-| `PATCH /api/config` | Write configuration; hot-swap compatible runtimes or report a pending rebuild |
+| `PATCH /api/config` | Write configuration; hot-swap compatible runtimes or report a required restart/rebuild |
 | `POST /api/query` | Answer a question from retrieved evidence |
 
 `PATCH /api/config` applies query-time and compatible adapter changes without a
-daemon restart. Changes that alter indexed content take effect fully after the
-next index pass. A primary embedding dimension mismatch returns HTTP 202 with
-`pending_rebuild: true`; the previous runtime remains active. Run
+daemon restart. The exception is `mcp.profile`: the new value is saved, but the
+active tool surface remains unchanged and the response reports
+`restart_required: true`. Changes that alter indexed content take effect fully
+after the next index pass. A primary embedding dimension mismatch returns HTTP
+202 with `pending_rebuild: true`; the previous runtime remains active. Run
 `stropha index --rebuild`, then restart the daemon or submit the patch again to
 activate the rebuilt vector space. Dimension rebuilds clear all derived search
 data for every repository in the shared backend, not only the selected
@@ -210,16 +219,17 @@ Clients using the common `mcpServers` shape:
 
 Useful public tools include:
 
-| Tool | Use |
-|---|---|
-| `search_code` | Semantic and lexical code search |
-| `smart_search_tool` | Route an ambiguous question to the appropriate search or graph tool |
-| `get_symbol` | Exact symbol lookup |
-| `get_file_outline` | Inspect file structure before reading it |
-| `find_callers` | Find callers through graph edges |
-| `find_tests_for` | Find tests associated with a symbol |
-| `assemble_context` | Retrieve and pack a bounded context bundle |
-| `execute_investigation` | Run a planned search, callers, tests, and rationale investigation |
+| Tool | Minimum profile | Use |
+|---|---|---|
+| `capabilities` | core | Inspect the active profile and tool inventory |
+| `search_code` | core | Semantic and lexical code search |
+| `smart_search_tool` | standard | Route an ambiguous question to the appropriate search or graph tool |
+| `get_symbol` | core | Exact symbol lookup |
+| `get_file_outline` | core | Inspect file structure before reading it |
+| `find_callers` | core | Find callers through graph edges |
+| `find_tests_for` | core | Find tests associated with a symbol |
+| `assemble_context` | core | Retrieve and pack a bounded context bundle |
+| `execute_investigation` | standard | Run a planned search, callers, tests, and rationale investigation |
 
 Tools are scoped to the current repository by default. Set
 `include_other_repos=true` only for an intentional cross-repository query.
@@ -273,6 +283,7 @@ git:
   clone_timeout: 300
 
 mcp:
+  profile: full
   watch: true
   watch_interval: 1.0
   watch_debounce: 2.0
@@ -280,6 +291,10 @@ mcp:
 logging:
   level: INFO
 ```
+
+`mcp.profile` accepts `core`, `standard`, or `full`. It has no CLI or generic
+environment-variable override. Restart `bin/stropha-mcp-ensure` after changing
+it, including when the dashboard saved the new value.
 
 API keys belong under `secrets:` in this file. Restrict it to the current user:
 

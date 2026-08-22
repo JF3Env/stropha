@@ -30,6 +30,7 @@ import yaml  # type: ignore[import-untyped]
 from ..errors import ConfigError
 from ..logging import get_logger
 from .models import (
+    MCP_PROFILES,
     Config,
     EmbedderConfig,
     ExperimentBlacklistConfig,
@@ -42,6 +43,7 @@ from .models import (
     InferenceConfig,
     LoggingConfig,
     McpConfig,
+    McpProfile,
     PathsConfig,
     RetrievalFeatures,
     SecretsConfig,
@@ -51,6 +53,7 @@ from .models import (
 )
 
 __all__ = [
+    "MCP_PROFILES",
     # Introspection metadata (consumed by tests + MCP get_config tool)
     "_ENV_REGISTRY",
     # Models (re-exported)
@@ -66,6 +69,7 @@ __all__ = [
     "InferenceConfig",
     "LoggingConfig",
     "McpConfig",
+    "McpProfile",
     "PathsConfig",
     "RetrievalFeatures",
     "SecretsConfig",
@@ -347,6 +351,7 @@ def _parse_logging(raw: dict[str, Any]) -> LoggingConfig:
 
 def _parse_mcp(raw: dict[str, Any]) -> McpConfig:
     return McpConfig(
+        profile=raw.get("profile", "full"),
         watch=_bool(raw.get("watch"), True),
         watch_interval=_float(raw.get("watch_interval"), 1.0),
         watch_debounce=_float(raw.get("watch_debounce"), 2.0),
@@ -552,6 +557,7 @@ def get_config_info() -> dict[str, Any]:
         "log_level": cfg.log_level,
         "max_file_bytes": cfg.max_file_bytes,
         "mcp_watch": cfg.mcp_watch,
+        "mcp_profile": cfg.mcp.profile,
         "mcp_watch_interval": cfg.mcp_watch_interval,
         "mcp_watch_debounce": cfg.mcp_watch_debounce,
         "use_voyage": cfg.use_voyage,

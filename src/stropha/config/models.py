@@ -306,13 +306,23 @@ class LoggingConfig:
 # ---------------------------------------------------------------------------
 
 
+McpProfile = Literal["core", "standard", "full"]
+MCP_PROFILES: tuple[McpProfile, ...] = ("core", "standard", "full")
+
+
 @dataclass(frozen=True)
 class McpConfig:
     """MCP server configuration (YAML: ``mcp``)."""
 
+    profile: McpProfile = "full"
     watch: bool = True
     watch_interval: float = 1.0
     watch_debounce: float = 2.0
+
+    def __post_init__(self) -> None:
+        if self.profile not in MCP_PROFILES:
+            choices = ", ".join(MCP_PROFILES)
+            raise ConfigError(f"mcp.profile must be one of: {choices}")
 
 
 # ---------------------------------------------------------------------------

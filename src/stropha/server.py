@@ -28,13 +28,13 @@ from __future__ import annotations
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, cast
 
 from mcp.server.fastmcp import Context
 from pydantic import BaseModel, Field
 
 from . import __version__
-from .config import Config, get_config, get_config_info, reset_config
+from .config import MCP_PROFILES, Config, get_config, get_config_info, reset_config
 from .errors import ConfigError, EmbeddingDimensionMismatchError, StrophaError
 from .logging import configure_logging, get_logger
 from .meta.decorator import traced
@@ -123,9 +123,12 @@ from .server_memory_tools import (
     resolve_target_repo_id as server_resolve_target_repo_id,
 )
 from .server_models import (
+    BadResultResponse,
     BlastRadiusResponse,
     BootstrapResponse,
+    CapabilitiesResponse,
     CitationAuditResponse,
+    CommunityResponse,
     ContractTestsResponse,
     CoOccurrenceResponse,
     CrossSessionCachePruneResponse,
@@ -134,9 +137,14 @@ from .server_models import (
     ExpandChunkResponse,
     ExpandChunksResponse,
     FacetCounts,  # noqa: F401 — re-exported for test_search_filters.py
+    FindCallersResponse,
+    FindRationaleResponse,
+    FindRelatedResponse,
+    FindTestsResponse,
     ForgetResponse,
     FreshnessResponse,
     HallucinationGuardResponse,
+    IndexHealthResponse,
     ListPinsResponse,
     MemoryEntry,
     OutlineEntry,
@@ -148,6 +156,7 @@ from .server_models import (
     RepoInfo,
     RepoSummary,
     ResetDedupResponse,
+    RuntimeConfigResponse,
     ScratchpadResponse,
     SearchResponse,
     SearchResult,
@@ -156,6 +165,7 @@ from .server_models import (
     StalenessResponse,
     StatsPayload,
     TestImpactResponse,
+    TraceFeatureResponse,
     VerdictResponse,
 )
 from .server_runtime import (
@@ -226,15 +236,14 @@ TOOL SELECTION GUIDE (use the most specific tool):
 | "Who calls X?" / "What uses X?"         | find_callers      | Graph traversal (structural) |
 | "What tests cover X?"                   | find_tests_for    | Graph + path heuristics      |
 | "What relates to X?"                    | find_related      | Bidirectional graph walk     |
-| "What's in the same module as X?"       | get_community     | Cluster grouping             |
 | "Why was X built this way?"             | find_rationale    | Links to docs/ADRs           |
-| "Trace feature X through the code"      | trace_feature     | DFS from entry points        |
 
 WORKFLOW TIPS:
-1. Start with search_code or get_symbol to find entry points
-2. Use get_file_outline before reading a full file — saves context tokens
-3. Use find_callers/find_related to understand dependencies
-4. Results include repo.local_path + rel_path for direct file access
+1. Call capabilities to inspect the active static tool profile
+2. Start with search_code or get_symbol to find entry points
+3. Use get_file_outline before reading a full file — saves context tokens
+4. Use find_callers/find_related to understand dependencies
+5. Results include repo.local_path + rel_path for direct file access
 
 The find_* and trace_* tools require a graphify graph in `graphify-out/graph.json`.
 When the graph is missing they return {"graph_loaded": false, ...} —
@@ -434,7 +443,11 @@ async def _frontend_config(request):
             return _frontend_json(request, {"error": str(exc)}, status_code=500)
         return _frontend_json(
             request,
-            {"config": redact_config_document(document), "version": __version__},
+            {
+                "config": redact_config_document(document),
+                "version": __version__,
+                "active_profile": mcp.tool_profile,
+            },
         )
 
     try:
@@ -458,6 +471,12 @@ async def _frontend_config(request):
         try:
             previous = read_config_document(path)
             candidate = merge_config_document(previous, patch)
+            mcp_document = candidate.get("mcp", {})
+            configured_profile = (
+                mcp_document.get("profile", "full")
+                if isinstance(mcp_document, dict)
+                else "full"
+            )
             write_config_document(candidate, path)
             reset_config()
             from .inference.backend import reset_backend
@@ -477,8 +496,10 @@ async def _frontend_config(request):
                         "storage": runtime.built.storage.adapter_id,
                         "retrieval": runtime.built.retrieval.adapter_id,
                         "inference": runtime.config.inference.backend,
+                        "mcp_profile": mcp.tool_profile,
                     },
                     "pending_rebuild": True,
+                    "restart_required": configured_profile != mcp.tool_profile,
                     "message": str(exc),
                 },
                 status_code=202,
@@ -505,7 +526,9 @@ async def _frontend_config(request):
                 "storage": runtime.built.storage.adapter_id,
                 "retrieval": runtime.built.retrieval.adapter_id,
                 "inference": runtime.config.inference.backend,
+                "mcp_profile": mcp.tool_profile,
             },
+            "restart_required": configured_profile != mcp.tool_profile,
         },
     )
 
@@ -675,6 +698,23 @@ def _apply_filters(
         path_prefix=path_prefix,
         kind=kind,
         exclude_tests=exclude_tests,
+    )
+
+
+@mcp.tool(
+    title="Describe the active MCP surface",
+    description=(
+        "Return the daemon's static MCP profile and every tool available in it. "
+        "This tool is visible in core, standard, and full profiles."
+    ),
+)
+def capabilities() -> CapabilitiesResponse:
+    tools = list(mcp.visible_tool_names())
+    return CapabilitiesResponse(
+        active_profile=mcp.tool_profile,
+        available_profiles=list(MCP_PROFILES),
+        tool_count=len(tools),
+        tools=tools,
     )
 
 
@@ -1656,21 +1696,24 @@ def find_callers(
     depth: int = 1,
     limit: int = 20,
     include_other_repos: bool = False,
-) -> dict:
+) -> FindCallersResponse:
     """Return callers of ``symbol`` (BFS up incoming `calls` edges, depth ≤ 3)."""
     app = _ctx(ctx)
     repo_id = None if include_other_repos else _resolve_target_repo_id(app)
     if repo_id is None and not include_other_repos:
-        return _graph_repo_unavailable() | {"symbol": symbol}
-    return find_callers_impl(
-        symbol,
-        app,
-        depth=depth,
-        limit=limit,
-        repo_id=repo_id,
-        graph_loaded_fn=graph_loaded,
-        unavailable_fn=_graph_unavailable,
-        graph_find_callers_fn=graph_find_callers,
+        return cast(FindCallersResponse, _graph_repo_unavailable() | {"symbol": symbol})
+    return cast(
+        FindCallersResponse,
+        find_callers_impl(
+            symbol,
+            app,
+            depth=depth,
+            limit=limit,
+            repo_id=repo_id,
+            graph_loaded_fn=graph_loaded,
+            unavailable_fn=_graph_unavailable,
+            graph_find_callers_fn=graph_find_callers,
+        ),
     )
 
 
@@ -1693,22 +1736,25 @@ def find_related(
     limit: int = 20,
     relations: list[str] | None = None,
     include_other_repos: bool = False,
-) -> dict:
+) -> FindRelatedResponse:
     """Return any node connected to ``symbol`` via the graph."""
     app = _ctx(ctx)
     repo_id = None if include_other_repos else _resolve_target_repo_id(app)
     if repo_id is None and not include_other_repos:
-        return _graph_repo_unavailable() | {"symbol": symbol}
-    return find_related_impl(
-        symbol,
-        app,
-        depth=depth,
-        limit=limit,
-        relations=relations,
-        repo_id=repo_id,
-        graph_loaded_fn=graph_loaded,
-        unavailable_fn=_graph_unavailable,
-        graph_find_related_fn=graph_find_related,
+        return cast(FindRelatedResponse, _graph_repo_unavailable() | {"symbol": symbol})
+    return cast(
+        FindRelatedResponse,
+        find_related_impl(
+            symbol,
+            app,
+            depth=depth,
+            limit=limit,
+            relations=relations,
+            repo_id=repo_id,
+            graph_loaded_fn=graph_loaded,
+            unavailable_fn=_graph_unavailable,
+            graph_find_related_fn=graph_find_related,
+        ),
     )
 
 
@@ -1729,20 +1775,26 @@ def get_community(
     ctx: Context,
     limit: int = 50,
     include_other_repos: bool = False,
-) -> dict:
+) -> CommunityResponse:
     """Return the community membership of a symbol or community id."""
     app = _ctx(ctx)
     repo_id = None if include_other_repos else _resolve_target_repo_id(app)
     if repo_id is None and not include_other_repos:
-        return _graph_repo_unavailable() | {"query": symbol_or_community_id}
-    return get_community_impl(
-        symbol_or_community_id,
-        app,
-        limit=limit,
-        repo_id=repo_id,
-        graph_loaded_fn=graph_loaded,
-        unavailable_fn=_graph_unavailable,
-        graph_get_community_fn=graph_get_community,
+        return cast(
+            CommunityResponse,
+            _graph_repo_unavailable() | {"query": symbol_or_community_id},
+        )
+    return cast(
+        CommunityResponse,
+        get_community_impl(
+            symbol_or_community_id,
+            app,
+            limit=limit,
+            repo_id=repo_id,
+            graph_loaded_fn=graph_loaded,
+            unavailable_fn=_graph_unavailable,
+            graph_get_community_fn=graph_get_community,
+        ),
     )
 
 
@@ -1763,21 +1815,24 @@ def find_rationale(
     ctx: Context,
     limit: int = 10,
     include_other_repos: bool = False,
-) -> dict:
+) -> FindRationaleResponse:
     """Return rationale nodes (docs/ADRs) explaining ``symbol``."""
     app = _ctx(ctx)
     repo_id = None if include_other_repos else _resolve_target_repo_id(app)
     if repo_id is None and not include_other_repos:
-        return _graph_repo_unavailable() | {"symbol": symbol}
-    return find_rationale_impl(
-        symbol,
-        app,
-        limit=limit,
-        repo_id=repo_id,
-        graph_loaded_fn=graph_loaded,
-        has_rationale_edges_fn=has_rationale_edges,
-        unavailable_fn=_graph_unavailable,
-        graph_find_rationale_fn=graph_find_rationale,
+        return cast(FindRationaleResponse, _graph_repo_unavailable() | {"symbol": symbol})
+    return cast(
+        FindRationaleResponse,
+        find_rationale_impl(
+            symbol,
+            app,
+            limit=limit,
+            repo_id=repo_id,
+            graph_loaded_fn=graph_loaded,
+            has_rationale_edges_fn=has_rationale_edges,
+            unavailable_fn=_graph_unavailable,
+            graph_find_rationale_fn=graph_find_rationale,
+        ),
     )
 
 
@@ -1799,21 +1854,24 @@ def find_tests_for(
     limit: int = 20,
     test_path_patterns: list[str] | None = None,
     include_other_repos: bool = False,
-) -> dict:
+) -> FindTestsResponse:
     """Return tests that exercise ``symbol`` (path-pattern filtered)."""
     app = _ctx(ctx)
     repo_id = None if include_other_repos else _resolve_target_repo_id(app)
     if repo_id is None and not include_other_repos:
-        return _graph_repo_unavailable() | {"symbol": symbol}
-    return find_tests_for_impl(
-        symbol,
-        app,
-        limit=limit,
-        test_path_patterns=test_path_patterns,
-        repo_id=repo_id,
-        graph_loaded_fn=graph_loaded,
-        unavailable_fn=_graph_unavailable,
-        graph_find_tests_for_fn=graph_find_tests_for,
+        return cast(FindTestsResponse, _graph_repo_unavailable() | {"symbol": symbol})
+    return cast(
+        FindTestsResponse,
+        find_tests_for_impl(
+            symbol,
+            app,
+            limit=limit,
+            test_path_patterns=test_path_patterns,
+            repo_id=repo_id,
+            graph_loaded_fn=graph_loaded,
+            unavailable_fn=_graph_unavailable,
+            graph_find_tests_for_fn=graph_find_tests_for,
+        ),
     )
 
 
@@ -1835,21 +1893,24 @@ def trace_feature(
     max_paths: int = 5,
     max_depth: int = 6,
     include_other_repos: bool = False,
-) -> dict:
+) -> TraceFeatureResponse:
     """Walk the call graph from feature-matching entry points."""
     app = _ctx(ctx)
     repo_id = None if include_other_repos else _resolve_target_repo_id(app)
     if repo_id is None and not include_other_repos:
-        return _graph_repo_unavailable() | {"feature": feature}
-    return trace_feature_impl(
-        feature,
-        app,
-        max_paths=max_paths,
-        max_depth=max_depth,
-        repo_id=repo_id,
-        graph_loaded_fn=graph_loaded,
-        unavailable_fn=_graph_unavailable,
-        graph_trace_feature_fn=graph_trace_feature,
+        return cast(TraceFeatureResponse, _graph_repo_unavailable() | {"feature": feature})
+    return cast(
+        TraceFeatureResponse,
+        trace_feature_impl(
+            feature,
+            app,
+            max_paths=max_paths,
+            max_depth=max_depth,
+            repo_id=repo_id,
+            graph_loaded_fn=graph_loaded,
+            unavailable_fn=_graph_unavailable,
+            graph_trace_feature_fn=graph_trace_feature,
+        ),
     )
 
 
@@ -1872,7 +1933,7 @@ def report_bad_result(
     *,
     ctx: Context,
     detail: str | None = None,
-) -> dict:
+) -> BadResultResponse:
     """Persist a bad-result report for the Meta-Harness labeler.
 
     Args:
@@ -2563,7 +2624,7 @@ def _features_summary(app: AppContext) -> dict:
     ),
 )
 @traced("get_config")
-def get_config_tool(*, ctx: Context) -> dict:
+def get_config_tool(*, ctx: Context) -> RuntimeConfigResponse:
     """Return the active configuration for debugging.
 
     Backwards-compatible: the legacy ``config`` / ``settings`` / ``sources`` /
@@ -2596,7 +2657,7 @@ def get_config_tool(*, ctx: Context) -> dict:
     info["graph"] = _graph_snapshot(app)
     info["available_adapters"] = _available_adapters()
 
-    return info
+    return cast(RuntimeConfigResponse, info)
 
 
 @mcp.tool(
@@ -2613,11 +2674,11 @@ def get_config_tool(*, ctx: Context) -> dict:
     ),
 )
 @traced("index_health")
-def index_health_tool(*, ctx: Context) -> dict:
+def index_health_tool(*, ctx: Context) -> IndexHealthResponse:
     """Return freshness / coverage / drift signals for every indexed repo."""
     from .server_health_tools import index_health_impl
 
-    return index_health_impl(_ctx(ctx))
+    return cast(IndexHealthResponse, index_health_impl(_ctx(ctx)))
 
 
 @mcp.resource("stropha://stats")
@@ -2731,17 +2792,19 @@ def suggest_next_tool_mcp(
     has_graph = graph_loaded(app.storage, repo_id=repo_id)
     has_rationale = has_rationale_edges(app.storage, repo_id=repo_id) if has_graph else False
 
+    registered_args = {
+        tool.name: set(tool.parameters.get("properties", {}))
+        for tool in mcp._tool_manager.list_tools()
+        if mcp.tool_is_available(tool.name)
+    }
     raw = _suggest(
         query,
         hits,
         has_graph=has_graph,
         has_rationale=has_rationale,
-        max_suggestions=max_suggestions,
+        max_suggestions=20,
     )
-    registered_args = {
-        tool.name: set(tool.parameters.get("properties", {}))
-        for tool in mcp._tool_manager.list_tools()
-    }
+    raw = [suggestion for suggestion in raw if suggestion.tool in registered_args]
 
     return SuggestNextResponse(
         query=query,
@@ -2757,7 +2820,7 @@ def suggest_next_tool_mcp(
                 reason=s.reason,
                 confidence=s.confidence,
             )
-            for s in raw
+            for s in raw[:max_suggestions]
         ],
         based_on_hits=len(hits),
         graph_loaded=has_graph,
@@ -3456,6 +3519,9 @@ def understand_file_prompt(file: str, primary_symbol: str) -> str:
     )
 
 
+mcp.set_tool_manifest()
+
+
 # ---- entry point -----------------------------------------------------------
 
 _DEFAULT_PORT = 9741
@@ -3489,6 +3555,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    mcp.set_tool_profile(get_config().mcp.profile)
     mcp.settings.host = args.host
     mcp.settings.port = args.port
 

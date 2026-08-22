@@ -332,7 +332,7 @@ def test_settings_dump_has_mcp_fields(tmp_path):
     """The ``settings`` block must expose MCP watcher fields."""
     _write_config(tmp_path, "")
     info = get_config_info()
-    for key in ("mcp_watch", "mcp_watch_interval", "mcp_watch_debounce"):
+    for key in ("mcp_profile", "mcp_watch", "mcp_watch_interval", "mcp_watch_debounce"):
         assert key in info["settings"], f"Field {key!r} missing from settings dump"
 
 
@@ -381,15 +381,30 @@ def test_logging_from_yaml(tmp_path):
 
 
 def test_mcp_from_yaml(tmp_path):
-    """MCP watch settings are read from YAML."""
+    """MCP profile and watch settings are read from YAML."""
     _write_config(
         tmp_path,
         """
         mcp:
+          profile: standard
           watch: false
           watch_interval: 5.0
     """,
     )
     cfg = load_config()
+    assert cfg.mcp.profile == "standard"
     assert cfg.mcp_watch is False
     assert cfg.mcp_watch_interval == 5.0
+
+
+def test_mcp_profile_defaults_to_full(tmp_path) -> None:
+    _write_config(tmp_path, "")
+
+    assert load_config().mcp.profile == "full"
+
+
+def test_invalid_mcp_profile_is_rejected(tmp_path) -> None:
+    _write_config(tmp_path, "mcp:\n  profile: dynamic\n")
+
+    with pytest.raises(ConfigError, match=r"mcp\.profile must be one of"):
+        load_config()

@@ -1,10 +1,119 @@
 """Pydantic response models for the MCP server surface."""
 
-from __future__ import annotations
+from typing import Any, NotRequired, TypedDict
 
 from pydantic import BaseModel, Field
 
+from .config.models import McpProfile
 from .models import SourceEvidenceRef
+
+
+class CapabilitiesResponse(BaseModel):
+    """Active static MCP surface for this daemon lifetime."""
+
+    active_profile: McpProfile
+    available_profiles: list[McpProfile]
+    tool_count: int
+    tools: list[str]
+    profile_is_static: bool = True
+
+
+class FindCallersResponse(TypedDict):
+    symbol: str
+    resolved_node: NotRequired[str | None]
+    depth: NotRequired[int | None]
+    callers: NotRequired[list[dict[str, Any]] | None]
+    edges: NotRequired[list[dict[str, Any]] | None]
+    provenance: NotRequired[str | None]
+    graph_loaded: NotRequired[bool | None]
+    message: NotRequired[str | None]
+
+
+class FindRelatedResponse(TypedDict):
+    symbol: str
+    resolved_node: NotRequired[str | None]
+    depth: NotRequired[int | None]
+    relations_filter: NotRequired[list[str] | None]
+    related: NotRequired[list[dict[str, Any]] | None]
+    edges: NotRequired[list[dict[str, Any]] | None]
+    provenance: NotRequired[str | None]
+    graph_loaded: NotRequired[bool | None]
+    message: NotRequired[str | None]
+
+
+class CommunityResponse(TypedDict):
+    query: str | int
+    resolved_node: NotRequired[str | None]
+    community: NotRequired[dict[str, Any] | None]
+    members: NotRequired[list[dict[str, Any]] | None]
+    provenance: NotRequired[str | None]
+    graph_loaded: NotRequired[bool | None]
+    message: NotRequired[str | None]
+
+
+class FindRationaleResponse(TypedDict):
+    symbol: str
+    resolved_node: NotRequired[str | None]
+    rationale: NotRequired[list[dict[str, Any]] | None]
+    provenance: NotRequired[str | None]
+    graph_loaded: NotRequired[bool | None]
+    message: NotRequired[str | None]
+
+
+class FindTestsResponse(TypedDict):
+    symbol: str
+    resolved_node: NotRequired[str | None]
+    tests: NotRequired[list[dict[str, Any]] | None]
+    test_path_patterns: NotRequired[list[str] | None]
+    provenance: NotRequired[str | None]
+    graph_loaded: NotRequired[bool | None]
+    message: NotRequired[str | None]
+
+
+class TraceFeatureResponse(TypedDict):
+    feature: str
+    entries: NotRequired[list[dict[str, Any]] | None]
+    paths: NotRequired[list[dict[str, Any]] | None]
+    nodes: NotRequired[list[dict[str, Any]] | None]
+    provenance: NotRequired[str | None]
+    graph_loaded: NotRequired[bool | None]
+    message: NotRequired[str | None]
+
+
+class BadResultResponse(TypedDict):
+    ok: bool
+    trace_id: NotRequired[str | None]
+    reason: NotRequired[str | None]
+    ts: NotRequired[str | None]
+    error: NotRequired[str | None]
+
+
+class RuntimeConfigResponse(TypedDict):
+    config: dict[str, Any]
+    settings: dict[str, Any]
+    experiments: dict[str, Any]
+    sources: dict[str, str]
+    env_values: dict[str, str | None]
+    env_groups: dict[str, Any]
+    runtime: dict[str, Any]
+    embedder: dict[str, Any]
+    index_stats: dict[str, Any]
+    features_summary: dict[str, Any]
+    pipeline: dict[str, Any]
+    inference: dict[str, Any]
+    retrieval_features: dict[str, Any]
+    graph: dict[str, Any]
+    available_adapters: dict[str, Any]
+
+
+class IndexHealthResponse(TypedDict):
+    storage: str
+    embedder: str | None
+    enricher: str
+    config_drift: bool
+    drift_detail: dict[str, Any]
+    repos: list[dict[str, Any]]
+    notes: list[str]
 
 
 class RepoInfo(BaseModel):
