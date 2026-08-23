@@ -519,7 +519,11 @@ async def _frontend_config(request):
                 },
                 status_code=202,
             )
-        except Exception as exc:
+        except BaseException as exc:
+            # Roll back before anything else. A client that gives up while a
+            # reload waits on the runtime lock cancels this task, and
+            # CancelledError is a BaseException — catching only Exception left
+            # the candidate document on disk with nobody told it was applied.
             if existed:
                 write_config_document(previous, path)
             else:
@@ -528,8 +532,26 @@ async def _frontend_config(request):
             from .inference.backend import reset_backend
 
             reset_backend()
+            if not isinstance(exc, Exception):
+                # Cancellation or interpreter shutdown: no response can reach
+                # the caller, so record the rollback and let it propagate.
+                log.warning(
+                    "frontend.config_update_aborted",
+                    error_type=type(exc).__name__,
+                    rolled_back=existed,
+                )
+                raise
             status = 422 if isinstance(exc, (StrophaError, ValueError)) else 500
             message = str(exc) if status == 422 else "Could not apply configuration"
+            # Without this the reason a save failed existed only in the
+            # caller's browser — the daemon log showed a bare 422.
+            log.warning(
+                "frontend.config_update_failed",
+                status=status,
+                error=str(exc),
+                error_type=type(exc).__name__,
+                exc_info=True,
+            )
             return _frontend_json(request, {"error": message}, status_code=status)
 
     return _frontend_json(

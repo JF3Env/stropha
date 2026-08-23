@@ -945,6 +945,13 @@ retêm seus adapters para não fechar uma conexão em uso; os runtimes aposentad
 são fechados no shutdown ASGI. Novas sessions e requests frontend observam o
 runtime substituto imediatamente.
 
+O rollback cobre também o cancelamento: um cliente que desiste enquanto o reload
+espera pelo lock derruba a task com `CancelledError`, que não é `Exception`, e o
+handler restaura o YAML anterior antes de propagar. Toda rejeição registra
+`frontend.config_update_failed` (com `error`, `error_type` e traceback) e todo
+cancelamento registra `frontend.config_update_aborted`; sem isso o motivo da
+falha existiria apenas no browser do chamador.
+
 `mcp.profile` é a exceção ao live reload. O PATCH pode persistir o novo perfil,
 mas retorna `restart_required: true`; o manifest ativo continua filtrando
 discovery e invocation com o perfil anterior até o restart do daemon.
