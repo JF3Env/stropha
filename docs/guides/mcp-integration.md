@@ -22,8 +22,10 @@ at `http://127.0.0.1:9741/health`.
 The daemon process starts first. The heavy adapter graph is built lazily on the
 first MCP or frontend request and remains warm for later sessions. Session
 state, including dedup history, pins, and scratchpads, stays isolated. When
-`mcp.watch` is enabled, the shared runtime starts one polling watcher and closes
-it only when the runtime is replaced or the daemon stops.
+`mcp.watch` is enabled, the shared runtime starts one native filesystem watcher
+and closes it only when the runtime is replaced or the daemon stops. The watcher
+reuses the warm model adapters but owns a separate storage connection in its
+writer thread.
 
 ## Client Configuration
 
@@ -245,9 +247,11 @@ runs normal `stropha index --repo <target>` auto mode; the pipeline owns the
 graphify update and graph loading. The next query observes committed index
 updates through the shared storage backend without a client restart.
 
-The daemon watcher is separate. It polls saved working-tree files and writes
-incremental changes to the persistent index. It is not a RAM overlay, and its
-default lightweight refresh does not rebuild graph vectors on every save.
+The daemon watcher is separate. Native filesystem notifications identify saved
+working-tree paths, and a debounced path-scoped refresh writes them to the
+persistent index. Startup and periodic full reconciliation cover missed or
+ambiguous events. This is not a RAM overlay, and the default lightweight refresh
+does not rebuild graph vectors on every save.
 
 ## PostgreSQL
 

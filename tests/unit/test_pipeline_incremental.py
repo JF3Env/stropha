@@ -22,7 +22,7 @@ import pytest
 
 from stropha.adapters.enricher.noop import NoopEnricher
 from stropha.embeddings.base import Embedder
-from stropha.errors import EmbeddingError, PipelineError
+from stropha.errors import EmbeddingError, FullReconcileRequiredError, PipelineError
 from stropha.ingest.chunkers.base import make_chunk_id
 from stropha.ingest.git_meta import RepoIdentity
 from stropha.models import (
@@ -144,6 +144,29 @@ class _FailingEmbedder(_StubEmbedder):
         raise EmbeddingError("injected embedding failure")
 
 
+class _FlakySecondaryEmbedder(_StubEmbedder):
+    def __init__(self) -> None:
+        self.fail_next = False
+
+    @property
+    def model_name(self) -> str:
+        return "secondary:test:v1"
+
+    @property
+    def adapter_id(self) -> str:
+        return "secondary:test:v1"
+
+    @property
+    def dim(self) -> int:
+        return 256
+
+    def embed_documents(self, texts: Sequence[str]) -> list[list[float]]:
+        if self.fail_next:
+            self.fail_next = False
+            raise EmbeddingError("injected secondary embedding failure")
+        return [[0.1] * 256 for _ in texts]
+
+
 class _FlakyEnricher(NoopEnricher):
     def __init__(self) -> None:
         self.calls = 0
@@ -197,120 +220,231 @@ def _git_init_with_file(repo: Path, name: str, content: str) -> Path:
 
 
 def test_file_is_fresh_returns_false_on_unknown_file(storage: Storage, repo_id: int) -> None:
-    assert storage.file_is_fresh(
-        repo_id, "missing.py", content_hash="abc", mtime=100.0, size_bytes=42,
-    ) is False
+    assert (
+        storage.file_is_fresh(
+            repo_id,
+            "missing.py",
+            content_hash="abc",
+            mtime=100.0,
+            size_bytes=42,
+        )
+        is False
+    )
 
 
 def test_file_is_fresh_returns_true_when_state_matches(storage: Storage, repo_id: int) -> None:
     storage.upsert_file_meta(
-        repo_id=repo_id, rel_path="a.py", content_hash="abc",
-        size_bytes=42, mtime=100.0, chunk_count=0,
-        enricher_id="noop", embedder_model="m1",
+        repo_id=repo_id,
+        rel_path="a.py",
+        content_hash="abc",
+        size_bytes=42,
+        mtime=100.0,
+        chunk_count=0,
+        enricher_id="noop",
+        embedder_model="m1",
     )
-    assert storage.file_is_fresh(
-        repo_id, "a.py", content_hash="abc", mtime=100.0, size_bytes=42,
-        enricher_id="noop", embedder_model="m1",
-    ) is True
+    assert (
+        storage.file_is_fresh(
+            repo_id,
+            "a.py",
+            content_hash="abc",
+            mtime=100.0,
+            size_bytes=42,
+            enricher_id="noop",
+            embedder_model="m1",
+        )
+        is True
+    )
 
 
 def test_file_is_fresh_returns_false_when_mtime_changes(
-    storage: Storage, repo_id: int,
+    storage: Storage,
+    repo_id: int,
 ) -> None:
     storage.upsert_file_meta(
-        repo_id=repo_id, rel_path="a.py", content_hash="abc",
-        size_bytes=42, mtime=100.0, chunk_count=0,
+        repo_id=repo_id,
+        rel_path="a.py",
+        content_hash="abc",
+        size_bytes=42,
+        mtime=100.0,
+        chunk_count=0,
     )
-    assert storage.file_is_fresh(
-        repo_id, "a.py", content_hash="abc", mtime=200.0, size_bytes=42,
-    ) is False
+    assert (
+        storage.file_is_fresh(
+            repo_id,
+            "a.py",
+            content_hash="abc",
+            mtime=200.0,
+            size_bytes=42,
+        )
+        is False
+    )
 
 
 def test_file_is_fresh_returns_false_when_size_changes(
-    storage: Storage, repo_id: int,
+    storage: Storage,
+    repo_id: int,
 ) -> None:
     storage.upsert_file_meta(
-        repo_id=repo_id, rel_path="a.py", content_hash="abc",
-        size_bytes=42, mtime=100.0, chunk_count=0,
+        repo_id=repo_id,
+        rel_path="a.py",
+        content_hash="abc",
+        size_bytes=42,
+        mtime=100.0,
+        chunk_count=0,
     )
-    assert storage.file_is_fresh(
-        repo_id, "a.py", content_hash="abc", mtime=100.0, size_bytes=99,
-    ) is False
+    assert (
+        storage.file_is_fresh(
+            repo_id,
+            "a.py",
+            content_hash="abc",
+            mtime=100.0,
+            size_bytes=99,
+        )
+        is False
+    )
 
 
 def test_file_is_fresh_returns_false_when_enricher_differs(
-    storage: Storage, repo_id: int,
+    storage: Storage,
+    repo_id: int,
 ) -> None:
     """Drift contract (ADR-004): switching enricher must invalidate fresh
     files even when (mtime, size) match exactly."""
     storage.upsert_file_meta(
-        repo_id=repo_id, rel_path="a.py", content_hash="abc",
-        size_bytes=42, mtime=100.0, chunk_count=0,
-        enricher_id="noop", embedder_model="m1",
+        repo_id=repo_id,
+        rel_path="a.py",
+        content_hash="abc",
+        size_bytes=42,
+        mtime=100.0,
+        chunk_count=0,
+        enricher_id="noop",
+        embedder_model="m1",
     )
-    assert storage.file_is_fresh(
-        repo_id, "a.py", content_hash="abc", mtime=100.0, size_bytes=42,
-        enricher_id="hierarchical", embedder_model="m1",
-    ) is False
+    assert (
+        storage.file_is_fresh(
+            repo_id,
+            "a.py",
+            content_hash="abc",
+            mtime=100.0,
+            size_bytes=42,
+            enricher_id="hierarchical",
+            embedder_model="m1",
+        )
+        is False
+    )
 
 
 def test_file_is_fresh_returns_false_when_embedder_differs(
-    storage: Storage, repo_id: int,
+    storage: Storage,
+    repo_id: int,
 ) -> None:
     storage.upsert_file_meta(
-        repo_id=repo_id, rel_path="a.py", content_hash="abc",
-        size_bytes=42, mtime=100.0, chunk_count=0,
-        enricher_id="noop", embedder_model="m1",
+        repo_id=repo_id,
+        rel_path="a.py",
+        content_hash="abc",
+        size_bytes=42,
+        mtime=100.0,
+        chunk_count=0,
+        enricher_id="noop",
+        embedder_model="m1",
     )
-    assert storage.file_is_fresh(
-        repo_id, "a.py", content_hash="abc", mtime=100.0, size_bytes=42,
-        enricher_id="noop", embedder_model="m2",
-    ) is False
+    assert (
+        storage.file_is_fresh(
+            repo_id,
+            "a.py",
+            content_hash="abc",
+            mtime=100.0,
+            size_bytes=42,
+            enricher_id="noop",
+            embedder_model="m2",
+        )
+        is False
+    )
 
 
 def test_file_is_fresh_ignores_unspecified_pipeline_keys(
-    storage: Storage, repo_id: int,
+    storage: Storage,
+    repo_id: int,
 ) -> None:
     """Callers that pass enricher_id=None / embedder_model=None opt out of
     that side of the comparison — useful for storage-only tests."""
     storage.upsert_file_meta(
-        repo_id=repo_id, rel_path="a.py", content_hash="abc",
-        size_bytes=42, mtime=100.0, chunk_count=0,
-        enricher_id="ENRICHER", embedder_model="MODEL",
+        repo_id=repo_id,
+        rel_path="a.py",
+        content_hash="abc",
+        size_bytes=42,
+        mtime=100.0,
+        chunk_count=0,
+        enricher_id="ENRICHER",
+        embedder_model="MODEL",
     )
     # Both None → source snapshot check without adapter drift comparison.
-    assert storage.file_is_fresh(
-        repo_id, "a.py", content_hash="abc", mtime=100.0, size_bytes=42,
-    ) is True
+    assert (
+        storage.file_is_fresh(
+            repo_id,
+            "a.py",
+            content_hash="abc",
+            mtime=100.0,
+            size_bytes=42,
+        )
+        is True
+    )
 
 
 def test_file_is_fresh_rejects_full_file_hash_mismatch(
-    storage: Storage, repo_id: int,
+    storage: Storage,
+    repo_id: int,
 ) -> None:
     storage.upsert_file_meta(
-        repo_id=repo_id, rel_path="a.py", content_hash="old",
-        size_bytes=42, mtime=100.0, chunk_count=0,
+        repo_id=repo_id,
+        rel_path="a.py",
+        content_hash="old",
+        size_bytes=42,
+        mtime=100.0,
+        chunk_count=0,
     )
-    assert storage.file_is_fresh(
-        repo_id, "a.py", content_hash="new", mtime=100.0, size_bytes=42,
-    ) is False
+    assert (
+        storage.file_is_fresh(
+            repo_id,
+            "a.py",
+            content_hash="new",
+            mtime=100.0,
+            size_bytes=42,
+        )
+        is False
+    )
 
 
 def test_file_is_fresh_rejects_incomplete_chunk_snapshot(
-    storage: Storage, repo_id: int,
+    storage: Storage,
+    repo_id: int,
 ) -> None:
     storage.upsert_file_meta(
-        repo_id=repo_id, rel_path="a.py", content_hash="abc",
-        size_bytes=42, mtime=100.0, chunk_count=1,
+        repo_id=repo_id,
+        rel_path="a.py",
+        content_hash="abc",
+        size_bytes=42,
+        mtime=100.0,
+        chunk_count=1,
     )
-    assert storage.file_is_fresh(
-        repo_id, "a.py", content_hash="abc", mtime=100.0, size_bytes=42,
-    ) is False
+    assert (
+        storage.file_is_fresh(
+            repo_id,
+            "a.py",
+            content_hash="abc",
+            mtime=100.0,
+            size_bytes=42,
+        )
+        is False
+    )
 
 
 @pytest.mark.parametrize("satellite", ["vec_chunks", "fts_chunks"])
 def test_file_is_fresh_rejects_missing_primary_satellite(
-    storage: Storage, repo_id: int, satellite: str,
+    storage: Storage,
+    repo_id: int,
+    satellite: str,
 ) -> None:
     chunk = Chunk(
         chunk_id="satellite-test",
@@ -321,9 +455,7 @@ def test_file_is_fresh_rejects_missing_primary_satellite(
         content="x = 1",
         content_hash="chunk-hash",
     )
-    rowid = storage.upsert_chunk(
-        chunk, [0.0] * 4, "m1", 4, repo_id=repo_id, enricher_id="noop"
-    )
+    rowid = storage.upsert_chunk(chunk, [0.0] * 4, "m1", 4, repo_id=repo_id, enricher_id="noop")
     storage.upsert_file_meta(
         repo_id=repo_id,
         rel_path="a.py",
@@ -347,9 +479,7 @@ def test_file_is_fresh_rejects_missing_primary_satellite(
 
     storage._conn.execute(f"DELETE FROM {satellite} WHERE rowid = ?", (rowid,))
 
-    assert not storage.chunk_is_fresh(
-        chunk.chunk_id, chunk.content_hash, "m1", enricher_id="noop"
-    )
+    assert not storage.chunk_is_fresh(chunk.chunk_id, chunk.content_hash, "m1", enricher_id="noop")
     assert not storage.file_is_fresh(
         repo_id,
         "a.py",
@@ -362,7 +492,8 @@ def test_file_is_fresh_rejects_missing_primary_satellite(
 
 
 def test_legacy_file_hash_is_not_exposed_as_source_evidence(
-    storage: Storage, repo_id: int,
+    storage: Storage,
+    repo_id: int,
 ) -> None:
     chunk = Chunk(
         chunk_id="legacy-source",
@@ -391,7 +522,8 @@ def test_legacy_file_hash_is_not_exposed_as_source_evidence(
 
 
 def test_source_snapshot_marker_is_repository_scoped(
-    storage: Storage, repo_id: int,
+    storage: Storage,
+    repo_id: int,
 ) -> None:
     legacy_repo_id = storage.register_repo(
         RepoIdentity(
@@ -431,12 +563,20 @@ def test_source_snapshot_marker_is_repository_scoped(
 
 def test_upsert_file_meta_idempotent(storage: Storage, repo_id: int) -> None:
     storage.upsert_file_meta(
-        repo_id=repo_id, rel_path="a.py", content_hash="abc",
-        size_bytes=42, mtime=100.0, chunk_count=3,
+        repo_id=repo_id,
+        rel_path="a.py",
+        content_hash="abc",
+        size_bytes=42,
+        mtime=100.0,
+        chunk_count=3,
     )
     storage.upsert_file_meta(
-        repo_id=repo_id, rel_path="a.py", content_hash="def",
-        size_bytes=43, mtime=200.0, chunk_count=4,
+        repo_id=repo_id,
+        rel_path="a.py",
+        content_hash="def",
+        size_bytes=43,
+        mtime=200.0,
+        chunk_count=4,
     )
     rows = storage._conn.execute(
         "SELECT * FROM files WHERE repo_id = ? AND rel_path = ?",
@@ -449,10 +589,20 @@ def test_upsert_file_meta_idempotent(storage: Storage, repo_id: int) -> None:
 
 def test_delete_file_meta_removes_rows(storage: Storage, repo_id: int) -> None:
     storage.upsert_file_meta(
-        repo_id=repo_id, rel_path="a.py", content_hash="h", size_bytes=1, mtime=1.0, chunk_count=1,
+        repo_id=repo_id,
+        rel_path="a.py",
+        content_hash="h",
+        size_bytes=1,
+        mtime=1.0,
+        chunk_count=1,
     )
     storage.upsert_file_meta(
-        repo_id=repo_id, rel_path="b.py", content_hash="h", size_bytes=1, mtime=1.0, chunk_count=1,
+        repo_id=repo_id,
+        rel_path="b.py",
+        content_hash="h",
+        size_bytes=1,
+        mtime=1.0,
+        chunk_count=1,
     )
     count = storage.delete_file_meta(repo_id, ["a.py", "b.py", "missing.py"])
     assert count == 2  # missing.py reports 0
@@ -461,8 +611,12 @@ def test_delete_file_meta_removes_rows(storage: Storage, repo_id: int) -> None:
 def test_list_stale_files_returns_missing(storage: Storage, repo_id: int) -> None:
     for p in ("a.py", "b.py", "c.py"):
         storage.upsert_file_meta(
-            repo_id=repo_id, rel_path=p, content_hash="h",
-            size_bytes=1, mtime=1.0, chunk_count=1,
+            repo_id=repo_id,
+            rel_path=p,
+            content_hash="h",
+            size_bytes=1,
+            mtime=1.0,
+            chunk_count=1,
         )
     stale = storage.list_stale_files(repo_id, ["a.py", "c.py"])
     assert set(stale) == {"b.py"}
@@ -470,8 +624,12 @@ def test_list_stale_files_returns_missing(storage: Storage, repo_id: int) -> Non
 
 def test_list_stale_files_empty_current_returns_all(storage: Storage, repo_id: int) -> None:
     storage.upsert_file_meta(
-        repo_id=repo_id, rel_path="x.py", content_hash="h",
-        size_bytes=1, mtime=1.0, chunk_count=1,
+        repo_id=repo_id,
+        rel_path="x.py",
+        content_hash="h",
+        size_bytes=1,
+        mtime=1.0,
+        chunk_count=1,
     )
     assert storage.list_stale_files(repo_id, []) == ["x.py"]
 
@@ -479,20 +637,36 @@ def test_list_stale_files_empty_current_returns_all(storage: Storage, repo_id: i
 def test_delete_chunks_by_repo_paths_is_scoped(storage: Storage) -> None:
     """Two repos with identically-named files; deletion in one must NOT
     touch the other."""
-    repo_a = storage.register_repo(RepoIdentity(
-        normalized_key="r-a", remote_url=None, root_path="/a",
-        default_branch=None, head_commit=None,
-    ))
-    repo_b = storage.register_repo(RepoIdentity(
-        normalized_key="r-b", remote_url=None, root_path="/b",
-        default_branch=None, head_commit=None,
-    ))
+    repo_a = storage.register_repo(
+        RepoIdentity(
+            normalized_key="r-a",
+            remote_url=None,
+            root_path="/a",
+            default_branch=None,
+            head_commit=None,
+        )
+    )
+    repo_b = storage.register_repo(
+        RepoIdentity(
+            normalized_key="r-b",
+            remote_url=None,
+            root_path="/b",
+            default_branch=None,
+            head_commit=None,
+        )
+    )
     for repo, cid in ((repo_a, "ca"), (repo_b, "cb")):
         c = Chunk(
-            chunk_id=cid, rel_path="shared.py", language="python",
-            kind="file", symbol=None, parent_chunk_id=None,
-            start_line=1, end_line=5,
-            content="x", content_hash=cid,
+            chunk_id=cid,
+            rel_path="shared.py",
+            language="python",
+            kind="file",
+            symbol=None,
+            parent_chunk_id=None,
+            start_line=1,
+            end_line=5,
+            content="x",
+            content_hash=cid,
         )
         storage.upsert_chunk(c, [0.0] * 4, "stub", 4, repo_id=repo)
     storage.commit()
@@ -507,12 +681,20 @@ def test_delete_chunks_by_repo_paths_is_scoped(storage: Storage) -> None:
 
 def test_stats_reports_files_tracked(storage: Storage, repo_id: int) -> None:
     storage.upsert_file_meta(
-        repo_id=repo_id, rel_path="a.py", content_hash="h",
-        size_bytes=1, mtime=1.0, chunk_count=1,
+        repo_id=repo_id,
+        rel_path="a.py",
+        content_hash="h",
+        size_bytes=1,
+        mtime=1.0,
+        chunk_count=1,
     )
     storage.upsert_file_meta(
-        repo_id=repo_id, rel_path="b.py", content_hash="h",
-        size_bytes=1, mtime=1.0, chunk_count=1,
+        repo_id=repo_id,
+        rel_path="b.py",
+        content_hash="h",
+        size_bytes=1,
+        mtime=1.0,
+        chunk_count=1,
     )
     s = storage.stats()
     assert s["files_tracked"] == 2
@@ -538,7 +720,9 @@ def test_pipeline_skips_unchanged_files_on_second_run(tmp_path: Path) -> None:
         embedder = _StubEmbedder()
 
         s1 = Pipeline(
-            storage=s, embedder=embedder, enricher=NoopEnricher(),
+            storage=s,
+            embedder=embedder,
+            enricher=NoopEnricher(),
             repos=[repo],
         ).run(rebuild=True, mode="full")
         assert s1.chunks_embedded >= 1
@@ -546,7 +730,9 @@ def test_pipeline_skips_unchanged_files_on_second_run(tmp_path: Path) -> None:
         assert s1.repos[0].code_changed is True
 
         s2 = Pipeline(
-            storage=s, embedder=embedder, enricher=NoopEnricher(),
+            storage=s,
+            embedder=embedder,
+            enricher=NoopEnricher(),
             repos=[repo],
         ).run(mode="full")
         assert s2.files_skipped_fresh == s1.files_visited
@@ -562,7 +748,9 @@ def test_pipeline_invalidates_skip_when_file_changes(tmp_path: Path) -> None:
     with Storage(tmp_path / "idx.db", embedding_dim=4) as s:
         embedder = _StubEmbedder()
         Pipeline(
-            storage=s, embedder=embedder, enricher=NoopEnricher(),
+            storage=s,
+            embedder=embedder,
+            enricher=NoopEnricher(),
             repos=[repo],
         ).run(rebuild=True, mode="full")
 
@@ -572,12 +760,323 @@ def test_pipeline_invalidates_skip_when_file_changes(tmp_path: Path) -> None:
         os.utime(main, (1_000_000_000, 1_000_000_000))
 
         s2 = Pipeline(
-            storage=s, embedder=embedder, enricher=NoopEnricher(),
+            storage=s,
+            embedder=embedder,
+            enricher=NoopEnricher(),
             repos=[repo],
         ).run(mode="full")
         assert s2.files_skipped_fresh == 0
         assert s2.chunks_seen >= 1
         assert s2.repos[0].code_changed is True
+
+
+def test_path_refresh_indexes_only_requested_files(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    first = _git_init_with_file(repo, "first.py", "first = 1\n")
+    second = repo / "second.py"
+    second.write_text("second = 1\n", encoding="utf-8")
+
+    with Storage(tmp_path / "idx.db", embedding_dim=4) as storage:
+        pipeline = Pipeline(
+            storage=storage,
+            embedder=_StubEmbedder(),
+            enricher=NoopEnricher(),
+            repos=[repo],
+            chunker=_LineChunker(),
+            graphify=False,
+        )
+        pipeline.run(mode="reconcile")
+        first.write_text("first = 2\n", encoding="utf-8")
+        second.write_text("second = 2\n", encoding="utf-8")
+
+        stats = pipeline.refresh_paths(repo=repo, changed_or_added={"first.py"})
+
+        rows = storage._conn.execute(
+            "SELECT rel_path, content FROM chunks ORDER BY rel_path"
+        ).fetchall()
+        content = {row["rel_path"]: row["content"] for row in rows}
+        assert stats.files_visited == 1
+        assert content["first.py"] == "first = 2"
+        assert content["second.py"] == "second = 1"
+
+
+def test_path_refresh_updates_indexed_symlink_aliases_without_full_walk(
+    tmp_path: Path,
+) -> None:
+    from unittest.mock import patch
+
+    repo = tmp_path / "repo"
+    target = _git_init_with_file(repo, "target.py", "value = 1\n")
+    (repo / "alias.py").symlink_to(target.name)
+
+    with Storage(tmp_path / "idx.db", embedding_dim=4) as storage:
+        pipeline = Pipeline(
+            storage=storage,
+            embedder=_StubEmbedder(),
+            enricher=NoopEnricher(),
+            repos=[repo],
+            chunker=_LineChunker(),
+            graphify=False,
+        )
+        pipeline.run(mode="reconcile")
+        target.write_text("value = 2\n", encoding="utf-8")
+
+        with patch.object(
+            pipeline._walker,
+            "discover",
+            side_effect=AssertionError("path refresh performed a full walk"),
+        ):
+            stats = pipeline.refresh_paths(repo=repo, changed_or_added={"target.py"})
+
+        rows = storage._conn.execute(
+            "SELECT rel_path, content FROM chunks "
+            "WHERE rel_path IN ('alias.py', 'target.py') ORDER BY rel_path"
+        ).fetchall()
+        content = {row["rel_path"]: row["content"] for row in rows}
+        assert stats.files_visited == 2
+        assert content == {"alias.py": "value = 2", "target.py": "value = 2"}
+
+
+def test_path_refresh_uses_current_state_instead_of_event_action(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    source = _git_init_with_file(repo, "module.py", "value = 1\n")
+
+    with Storage(tmp_path / "idx.db", embedding_dim=4) as storage:
+        pipeline = Pipeline(
+            storage=storage,
+            embedder=_StubEmbedder(),
+            enricher=NoopEnricher(),
+            repos=[repo],
+            chunker=_LineChunker(),
+            graphify=False,
+        )
+        pipeline.run(mode="reconcile")
+        source.write_text("value = 2\n", encoding="utf-8")
+
+        stats = pipeline.refresh_paths(repo=repo, deleted={"module.py"})
+
+        row = storage._conn.execute(
+            "SELECT content FROM chunks WHERE rel_path = 'module.py'"
+        ).fetchone()
+        assert stats.files_visited == 1
+        assert row["content"] == "value = 2"
+
+
+def test_path_refresh_evicts_deleted_directory_without_prefix_collision(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    _git_init_with_file(repo, "root.py", "root = 1\n")
+    package = repo / "pkg"
+    package.mkdir()
+    (package / "gone.py").write_text("gone = 1\n", encoding="utf-8")
+    other = repo / "pkg2"
+    other.mkdir()
+    (other / "keep.py").write_text("keep = 1\n", encoding="utf-8")
+
+    with Storage(tmp_path / "idx.db", embedding_dim=4) as storage:
+        pipeline = Pipeline(
+            storage=storage,
+            embedder=_StubEmbedder(),
+            enricher=NoopEnricher(),
+            repos=[repo],
+            chunker=_LineChunker(),
+            graphify=False,
+        )
+        pipeline.run(mode="reconcile")
+        (package / "gone.py").unlink()
+        package.rmdir()
+
+        stats = pipeline.refresh_paths(repo=repo, deleted={"pkg"})
+
+        repo_key = storage.list_repos()[0].normalized_key
+        indexed_repo_id = storage.lookup_repo_id(repo_key)
+        assert indexed_repo_id is not None
+        paths = set(storage.load_file_meta_map(indexed_repo_id))
+        assert "pkg/gone.py" not in paths
+        assert "pkg2/keep.py" in paths
+        assert stats.files_evicted == 1
+
+
+def test_path_refresh_evicts_descendants_when_directory_becomes_file(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    _git_init_with_file(repo, "root.py", "root = 1\n")
+    replaced = repo / "module.py"
+    replaced.mkdir()
+    (replaced / "old.py").write_text("old = 1\n", encoding="utf-8")
+
+    with Storage(tmp_path / "idx.db", embedding_dim=4) as storage:
+        pipeline = Pipeline(
+            storage=storage,
+            embedder=_StubEmbedder(),
+            enricher=NoopEnricher(),
+            repos=[repo],
+            chunker=_LineChunker(),
+            graphify=False,
+        )
+        pipeline.run(mode="reconcile")
+        (replaced / "old.py").unlink()
+        replaced.rmdir()
+        replaced.write_text("replacement = 1\n", encoding="utf-8")
+
+        stats = pipeline.refresh_paths(repo=repo, changed_or_added={"module.py"})
+
+        repo_key = storage.list_repos()[0].normalized_key
+        indexed_repo_id = storage.lookup_repo_id(repo_key)
+        assert indexed_repo_id is not None
+        paths = set(storage.load_file_meta_map(indexed_repo_id))
+        assert "module.py" in paths
+        assert "module.py/old.py" not in paths
+        assert stats.files_evicted == 1
+
+
+def test_path_refresh_evicts_file_that_vanishes_after_discovery(tmp_path: Path) -> None:
+    from unittest.mock import patch
+
+    repo = tmp_path / "repo"
+    source = _git_init_with_file(repo, "module.py", "value = 1\n")
+
+    with Storage(tmp_path / "idx.db", embedding_dim=4) as storage:
+        pipeline = Pipeline(
+            storage=storage,
+            embedder=_StubEmbedder(),
+            enricher=NoopEnricher(),
+            repos=[repo],
+            chunker=_LineChunker(),
+            graphify=False,
+        )
+        pipeline.run(mode="reconcile")
+        discover_paths = pipeline._walker.discover_paths
+
+        def discover_then_remove(repo_path: Path, paths: Iterable[str]):
+            discovered = list(discover_paths(repo_path, paths))
+            source.unlink()
+            return discovered
+
+        with patch.object(
+            pipeline._walker,
+            "discover_paths",
+            side_effect=discover_then_remove,
+        ):
+            stats = pipeline.refresh_paths(repo=repo, changed_or_added={"module.py"})
+
+        repo_key = storage.list_repos()[0].normalized_key
+        indexed_repo_id = storage.lookup_repo_id(repo_key)
+        assert indexed_repo_id is not None
+        assert "module.py" not in storage.load_file_meta_map(indexed_repo_id)
+        assert stats.files_evicted == 1
+
+
+def test_path_refresh_retries_missing_secondary_embeddings_for_fresh_primary(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    source = _git_init_with_file(repo, "module.py", "value = 1\n")
+    secondary = _FlakySecondaryEmbedder()
+
+    with Storage(tmp_path / "idx.db", embedding_dim=4) as storage:
+        pipeline = Pipeline(
+            storage=storage,
+            embedder=_StubEmbedder(),
+            secondary_embedder=secondary,
+            enricher=NoopEnricher(),
+            repos=[repo],
+            chunker=_LineChunker(),
+            graphify=False,
+        )
+        pipeline.run(mode="reconcile")
+        source.write_text("value = 2\n", encoding="utf-8")
+        secondary.fail_next = True
+
+        with pytest.raises(EmbeddingError, match="secondary"):
+            pipeline.refresh_paths(repo=repo, changed_or_added={"module.py"})
+
+        stats = pipeline.refresh_paths(repo=repo, changed_or_added={"module.py"})
+
+        assert stats.files_skipped_fresh == 1
+        assert stats.secondary_chunks_embedded == 1
+
+
+def test_path_refresh_evicts_file_that_became_ignored(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _git_init_with_file(repo, "root.py", "root = 1\n")
+    source = repo / "generated.py"
+    source.write_text("value = 1\n", encoding="utf-8")
+
+    with Storage(tmp_path / "idx.db", embedding_dim=4) as storage:
+        pipeline = Pipeline(
+            storage=storage,
+            embedder=_StubEmbedder(),
+            enricher=NoopEnricher(),
+            repos=[repo],
+            chunker=_LineChunker(),
+            graphify=False,
+        )
+        pipeline.run(mode="reconcile")
+        (repo / ".gitignore").write_text("generated.py\n", encoding="utf-8")
+        source.write_text("value = 2\n", encoding="utf-8")
+
+        stats = pipeline.refresh_paths(repo=repo, changed_or_added={"generated.py"})
+
+        assert stats.files_evicted == 1
+        assert (
+            storage._conn.execute("SELECT 1 FROM chunks WHERE rel_path = 'generated.py'").fetchone()
+            is None
+        )
+
+
+def test_path_refresh_requires_reconcile_before_adapter_drift_mutates_index(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    source = _git_init_with_file(repo, "module.py", "value = 1\n")
+
+    with Storage(tmp_path / "idx.db", embedding_dim=4) as storage:
+        pipeline = Pipeline(
+            storage=storage,
+            embedder=_StubEmbedder(),
+            enricher=NoopEnricher(),
+            repos=[repo],
+            chunker=_LineChunker(),
+            graphify=False,
+        )
+        pipeline.run(mode="reconcile")
+        repo_key = storage.list_repos()[0].normalized_key
+        indexed_repo_id = storage.lookup_repo_id(repo_key)
+        assert indexed_repo_id is not None
+        before = storage.load_file_meta_map(indexed_repo_id)["module.py"].content_hash
+        storage.set_meta("active_embedder_id", "different:v1")
+        storage.commit()
+        source.write_text("value = 2\n", encoding="utf-8")
+
+        with pytest.raises(FullReconcileRequiredError, match="embedder"):
+            pipeline.refresh_paths(repo=repo, changed_or_added={"module.py"})
+
+        after = storage.load_file_meta_map(indexed_repo_id)["module.py"].content_hash
+        assert after == before
+
+
+def test_path_refresh_rejects_unsafe_and_directory_paths(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _git_init_with_file(repo, "module.py", "value = 1\n")
+
+    with Storage(tmp_path / "idx.db", embedding_dim=4) as storage:
+        pipeline = Pipeline(
+            storage=storage,
+            embedder=_StubEmbedder(),
+            enricher=NoopEnricher(),
+            repos=[repo],
+            chunker=_LineChunker(),
+            graphify=False,
+        )
+        pipeline.run(mode="reconcile")
+
+        with pytest.raises(ValueError, match="repository-relative"):
+            pipeline.refresh_paths(repo=repo, changed_or_added={"../outside.py"})
+        with pytest.raises(FullReconcileRequiredError, match="directory"):
+            pipeline.refresh_paths(repo=repo, changed_or_added={"."})
 
 
 def test_pipeline_rejects_conflicting_duplicate_chunk_ids(tmp_path: Path) -> None:
@@ -628,9 +1127,7 @@ def test_graph_dirty_survives_graph_disabled_run(tmp_path: Path) -> None:
             "stropha.pipeline.graphify_runner.run_graphify_multi",
             return_value=[],
         ) as run_graphify:
-            failed = pipeline._run_graphify(
-                [RepoStats(normalized_key="test", url=None)]
-            )
+            failed = pipeline._run_graphify([RepoStats(normalized_key="test", url=None)])
 
         run_graphify.assert_called_once_with([repo.resolve()])
         assert failed == {repo.resolve()}
@@ -659,8 +1156,9 @@ def test_graph_dirty_clears_only_after_mirror_success(tmp_path: Path) -> None:
             repos=[repo],
             graphify=True,
         )
-        with patch.object(pipeline, "_run_graphify", return_value=set()), patch.object(
-            pipeline, "_refresh_graphify_mirror", return_value={1}
+        with (
+            patch.object(pipeline, "_run_graphify", return_value=set()),
+            patch.object(pipeline, "_refresh_graphify_mirror", return_value={1}),
         ):
             pipeline.run(mode="full")
 
@@ -680,7 +1178,9 @@ def test_incremental_falls_back_to_full_on_first_run(tmp_path: Path) -> None:
         embedder = _StubEmbedder()
         # Explicit incremental on a fresh DB.
         stats = Pipeline(
-            storage=s, embedder=embedder, enricher=NoopEnricher(),
+            storage=s,
+            embedder=embedder,
+            enricher=NoopEnricher(),
             repos=[repo],
         ).run(rebuild=True, mode="incremental")
         # Fallback happened — full pass embedded the file.
@@ -695,13 +1195,16 @@ def test_incremental_falls_back_to_full_on_first_run(tmp_path: Path) -> None:
 def test_incremental_picks_up_new_commit(tmp_path: Path) -> None:
     """Add a file in a 2nd commit; incremental mode embeds just that one."""
     import subprocess
+
     repo = tmp_path / "repo"
     _git_init_with_file(repo, "a.py", "x = 1\n")
 
     with Storage(tmp_path / "idx.db", embedding_dim=4) as s:
         embedder = _StubEmbedder()
         Pipeline(
-            storage=s, embedder=embedder, enricher=NoopEnricher(),
+            storage=s,
+            embedder=embedder,
+            enricher=NoopEnricher(),
             repos=[repo],
         ).run(rebuild=True)
 
@@ -711,7 +1214,9 @@ def test_incremental_picks_up_new_commit(tmp_path: Path) -> None:
         subprocess.run(["git", "commit", "-qm", "add b"], cwd=repo, check=True)
 
         stats = Pipeline(
-            storage=s, embedder=embedder, enricher=NoopEnricher(),
+            storage=s,
+            embedder=embedder,
+            enricher=NoopEnricher(),
             repos=[repo],
         ).run(mode="incremental")
         # Only b.py touched
@@ -723,6 +1228,7 @@ def test_incremental_picks_up_new_commit(tmp_path: Path) -> None:
 
 def test_incremental_evicts_deleted_file(tmp_path: Path) -> None:
     import subprocess
+
     repo = tmp_path / "repo"
     _git_init_with_file(repo, "keep.py", "k\n")
     (repo / "drop.py").write_text("d\n", encoding="utf-8")
@@ -732,7 +1238,9 @@ def test_incremental_evicts_deleted_file(tmp_path: Path) -> None:
     with Storage(tmp_path / "idx.db", embedding_dim=4) as s:
         embedder = _StubEmbedder()
         Pipeline(
-            storage=s, embedder=embedder, enricher=NoopEnricher(),
+            storage=s,
+            embedder=embedder,
+            enricher=NoopEnricher(),
             repos=[repo],
         ).run(rebuild=True)
 
@@ -741,45 +1249,50 @@ def test_incremental_evicts_deleted_file(tmp_path: Path) -> None:
         subprocess.run(["git", "commit", "-qm", "drop"], cwd=repo, check=True)
 
         stats = Pipeline(
-            storage=s, embedder=embedder, enricher=NoopEnricher(),
+            storage=s,
+            embedder=embedder,
+            enricher=NoopEnricher(),
             repos=[repo],
         ).run(mode="incremental")
         assert stats.files_evicted == 1
-        assert s._conn.execute(
-            "SELECT 1 FROM chunks WHERE rel_path='drop.py' LIMIT 1"
-        ).fetchone() is None
+        assert (
+            s._conn.execute("SELECT 1 FROM chunks WHERE rel_path='drop.py' LIMIT 1").fetchone()
+            is None
+        )
 
 
 def test_incremental_renames_chunks_without_re_embed(tmp_path: Path) -> None:
     """Pure rename → rename_chunks preserves the original chunks (zero
     re-embed work). The file_meta row's rel_path is updated."""
     import subprocess
+
     repo = tmp_path / "repo"
     _git_init_with_file(repo, "old_name.py", "def foo():\n    return 1\n")
 
     with Storage(tmp_path / "idx.db", embedding_dim=4) as s:
         embedder = _StubEmbedder()
         Pipeline(
-            storage=s, embedder=embedder, enricher=NoopEnricher(),
+            storage=s,
+            embedder=embedder,
+            enricher=NoopEnricher(),
             repos=[repo],
         ).run(rebuild=True)
 
         # Pure rename, no content change.
-        subprocess.run(["git", "mv", "old_name.py", "new_name.py"],
-                       cwd=repo, check=True)
+        subprocess.run(["git", "mv", "old_name.py", "new_name.py"], cwd=repo, check=True)
         subprocess.run(["git", "commit", "-qm", "rename"], cwd=repo, check=True)
 
         Pipeline(
-            storage=s, embedder=embedder, enricher=NoopEnricher(),
+            storage=s,
+            embedder=embedder,
+            enricher=NoopEnricher(),
             repos=[repo],
         ).run(mode="incremental")
 
         # The chunk_id today still hashes rel_path so the rename causes
         # at least some downstream re-processing. What MUST hold is that
         # the new path is present in chunks and the old is absent.
-        rows = s._conn.execute(
-            "SELECT rel_path FROM chunks ORDER BY rel_path"
-        ).fetchall()
+        rows = s._conn.execute("SELECT rel_path FROM chunks ORDER BY rel_path").fetchall()
         paths = {r["rel_path"] for r in rows}
         assert "new_name.py" in paths
         assert "old_name.py" not in paths
@@ -796,10 +1309,15 @@ def test_rename_chunks_recomputes_chunk_id(storage: Storage, repo_id: int) -> No
 
     chunk = Chunk(
         chunk_id="placeholder",  # we'll compute the real one below
-        rel_path="old.py", language="python",
-        kind="function", symbol="foo", parent_chunk_id=None,
-        start_line=1, end_line=10,
-        content="def foo(): pass", content_hash="hash-foo",
+        rel_path="old.py",
+        language="python",
+        kind="function",
+        symbol="foo",
+        parent_chunk_id=None,
+        start_line=1,
+        end_line=10,
+        content="def foo(): pass",
+        content_hash="hash-foo",
     )
     real_old_id = make_chunk_id("old.py", 1, 10, "hash-foo", repo_key="local:test")
     chunk = chunk.model_copy(update={"chunk_id": real_old_id})
@@ -814,7 +1332,11 @@ def test_rename_chunks_recomputes_chunk_id(storage: Storage, repo_id: int) -> No
     ).fetchone()
     assert row is not None
     expected_new_id = make_chunk_id(
-        "new.py", 1, 10, "hash-foo", repo_key="local:test",
+        "new.py",
+        1,
+        10,
+        "hash-foo",
+        repo_key="local:test",
     )
     assert row["chunk_id"] == expected_new_id
     assert row["chunk_id"] != real_old_id
@@ -827,10 +1349,15 @@ def test_rename_chunks_regenerates_fts5_row(storage: Storage, repo_id: int) -> N
 
     chunk = Chunk(
         chunk_id=make_chunk_id("src/old_thing.py", 1, 5, "h", repo_key="local:test"),
-        rel_path="src/old_thing.py", language="python",
-        kind="function", symbol="thing", parent_chunk_id=None,
-        start_line=1, end_line=5,
-        content="def thing(): pass", content_hash="h",
+        rel_path="src/old_thing.py",
+        language="python",
+        kind="function",
+        symbol="thing",
+        parent_chunk_id=None,
+        start_line=1,
+        end_line=5,
+        content="def thing(): pass",
+        content_hash="h",
     )
     storage.upsert_chunk(chunk, [0.0] * 4, "stub", 4, repo_id=repo_id)
     storage.commit()
@@ -855,10 +1382,15 @@ def test_rename_preserves_chunk_is_fresh(storage: Storage, repo_id: int) -> None
 
     chunk = Chunk(
         chunk_id=make_chunk_id("a.py", 1, 5, "hc", repo_key="local:test"),
-        rel_path="a.py", language="python",
-        kind="function", symbol=None, parent_chunk_id=None,
-        start_line=1, end_line=5,
-        content="x", content_hash="hc",
+        rel_path="a.py",
+        language="python",
+        kind="function",
+        symbol=None,
+        parent_chunk_id=None,
+        start_line=1,
+        end_line=5,
+        content="x",
+        content_hash="hc",
     )
     storage.upsert_chunk(chunk, [0.0] * 4, "m", 4, repo_id=repo_id)
     storage.rename_chunks(repo_id, "a.py", "b.py")
@@ -887,7 +1419,9 @@ def test_full_flag_overrides_incremental_default(tmp_path: Path) -> None:
     with Storage(tmp_path / "idx.db", embedding_dim=4) as s:
         embedder = _StubEmbedder()
         Pipeline(
-            storage=s, embedder=embedder, enricher=NoopEnricher(),
+            storage=s,
+            embedder=embedder,
+            enricher=NoopEnricher(),
             repos=[repo],
         ).run(rebuild=True)
         # Touch the file mtime artificially so file_is_fresh fails:
@@ -895,7 +1429,9 @@ def test_full_flag_overrides_incremental_default(tmp_path: Path) -> None:
         # file, not git diff. The simplest check is that files_visited
         # > 0 even when no commits happened since last index.
         stats = Pipeline(
-            storage=s, embedder=embedder, enricher=NoopEnricher(),
+            storage=s,
+            embedder=embedder,
+            enricher=NoopEnricher(),
             repos=[repo],
         ).run(mode="full")
         # Walker visited the file (it was just skipped via cache).
@@ -910,13 +1446,16 @@ def test_pipeline_evicts_stale_files_at_end_of_run(tmp_path: Path) -> None:
     transient = repo / "transient.py"
     transient.write_text("y = 2\n", encoding="utf-8")
     import subprocess
+
     subprocess.run(["git", "add", "."], cwd=repo, check=True)
     subprocess.run(["git", "commit", "-qm", "add transient"], cwd=repo, check=True)
 
     with Storage(tmp_path / "idx.db", embedding_dim=4) as s:
         embedder = _StubEmbedder()
         s1 = Pipeline(
-            storage=s, embedder=embedder, enricher=NoopEnricher(),
+            storage=s,
+            embedder=embedder,
+            enricher=NoopEnricher(),
             repos=[repo],
         ).run(rebuild=True, mode="full")
         assert s1.files_visited == 2
@@ -927,7 +1466,9 @@ def test_pipeline_evicts_stale_files_at_end_of_run(tmp_path: Path) -> None:
         subprocess.run(["git", "commit", "-qm", "drop transient"], cwd=repo, check=True)
 
         s2 = Pipeline(
-            storage=s, embedder=embedder, enricher=NoopEnricher(),
+            storage=s,
+            embedder=embedder,
+            enricher=NoopEnricher(),
             repos=[repo],
         ).run(mode="full")
         assert s2.files_evicted == 1
@@ -937,9 +1478,12 @@ def test_pipeline_evicts_stale_files_at_end_of_run(tmp_path: Path) -> None:
         ).fetchone()
         assert remaining is None
         # file_meta row also gone.
-        assert s._conn.execute(
-            "SELECT 1 FROM files WHERE rel_path = 'transient.py' LIMIT 1"
-        ).fetchone() is None
+        assert (
+            s._conn.execute(
+                "SELECT 1 FROM files WHERE rel_path = 'transient.py' LIMIT 1"
+            ).fetchone()
+            is None
+        )
 
 
 # --------------------------------------------------------------------------- WIN-425 — hash-based reconcile (auto default)
@@ -969,11 +1513,17 @@ def test_auto_mode_routes_to_reconcile(tmp_path: Path) -> None:
     with Storage(tmp_path / "idx.db", embedding_dim=4) as s:
         emb = _StubEmbedder()
         s1 = Pipeline(
-            storage=s, embedder=emb, enricher=NoopEnricher(), repos=[repo],
+            storage=s,
+            embedder=emb,
+            enricher=NoopEnricher(),
+            repos=[repo],
         ).run()  # default mode == "auto" -> reconcile
         assert s1.chunks_embedded >= 1
         s2 = Pipeline(
-            storage=s, embedder=emb, enricher=NoopEnricher(), repos=[repo],
+            storage=s,
+            embedder=emb,
+            enricher=NoopEnricher(),
+            repos=[repo],
         ).run()
         assert s2.files_skipped_fresh >= 1
         assert s2.chunks_seen == 0  # nothing re-chunked
@@ -988,7 +1538,10 @@ def test_reconcile_detects_uncommitted_edit(tmp_path: Path) -> None:
     with Storage(tmp_path / "idx.db", embedding_dim=4) as s:
         emb = _StubEmbedder()
         Pipeline(
-            storage=s, embedder=emb, enricher=NoopEnricher(), repos=[repo],
+            storage=s,
+            embedder=emb,
+            enricher=NoopEnricher(),
+            repos=[repo],
         ).run()
 
         # Edit WITHOUT committing; bump mtime so the (mtime,size) fast-path fires.
@@ -996,7 +1549,10 @@ def test_reconcile_detects_uncommitted_edit(tmp_path: Path) -> None:
         os.utime(main, (1_000_000_000, 1_000_000_000))
 
         stats = Pipeline(
-            storage=s, embedder=emb, enricher=NoopEnricher(), repos=[repo],
+            storage=s,
+            embedder=emb,
+            enricher=NoopEnricher(),
+            repos=[repo],
         ).run()
         assert stats.files_skipped_fresh == 0
         assert stats.chunks_seen >= 1
@@ -1019,7 +1575,10 @@ def test_reconcile_recovers_from_interrupted_index(tmp_path: Path) -> None:
     with Storage(tmp_path / "idx.db", embedding_dim=4) as s:
         emb = _StubEmbedder()
         Pipeline(
-            storage=s, embedder=emb, enricher=NoopEnricher(), repos=[repo],
+            storage=s,
+            embedder=emb,
+            enricher=NoopEnricher(),
+            repos=[repo],
         ).run()
         repo_id = s._conn.execute("SELECT id FROM repos LIMIT 1").fetchone()["id"]
 
@@ -1029,14 +1588,18 @@ def test_reconcile_recovers_from_interrupted_index(tmp_path: Path) -> None:
         s.commit()
 
         stats = Pipeline(
-            storage=s, embedder=emb, enricher=NoopEnricher(), repos=[repo],
+            storage=s,
+            embedder=emb,
+            enricher=NoopEnricher(),
+            repos=[repo],
         ).run()
         # a.py is fresh (skipped); b.py had no meta -> reconciled.
         assert stats.files_skipped_fresh == 1
         assert stats.chunks_seen >= 1
-        assert s._conn.execute(
-            "SELECT 1 FROM chunks WHERE rel_path = 'b.py' LIMIT 1"
-        ).fetchone() is not None
+        assert (
+            s._conn.execute("SELECT 1 FROM chunks WHERE rel_path = 'b.py' LIMIT 1").fetchone()
+            is not None
+        )
 
 
 def test_reconcile_evicts_file_deleted_from_worktree(tmp_path: Path) -> None:
@@ -1052,19 +1615,26 @@ def test_reconcile_evicts_file_deleted_from_worktree(tmp_path: Path) -> None:
     with Storage(tmp_path / "idx.db", embedding_dim=4) as s:
         emb = _StubEmbedder()
         Pipeline(
-            storage=s, embedder=emb, enricher=NoopEnricher(), repos=[repo],
+            storage=s,
+            embedder=emb,
+            enricher=NoopEnricher(),
+            repos=[repo],
         ).run()
 
         (repo / "drop.py").unlink()
 
         stats = Pipeline(
-            storage=s, embedder=emb, enricher=NoopEnricher(), repos=[repo],
+            storage=s,
+            embedder=emb,
+            enricher=NoopEnricher(),
+            repos=[repo],
         ).run()
         assert stats.files_evicted == 1
         assert stats.repos[0].code_changed is True
-        assert s._conn.execute(
-            "SELECT 1 FROM chunks WHERE rel_path = 'drop.py' LIMIT 1"
-        ).fetchone() is None
+        assert (
+            s._conn.execute("SELECT 1 FROM chunks WHERE rel_path = 'drop.py' LIMIT 1").fetchone()
+            is None
+        )
 
 
 def test_pipeline_clears_obsolete_path_identity(tmp_path: Path) -> None:
@@ -1111,9 +1681,12 @@ def test_pipeline_clears_obsolete_path_identity(tmp_path: Path) -> None:
             repos=[repo],
         ).run()
 
-        assert s._conn.execute(
-            "SELECT 1 FROM chunks WHERE repo_id = ? LIMIT 1", (fallback_id,)
-        ).fetchone() is None
+        assert (
+            s._conn.execute(
+                "SELECT 1 FROM chunks WHERE repo_id = ? LIMIT 1", (fallback_id,)
+            ).fetchone()
+            is None
+        )
 
 
 def test_reconcile_reindexes_on_embedder_config_change(tmp_path: Path) -> None:
@@ -1124,12 +1697,16 @@ def test_reconcile_reindexes_on_embedder_config_change(tmp_path: Path) -> None:
     _git_init_with_file(repo, "main.py", "x = 1\n")
     with Storage(tmp_path / "idx.db", embedding_dim=4) as s:
         Pipeline(
-            storage=s, embedder=_StubEmbedder(), enricher=NoopEnricher(),
+            storage=s,
+            embedder=_StubEmbedder(),
+            enricher=NoopEnricher(),
             repos=[repo],
         ).run()
         # Identical content, different embedder config -> must NOT skip.
         stats = Pipeline(
-            storage=s, embedder=_StubEmbedderV2(), enricher=NoopEnricher(),
+            storage=s,
+            embedder=_StubEmbedderV2(),
+            enricher=NoopEnricher(),
             repos=[repo],
         ).run()
         assert stats.files_skipped_fresh == 0
@@ -1287,9 +1864,7 @@ def test_failed_index_preserves_snapshot_and_repository_watermark(
         before_chunks = storage._conn.execute(
             "SELECT chunk_id, content FROM chunks ORDER BY chunk_id"
         ).fetchall()
-        before_checkpoint = storage.get_meta(
-            f"last_indexed_sha_{int(before_repo['id'])}"
-        )
+        before_checkpoint = storage.get_meta(f"last_indexed_sha_{int(before_repo['id'])}")
 
         main.write_text("x = 2\n", encoding="utf-8")
         subprocess.run(["git", "add", "main.py"], cwd=repo, check=True)
@@ -1314,12 +1889,8 @@ def test_failed_index_preserves_snapshot_and_repository_watermark(
             "head_commit": before_repo["head_commit"],
             "last_indexed_at": before_repo["last_indexed_at"],
         }
-        assert [tuple(row) for row in after_chunks] == [
-            tuple(row) for row in before_chunks
-        ]
-        assert storage.get_meta(
-            f"last_indexed_sha_{int(before_repo['id'])}"
-        ) == before_checkpoint
+        assert [tuple(row) for row in after_chunks] == [tuple(row) for row in before_chunks]
+        assert storage.get_meta(f"last_indexed_sha_{int(before_repo['id'])}") == before_checkpoint
 
 
 def test_failed_first_index_does_not_publish_repository_watermark(
@@ -1349,16 +1920,15 @@ def test_failed_first_index_does_not_publish_repository_watermark(
 
 
 def test_failed_index_releases_storage_writer_lock(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repo = tmp_path / "repo"
     _git_init_with_file(repo, "main.py", "x = 1\n")
     released: list[bool] = []
 
     with Storage(tmp_path / "idx.db", embedding_dim=4) as storage:
-        monkeypatch.setattr(
-            storage, "try_acquire_index_lock", lambda: True, raising=False
-        )
+        monkeypatch.setattr(storage, "try_acquire_index_lock", lambda: True, raising=False)
         monkeypatch.setattr(
             storage,
             "release_index_lock",
@@ -1419,12 +1989,9 @@ def test_snapshot_upgrade_forces_reconcile_in_incremental_mode(tmp_path: Path) -
             repos=[repo],
             graphify=False,
         ).run()
-        repo_id = int(
-            storage._conn.execute("SELECT id FROM repos LIMIT 1").fetchone()["id"]
-        )
+        repo_id = int(storage._conn.execute("SELECT id FROM repos LIMIT 1").fetchone()["id"])
         storage._conn.execute(
-            "UPDATE files SET content_hash = 'legacy-first-chunk-hash' "
-            "WHERE rel_path = 'main.py'"
+            "UPDATE files SET content_hash = 'legacy-first-chunk-hash' WHERE rel_path = 'main.py'"
         )
         storage._conn.execute(
             "DELETE FROM meta WHERE key = ?",
@@ -1446,10 +2013,7 @@ def test_snapshot_upgrade_forces_reconcile_in_incremental_mode(tmp_path: Path) -
         assert stats.files_visited == 1
         assert stats.files_skipped_fresh == 0
         assert row["content_hash"] == hashlib.sha256(main.read_bytes()).hexdigest()
-        assert (
-            storage.get_meta(source_snapshot_meta_key(repo_id))
-            == SOURCE_SNAPSHOT_VERSION
-        )
+        assert storage.get_meta(source_snapshot_meta_key(repo_id)) == SOURCE_SNAPSHOT_VERSION
 
 
 @pytest.mark.parametrize("stored_chunker_id", [None, "tree-sitter-dispatch:stale"])
@@ -1469,9 +2033,7 @@ def test_chunker_drift_forces_reconcile_in_incremental_mode(
             graphify=False,
         )
         first_pipeline.run()
-        repo_id = int(
-            storage._conn.execute("SELECT id FROM repos LIMIT 1").fetchone()["id"]
-        )
+        repo_id = int(storage._conn.execute("SELECT id FROM repos LIMIT 1").fetchone()["id"])
         chunker_meta_key = f"active_chunker_id:{repo_id}"
         active_chunker_id = storage.get_meta(chunker_meta_key)
         assert active_chunker_id is not None
@@ -1514,9 +2076,7 @@ def test_failed_enrichment_stays_retryable_and_defers_watermark(tmp_path: Path) 
         failed_meta = storage._conn.execute(
             "SELECT last_enricher_id FROM files WHERE rel_path = 'main.py'"
         ).fetchone()
-        repo_id = int(
-            storage._conn.execute("SELECT id FROM repos LIMIT 1").fetchone()["id"]
-        )
+        repo_id = int(storage._conn.execute("SELECT id FROM repos LIMIT 1").fetchone()["id"])
         assert failed_meta["last_enricher_id"] == "__stropha_incomplete__"
         assert storage.get_meta(source_snapshot_meta_key(repo_id)) is None
         assert storage.get_meta(f"active_chunker_id:{repo_id}") is None
@@ -1536,10 +2096,7 @@ def test_failed_enrichment_stays_retryable_and_defers_watermark(tmp_path: Path) 
         ).fetchone()
         assert enricher.calls == 2
         assert completed_meta["last_enricher_id"] == "flaky:v1"
-        assert (
-            storage.get_meta(source_snapshot_meta_key(repo_id))
-            == SOURCE_SNAPSHOT_VERSION
-        )
+        assert storage.get_meta(source_snapshot_meta_key(repo_id)) == SOURCE_SNAPSHOT_VERSION
         assert storage.get_meta(f"active_chunker_id:{repo_id}") == "test-line:v1"
         assert storage.list_repos()[0].last_indexed_at is not None
         assert retry_stats.repos[0].code_changed is True

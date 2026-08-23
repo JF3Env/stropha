@@ -230,7 +230,7 @@ Continuously numbered 1–118. **Effort:** S (<1d) · M (1–4d) · L (>1w). **I
 |---|---|---|---|---|
 | 74 | LSP-backed precise edges | Consume a language server for exact go-to-def/refs instead of graphify heuristics — eliminates symbol-resolution false edges. | L | High |
 | 75 | Editor-buffer ingestion | An LSP/MCP channel so unsaved buffer edits update the index, not just commits. | L | High |
-| 76 | Streaming re-embed queue | Debounced background re-embed of just-touched symbols (`stropha watch` already polls — make it symbol-granular). | M | Med |
+| 76 | Streaming re-embed queue | Native filesystem watch already performs debounced path-scoped refresh; narrow invalidation to just-touched symbols. | M | Med |
 | 77 | Branch-aware index overlays | Per-branch overlays so switching branches doesn't thrash the index. | L | Med |
 | 78 | Stale-result watermark | Every result carries the index's HEAD SHA so the agent knows if it is reading old code. | S | Med |
 | 79 | Predictive prefetch on file-open | When the agent opens file F, pre-warm retrieval for F's graph neighbors. | M | Med |

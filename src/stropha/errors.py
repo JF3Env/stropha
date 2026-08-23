@@ -59,6 +59,10 @@ class PipelineError(StrophaError):
     """Failure assembling or running the pipeline."""
 
 
+class FullReconcileRequiredError(PipelineError):
+    """A path-scoped refresh cannot safely preserve the complete index."""
+
+
 class AdapterError(StrophaError):
     """Failure registering or invoking an adapter.
 

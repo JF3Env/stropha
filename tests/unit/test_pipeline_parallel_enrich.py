@@ -39,8 +39,10 @@ class _SleepyEnricher:
     @property
     def config_schema(self):  # pragma: no cover  not exercised
         from pydantic import BaseModel
+
         class _C(BaseModel):
             pass
+
         return _C
 
     def health(self) -> StageHealth:
@@ -48,6 +50,7 @@ class _SleepyEnricher:
 
     def enrich(self, chunk: Chunk, ctx: StageContext) -> str:
         import threading
+
         time.sleep(self._latency_s)
         self.calls.append((chunk.chunk_id, threading.get_ident()))
         return f"enriched({chunk.chunk_id})"
@@ -65,7 +68,9 @@ def _make_chunk(chunk_id: str) -> Chunk:
     )
 
 
-def _make_pipeline_shell(concurrency: int, latency_s: float = 0.1) -> tuple[Pipeline, _SleepyEnricher]:
+def _make_pipeline_shell(
+    concurrency: int, latency_s: float = 0.1
+) -> tuple[Pipeline, _SleepyEnricher]:
     """Build a Pipeline instance bypassing __init__ to avoid storage/embedder setup.
 
     Only ``_enricher`` and ``_enricher_concurrency`` are needed for
@@ -165,6 +170,7 @@ def test_single_chunk_skips_thread_pool():
     assert results == [("enriched(only)", True)]
     # The one call should be on the main thread (no pool spawned).
     import threading
+
     main_tid = threading.get_ident()
     assert enricher.calls[0][1] == main_tid
 
@@ -209,6 +215,24 @@ def test_invalid_concurrency_rejected_at_pipeline_init():
         )
 
 
+def test_storage_bound_enricher_is_forced_to_owner_thread():
+    from unittest.mock import MagicMock
+
+    from stropha.pipeline.pipeline import Pipeline
+
+    enricher = _SleepyEnricher(latency_s=0)
+    enricher._storage = MagicMock()
+    pipeline = Pipeline(
+        storage=MagicMock(),
+        embedder=MagicMock(batch_size=64, dim=512, model_name="m"),
+        enricher=enricher,
+        repos=[__import__("pathlib").Path("/tmp")],
+        enricher_concurrency=4,
+    )
+
+    assert pipeline._enricher_concurrency == 1
+
+
 def test_enricher_exceptions_propagate():
     """If the enricher raises (not just returns None), the parallel map
     surfaces the exception so the caller can handle/log it. Currently the
@@ -246,8 +270,10 @@ class _FailingEnricher:
     @property
     def config_schema(self):  # pragma: no cover
         from pydantic import BaseModel
+
         class _C(BaseModel):
             pass
+
         return _C
 
     def health(self):
@@ -329,8 +355,10 @@ class _BatchingEnricher:
     @property
     def config_schema(self):  # pragma: no cover
         from pydantic import BaseModel
+
         class _C(BaseModel):
             pass
+
         return _C
 
     def health(self):
@@ -410,6 +438,7 @@ def test_pipeline_batch_path_respects_concurrency():
 
     def slow_enrich_batch(chunks, contexts):
         import time as _t
+
         _t.sleep(0.05)
         with lock:
             seen_threads.add(threading.get_ident())

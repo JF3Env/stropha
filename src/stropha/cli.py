@@ -1317,7 +1317,7 @@ def watch(
         "--interval",
         min=0.1,
         max=60.0,
-        help="Polling interval in seconds.",
+        help="Maximum native event wait before maintenance and retry checks.",
     ),
     debounce: float = typer.Option(
         2.0,
@@ -1341,7 +1341,8 @@ def watch(
     target = repo or _load_config().target_repo
     console.print(
         f"[bold]Watching:[/bold] {target.resolve()}\n"
-        f"[dim]interval={interval}s · debounce={debounce}s · full_refresh={full_refresh}[/dim]\n"
+        f"[dim]event_wait={interval}s · debounce={debounce}s · "
+        f"full_refresh={full_refresh}[/dim]\n"
         "[dim]Ctrl-C to stop.[/dim]"
     )
     try:

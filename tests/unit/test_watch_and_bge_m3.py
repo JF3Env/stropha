@@ -1,307 +1,505 @@
-"""Tests for `stropha watch` snapshot diffing and bge-m3 adapter registration.
-
-The blocking loop is exercised with injected clocks and wait callbacks so
-the reliability tests stay deterministic. The rest covers the snapshot
-helpers and BGE-M3 adapter registration.
-"""
+"""Tests for native saved-worktree watching and BGE-M3 registration."""
 
 from __future__ import annotations
 
-import os
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+from watchfiles import Change
 
 from stropha.adapters.embedder.bge_m3 import BgeM3Config, BgeM3Embedder
 from stropha.errors import PipelineError, StrophaError
-from stropha.models import SourceFile
 from stropha.pipeline.registry import lookup_adapter
+from stropha.stages.embedder import SynchronizedEmbedder
 from stropha.watch import (
     WatchController,
-    _format_changes,
+    _classify_changes,
+    _PendingRefresh,
     _reindex,
+    _run_resilient_watch_loop,
     _run_watch_loop,
-    _Snapshot,
-    _snapshot,
-    _WatchState,
+    _watch_filter,
 )
 
-# --------------------------------------------------------------------------- snapshot diff
 
+def test_classify_changes_uses_final_filesystem_state(tmp_path: Path) -> None:
+    changed = tmp_path / "changed.py"
+    changed.write_text("x = 1\n", encoding="utf-8")
+    deleted = tmp_path / "deleted.py"
 
-def test_snapshot_empty_diff() -> None:
-    a = _Snapshot()
-    b = _Snapshot()
-    changed, removed = a.diff(b)
-    assert changed == set()
-    assert removed == set()
-
-
-def test_snapshot_detects_new_files() -> None:
-    a = _Snapshot()
-    b = _Snapshot(files={Path("/x/a.py"): (1, 10, "a")})
-    changed, _removed = a.diff(b)
-    assert changed == {Path("/x/a.py")}
-
-
-def test_snapshot_detects_changed_mtime_ns() -> None:
-    a = _Snapshot(files={Path("/x/a.py"): (1, 10, "a")})
-    b = _Snapshot(files={Path("/x/a.py"): (2, 10, "a")})
-    changed, _removed = a.diff(b)
-    assert changed == {Path("/x/a.py")}
-
-
-def test_snapshot_detects_changed_size_with_same_mtime_ns() -> None:
-    a = _Snapshot(files={Path("/x/a.py"): (1, 10, "a")})
-    b = _Snapshot(files={Path("/x/a.py"): (1, 11, "a")})
-    changed, _removed = a.diff(b)
-    assert changed == {Path("/x/a.py")}
-
-
-def test_snapshot_detects_removed() -> None:
-    a = _Snapshot(
-        files={Path("/x/a.py"): (1, 10, "a"), Path("/x/b.py"): (1, 10, "b")}
-    )
-    b = _Snapshot(files={Path("/x/a.py"): (1, 10, "a")})
-    changed, removed = a.diff(b)
-    assert changed == set()
-    assert removed == {Path("/x/b.py")}
-
-
-def test_snapshot_walks_real_directory(tmp_path: Path) -> None:
-    """End-to-end: snapshot picks up real files via the Walker."""
-    # The Walker requires a git repo for git-ls-files but falls back to
-    # filesystem walk when .git is absent.
-    (tmp_path / "a.py").write_text("x", encoding="utf-8")
-    (tmp_path / "b.md").write_text("# hi", encoding="utf-8")
-    snap = _snapshot(tmp_path)
-    file_names = {p.name for p in snap.files}
-    assert "a.py" in file_names
-    assert "b.md" in file_names
-    path = (tmp_path / "a.py").resolve()
-    stat = path.stat()
-    assert snap.files[path] == (
-        stat.st_mtime_ns,
-        stat.st_size,
-        "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
+    dirty, removed, reconcile = _classify_changes(
+        tmp_path,
+        {
+            (Change.deleted, str(changed)),
+            (Change.modified, str(deleted)),
+        },
     )
 
-
-def test_snapshot_detects_same_size_edit_with_preserved_mtime(tmp_path: Path) -> None:
-    path = tmp_path / "a.py"
-    path.write_text("x = 1\n", encoding="utf-8")
-    before = _snapshot(tmp_path)
-    stat = path.stat()
-    path.write_text("x = 2\n", encoding="utf-8")
-    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
-
-    changed, removed = before.diff(_snapshot(tmp_path))
-
-    assert changed == {path.resolve()}
-    assert removed == set()
+    assert dirty == {"changed.py"}
+    assert removed == {"deleted.py"}
+    assert reconcile is False
 
 
-def test_snapshot_keeps_distinct_logical_symlink_paths(tmp_path: Path) -> None:
-    target = tmp_path / "target.py"
-    target.write_text("x = 1\n", encoding="utf-8")
-    first = tmp_path / "first.py"
-    second = tmp_path / "second.py"
-    first.symlink_to(target)
-    second.symlink_to(target)
-    walker = MagicMock()
-    walker.discover.return_value = [
-        SourceFile(
-            path=target,
-            rel_path="first.py",
-            language="python",
-            size_bytes=target.stat().st_size,
-        ),
-        SourceFile(
-            path=target,
-            rel_path="second.py",
-            language="python",
-            size_bytes=target.stat().st_size,
-        ),
+@pytest.mark.parametrize("name", [".gitignore", ".strophaignore", ".ragignore"])
+def test_classify_changes_reconciles_admission_rule_edits(
+    tmp_path: Path,
+    name: str,
+) -> None:
+    path = tmp_path / name
+    path.write_text("generated/\n", encoding="utf-8")
+
+    _changed, _deleted, reconcile = _classify_changes(tmp_path, {(Change.modified, str(path))})
+
+    assert reconcile is True
+
+
+def test_classify_changes_reconciles_current_directories(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    package.mkdir()
+
+    changed, deleted, reconcile = _classify_changes(tmp_path, {(Change.added, str(package))})
+
+    assert changed == set()
+    assert deleted == set()
+    assert reconcile is True
+
+
+def test_classify_changes_ignores_unrelated_git_internal_and_outside_paths(
+    tmp_path: Path,
+) -> None:
+    git_object = tmp_path / ".git" / "objects" / "pack" / "data"
+    outside = tmp_path.parent / "outside.py"
+
+    changed, deleted, reconcile = _classify_changes(
+        tmp_path,
+        {
+            (Change.modified, str(git_object)),
+            (Change.modified, str(outside)),
+        },
+    )
+
+    assert changed == set()
+    assert deleted == set()
+    assert reconcile is False
+
+
+@pytest.mark.parametrize(
+    "rel_path",
+    [
+        ".git/index",
+        ".git/config",
+        ".git/info/exclude",
+        "nested/.git",
+        "nested/.git/index",
+    ],
+)
+def test_git_admission_events_require_full_reconcile(tmp_path: Path, rel_path: str) -> None:
+    path = tmp_path / rel_path
+
+    changed, deleted, reconcile = _classify_changes(
+        tmp_path,
+        {(Change.modified, str(path))},
+    )
+
+    assert changed == set()
+    assert deleted == set()
+    assert reconcile is True
+    assert _watch_filter(tmp_path)(Change.modified, str(path)) is True
+
+
+def test_watch_loop_uses_native_backend_and_reconciles_on_startup(
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, object] = {}
+    refresh = MagicMock()
+
+    def fake_watch(*paths, **kwargs):
+        captured["paths"] = paths
+        captured.update(kwargs)
+        yield set()
+
+    _run_watch_loop(
+        tmp_path,
+        interval_s=0.25,
+        debounce_s=1.5,
+        full_refresh=False,
+        stop_event=threading.Event(),
+        refresh=refresh,
+        once=True,
+        watch_fn=fake_watch,
+    )
+
+    assert captured["paths"] == (tmp_path,)
+    assert captured["force_polling"] is None
+    assert captured["yield_on_timeout"] is True
+    assert captured["stop_event"] is not None
+    assert captured["debounce"] == 50
+    assert captured["step"] == 50
+    watch_filter = captured["watch_filter"]
+    assert callable(watch_filter)
+    assert watch_filter(Change.modified, str(tmp_path / ".venv" / "tracked.py"))
+    assert watch_filter(Change.modified, str(tmp_path / ".git" / "index"))
+    assert not watch_filter(Change.modified, str(tmp_path / ".git" / "objects" / "data"))
+    refresh.assert_called_once_with(set(), set(), full_reconcile=True)
+
+
+def test_watch_loop_emits_only_dirty_paths_after_startup(tmp_path: Path) -> None:
+    source = tmp_path / "module.py"
+    source.write_text("x = 1\n", encoding="utf-8")
+    refresh = MagicMock()
+
+    def fake_watch(*_paths, **_kwargs):
+        yield set()
+        yield {(Change.modified, str(source))}
+
+    _run_watch_loop(
+        tmp_path,
+        interval_s=0.1,
+        debounce_s=0,
+        full_refresh=False,
+        stop_event=threading.Event(),
+        refresh=refresh,
+        watch_fn=fake_watch,
+    )
+
+    assert refresh.call_args_list == [
+        ((set(), set()), {"full_reconcile": True}),
+        (({"module.py"}, set()), {"full_reconcile": False}),
     ]
 
-    snap = _snapshot(tmp_path, walker=walker)
 
-    assert set(snap.files) == {first.absolute(), second.absolute()}
-
-
-# --------------------------------------------------------------------------- formatting
-
-
-def test_format_changes_empty() -> None:
-    out = _format_changes([], [], root=Path("/x"))
-    assert out == "no changes"
-
-
-def test_format_changes_only_changed() -> None:
-    out = _format_changes(
-        [Path("/x/a.py"), Path("/x/b.py")],
-        [],
-        root=Path("/x"),
-    )
-    assert "2 changed" in out
-    assert "a.py" in out
-
-
-def test_format_changes_only_removed() -> None:
-    out = _format_changes(
-        [],
-        [Path("/x/old.py")],
-        root=Path("/x"),
-    )
-    assert "1 removed" in out
-
-
-def test_format_changes_caps_long_lists() -> None:
-    many = [Path(f"/x/f{i}.py") for i in range(10)]
-    out = _format_changes(many, [], root=Path("/x"))
-    assert "10 changed" in out
-    assert "more" in out  # the "(+N more)" elision
-
-
-# --------------------------------------------------------------------------- WatchController
-
-
-def test_watch_loop_reconciles_existing_work_on_startup(tmp_path: Path) -> None:
-    snapshot = _Snapshot(files={(tmp_path / "a.py").resolve(): (1, 1, "a")})
-
-    with (
-        patch("stropha.watch._snapshot", return_value=snapshot),
-        patch("stropha.watch._reindex") as reindex,
-    ):
-        _run_watch_loop(
-            tmp_path,
-            interval_s=1.0,
-            debounce_s=0.0,
-            full_refresh=False,
-            wait=lambda _timeout: False,
-            once=True,
-            now_fn=lambda: 0.0,
-        )
-
-    reindex.assert_called_once_with(tmp_path, full_refresh=False)
-
-
-def test_watch_loop_retries_after_initial_snapshot_failure(tmp_path: Path) -> None:
-    snapshot = _Snapshot(files={(tmp_path / "a.py").absolute(): (1, 1, "a")})
-
-    with (
-        patch(
-            "stropha.watch._snapshot",
-            side_effect=[RuntimeError("walker failed"), snapshot],
-        ),
-        patch("stropha.watch._reindex") as reindex,
-    ):
-        _run_watch_loop(
-            tmp_path,
-            interval_s=1.0,
-            debounce_s=0.0,
-            full_refresh=False,
-            wait=lambda _timeout: False,
-            once=True,
-            now_fn=lambda: 0.0,
-        )
-
-    reindex.assert_called_once_with(tmp_path, full_refresh=False)
-
-
-def test_watch_loop_retries_lock_failure_without_new_event(tmp_path: Path) -> None:
-    snapshot = _Snapshot(files={(tmp_path / "a.py").resolve(): (1, 1, "a")})
+def test_watch_loop_applies_configured_debounce_after_last_change(tmp_path: Path) -> None:
+    source = tmp_path / "module.py"
+    source.write_text("x = 1\n", encoding="utf-8")
     clock = 0.0
-    finished = False
+    refresh = MagicMock()
+
+    def now() -> float:
+        return clock
+
+    def fake_watch(*_paths, **_kwargs):
+        nonlocal clock
+        yield set()
+        clock = 0.1
+        yield {(Change.modified, str(source))}
+        clock = 1.0
+        yield set()
+        clock = 1.6
+        yield set()
+
+    _run_watch_loop(
+        tmp_path,
+        interval_s=0.1,
+        debounce_s=1.5,
+        full_refresh=False,
+        stop_event=threading.Event(),
+        refresh=refresh,
+        watch_fn=fake_watch,
+        now_fn=now,
+    )
+
+    assert refresh.call_args_list == [
+        ((set(), set()), {"full_reconcile": True}),
+        (({"module.py"}, set()), {"full_reconcile": False}),
+    ]
+
+
+def test_watch_loop_retries_without_another_filesystem_event(tmp_path: Path) -> None:
+    clock = 0.0
     attempts: list[float] = []
 
-    def wait(_timeout: float) -> bool:
-        nonlocal clock
-        if finished:
-            return True
-        clock += 0.25
-        return False
+    def now() -> float:
+        return clock
 
-    def reindex(_repo: Path, *, full_refresh: bool) -> None:
-        nonlocal finished
-        assert full_refresh is False
+    def refresh(
+        _changed: set[str],
+        _deleted: set[str],
+        *,
+        full_reconcile: bool,
+    ) -> None:
+        assert full_reconcile is True
         attempts.append(clock)
         if len(attempts) == 1:
             raise StrophaError("advisory lock held")
-        finished = True
 
-    with (
-        patch("stropha.watch._snapshot", return_value=snapshot),
-        patch("stropha.watch._reindex", side_effect=reindex),
-    ):
-        _run_watch_loop(
-            tmp_path,
-            interval_s=0.25,
-            debounce_s=0.0,
-            full_refresh=False,
-            wait=wait,
-            now_fn=lambda: clock,
-        )
+    def fake_watch(*_paths, **_kwargs):
+        nonlocal clock
+        yield set()
+        clock = 0.5
+        yield set()
+        clock = 1.0
+        yield set()
 
-    assert attempts == [0.25, 1.25]
+    _run_watch_loop(
+        tmp_path,
+        interval_s=0.1,
+        debounce_s=0.1,
+        full_refresh=False,
+        stop_event=threading.Event(),
+        refresh=refresh,
+        once=True,
+        watch_fn=fake_watch,
+        now_fn=now,
+    )
+
+    assert attempts == [0.0, 1.0]
 
 
-def test_watch_state_uses_bounded_exponential_backoff() -> None:
-    state = _WatchState.starting(_Snapshot(), now=0.0)
+def test_pending_refresh_uses_bounded_exponential_backoff() -> None:
+    pending = _PendingRefresh(full_reconcile=True)
 
-    delays = [state.mark_failed(now=0.0) for _ in range(7)]
+    delays = [pending.mark_failed(now=0.0) for _ in range(7)]
 
     assert delays == [1.0, 2.0, 4.0, 8.0, 16.0, 30.0, 30.0]
 
 
-def test_watch_state_merges_events_while_retry_is_pending() -> None:
-    path = Path("/x/a.py")
-    state = _WatchState.starting(_Snapshot(files={path: (1, 1, "a")}), now=0.0)
-    assert state.mark_failed(now=0.0) == 1.0
+def test_pending_refresh_full_reconcile_supersedes_paths() -> None:
+    pending = _PendingRefresh(changed={"a.py"}, deleted={"old.py"})
 
-    changed, removed = state.observe(_Snapshot(files={path: (2, 2, "b")}), now=0.5)
+    pending.merge({"b.py"}, {"gone.py"}, full_reconcile=True)
 
-    assert changed == {path}
-    assert removed == set()
-    assert state.pending_since == 0.5
-    assert state.retry_at == 1.0
-    assert state.is_ready(now=0.99, debounce_s=0.25) is False
-    assert state.is_ready(now=1.0, debounce_s=0.25) is True
+    assert pending.full_reconcile is True
+    assert pending.changed == set()
+    assert pending.deleted == set()
 
 
 def test_watch_controller_starts_and_stops(tmp_path: Path) -> None:
-    """WatchController can be started and stopped cleanly."""
-    (tmp_path / "a.py").write_text("x", encoding="utf-8")
-    ctrl = WatchController(repo=tmp_path, interval_s=0.1, debounce_s=0.1)
-    ctrl.start()
-    assert ctrl._thread is not None
-    assert ctrl._thread.is_alive()
-    ctrl.stop(timeout=2.0)
-    assert not ctrl._thread.is_alive()
+    def fake_watch(*_paths, **kwargs):
+        stop_event = kwargs["stop_event"]
+        yield set()
+        while not stop_event.wait(0.01):
+            yield set()
+
+    with (
+        patch("stropha.watch.watch", side_effect=fake_watch),
+        patch("stropha.watch._reindex"),
+    ):
+        controller = WatchController(repo=tmp_path, interval_s=0.1, debounce_s=0.1)
+        controller.start()
+        assert controller._thread is not None
+        assert controller._thread.is_alive()
+        controller.stop(timeout=2.0)
+
+    assert not controller._thread.is_alive()
+
+
+def test_watch_controller_surfaces_startup_failure(tmp_path: Path) -> None:
+    def broken_watch(*_paths, **_kwargs):
+        raise OSError("native backend failed")
+        yield set()
+
+    with patch("stropha.watch.watch", side_effect=broken_watch):
+        controller = WatchController(repo=tmp_path)
+        with pytest.raises(StrophaError, match="native backend failed"):
+            controller.start()
+
+
+def test_watch_controller_startup_is_not_delayed_by_debounce(tmp_path: Path) -> None:
+    with patch("stropha.watch._reindex"):
+        controller = WatchController(repo=tmp_path, interval_s=0.1, debounce_s=6.0)
+        started_at = time.monotonic()
+        controller.start()
+        elapsed = time.monotonic() - started_at
+        controller.stop(timeout=2.0)
+
+    assert elapsed < 1.0
+
+
+def test_resilient_watch_loop_restarts_backend_after_runtime_failure(tmp_path: Path) -> None:
+    attempts = 0
+    stop_event = threading.Event()
+
+    def flaky_watch(*_paths, **_kwargs):
+        nonlocal attempts
+        attempts += 1
+        yield set()
+        if attempts == 1:
+            raise OSError("backend disconnected")
+        stop_event.set()
+        yield set()
+
+    with patch("stropha.watch._RETRY_INITIAL_S", 0):
+        _run_resilient_watch_loop(
+            tmp_path,
+            interval_s=0.1,
+            debounce_s=0.1,
+            full_refresh=False,
+            stop_event=stop_event,
+            refresh=MagicMock(),
+            watch_fn=flaky_watch,
+        )
+
+    assert attempts == 2
+
+
+def test_watch_controller_restarts_backend_after_runtime_failure(tmp_path: Path) -> None:
+    attempts = 0
+    restarted = threading.Event()
+
+    def flaky_watch(*_paths, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        stop_event = kwargs["stop_event"]
+        yield set()
+        if attempts == 1:
+            raise OSError("backend disconnected")
+        restarted.set()
+        while not stop_event.wait(0.01):
+            yield set()
+
+    with (
+        patch("stropha.watch.watch", side_effect=flaky_watch),
+        patch("stropha.watch._reindex"),
+        patch("stropha.watch._RETRY_INITIAL_S", 0.01),
+        patch("stropha.watch._RETRY_MAX_S", 0.01),
+    ):
+        controller = WatchController(repo=tmp_path, interval_s=0.1, debounce_s=0.1)
+        controller.start()
+        assert restarted.wait(timeout=1)
+        assert controller._thread is not None
+        assert controller._thread.is_alive()
+        controller.stop(timeout=1)
+
+    assert attempts == 2
+
+
+def test_watch_controller_owns_writer_storage_and_reuses_warm_stages(
+    tmp_path: Path,
+) -> None:
+    stages = SimpleNamespace(
+        resolved={"storage": {"adapter": "test"}},
+        embedder=SimpleNamespace(dim=3),
+        secondary_embedder=None,
+        enricher=SimpleNamespace(),
+    )
+    writer_storage = MagicMock()
+    pipeline = MagicMock()
+    refreshed = threading.Event()
+    worker_thread_ids: list[int] = []
+
+    def build_writer(*_args, **_kwargs):
+        worker_thread_ids.append(threading.get_ident())
+        return writer_storage
+
+    def run_loop(_repo, **kwargs):
+        kwargs["on_ready"]()
+        kwargs["refresh"]({"src/app.py"}, set(), full_reconcile=False)
+        refreshed.set()
+        kwargs["stop_event"].wait(timeout=1)
+
+    with (
+        patch("stropha.watch.build_storage", side_effect=build_writer) as build_storage,
+        patch("stropha.watch._pipeline_from_stages", return_value=pipeline) as make_pipeline,
+        patch("stropha.watch._refresh_pipeline") as refresh_pipeline,
+        patch("stropha.watch._run_watch_loop", side_effect=run_loop),
+    ):
+        controller = WatchController(
+            tmp_path,
+            stages=stages,
+            enricher_concurrency=2,
+            enricher_batch_size=4,
+        )
+        controller.start()
+        assert refreshed.wait(timeout=1)
+        controller.stop(timeout=1)
+
+    assert controller._thread is not None
+    assert worker_thread_ids == [controller._thread.ident]
+    assert worker_thread_ids[0] != threading.get_ident()
+    build_storage.assert_called_once_with(stages.resolved, embedding_dim=3)
+    make_pipeline.assert_called_once_with(
+        tmp_path.resolve(),
+        stages,
+        storage=writer_storage,
+        enricher=stages.enricher,
+        graphify=False,
+        enricher_concurrency=2,
+        enricher_batch_size=4,
+    )
+    refresh_pipeline.assert_called_once_with(
+        pipeline,
+        tmp_path.resolve(),
+        {"src/app.py"},
+        set(),
+        full_reconcile=False,
+    )
+    writer_storage.close.assert_called_once_with()
+
+
+def test_synchronized_embedder_serializes_query_and_document_calls() -> None:
+    delegate = MagicMock()
+    active = 0
+    max_active = 0
+    active_lock = threading.Lock()
+    start = threading.Barrier(3)
+
+    def embed(*_args):
+        nonlocal active, max_active
+        with active_lock:
+            active += 1
+            max_active = max(max_active, active)
+        time.sleep(0.02)
+        with active_lock:
+            active -= 1
+        return [1.0]
+
+    delegate.embed_query.side_effect = embed
+    delegate.embed_documents.side_effect = embed
+    embedder = SynchronizedEmbedder(delegate)
+
+    def embed_query() -> None:
+        start.wait()
+        embedder.embed_query("query")
+
+    def embed_documents() -> None:
+        start.wait()
+        embedder.embed_documents(["document"])
+
+    threads = [
+        threading.Thread(target=embed_query),
+        threading.Thread(target=embed_documents),
+    ]
+    for thread in threads:
+        thread.start()
+    start.wait()
+    for thread in threads:
+        thread.join(timeout=1)
+
+    assert max_active == 1
+    assert all(not thread.is_alive() for thread in threads)
 
 
 def test_watch_controller_double_start_is_noop(tmp_path: Path) -> None:
-    """Starting twice doesn't spawn two threads."""
-    (tmp_path / "a.py").write_text("x", encoding="utf-8")
-    ctrl = WatchController(repo=tmp_path, interval_s=0.1, debounce_s=0.1)
-    ctrl.start()
-    first_thread = ctrl._thread
-    ctrl.start()  # Should be no-op
-    assert ctrl._thread is first_thread
-    ctrl.stop(timeout=2.0)
+    def fake_watch(*_paths, **kwargs):
+        stop_event = kwargs["stop_event"]
+        yield set()
+        while not stop_event.wait(0.01):
+            yield set()
+
+    with (
+        patch("stropha.watch.watch", side_effect=fake_watch),
+        patch("stropha.watch._reindex"),
+    ):
+        controller = WatchController(repo=tmp_path)
+        controller.start()
+        first_thread = controller._thread
+        controller.start()
+        assert controller._thread is first_thread
+        controller.stop(timeout=2.0)
 
 
 def test_watch_controller_stop_without_start_is_noop(tmp_path: Path) -> None:
-    """Stopping without starting doesn't raise."""
-    ctrl = WatchController(repo=tmp_path)
-    ctrl.stop()  # Should not raise
+    WatchController(repo=tmp_path).stop()
 
 
 @pytest.mark.parametrize("full_refresh", [False, True])
 def test_reindex_only_runs_graph_lifecycle_for_full_refresh(
-    tmp_path: Path, full_refresh: bool
+    tmp_path: Path,
+    full_refresh: bool,
 ) -> None:
     storage = MagicMock()
     built = SimpleNamespace(
@@ -318,6 +516,7 @@ def test_reindex_only_runs_graph_lifecycle_for_full_refresh(
     )
     stats = SimpleNamespace(
         files_visited=1,
+        files_evicted=0,
         chunks_seen=1,
         chunks_embedded=1,
         chunks_skipped_fresh=0,
@@ -327,10 +526,7 @@ def test_reindex_only_runs_graph_lifecycle_for_full_refresh(
     with (
         patch("stropha.watch.load_pipeline_config", return_value={}),
         patch("stropha.watch.build_stages", return_value=built),
-        patch(
-            "stropha.watch.get_config",
-            return_value=SimpleNamespace(inference=inference),
-        ),
+        patch("stropha.watch.get_config", return_value=SimpleNamespace(inference=inference)),
         patch("stropha.watch.Pipeline") as pipeline_cls,
     ):
         pipeline_cls.return_value.run.return_value = stats
@@ -355,6 +551,7 @@ def test_reindex_rejects_incomplete_pipeline_stats(tmp_path: Path) -> None:
     )
     stats = SimpleNamespace(
         files_visited=1,
+        files_evicted=0,
         chunks_seen=1,
         chunks_embedded=0,
         chunks_skipped_fresh=0,
@@ -364,18 +561,12 @@ def test_reindex_rejects_incomplete_pipeline_stats(tmp_path: Path) -> None:
     with (
         patch("stropha.watch.load_pipeline_config", return_value={}),
         patch("stropha.watch.build_stages", return_value=built),
-        patch(
-            "stropha.watch.get_config",
-            return_value=SimpleNamespace(inference=inference),
-        ),
+        patch("stropha.watch.get_config", return_value=SimpleNamespace(inference=inference)),
         patch("stropha.watch.Pipeline") as pipeline_cls,
         pytest.raises(PipelineError, match="2 chunks failed enrichment"),
     ):
         pipeline_cls.return_value.run.return_value = stats
         _reindex(tmp_path, full_refresh=False)
-
-
-# --------------------------------------------------------------------------- bge-m3 registry
 
 
 def test_bge_m3_registered_in_adapter_registry() -> None:
@@ -389,11 +580,6 @@ def test_bge_m3_default_model_is_bge_m3() -> None:
 
 
 def test_bge_m3_adapter_id_prefix() -> None:
-    """We don't load the real model in tests — just check the class
-    declares the correct adapter_name without instantiating."""
-    assert BgeM3Embedder.__name__ == "BgeM3Embedder"
-    # adapter_name is a @property on instances; check via class-level
-    # attribute access by reading the source contract.
     import inspect
 
     src = inspect.getsource(BgeM3Embedder.adapter_name.fget)  # type: ignore[union-attr]

@@ -19,7 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ..errors import PipelineError, StrophaError
+from ..errors import FullReconcileRequiredError, PipelineError, StrophaError
 from ..ingest.git_meta import detect as detect_repo
 from ..logging import get_logger
 from ..models import SOURCE_SNAPSHOT_VERSION, Chunk, source_snapshot_meta_key
@@ -36,6 +36,8 @@ _SOURCE_SNAPSHOT_ATTEMPTS = 3
 _INCOMPLETE_ENRICHER_ID = "__stropha_incomplete__"
 _GRAPH_DIRTY_META_PREFIX = "graph_dirty:"
 _CHUNKER_ID_META_PREFIX = "active_chunker_id:"
+_WALKER_ID_META_PREFIX = "active_walker_id:"
+_ADMISSION_RULE_FILES = frozenset({".gitignore", ".strophaignore", ".ragignore"})
 
 
 def _graph_dirty_meta_key(repo_id: int) -> str:
@@ -44,6 +46,10 @@ def _graph_dirty_meta_key(repo_id: int) -> str:
 
 def _chunker_id_meta_key(repo_id: int) -> str:
     return f"{_CHUNKER_ID_META_PREFIX}{repo_id}"
+
+
+def _walker_id_meta_key(repo_id: int) -> str:
+    return f"{_WALKER_ID_META_PREFIX}{repo_id}"
 
 
 @dataclass(frozen=True)
@@ -56,15 +62,18 @@ class _SourceSnapshot:
     mtime: float
 
 
-def _capture_source_snapshot(path: Path) -> _SourceSnapshot | None:
+def _capture_source_snapshot(path: Path, *, repo_root: Path) -> _SourceSnapshot | None:
     """Read bytes only when path identity and metadata stay stable."""
     try:
+        root = repo_root.resolve()
         read_path = path.resolve()
+        read_path.relative_to(root)
         before = read_path.stat()
         raw = read_path.read_bytes()
         after = read_path.stat()
         resolved_after = path.resolve()
-    except OSError:
+        resolved_after.relative_to(root)
+    except (OSError, ValueError):
         return None
     before_identity = (
         before.st_dev,
@@ -219,13 +228,19 @@ class Pipeline:
         if not repos:
             raise ValueError("Pipeline requires at least one repo")
         if enricher_concurrency < 1:
-            raise ValueError(
-                f"enricher_concurrency must be >= 1, got {enricher_concurrency}"
-            )
+            raise ValueError(f"enricher_concurrency must be >= 1, got {enricher_concurrency}")
         if enricher_batch_size < 1:
-            raise ValueError(
-                f"enricher_batch_size must be >= 1, got {enricher_batch_size}"
+            raise ValueError(f"enricher_batch_size must be >= 1, got {enricher_batch_size}")
+        if (
+            enricher_concurrency > 1
+            and getattr(enricher, "__dict__", {}).get("_storage") is not None
+        ):
+            log.info(
+                "pipeline.storage_bound_enricher_serialized",
+                requested_concurrency=enricher_concurrency,
+                enricher=getattr(enricher, "adapter_name", type(enricher).__name__),
             )
+            enricher_concurrency = 1
         self._storage = storage
         self._embedder = embedder
         self._secondary_embedder = secondary_embedder
@@ -233,9 +248,7 @@ class Pipeline:
         self._repos = [p.resolve() for p in repos]
         self._enricher_concurrency = enricher_concurrency
         self._enricher_batch_size = enricher_batch_size
-        self._effective_enricher_id = effective_enricher_id(
-            self._enricher, enricher_batch_size
-        )
+        self._effective_enricher_id = effective_enricher_id(self._enricher, enricher_batch_size)
         self._graphify = graphify
         self._graph_fts_augment = graph_fts_augment
         self._force_file_snapshot_refresh = False
@@ -289,6 +302,246 @@ class Pipeline:
             release_lock = getattr(self._storage, "release_index_lock", None)
             if release_lock is not None:
                 release_lock()
+
+    def refresh_paths(
+        self,
+        *,
+        repo: Path,
+        changed_or_added: Iterable[str] = (),
+        deleted: Iterable[str] = (),
+    ) -> PipelineStats:
+        """Refresh an explicit saved-worktree subset without walking the repo.
+
+        A complete reconcile must have established compatible source and adapter
+        identities first. Callers should catch :class:`FullReconcileRequiredError`
+        and run ``run(mode="reconcile")`` before retrying future path batches.
+        """
+        acquire_lock = getattr(self._storage, "try_acquire_index_lock", None)
+        if acquire_lock is not None and not acquire_lock():
+            raise StrophaError(
+                "Another `stropha index` run is already writing to this index "
+                "(advisory lock held). Wait for it to finish before refreshing paths."
+            )
+        try:
+            return self._refresh_paths_once(
+                repo=repo,
+                changed_or_added=changed_or_added,
+                deleted=deleted,
+            )
+        finally:
+            release_lock = getattr(self._storage, "release_index_lock", None)
+            if release_lock is not None:
+                release_lock()
+
+    def _refresh_paths_once(
+        self,
+        *,
+        repo: Path,
+        changed_or_added: Iterable[str],
+        deleted: Iterable[str],
+    ) -> PipelineStats:
+        repo_path = repo.expanduser().resolve()
+        if repo_path not in self._repos:
+            raise ValueError(f"repo is not configured on this pipeline: {repo_path}")
+
+        requested = self._normalize_refresh_paths(changed_or_added, deleted)
+        stats = PipelineStats(
+            enricher_id=self._effective_enricher_id,
+            embedder_id=self._embedder.adapter_id,
+            secondary_embedder_id=(
+                self._secondary_embedder.adapter_id
+                if self._secondary_embedder is not None
+                else None
+            ),
+        )
+        if not requested:
+            return stats
+
+        identity = detect_repo(repo_path)
+        repo_id = self._storage.lookup_repo_id(identity.normalized_key)
+        if repo_id is None:
+            raise FullReconcileRequiredError(
+                "Path refresh requires an existing repository snapshot"
+            )
+        self._require_path_refresh_compatible(repo_id)
+        stored_paths = set(self._storage.load_file_meta_map(repo_id))
+        requested = self._expand_indexed_symlink_aliases(
+            repo_path,
+            requested,
+            stored_paths,
+        )
+
+        current_files: set[str] = set()
+        absent: set[str] = set()
+        for rel_path in requested:
+            if Path(rel_path).name in _ADMISSION_RULE_FILES:
+                raise FullReconcileRequiredError(f"Admission rules changed at {rel_path!r}")
+            path = repo_path / rel_path
+            if path.is_dir():
+                raise FullReconcileRequiredError(f"Path refresh received directory {rel_path!r}")
+            if path.is_file():
+                current_files.add(rel_path)
+            else:
+                absent.add(rel_path)
+
+        source_files = list(self._walker.discover_paths(repo_path, sorted(current_files)))
+        eligible_paths = {source.rel_path for source in source_files}
+        eviction_roots = absent | (current_files - eligible_paths)
+        # Build the descendant predicate without accepting sibling prefixes
+        # such as ``pkg2`` when the deleted directory was ``pkg``.
+        evicted_paths = {
+            stored_path
+            for stored_path in stored_paths
+            if any(
+                stored_path == root or stored_path.startswith(f"{root.rstrip('/')}/")
+                for root in eviction_roots
+            )
+            or any(stored_path.startswith(f"{root.rstrip('/')}/") for root in eligible_paths)
+        }
+
+        rstats = RepoStats(normalized_key=identity.normalized_key, url=identity.remote_url)
+        stats.repos.append(rstats)
+        if evicted_paths:
+            self._delete_file_snapshots(repo_id, sorted(evicted_paths))
+            self._storage.set_meta(_graph_dirty_meta_key(repo_id), "1")
+            rstats.files_evicted = len(evicted_paths)
+            rstats.code_changed = True
+            self._storage.commit()
+
+        self._force_file_snapshot_refresh = False
+        published_paths = self._index_files(
+            source_files,
+            rstats,
+            repo_id=repo_id,
+            repo_key=identity.normalized_key,
+            repo_root=repo_path,
+        )
+        if rstats.chunks_enriched_failed:
+            raise PipelineError(
+                f"Index incomplete: {rstats.chunks_enriched_failed} chunks failed enrichment"
+            )
+
+        vanished_paths = eligible_paths - published_paths
+        late_evictions = {
+            stored_path
+            for stored_path in stored_paths - evicted_paths
+            if any(
+                stored_path == root or stored_path.startswith(f"{root.rstrip('/')}/")
+                for root in vanished_paths
+            )
+        }
+        if late_evictions:
+            self._delete_file_snapshots(repo_id, sorted(late_evictions))
+            self._storage.set_meta(_graph_dirty_meta_key(repo_id), "1")
+            rstats.files_evicted += len(late_evictions)
+            rstats.code_changed = True
+            self._storage.commit()
+
+        if self._secondary_embedder is not None:
+            from ..ingest.secondary_embedding_loader import SecondaryEmbeddingLoader
+
+            secondary = SecondaryEmbeddingLoader(self._storage, self._secondary_embedder).load()
+            stats.secondary_chunks_embedded = secondary.embedded
+
+        self._storage.commit()
+        log.info(
+            "pipeline.paths_refreshed",
+            repo=identity.normalized_key,
+            requested=len(requested),
+            files=rstats.files_visited,
+            files_evicted=rstats.files_evicted,
+            chunks=rstats.chunks_seen,
+            embedded=rstats.chunks_embedded,
+        )
+        return stats
+
+    @staticmethod
+    def _normalize_refresh_paths(
+        changed_or_added: Iterable[str], deleted: Iterable[str]
+    ) -> set[str]:
+        normalized: set[str] = set()
+        for raw_path in (*changed_or_added, *deleted):
+            candidate = Path(raw_path)
+            if not raw_path or candidate.is_absolute() or ".." in candidate.parts:
+                raise ValueError(f"refresh paths must be repository-relative: {raw_path!r}")
+            normalized.add(candidate.as_posix())
+        return normalized
+
+    @staticmethod
+    def _expand_indexed_symlink_aliases(
+        repo: Path,
+        requested: set[str],
+        stored_paths: set[str],
+    ) -> set[str]:
+        """Include indexed in-repo symlinks that resolve to a requested path."""
+        targets: set[Path] = set()
+        for rel_path in requested:
+            try:
+                target = (repo / rel_path).resolve()
+                target.relative_to(repo)
+            except (OSError, RuntimeError, ValueError):
+                continue
+            targets.add(target)
+
+        if not targets:
+            return requested
+
+        expanded = set(requested)
+        for target in targets:
+            canonical = target.relative_to(repo).as_posix()
+            if canonical in stored_paths:
+                expanded.add(canonical)
+        for stored_path in stored_paths:
+            logical_path = repo / stored_path
+            if not logical_path.is_symlink():
+                continue
+            try:
+                target = logical_path.resolve()
+            except (OSError, RuntimeError):
+                continue
+            if target in targets:
+                expanded.add(stored_path)
+        return expanded
+
+    def _require_path_refresh_compatible(self, repo_id: int) -> None:
+        checks = (
+            (
+                "source snapshot",
+                self._storage.get_meta(source_snapshot_meta_key(repo_id)),
+                SOURCE_SNAPSHOT_VERSION,
+            ),
+            (
+                "walker",
+                self._storage.get_meta(_walker_id_meta_key(repo_id)),
+                self._walker.adapter_id,
+            ),
+            (
+                "chunker",
+                self._storage.get_meta(_chunker_id_meta_key(repo_id)),
+                self._chunker.adapter_id,
+            ),
+            (
+                "enricher",
+                self._storage.get_meta("active_enricher_id"),
+                self._effective_enricher_id,
+            ),
+            (
+                "embedder",
+                self._storage.get_meta("active_embedder_id"),
+                self._embedder.adapter_id,
+            ),
+            ("chunk id", self._storage.get_meta("chunk_id_version"), "2"),
+        )
+        for label, stored, active in checks:
+            if stored != active:
+                raise FullReconcileRequiredError(
+                    f"Path refresh requires full reconcile after {label} drift "
+                    f"(stored={stored!r}, active={active!r})"
+                )
+        if self._storage.count_chunks_without_repo() > 0:
+            raise FullReconcileRequiredError(
+                "Path refresh requires full reconcile while legacy chunks are unscoped"
+            )
 
     def _run_once(
         self,
@@ -346,12 +599,10 @@ class Pipeline:
             stored_enricher = self._storage.get_meta("active_enricher_id")
             stored_embedder = self._storage.get_meta("active_embedder_id")
             drift_enricher = (
-                stored_enricher is not None
-                and stored_enricher != self._effective_enricher_id
+                stored_enricher is not None and stored_enricher != self._effective_enricher_id
             )
             drift_embedder = (
-                stored_embedder is not None
-                and stored_embedder != self._embedder.adapter_id
+                stored_embedder is not None and stored_embedder != self._embedder.adapter_id
             )
             if drift_enricher or drift_embedder:
                 log.warning(
@@ -373,9 +624,7 @@ class Pipeline:
         if not rebuild and self._storage.count_chunks_without_repo() > 0:
             if len(self._repos) == 1:
                 identity = detect_repo(self._repos[0])
-                repo_id = self._storage.register_repo(
-                    identity, publish_watermark=False
-                )
+                repo_id = self._storage.register_repo(identity, publish_watermark=False)
                 n = self._storage.backfill_chunks_to_repo(repo_id, self._repos[0])
                 if n > 0:
                     log.info("pipeline.chunks_backfilled", count=n)
@@ -389,9 +638,7 @@ class Pipeline:
         if rebuild:
             for repo_path in self._repos:
                 identity = detect_repo(repo_path)
-                repo_id = self._storage.register_repo(
-                    identity, publish_watermark=False
-                )
+                repo_id = self._storage.register_repo(identity, publish_watermark=False)
                 log.info(
                     "pipeline.rebuild_clear_repo",
                     repo=identity.normalized_key,
@@ -402,7 +649,9 @@ class Pipeline:
 
         for repo_path in self._repos:
             rstats = self._index_one_repo(
-                repo_path, mode=mode, since_sha_override=since_sha,
+                repo_path,
+                mode=mode,
+                since_sha_override=since_sha,
             )
             stats.repos.append(rstats)
             self._storage.commit()
@@ -439,9 +688,7 @@ class Pipeline:
             # Refreshing the mirror also embeds graph nodes and augments FTS.
             # Keep the entire lifecycle behind --graphify/--no-graphify so a
             # caller can explicitly avoid expensive post-index graph work.
-            mirrored_repo_ids = self._refresh_graphify_mirror(
-                skip_repos=failed_repos
-            )
+            mirrored_repo_ids = self._refresh_graphify_mirror(skip_repos=failed_repos)
             for repo_id in mirrored_repo_ids:
                 if self._storage.get_meta(_graph_dirty_meta_key(repo_id)) == "1":
                     self._storage.set_meta(_graph_dirty_meta_key(repo_id), "0")
@@ -464,16 +711,14 @@ class Pipeline:
         repos_to_update: list[Path] = []
         for repo_path, rstats in zip(self._repos, repo_stats, strict=True):
             identity = detect_repo(repo_path)
-            repo_id = self._storage.register_repo(
-                identity, publish_watermark=False
-            )
-            graph_dirty = (
-                self._storage.get_meta(_graph_dirty_meta_key(repo_id)) == "1"
-            )
+            repo_id = self._storage.register_repo(identity, publish_watermark=False)
+            graph_dirty = self._storage.get_meta(_graph_dirty_meta_key(repo_id)) == "1"
             if not rstats.code_changed and not graph_dirty:
                 try:
                     loader = GraphifyLoader(
-                        self._storage, repo_path, repo_id=repo_id,
+                        self._storage,
+                        repo_path,
+                        repo_id=repo_id,
                     )  # type: ignore[arg-type]
                     graph_is_imported = loader.exists() and not loader.is_stale()
                 except Exception as exc:  # pragma: no cover - custom storage fallback
@@ -522,9 +767,7 @@ class Pipeline:
                 )
         return failed_repos
 
-    def _refresh_graphify_mirror(
-        self, *, skip_repos: set[Path] | None = None
-    ) -> set[int]:
+    def _refresh_graphify_mirror(self, *, skip_repos: set[Path] | None = None) -> set[int]:
         """Reload the graphify mirror tables if the on-disk graph is newer.
 
         After the structural mirror is refreshed, embed graph node labels
@@ -552,13 +795,13 @@ class Pipeline:
                 continue
             # Get repo_id for this repo (required for multi-repo isolation)
             identity = detect_repo(repo_path)
-            repo_id = self._storage.register_repo(
-                identity, publish_watermark=False
-            )
+            repo_id = self._storage.register_repo(identity, publish_watermark=False)
 
             try:
                 loader = GraphifyLoader(
-                    self._storage, repo_path, repo_id=repo_id,
+                    self._storage,
+                    repo_path,
+                    repo_id=repo_id,
                 )  # type: ignore[arg-type]
             except Exception as exc:  # pragma: no cover — defensive
                 log.warning("graphify_loader.init_failed", error=str(exc))
@@ -628,16 +871,25 @@ class Pipeline:
         stored_chunker_id = self._storage.get_meta(chunker_meta_key)
         active_chunker_id = self._chunker.adapter_id
         chunker_changed = stored_chunker_id != active_chunker_id and (
-            stored_chunker_id is not None
-            or stored_snapshot_version == SOURCE_SNAPSHOT_VERSION
+            stored_chunker_id is not None or stored_snapshot_version == SOURCE_SNAPSHOT_VERSION
         )
-        self._force_file_snapshot_refresh = source_snapshot_changed or chunker_changed
-        if chunker_changed:
+        walker_meta_key = _walker_id_meta_key(repo_id)
+        stored_walker_id = self._storage.get_meta(walker_meta_key)
+        active_walker_id = self._walker.adapter_id
+        walker_changed = stored_walker_id != active_walker_id and (
+            stored_walker_id is not None or stored_snapshot_version == SOURCE_SNAPSHOT_VERSION
+        )
+        self._force_file_snapshot_refresh = (
+            source_snapshot_changed or chunker_changed or walker_changed
+        )
+        if chunker_changed or walker_changed:
             log.warning(
-                "pipeline.chunker_drift_detected",
+                "pipeline.source_adapter_drift_detected",
                 repo=identity.normalized_key,
                 stored_chunker_id=stored_chunker_id,
                 active_chunker_id=active_chunker_id,
+                stored_walker_id=stored_walker_id,
+                active_walker_id=active_walker_id,
                 action="forcing complete hash reconciliation",
             )
         # A checkout may first be indexed before it is a Git repo or before an
@@ -713,7 +965,11 @@ class Pipeline:
 
         if effective_mode == "incremental":
             self._index_one_repo_incremental(
-                repo_path, identity, repo_id, rstats, since_sha,  # type: ignore[arg-type]
+                repo_path,
+                identity,
+                repo_id,
+                rstats,
+                since_sha,  # type: ignore[arg-type]
             )
         elif effective_mode == "reconcile":
             self._index_one_repo_reconcile(repo_path, identity, repo_id, rstats)
@@ -722,12 +978,12 @@ class Pipeline:
 
         if rstats.chunks_enriched_failed:
             raise PipelineError(
-                f"Index incomplete: {rstats.chunks_enriched_failed} chunks "
-                "failed enrichment"
+                f"Index incomplete: {rstats.chunks_enriched_failed} chunks failed enrichment"
             )
 
         self._storage.set_meta(snapshot_meta_key, SOURCE_SNAPSHOT_VERSION)
         self._storage.set_meta(chunker_meta_key, active_chunker_id)
+        self._storage.set_meta(walker_meta_key, active_walker_id)
         # Record the new checkpoint when we have a HEAD sha (real git repo).
         if head_sha:
             self._storage.set_meta(meta_key, head_sha)
@@ -749,7 +1005,11 @@ class Pipeline:
         return rstats
 
     def _index_one_repo_full(
-        self, repo_path: Path, identity, repo_id: int, rstats: RepoStats,
+        self,
+        repo_path: Path,
+        identity,
+        repo_id: int,
+        rstats: RepoStats,
     ) -> None:
         """Legacy path: walk every file via the configured walker."""
         # Materialise the walker output so we can both index it and use
@@ -760,6 +1020,7 @@ class Pipeline:
             rstats,
             repo_id=repo_id,
             repo_key=identity.normalized_key,
+            repo_root=repo_path,
         )
         # Passive stale cleanup: files that were tracked in a previous
         # run but no longer appear in the walker output get their
@@ -780,7 +1041,11 @@ class Pipeline:
             self._storage.commit()
 
     def _index_one_repo_reconcile(
-        self, repo_path: Path, identity, repo_id: int, rstats: RepoStats,
+        self,
+        repo_path: Path,
+        identity,
+        repo_id: int,
+        rstats: RepoStats,
     ) -> None:
         """Reconcile every saved file against its full raw-byte SHA-256."""
         source_files = list(self._walker.discover(repo_path))
@@ -791,6 +1056,7 @@ class Pipeline:
             rstats,
             repo_id=repo_id,
             repo_key=identity.normalized_key,
+            repo_root=repo_path,
         )
         visited = rstats.files_visited - visited_before
         fresh = rstats.files_skipped_fresh - skipped_before
@@ -835,12 +1101,9 @@ class Pipeline:
         from ..adapters.walker.git_diff import GitDiffWalker, GitDiffWalkerConfig
         from ..config import get_config
         from ..errors import WalkerError
-        from ..ingest.walker import Walker
 
         rename_threshold = max(0, min(100, get_config().git.rename_threshold))
-        diff_walker = GitDiffWalker(
-            GitDiffWalkerConfig(rename_threshold=rename_threshold)
-        )
+        diff_walker = GitDiffWalker(GitDiffWalkerConfig(rename_threshold=rename_threshold))
         try:
             deltas = diff_walker.discover_deltas(repo_path, since_sha=since_sha)
         except WalkerError as exc:
@@ -886,7 +1149,9 @@ class Pipeline:
             log.info(
                 "pipeline.incremental_rename",
                 repo=identity.normalized_key,
-                old=old, new=new, chunks_moved=moved,
+                old=old,
+                new=new,
+                chunks_moved=moved,
             )
 
         # ---- Apply deletes ------------------------------------------------
@@ -902,14 +1167,14 @@ class Pipeline:
         self._storage.commit()
 
         # ---- Index adds + modifies (full chunker + embedder pass) --------
-        # We need to feed the chunker SourceFile objects. The legacy Walker
-        # has a `discover_paths` helper for exactly this case.
         if adds_modifies:
-            walker = Walker(repo_path)
-            source_files = list(walker.discover_paths(adds_modifies))
+            source_files = list(self._walker.discover_paths(repo_path, adds_modifies))
             self._index_files(
-                source_files, rstats,
-                repo_id=repo_id, repo_key=identity.normalized_key,
+                source_files,
+                rstats,
+                repo_id=repo_id,
+                repo_key=identity.normalized_key,
+                repo_root=repo_path,
             )
 
     def _delete_file_snapshots(self, repo_id: int, rel_paths: Sequence[str]) -> int:
@@ -925,6 +1190,7 @@ class Pipeline:
         *,
         repo_id: int,
         repo_key: str,
+        repo_root: Path,
     ) -> set[str]:
         batch_size = self._embedder.batch_size
         current_paths: set[str] = set()
@@ -938,7 +1204,7 @@ class Pipeline:
             published = False
             vanished = False
             for attempt in range(1, _SOURCE_SNAPSHOT_ATTEMPTS + 1):
-                source = _capture_source_snapshot(sf.path)
+                source = _capture_source_snapshot(sf.path, repo_root=repo_root)
                 if source is None:
                     vanished = not sf.path.exists()
                     if vanished:
@@ -947,17 +1213,14 @@ class Pipeline:
                         continue
                     break
 
-                if (
-                    not self._force_file_snapshot_refresh
-                    and self._storage.file_is_fresh(
-                        repo_id=repo_id,
-                        rel_path=sf.rel_path,
-                        content_hash=source.content_hash,
-                        mtime=source.mtime,
-                        size_bytes=source.size_bytes,
-                        enricher_id=enricher_id,
-                        embedder_model=embedder_model,
-                    )
+                if not self._force_file_snapshot_refresh and self._storage.file_is_fresh(
+                    repo_id=repo_id,
+                    rel_path=sf.rel_path,
+                    content_hash=source.content_hash,
+                    mtime=source.mtime,
+                    size_bytes=source.size_bytes,
+                    enricher_id=enricher_id,
+                    embedder_model=embedder_model,
                 ):
                     current_paths.add(sf.rel_path)
                     stats.files_skipped_fresh += 1
@@ -970,14 +1233,10 @@ class Pipeline:
                         "size_bytes": source.size_bytes,
                     }
                 )
-                file_chunks = list(
-                    self._chunker.chunk([snapshot_file], repo_key=repo_key)
-                )
+                file_chunks = list(self._chunker.chunk([snapshot_file], repo_key=repo_key))
                 desired_chunk_ids = [chunk.chunk_id for chunk in file_chunks]
                 if len(desired_chunk_ids) != len(set(desired_chunk_ids)):
-                    raise PipelineError(
-                        f"Chunker emitted duplicate IDs for {sf.rel_path!r}"
-                    )
+                    raise PipelineError(f"Chunker emitted duplicate IDs for {sf.rel_path!r}")
                 by_id = {chunk.chunk_id: chunk for chunk in file_chunks}
 
                 chunks_skipped = 0
@@ -999,9 +1258,7 @@ class Pipeline:
                         chunks_skipped += 1
                         reused_chunks.append(chunk)
                         continue
-                    cached = self._storage.get_enrichment(
-                        chunk.content_hash, enricher_id
-                    )
+                    cached = self._storage.get_enrichment(chunk.content_hash, enricher_id)
                     if cached is not None:
                         enriched_cached += 1
                         staged.append((chunk, cached))
@@ -1015,9 +1272,7 @@ class Pipeline:
                         StageContext(
                             repo_key=repo_key,
                             parent_chunk=(
-                                by_id.get(chunk.parent_chunk_id)
-                                if chunk.parent_chunk_id
-                                else None
+                                by_id.get(chunk.parent_chunk_id) if chunk.parent_chunk_id else None
                             ),
                         )
                         for chunk in pending_chunks
@@ -1029,9 +1284,7 @@ class Pipeline:
                         chunk = staged[idx][0]
                         staged[idx] = (chunk, embedding_text)
                         if success:
-                            enrichment_writes.append(
-                                (chunk.content_hash, embedding_text)
-                            )
+                            enrichment_writes.append((chunk.content_hash, embedding_text))
                             enriched_fresh += 1
                         else:
                             enriched_failed += 1
@@ -1057,7 +1310,7 @@ class Pipeline:
                             }
                         )
 
-                confirmed = _capture_source_snapshot(sf.path)
+                confirmed = _capture_source_snapshot(sf.path, repo_root=repo_root)
                 if confirmed is None or confirmed.content_hash != source.content_hash:
                     vanished = confirmed is None and not sf.path.exists()
                     if vanished:
@@ -1073,9 +1326,7 @@ class Pipeline:
                     break
 
                 for content_hash, embedding_text in enrichment_writes:
-                    self._storage.put_enrichment(
-                        content_hash, enricher_id, embedding_text
-                    )
+                    self._storage.put_enrichment(content_hash, enricher_id, embedding_text)
                 self._storage.replace_file_snapshot(
                     repo_id=repo_id,
                     rel_path=sf.rel_path,
@@ -1083,11 +1334,7 @@ class Pipeline:
                     chunk_writes=chunk_writes,
                     embedding_model=embedder_model,
                     embedding_dim=self._embedder.dim,
-                    enricher_id=(
-                        enricher_id
-                        if enriched_failed == 0
-                        else _INCOMPLETE_ENRICHER_ID
-                    ),
+                    enricher_id=(enricher_id if enriched_failed == 0 else _INCOMPLETE_ENRICHER_ID),
                     file_content_hash=confirmed.content_hash,
                     size_bytes=confirmed.size_bytes,
                     mtime=confirmed.mtime,
@@ -1168,8 +1415,7 @@ class Pipeline:
         """
         if len(chunks) != len(contexts):
             raise ValueError(
-                f"chunks ({len(chunks)}) and contexts ({len(contexts)}) "
-                "must have the same length"
+                f"chunks ({len(chunks)}) and contexts ({len(contexts)}) must have the same length"
             )
 
         # Import lazily to avoid a circular import (stages.enricher imports
@@ -1211,9 +1457,7 @@ class Pipeline:
         ) as executor:
             return list(
                 executor.map(
-                    lambda pair: enrich_with_status(
-                        self._enricher, pair[0], pair[1]
-                    ),
+                    lambda pair: enrich_with_status(self._enricher, pair[0], pair[1]),
                     zip(chunks, contexts, strict=True),
                 )
             )
@@ -1254,9 +1498,7 @@ class Pipeline:
             results: list[tuple[str, bool]] = []
             for batch_chunks, batch_contexts in batches:
                 results.extend(
-                    enrich_batch_with_status(
-                        self._enricher, batch_chunks, batch_contexts
-                    )
+                    enrich_batch_with_status(self._enricher, batch_chunks, batch_contexts)
                 )
             return results
 
@@ -1271,9 +1513,7 @@ class Pipeline:
         ) as executor:
             batch_results = list(
                 executor.map(
-                    lambda pair: enrich_batch_with_status(
-                        self._enricher, pair[0], pair[1]
-                    ),
+                    lambda pair: enrich_batch_with_status(self._enricher, pair[0], pair[1]),
                     batches,
                 )
             )

@@ -718,18 +718,24 @@ Para cada arquivo (caminho git-diff):
 |---|---|---|
 | Commit local | Git hook `post-commit` (silencioso, em background) | <5 s |
 | Pull / merge | Git hook `post-merge` | <30 s |
-| Edição salva não-commitada | Polling stdlib por hash completo, debounce 2 s | Intervalo de polling + debounce |
+| Edição salva não-commitada | Notificação nativa (`watchfiles`) + refresh por path, debounce 2 s | Notificação do SO + debounce |
 | Deploy CI | GitHub Actions step | OK ser lento |
 
 ### 8.3 Working tree salvo
 
 O índice persistente representa o working tree **salvo**, incluindo edições não
 commitadas. `HEAD` é metadado Git, não prova dos bytes indexados. O watcher faz
-reconciliação inicial e retries com backoff para não depender de um novo evento
-após falha. Seu snapshot usa o path lógico relativo retornado pelo walker, mesmo
-quando o path físico foi canonicalizado, e valida o target de symlink ao ler.
-Buffers ainda não salvos não entram no índice persistente; overlays de sessão
-explícitos são uma extensão futura e separada.
+reconciliação inicial e periódica, além de retries com backoff, para não depender
+de um novo evento após falha. Eventos nativos são coalescidos e resolvidos contra
+o estado final do filesystem. Arquivos usam `Pipeline.refresh_paths()`; diretórios,
+regras de admissão (`.gitignore`, `.strophaignore`, `.ragignore`), drift de
+adapter/snapshot ou estado ambíguo promovem a operação para reconciliação completa.
+Deletes de diretório usam prefixo lógico com fronteira de path, sem atingir
+siblings de mesmo prefixo.
+
+O walker revalida cada path lógico, inclusive ignore rules e symlinks, antes de
+ler um snapshot imutável. Buffers ainda não salvos não entram no índice
+persistente; overlays de sessão explícitos são uma extensão futura e separada.
 
 ### 8.4 Compactação e rebuild
 
@@ -751,6 +757,7 @@ Schema migrations + lazy backfill: adicionar coluna nullable, preencher em backg
 | **C** | — | Rename-resilient `chunk_id`. `Storage.rename_chunks()` recomputes `chunk_id` via `make_chunk_id(new_path, ...)` + regenerates FTS5 rows. Zero re-embed cost for renames. `GraphifyLoader` diff-loads (deltas only, not full DELETE+INSERT). |
 | **D** | — | Hash-based reconcile (WIN-425, 2026-06-08). `auto` (default) diffs the working tree against the `files` cache via `Storage.load_file_meta_map()` — git-independent, crash-resilient (interrupted runs self-heal), sees uncommitted edits, works on non-git dirs. Git-diff (`--incremental`) demoted to an opt-in fast-path. `Pipeline._index_one_repo_reconcile()`. |
 | **E** | — | Trustworthy source snapshots (2026-08-21). Full raw-byte SHA-256, immutable chunker input, post-processing rehash, adapter-owned atomic replace/delete, vector-preserving structural refresh, zero-chunk support, completion-only repository watermarks, durable per-repo graph dirtiness, startup watcher reconciliation, retry backoff, and versioned source evidence on every retrieval stream. |
+| **F** | — | Native saved-worktree refresh (WIN-361, 2026-08-23). OS notifications replace idle tree polling; `Pipeline.refresh_paths()` handles exact files and boundary-safe directory eviction, while startup/periodic reconciliation and drift guards preserve correctness. |
 
 CLI flags: `--full` (force full walk), `--incremental` (force git-diff fast-path, falls back to reconcile if no checkpoint), `--since <sha>` (override checkpoint). Default (no flag) = `auto` = hash reconcile.
 
@@ -898,6 +905,13 @@ validados contra a raiz local do repositório tanto na entrada quanto na leitura
 e são limpos ao encerrar a session; IDs expirados não podem ser reutilizados na
 mesma session. Eles nunca entram em metadata persistente nem traces. No shutdown
 ASGI, o session manager encerra as tasks antes de parar watcher e fechar storage.
+
+Quando `mcp.watch` está ativo, o runtime cria um watcher nativo por geração. A
+thread do watcher possui sua própria conexão de storage e seu próprio `Pipeline`,
+mas reutiliza walker, chunker e modelos já aquecidos. Um wrapper sincronizado
+serializa chamadas aos embedders entre queries e escrita; storage nunca cruza a
+fronteira de thread. Reload e shutdown param e aguardam a thread antes de fechar
+os adapters publicados.
 
 O perfil MCP é selecionado de `~/.stropha/config.yaml` antes de iniciar o
 transport HTTP e permanece fixo por toda a vida do daemon. Não existem

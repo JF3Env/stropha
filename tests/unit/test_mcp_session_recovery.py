@@ -94,14 +94,23 @@ def _delete_session(client: TestClient, session_id: str):
     )
 
 
-def test_streamable_http_recovers_from_stale_session_id_after_restart() -> None:
+def test_streamable_http_recovers_from_stale_session_id_after_restart(tmp_path) -> None:
     from stropha.server import mcp
 
     fake_storage = MagicMock()
     fake_storage.close = MagicMock()
     fake_built = MagicMock(storage=fake_storage, embedder=MagicMock())
+    config = SimpleNamespace(
+        log_level="INFO",
+        target_repo=tmp_path,
+        mcp_watch=False,
+        mcp_watch_interval=1.0,
+        mcp_watch_debounce=1.0,
+        resolve_index_path=lambda: tmp_path / "index.db",
+    )
 
     with (
+        patch("stropha.server.get_config", return_value=config),
         patch("stropha.server.load_pipeline_config", return_value={}),
         patch("stropha.server.build_stages", return_value=fake_built) as build_stages,
         patch("stropha.server._resolve_target_repo_id", return_value=None),
@@ -158,9 +167,9 @@ def test_streamable_http_recovers_from_stale_session_id_after_restart() -> None:
             hidden_body = _read_sse_json(hidden)
             assert hidden_body["id"] == "hidden-1"
             assert hidden_body["result"]["isError"] is True
-            assert "not available in MCP profile 'core'" in hidden_body["result"]["content"][0][
-                "text"
-            ]
+            assert (
+                "not available in MCP profile 'core'" in hidden_body["result"]["content"][0]["text"]
+            )
 
             capabilities_body = _read_sse_json(capabilities)
             assert capabilities_body["id"] == "capabilities-1"
@@ -278,12 +287,8 @@ def test_agent_observations_are_session_local_and_cleared_on_reconnect(tmp_path)
                         }
                     },
                 )
-                first_view = _call_tool(
-                    client, first_session, "observe_agent_state", "observe-2"
-                )
-                second_view = _call_tool(
-                    client, second_session, "observe_agent_state", "observe-3"
-                )
+                first_view = _call_tool(client, first_session, "observe_agent_state", "observe-2")
+                second_view = _call_tool(client, second_session, "observe_agent_state", "observe-3")
 
                 assert _read_sse_json(state)["result"].get("isError", False) is False
                 assert _read_sse_json(artifact)["result"].get("isError", False) is False

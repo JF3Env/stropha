@@ -1,169 +1,92 @@
-"""Watch a saved working tree and persistently reconcile file changes.
+"""Persist saved working-tree changes through native filesystem notifications.
 
-Per spec §8 / Phase 3: "Soft index para working tree (file watcher)."
-The post-commit hook covers the committed state; this command covers
-the *uncommitted* state while you iterate, so retrieval queries see
-your latest edits within seconds of saving.
-
-Design:
-- Standard library only (``watchdog`` not pulled in to keep deps light).
-  We poll full source hashes on a low-frequency interval (default 1 s),
-  using the configured walker when the MCP runtime provides it.
-- Debounced: a wave of writes from an LSP/format/save-on-blur cycle
-  collapses into a single re-index pass after the debounce window
-  (default 2 s of quiet).
-- Respects `.gitignore` / `.strophaignore` via the standard ``Walker``
-  filters, so build artefacts and caches don't trigger storms.
-- Re-indexes through the pipeline's hash-based reconcile mode, so changed
-  files are refreshed and unchanged files pay only the freshness skip.
-- Doesn't reload the graphify graph or re-embed graph nodes by default
-  — those are heavy and the hook handles them on commit. Override via
-  ``--full-refresh`` if you want a complete pass.
-
-MCP Integration:
-- When ``mcp.watch: true`` in ``~/.stropha/config.yaml`` (the default), the MCP
-  server starts the watcher in a background thread during lifespan. This ensures queries
-  always see recent edits without requiring a separate ``stropha watch``.
-- The watcher can be stopped via ``WatchController.stop()`` or by
-  setting the threading.Event passed to ``watch_repo_async()``.
+The post-commit hook covers committed state. This watcher covers uncommitted
+saves without repeatedly walking and hashing the repository while idle.
 """
 
 from __future__ import annotations
 
 import contextlib
-import hashlib
 import signal
 import threading
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
+
+from watchfiles import Change, watch
 
 from .config import get_config
-from .errors import PipelineError, StrophaError
-from .ingest.walker import Walker
+from .errors import FullReconcileRequiredError, PipelineError, StrophaError
 from .logging import get_logger
-from .pipeline import Pipeline, build_stages, build_walker, load_pipeline_config
-from .stages.walker import WalkerStage
+from .pipeline import BuiltStages, Pipeline, PipelineStats, build_stages, load_pipeline_config
+from .pipeline.builder import build_enricher, build_storage
+from .stages.storage import StorageStage
 
 log = get_logger(__name__)
 
 _DEFAULT_INTERVAL_S = 1.0
 _DEFAULT_DEBOUNCE_S = 2.0
+_DEFAULT_RECONCILE_INTERVAL_S = 300.0
 _RETRY_INITIAL_S = 1.0
 _RETRY_MAX_S = 30.0
+_STARTUP_TIMEOUT_S = 5.0
+_ADMISSION_RULE_FILES = frozenset({".gitignore", ".strophaignore", ".ragignore"})
+_GIT_ADMISSION_PATHS = frozenset({("config",), ("index",), ("info", "exclude")})
+
+FileChange = tuple[Change, str]
+WatchFn = Callable[..., Iterator[set[FileChange]]]
 
 
 @dataclass
-class _Snapshot:
-    """Full-hash snapshot for saved-source change detection."""
+class _PendingRefresh:
+    """Coalesced native events plus bounded retry state."""
 
-    files: dict[Path, tuple[int, int, str]] = field(default_factory=dict)
-
-    def diff(self, fresh: _Snapshot) -> tuple[set[Path], set[Path]]:
-        """Return ``(changed_or_added, removed)`` since the previous snapshot."""
-        changed: set[Path] = set()
-        for path, stamp in fresh.files.items():
-            previous_stamp = self.files.get(path)
-            if previous_stamp is None or previous_stamp != stamp:
-                changed.add(path)
-        removed = set(self.files) - set(fresh.files)
-        return changed, removed
-
-
-def _snapshot(
-    repo: Path,
-    *,
-    max_file_bytes: int = 524_288,
-    walker: WalkerStage | None = None,
-) -> _Snapshot:
-    """Walk indexable files and capture stable full-byte hashes."""
-    snap = _Snapshot()
-    source_files = (
-        walker.discover(repo)
-        if walker is not None
-        else Walker(repo, max_file_bytes=max_file_bytes).discover()
-    )
-    for sf in source_files:
-        try:
-            # Snapshot identity follows the walker's repository-relative path,
-            # not a potentially canonicalized physical SourceFile.path.
-            logical_path = (repo / sf.rel_path).absolute()
-            read_path = (
-                sf.path if sf.path.is_absolute() else repo / sf.rel_path
-            ).resolve()
-            before = read_path.stat()
-            raw = read_path.read_bytes()
-            after = read_path.stat()
-            resolved_after = logical_path.resolve()
-        except OSError:
-            continue
-        before_identity = (
-            before.st_dev,
-            before.st_ino,
-            before.st_size,
-            before.st_mtime_ns,
-            before.st_ctime_ns,
-        )
-        after_identity = (
-            after.st_dev,
-            after.st_ino,
-            after.st_size,
-            after.st_mtime_ns,
-            after.st_ctime_ns,
-        )
-        if (
-            before_identity != after_identity
-            or len(raw) != after.st_size
-            or resolved_after != read_path
-        ):
-            continue
-        snap.files[logical_path] = (
-            after.st_mtime_ns,
-            after.st_size,
-            hashlib.sha256(raw).hexdigest(),
-        )
-    return snap
-
-
-@dataclass
-class _WatchState:
-    """Pending reconciliation and retry state shared by both watcher entry points."""
-
-    previous: _Snapshot
-    pending_since: float | None
+    changed: set[str] = field(default_factory=set)
+    deleted: set[str] = field(default_factory=set)
+    full_reconcile: bool = False
     retry_at: float | None = None
     failures: int = 0
     next_retry_s: float = field(default=_RETRY_INITIAL_S, repr=False)
 
-    @classmethod
-    def starting(cls, previous: _Snapshot, *, now: float) -> _WatchState:
-        # Reconcile edits made while no watcher was running.
-        return cls(previous=previous, pending_since=now)
+    @property
+    def has_work(self) -> bool:
+        return self.full_reconcile or bool(self.changed or self.deleted)
 
-    def observe(self, fresh: _Snapshot, *, now: float) -> tuple[set[Path], set[Path]]:
-        """Merge a fresh filesystem observation into pending work."""
-        changed, removed = self.previous.diff(fresh)
-        if changed or removed:
-            self.previous = fresh
-            self.pending_since = now
-        return changed, removed
+    def merge(
+        self,
+        changed: Iterable[str],
+        deleted: Iterable[str],
+        *,
+        full_reconcile: bool = False,
+    ) -> None:
+        if full_reconcile:
+            self.full_reconcile = True
+            self.changed.clear()
+            self.deleted.clear()
+            return
+        if self.full_reconcile:
+            return
+        changed_set = set(changed)
+        deleted_set = set(deleted)
+        self.deleted.difference_update(changed_set)
+        self.changed.update(changed_set)
+        self.changed.difference_update(deleted_set)
+        self.deleted.update(deleted_set)
 
-    def is_ready(self, *, now: float, debounce_s: float) -> bool:
-        """Return whether pending work is quiet and outside retry backoff."""
-        if self.pending_since is None or now < self.pending_since + debounce_s:
-            return False
-        return self.retry_at is None or now >= self.retry_at
+    def is_ready(self, *, now: float) -> bool:
+        return self.has_work and (self.retry_at is None or now >= self.retry_at)
 
     def mark_succeeded(self) -> None:
-        """Clear pending work only after a complete refresh."""
-        self.pending_since = None
+        self.changed.clear()
+        self.deleted.clear()
+        self.full_reconcile = False
         self.retry_at = None
         self.failures = 0
         self.next_retry_s = _RETRY_INITIAL_S
 
     def mark_failed(self, *, now: float) -> float:
-        """Keep work pending and schedule the next bounded retry."""
         delay = self.next_retry_s
         self.retry_at = now + delay
         self.failures += 1
@@ -171,26 +94,85 @@ class _WatchState:
         return delay
 
 
-def _format_changes(
-    changed: Iterable[Path],
-    removed: Iterable[Path],
-    *,
-    root: Path,
-) -> str:
-    parts: list[str] = []
+def _classify_changes(repo: Path, changes: Iterable[FileChange]) -> tuple[set[str], set[str], bool]:
+    """Resolve event actions against final filesystem state."""
+    changed: set[str] = set()
+    deleted: set[str] = set()
+    full_reconcile = False
+    root = repo.expanduser().resolve()
+
+    touched: set[str] = set()
+    for _change, raw_path in changes:
+        path = Path(raw_path)
+        if not path.is_absolute():
+            path = root / path
+        try:
+            relative = path.absolute().relative_to(root)
+        except ValueError:
+            continue
+        if ".git" in relative.parts:
+            if _is_git_admission_path(relative):
+                full_reconcile = True
+            continue
+        rel_path = relative.as_posix()
+        if rel_path in ("", "."):
+            full_reconcile = True
+            continue
+        touched.add(rel_path)
+
+    for rel_path in touched:
+        path = root / rel_path
+        if Path(rel_path).name in _ADMISSION_RULE_FILES or path.is_dir():
+            full_reconcile = True
+        elif path.is_file():
+            changed.add(rel_path)
+        else:
+            deleted.add(rel_path)
+
+    if full_reconcile:
+        return set(), set(), True
+    return changed, deleted, False
+
+
+def _is_git_admission_path(relative: Path) -> bool:
+    """Return whether Git metadata can change configured walker admission."""
+    for index, part in enumerate(relative.parts):
+        if part != ".git":
+            continue
+        remainder = relative.parts[index + 1 :]
+        if not remainder or remainder in _GIT_ADMISSION_PATHS:
+            return True
+    return False
+
+
+def _watch_filter(repo: Path) -> Callable[[Change, str], bool]:
+    """Keep source and Git-admission events while discarding other Git internals."""
+    root = repo.expanduser().resolve()
+
+    def include(_change: Change, raw_path: str) -> bool:
+        path = Path(raw_path)
+        if not path.is_absolute():
+            path = root / path
+        try:
+            relative = path.absolute().relative_to(root)
+        except ValueError:
+            return False
+        return ".git" not in relative.parts or _is_git_admission_path(relative)
+
+    return include
+
+
+def _format_changes(changed: Iterable[str], deleted: Iterable[str]) -> str:
     changed_list = sorted(changed)
-    removed_list = sorted(removed)
+    deleted_list = sorted(deleted)
+    parts: list[str] = []
     if changed_list:
-        rels = [
-            str(p.relative_to(root)) if p.is_relative_to(root) else str(p) for p in changed_list[:5]
-        ]
-        more = ""
-        if len(changed_list) > 5:
-            more = f" (+{len(changed_list) - 5} more)"
-        parts.append(f"{len(changed_list)} changed: {', '.join(rels)}{more}")
-    if removed_list:
-        parts.append(f"{len(removed_list)} removed")
-    return " · ".join(parts) if parts else "no changes"
+        examples = ", ".join(changed_list[:5])
+        more = f" (+{len(changed_list) - 5} more)" if len(changed_list) > 5 else ""
+        parts.append(f"{len(changed_list)} changed: {examples}{more}")
+    if deleted_list:
+        parts.append(f"{len(deleted_list)} removed")
+    return " · ".join(parts) if parts else "full reconcile"
 
 
 def _run_watch_loop(
@@ -199,55 +181,221 @@ def _run_watch_loop(
     interval_s: float,
     debounce_s: float,
     full_refresh: bool,
-    wait: Callable[[float], bool],
-    max_file_bytes: int = 524_288,
-    walker: WalkerStage | None = None,
+    stop_event: threading.Event,
+    refresh: Callable[..., None],
     once: bool = False,
+    watch_fn: WatchFn | None = None,
     now_fn: Callable[[], float] = time.monotonic,
+    reconcile_interval_s: float = _DEFAULT_RECONCILE_INTERVAL_S,
+    on_ready: Callable[[], None] | None = None,
 ) -> None:
-    """Poll, debounce, and retry until ``wait`` reports a stop request."""
-    try:
-        initial = _snapshot(repo, max_file_bytes=max_file_bytes, walker=walker)
-    except Exception as exc:
-        log.warning("watch.snapshot_failed", error=str(exc))
-        initial = _Snapshot()
-    state = _WatchState.starting(initial, now=now_fn())
+    """Consume native event batches, periodically reconcile, and retry failures."""
+    watch_fn = watch if watch_fn is None else watch_fn
+    interval_ms = max(1, int(interval_s * 1000))
+    debounce_ms = max(1, int(debounce_s * 1000))
+    # Keep backend batches responsive and apply the user-facing quiet period below.
+    batch_window_ms = min(debounce_ms, 50)
+    timeout_ms = max(50, min(interval_ms, debounce_ms, 1000))
+    event_batches = iter(
+        watch_fn(
+            repo,
+            watch_filter=_watch_filter(repo),
+            debounce=batch_window_ms,
+            step=batch_window_ms,
+            stop_event=stop_event,
+            rust_timeout=timeout_ms,
+            yield_on_timeout=True,
+            raise_interrupt=False,
+            force_polling=None,
+        )
+    )
 
-    while not wait(interval_s):
+    first_batch = next(event_batches)
+    if on_ready is not None:
+        on_ready()
+
+    pending = _PendingRefresh(full_reconcile=True)
+    settle_at: float | None = None
+    changed, deleted, requires_full = _classify_changes(repo, first_batch)
+    pending.merge(changed, deleted, full_reconcile=requires_full)
+    last_reconcile = now_fn()
+
+    def apply_pending(now: float) -> bool:
+        nonlocal last_reconcile, settle_at
+        if settle_at is not None and now < settle_at:
+            return False
+        if not pending.is_ready(now=now):
+            return False
+        settle_at = None
+        requested_full = pending.full_reconcile or full_refresh
+        log.info(
+            "watch.refresh_start",
+            summary=_format_changes(pending.changed, pending.deleted),
+            full_reconcile=requested_full,
+        )
         try:
-            fresh = _snapshot(repo, max_file_bytes=max_file_bytes, walker=walker)
+            refresh(
+                set(pending.changed),
+                set(pending.deleted),
+                full_reconcile=requested_full,
+            )
         except Exception as exc:
-            log.warning("watch.snapshot_failed", error=str(exc))
-            if once:
-                break
-            continue
+            retry_in_s = pending.mark_failed(now=now_fn())
+            log.warning(
+                "watch.refresh_failed",
+                error=str(exc),
+                failures=pending.failures,
+                retry_in_s=retry_in_s,
+            )
+            return False
+        if requested_full:
+            last_reconcile = now_fn()
+        pending.mark_succeeded()
+        log.info("watch.refresh_done")
+        return True
 
+    initial_succeeded = apply_pending(now_fn())
+    if once and initial_succeeded:
+        return
+
+    for batch in event_batches:
+        if stop_event.is_set():
+            break
         now = now_fn()
-        changed, removed = state.observe(fresh, now=now)
-        if changed or removed:
+        changed, deleted, requires_full = _classify_changes(repo, batch)
+        if changed or deleted or requires_full:
+            pending.merge(changed, deleted, full_reconcile=requires_full)
+            settle_at = now + max(0.0, debounce_s)
             log.info(
                 "watch.changes_seen",
-                summary=_format_changes(changed, removed, root=repo),
+                summary=_format_changes(changed, deleted),
             )
+        if now - last_reconcile >= reconcile_interval_s:
+            pending.merge(set(), set(), full_reconcile=True)
+            settle_at = None
+        succeeded = apply_pending(now)
+        if once and succeeded:
+            return
 
-        if state.is_ready(now=now, debounce_s=debounce_s):
-            log.info("watch.reindex_start")
-            try:
-                _reindex(repo, full_refresh=full_refresh)
-            except Exception as exc:
-                retry_in_s = state.mark_failed(now=now_fn())
-                log.warning(
-                    "watch.reindex_failed",
-                    error=str(exc),
-                    failures=state.failures,
-                    retry_in_s=retry_in_s,
-                )
-            else:
-                state.mark_succeeded()
-                log.info("watch.reindex_done")
 
-        if once:
-            break
+def _run_resilient_watch_loop(
+    repo: Path,
+    *,
+    interval_s: float,
+    debounce_s: float,
+    full_refresh: bool,
+    stop_event: threading.Event,
+    refresh: Callable[..., None],
+    once: bool = False,
+    watch_fn: WatchFn | None = None,
+    now_fn: Callable[[], float] = time.monotonic,
+    reconcile_interval_s: float = _DEFAULT_RECONCILE_INTERVAL_S,
+    on_ready: Callable[[], None] | None = None,
+) -> None:
+    """Restart an initialized native backend with bounded backoff."""
+    ready = False
+    backend_retry_s = _RETRY_INITIAL_S
+
+    def mark_ready() -> None:
+        nonlocal ready
+        ready = True
+        if on_ready is not None:
+            on_ready()
+
+    while not stop_event.is_set():
+        try:
+            _run_watch_loop(
+                repo,
+                interval_s=interval_s,
+                debounce_s=debounce_s,
+                full_refresh=full_refresh,
+                stop_event=stop_event,
+                refresh=refresh,
+                once=once,
+                watch_fn=watch_fn,
+                now_fn=now_fn,
+                reconcile_interval_s=reconcile_interval_s,
+                on_ready=mark_ready,
+            )
+            if once or stop_event.is_set():
+                return
+            raise StrophaError("Native watcher stopped unexpectedly")
+        except Exception as exc:
+            if not ready:
+                raise
+            if stop_event.is_set():
+                return
+            log.warning(
+                "watch.backend_failed",
+                error=str(exc),
+                retry_in_s=backend_retry_s,
+            )
+            if stop_event.wait(backend_retry_s):
+                return
+            backend_retry_s = min(backend_retry_s * 2, _RETRY_MAX_S)
+
+
+def _pipeline_from_stages(
+    repo: Path,
+    built: BuiltStages,
+    *,
+    storage: StorageStage | None = None,
+    enricher: Any = None,
+    graphify: bool,
+    enricher_concurrency: int,
+    enricher_batch_size: int,
+) -> Pipeline:
+    return Pipeline(
+        storage=storage or built.storage,
+        embedder=built.embedder,
+        secondary_embedder=built.secondary_embedder,
+        enricher=enricher or built.enricher,
+        walker=built.walker,
+        chunker=built.chunker,
+        repos=[repo],
+        enricher_concurrency=enricher_concurrency,
+        enricher_batch_size=enricher_batch_size,
+        graphify=graphify,
+    )
+
+
+def _refresh_pipeline(
+    pipeline: Pipeline,
+    repo: Path,
+    changed: set[str],
+    deleted: set[str],
+    *,
+    full_reconcile: bool,
+) -> None:
+    if full_reconcile:
+        stats = pipeline.run(mode="reconcile")
+    else:
+        try:
+            stats = pipeline.refresh_paths(
+                repo=repo,
+                changed_or_added=changed,
+                deleted=deleted,
+            )
+        except FullReconcileRequiredError as exc:
+            log.info("watch.reconcile_required", reason=str(exc))
+            stats = pipeline.run(mode="reconcile")
+    _log_refresh_stats(stats)
+
+
+def _log_refresh_stats(stats: PipelineStats) -> None:
+    log.info(
+        "watch.refresh_summary",
+        files=stats.files_visited,
+        evicted=stats.files_evicted,
+        chunks=stats.chunks_seen,
+        embedded=stats.chunks_embedded,
+        reused=stats.chunks_skipped_fresh,
+        failed=stats.chunks_enriched_failed,
+    )
+    if stats.chunks_enriched_failed:
+        raise PipelineError(
+            f"Re-index incomplete: {stats.chunks_enriched_failed} chunks failed enrichment"
+        )
 
 
 def watch_repo(
@@ -258,21 +406,9 @@ def watch_repo(
     full_refresh: bool = False,
     once: bool = False,
 ) -> None:
-    """Watch ``repo`` and re-index changed files after the debounce window.
-
-    Args:
-        repo: The repository root to watch.
-        interval_s: Polling interval in seconds. Lower = snappier, higher
-            CPU. 1.0 is comfortable for most editors.
-        debounce_s: Wait this many seconds of *no further changes* before
-            triggering a re-index. Protects against save bursts.
-        full_refresh: When True, every re-index runs a full ``Pipeline.run()``
-            (including graphify graph reload and graph-vec embedding).
-            Default False — only the changed files go through the pipeline.
-        once: Run one detection cycle and return. Used by tests.
-    """
+    """Watch ``repo`` and persist debounced saved-file changes."""
     repo = repo.expanduser().resolve()
-    if not (repo / ".git").exists() and not repo.is_dir():
+    if not repo.is_dir():
         raise StrophaError(f"Not a directory: {repo}")
     log.info(
         "watch.start",
@@ -280,116 +416,118 @@ def watch_repo(
         interval_s=interval_s,
         debounce_s=debounce_s,
         full_refresh=full_refresh,
+        backend="watchfiles",
     )
 
     stop_event = threading.Event()
 
-    def _on_sigint(_sig: int, _frame: object) -> None:
+    def _on_signal(_sig: int, _frame: object) -> None:
         stop_event.set()
         log.info("watch.stop_requested")
 
     try:
-        signal.signal(signal.SIGINT, _on_sigint)
-        signal.signal(signal.SIGTERM, _on_sigint)
+        signal.signal(signal.SIGINT, _on_signal)
+        signal.signal(signal.SIGTERM, _on_signal)
     except (ValueError, OSError):
-        # signal() can only be called from main thread; in test runners
-        # the watcher may run elsewhere — skip silently.
         pass
 
-    resolved = load_pipeline_config()
-    _run_watch_loop(
+    built = build_stages(load_pipeline_config())
+    inference = get_config().inference
+    pipeline = _pipeline_from_stages(
         repo,
-        interval_s=interval_s,
-        debounce_s=debounce_s,
-        full_refresh=full_refresh,
-        wait=stop_event.wait,
-        max_file_bytes=get_config().max_file_bytes,
-        walker=build_walker(resolved),
-        once=once,
+        built,
+        graphify=full_refresh,
+        enricher_concurrency=inference.enricher_concurrency,
+        enricher_batch_size=inference.effective_batch_size(),
     )
+    try:
+        _run_resilient_watch_loop(
+            repo,
+            interval_s=interval_s,
+            debounce_s=debounce_s,
+            full_refresh=full_refresh,
+            stop_event=stop_event,
+            refresh=lambda changed, deleted, *, full_reconcile: _refresh_pipeline(
+                pipeline,
+                repo,
+                changed,
+                deleted,
+                full_reconcile=full_reconcile,
+            ),
+            once=once,
+        )
+    finally:
+        with contextlib.suppress(Exception):
+            built.storage.close()
 
 
 def _reindex(repo: Path, *, full_refresh: bool) -> None:
-    """Run a fresh ``Pipeline`` pass against ``repo``."""
-    resolved = load_pipeline_config()
-    built = build_stages(resolved)
+    """Run one independently-owned reconcile pass against ``repo``."""
+    built = build_stages(load_pipeline_config())
     inference = get_config().inference
     try:
-        with built.storage:  # type: ignore[union-attr]
-            pipeline = Pipeline(
-                storage=built.storage,
-                embedder=built.embedder,
-                secondary_embedder=built.secondary_embedder,
-                enricher=built.enricher,
-                walker=built.walker,
-                chunker=built.chunker,
-                repos=[repo],
-                enricher_concurrency=inference.enricher_concurrency,
-                enricher_batch_size=inference.effective_batch_size(),
-                graphify=full_refresh,
-            )
-            stats = pipeline.run()
-        log.info(
-            "watch.reindex_summary",
-            files=stats.files_visited,
-            chunks=stats.chunks_seen,
-            embedded=stats.chunks_embedded,
-            reused=stats.chunks_skipped_fresh,
-            failed=stats.chunks_enriched_failed,
+        pipeline = _pipeline_from_stages(
+            repo,
+            built,
+            graphify=full_refresh,
+            enricher_concurrency=inference.enricher_concurrency,
+            enricher_batch_size=inference.effective_batch_size(),
         )
-        if stats.chunks_enriched_failed:
-            raise PipelineError(
-                f"Re-index incomplete: {stats.chunks_enriched_failed} chunks failed enrichment"
-            )
+        _log_refresh_stats(pipeline.run(mode="reconcile"))
     finally:
         if built.storage is not None:
             with contextlib.suppress(Exception):
                 built.storage.close()
 
 
-# ---------------------------------------------------------------------------
-# Async/threaded watch for MCP server integration
-# ---------------------------------------------------------------------------
-
-
 @dataclass
 class WatchController:
-    """Controller for a background watch thread.
-
-    Use this to start/stop the watcher from the MCP server lifespan.
-    """
+    """Own a native watch thread and its long-lived writer connection."""
 
     repo: Path
     interval_s: float = _DEFAULT_INTERVAL_S
     debounce_s: float = _DEFAULT_DEBOUNCE_S
     full_refresh: bool = False
-    max_file_bytes: int = 524_288
-    walker: WalkerStage | None = None
+    stages: BuiltStages | None = None
+    enricher_concurrency: int = 1
+    enricher_batch_size: int = 1
+    reconcile_interval_s: float = _DEFAULT_RECONCILE_INTERVAL_S
 
     _stop_event: threading.Event = field(default_factory=threading.Event)
+    _ready_event: threading.Event = field(default_factory=threading.Event)
     _thread: threading.Thread | None = field(default=None, init=False)
+    _startup_error: BaseException | None = field(default=None, init=False)
 
     def start(self) -> None:
-        """Start the watch loop in a background daemon thread."""
         if self._thread is not None and self._thread.is_alive():
             log.warning("watch.already_running")
             return
         self._stop_event.clear()
+        self._ready_event.clear()
+        self._startup_error = None
         self._thread = threading.Thread(
             target=self._run_loop,
             name="stropha-watch",
             daemon=True,
         )
         self._thread.start()
+        startup_timeout_s = _STARTUP_TIMEOUT_S
+        if not self._ready_event.wait(startup_timeout_s):
+            self._stop_event.set()
+            raise StrophaError(
+                f"Native watcher did not become ready within {startup_timeout_s:g} seconds"
+            )
+        if self._startup_error is not None:
+            raise StrophaError(f"Native watcher failed to start: {self._startup_error}")
         log.info(
             "watch.thread_started",
             repo=str(self.repo),
             interval_s=self.interval_s,
             debounce_s=self.debounce_s,
+            backend="watchfiles",
         )
 
     def stop(self, timeout: float | None = None) -> None:
-        """Signal the watch loop to stop and wait for thread to finish."""
         if self._thread is None or not self._thread.is_alive():
             return
         log.info("watch.thread_stopping")
@@ -401,18 +539,81 @@ class WatchController:
             log.info("watch.thread_stopped")
 
     def _run_loop(self) -> None:
-        """The actual watch loop, runs in a background thread."""
         repo = self.repo.expanduser().resolve()
-        if not repo.is_dir():
-            log.error("watch.not_a_directory", path=str(repo))
-            return
+        writer_storage: StorageStage | None = None
+        ready = False
+        try:
+            if not repo.is_dir():
+                raise StrophaError(f"Not a directory: {repo}")
 
-        _run_watch_loop(
-            repo,
-            interval_s=self.interval_s,
-            debounce_s=self.debounce_s,
-            full_refresh=self.full_refresh,
-            wait=self._stop_event.wait,
-            max_file_bytes=self.max_file_bytes,
-            walker=self.walker,
-        )
+            refresh_fn: Callable[..., None]
+            if self.stages is None:
+
+                def cold_refresh(
+                    _changed: set[str],
+                    _deleted: set[str],
+                    *,
+                    full_reconcile: bool,
+                ) -> None:
+                    _reindex(repo, full_refresh=self.full_refresh)
+
+                refresh_fn = cold_refresh
+            else:
+                writer_storage = build_storage(
+                    self.stages.resolved,
+                    embedding_dim=self.stages.embedder.dim,
+                )
+                enricher = self.stages.enricher
+                if getattr(enricher, "_storage", None) is not None:
+                    enricher = build_enricher(self.stages.resolved, storage=writer_storage)
+                pipeline = _pipeline_from_stages(
+                    repo,
+                    self.stages,
+                    storage=writer_storage,
+                    enricher=enricher,
+                    graphify=self.full_refresh,
+                    enricher_concurrency=self.enricher_concurrency,
+                    enricher_batch_size=self.enricher_batch_size,
+                )
+
+                def warm_refresh(
+                    changed: set[str],
+                    deleted: set[str],
+                    *,
+                    full_reconcile: bool,
+                ) -> None:
+                    _refresh_pipeline(
+                        pipeline,
+                        repo,
+                        changed,
+                        deleted,
+                        full_reconcile=full_reconcile,
+                    )
+
+                refresh_fn = warm_refresh
+
+            def mark_ready() -> None:
+                nonlocal ready
+                ready = True
+                self._ready_event.set()
+
+            _run_resilient_watch_loop(
+                repo,
+                interval_s=self.interval_s,
+                debounce_s=self.debounce_s,
+                full_refresh=self.full_refresh,
+                stop_event=self._stop_event,
+                refresh=refresh_fn,
+                reconcile_interval_s=self.reconcile_interval_s,
+                on_ready=mark_ready,
+            )
+        except BaseException as exc:
+            if not ready:
+                self._startup_error = exc
+                self._ready_event.set()
+            elif not self._stop_event.is_set():
+                log.error("watch.thread_failed", error=str(exc))
+        finally:
+            if writer_storage is not None:
+                with contextlib.suppress(Exception):
+                    writer_storage.close()

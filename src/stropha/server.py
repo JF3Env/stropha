@@ -18,9 +18,9 @@ clients connect to it as a ``remote`` server.
 
 Background file watcher:
 When ``mcp.watch`` is enabled in ``~/.stropha/config.yaml`` (the default), the
-shared runtime polls the target repository and triggers a debounced light
-re-index so MCP queries see saved edits. Disable that YAML setting when manual
-indexing or the post-commit hook is sufficient.
+shared runtime consumes native filesystem notifications and triggers a debounced,
+path-scoped re-index so MCP queries see saved edits. Disable that YAML setting
+when manual indexing or the post-commit hook is sufficient.
 """
 
 from __future__ import annotations
@@ -490,9 +490,7 @@ async def _frontend_config(request):
             candidate = merge_config_document(previous, patch)
             mcp_document = candidate.get("mcp", {})
             configured_profile = (
-                mcp_document.get("profile", "full")
-                if isinstance(mcp_document, dict)
-                else "full"
+                mcp_document.get("profile", "full") if isinstance(mcp_document, dict) else "full"
             )
             write_config_document(candidate, path)
             reset_config()
@@ -2248,9 +2246,7 @@ def _hard_bound_retrieval(
     budget_tokens: int,
 ) -> tuple[AssembleContextResponse, bool]:
     if retrieval.total_tokens <= budget_tokens:
-        return retrieval.model_copy(
-            update={"bundle": _render_retrieval_bundle(retrieval)}
-        ), False
+        return retrieval.model_copy(update={"bundle": _render_retrieval_bundle(retrieval)}), False
     bounded = retrieval.model_copy(
         update={
             "bundle": f"# Context for: {_single_line(retrieval.task)}\n",
@@ -2660,9 +2656,7 @@ def _inference_snapshot(cfg: Config) -> dict:
                 "max_retries": cfg.inference.lms_max_retries,
                 "think": cfg.inference.lms_think,
                 "max_connections": cfg.inference.lms_max_connections,
-                "max_keepalive_connections": (
-                    cfg.inference.lms_max_keepalive_connections
-                ),
+                "max_keepalive_connections": (cfg.inference.lms_max_keepalive_connections),
                 "location": "internal (OpenAI-compatible LMS)",
             }
         )

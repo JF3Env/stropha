@@ -141,12 +141,22 @@ def _load_ragignore(repo: Path) -> pathspec.PathSpec:
 class Walker:
     """Discovers indexable files under a target repository."""
 
-    def __init__(self, repo: Path, max_file_bytes: int = 524_288) -> None:
+    def __init__(
+        self,
+        repo: Path,
+        max_file_bytes: int = 524_288,
+        *,
+        respect_strophaignore: bool = True,
+    ) -> None:
         if not repo.exists() or not repo.is_dir():
             raise WalkerError(f"Target repo not found or not a directory: {repo}")
         self.repo = repo.resolve()
         self.max_file_bytes = max_file_bytes
-        self._spec = _load_ragignore(self.repo)
+        self._spec = (
+            _load_ragignore(self.repo)
+            if respect_strophaignore
+            else pathspec.PathSpec.from_lines("gitignore", [])
+        )
 
     def discover(self) -> Iterable[SourceFile]:
         """Yield every file that survives all filters."""
@@ -198,17 +208,31 @@ class Walker:
 
     def discover_paths(self, rel_paths: Iterable[str]) -> Iterator[SourceFile]:
         """Yield SourceFile only for the explicit subset of paths given."""
-        for rel in rel_paths:
+        safe_paths = [
+            normalized
+            for rel in rel_paths
+            if (normalized := self._normalize_rel_path(rel)) is not None
+        ]
+        ignored = self._git_ignored_paths(safe_paths)
+        for rel in safe_paths:
+            if rel in ignored:
+                continue
             sf = self.evaluate_path(rel)
             if sf is not None:
                 yield sf
 
     def evaluate_path(self, rel: str) -> SourceFile | None:
         """Apply all filters to a single rel_path. Returns None if filtered out."""
-        if not rel or self._spec.match_file(rel):
+        normalized = self._normalize_rel_path(rel)
+        if normalized is None or self._spec.match_file(normalized):
             return None
+        rel = normalized
         abs_path = self.repo / rel
         if not abs_path.is_file():
+            return None
+        try:
+            abs_path.resolve(strict=True).relative_to(self.repo)
+        except (OSError, ValueError):
             return None
         language = detect_language(abs_path)
         if language is None:
@@ -227,3 +251,38 @@ class Walker:
             language=language,
             size_bytes=size,
         )
+
+    def _normalize_rel_path(self, rel: str) -> str | None:
+        candidate = Path(rel)
+        if not rel or candidate.is_absolute() or ".." in candidate.parts:
+            return None
+        normalized = candidate.as_posix()
+        if normalized in ("", "."):
+            return None
+        try:
+            (self.repo / candidate).absolute().relative_to(self.repo)
+        except ValueError:
+            return None
+        return normalized
+
+    def _git_ignored_paths(self, rel_paths: list[str]) -> set[str]:
+        """Return untracked paths excluded by Git without scanning the tree."""
+        if not rel_paths:
+            return set()
+        payload = ("\0".join(rel_paths) + "\0").encode()
+        try:
+            result = subprocess.run(
+                ["git", "check-ignore", "-z", "--stdin"],
+                cwd=self.repo,
+                input=payload,
+                capture_output=True,
+                check=False,
+                timeout=30,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            return set()
+        if result.returncode not in (0, 1):
+            return set()
+        return {
+            path for path in result.stdout.decode("utf-8", errors="replace").split("\0") if path
+        }

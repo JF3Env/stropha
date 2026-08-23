@@ -38,3 +38,6 @@ class WalkerStage(Protocol):
 
     def discover(self, repo: Path) -> Iterable[SourceFile]:
         """Yield every file the indexer should consider for chunking."""
+
+    def discover_paths(self, repo: Path, rel_paths: Iterable[str]) -> Iterable[SourceFile]:
+        """Apply the same admission rules to an explicit path subset."""

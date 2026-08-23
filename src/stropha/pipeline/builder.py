@@ -19,7 +19,7 @@ from .. import adapters  # noqa: F401  — side-effect: populate registry
 from ..errors import ConfigError
 from ..logging import get_logger
 from ..stages.chunker import ChunkerStage
-from ..stages.embedder import EmbedderStage
+from ..stages.embedder import EmbedderStage, SynchronizedEmbedder
 from ..stages.enricher import EnricherStage, effective_enricher_id
 from ..stages.retrieval import RetrievalStage
 from ..stages.router import RouterStage
@@ -55,9 +55,7 @@ class BuiltStages:
         """Indexing identity using the configured runtime batch size."""
         from ..config import get_config
 
-        return effective_enricher_id(
-            self.enricher, get_config().inference.effective_batch_size()
-        )
+        return effective_enricher_id(self.enricher, get_config().inference.effective_batch_size())
 
     def indexing_hash(self) -> str:
         """Stable hash of the adapters that determine index contents.
@@ -99,6 +97,7 @@ def build_stages(
     *,
     open_storage: bool = True,
     force_rebuild: bool = False,
+    synchronize_embedders: bool = False,
 ) -> BuiltStages:
     """Instantiate every adapter named in ``resolved_config``.
 
@@ -112,59 +111,34 @@ def build_stages(
     rejects a dim shift (e.g. ``bge-m3`` 1024 → ``voyage-code-3`` 512).
     Caller is responsible for actually triggering ``Pipeline.run(rebuild=True)``
     after — passing this flag without the rebuild leaves the index empty.
+
+    ``synchronize_embedders=True`` wraps each warm embedder with a re-entrant
+    lock so the MCP query path and watcher writer thread can safely share the
+    model instance. Storage remains independently owned by each thread.
     """
     walker = build_walker(resolved_config)
     chunker = _build_simple(resolved_config, "chunker")
-    enricher = _build_simple(resolved_config, "enricher")
+    enricher = build_enricher(resolved_config)
     embedder = _build_simple(resolved_config, "embedder")
     secondary_embedder = _build_secondary_embedder(resolved_config)
+    if synchronize_embedders:
+        embedder = SynchronizedEmbedder(embedder)
+        if secondary_embedder is not None:
+            secondary_embedder = SynchronizedEmbedder(secondary_embedder)
 
     storage: StorageStage | None = None
     retrieval: RetrievalStage | None = None
     if open_storage:
-        storage_section = resolved_config.get("storage") or {}
-        storage_name = storage_section.get("adapter") or "sqlite-vec"
-        storage_cls = lookup_adapter("storage", storage_name)
-        try:
-            storage_cfg = storage_cls.Config(**(storage_section.get("config") or {}))
-        except Exception as exc:
-            raise ConfigError(
-                f"Invalid config for pipeline.storage adapter={storage_name!r}: {exc}"
-            ) from exc
-        # Storage adapters may use force_rebuild to recreate
-        # dimension-dependent data before validating the active embedder.
-        try:
-            storage = storage_cls(
-                storage_cfg,
-                embedding_dim=embedder.dim,
-                force_rebuild=force_rebuild,
-            )
-        except TypeError:
-            # Adapter not yet aware of force_rebuild — fall back to the
-            # original signature. The user gets the dim-mismatch error if
-            # any (i.e. behaviour matches pre-flag world).
-            storage = storage_cls(storage_cfg, embedding_dim=embedder.dim)
-        log.info(
-            "pipeline.adapter.built",
-            stage="storage",
-            adapter=storage_name,
-            adapter_id=storage.adapter_id,
+        storage = build_storage(
+            resolved_config,
+            embedding_dim=embedder.dim,
+            force_rebuild=force_rebuild,
         )
 
         # Late inject storage into enrichers that need it (e.g. graph-aware
         # enricher uses graph_nodes table). Adapters opt-in via setattr or
         # by accepting `storage` in __init__.
-        if hasattr(enricher, "_storage") and getattr(enricher, "_storage", None) is None:
-            try:
-                enricher._storage = storage  # type: ignore[attr-defined]
-                log.info(
-                    "pipeline.adapter.injected",
-                    stage="enricher",
-                    adapter=enricher.adapter_name,
-                    dependency="storage",
-                )
-            except (AttributeError, TypeError):
-                pass
+        _bind_enricher_storage(enricher, storage)
 
         retrieval_section = resolved_config.get("retrieval") or {}
         retrieval_name = retrieval_section.get("adapter") or "hybrid-rrf"
@@ -197,7 +171,8 @@ def build_stages(
     except Exception as exc:
         log.warning(
             "pipeline.router.unavailable",
-            adapter=router_name, error=str(exc),
+            adapter=router_name,
+            error=str(exc),
         )
         router_cls = None
     if router_cls is not None:
@@ -234,6 +209,64 @@ def build_stages(
 def build_walker(resolved_config: dict[str, Any]) -> WalkerStage:
     """Build only the configured walker without loading model-backed stages."""
     return cast(WalkerStage, _build_simple(resolved_config, "walker"))
+
+
+def build_enricher(
+    resolved_config: dict[str, Any], *, storage: StorageStage | None = None
+) -> EnricherStage:
+    """Build an enricher, optionally binding a thread-owned storage handle."""
+    enricher = cast(EnricherStage, _build_simple(resolved_config, "enricher"))
+    if storage is not None:
+        _bind_enricher_storage(enricher, storage)
+    return enricher
+
+
+def build_storage(
+    resolved_config: dict[str, Any],
+    *,
+    embedding_dim: int,
+    force_rebuild: bool = False,
+) -> StorageStage:
+    """Build only the configured storage adapter for an owning thread."""
+    storage_section = resolved_config.get("storage") or {}
+    storage_name = storage_section.get("adapter") or "sqlite-vec"
+    storage_cls = lookup_adapter("storage", storage_name)
+    try:
+        storage_cfg = storage_cls.Config(**(storage_section.get("config") or {}))
+    except Exception as exc:
+        raise ConfigError(
+            f"Invalid config for pipeline.storage adapter={storage_name!r}: {exc}"
+        ) from exc
+    try:
+        storage = storage_cls(
+            storage_cfg,
+            embedding_dim=embedding_dim,
+            force_rebuild=force_rebuild,
+        )
+    except TypeError:
+        storage = storage_cls(storage_cfg, embedding_dim=embedding_dim)
+    log.info(
+        "pipeline.adapter.built",
+        stage="storage",
+        adapter=storage_name,
+        adapter_id=storage.adapter_id,
+    )
+    return cast(StorageStage, storage)
+
+
+def _bind_enricher_storage(enricher: EnricherStage, storage: StorageStage) -> None:
+    if not hasattr(enricher, "_storage") or getattr(enricher, "_storage", None) is not None:
+        return
+    try:
+        enricher._storage = storage  # type: ignore[attr-defined]
+        log.info(
+            "pipeline.adapter.injected",
+            stage="enricher",
+            adapter=enricher.adapter_name,
+            dependency="storage",
+        )
+    except (AttributeError, TypeError):
+        pass
 
 
 def _build_simple(resolved_config: dict[str, Any], stage: str) -> Any:
@@ -284,8 +317,7 @@ def _build_secondary_embedder(
             configs.append(stream_cls.Config(**(spec.get("config") or {})))
         except Exception as exc:
             raise ConfigError(
-                f"Invalid config for retrieval.streams.{name} "
-                f"(adapter='model2vec-cosine'): {exc}"
+                f"Invalid config for retrieval.streams.{name} (adapter='model2vec-cosine'): {exc}"
             ) from exc
 
     if not configs:

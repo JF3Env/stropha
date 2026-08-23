@@ -65,7 +65,7 @@ class LlmRerankerConfig(BaseModel):
     max_snippet_chars: int = Field(default=1200, ge=200, le=4000)
     max_tokens: int = Field(default=256, ge=64, le=2048)
     temperature: float = Field(default=0.0, ge=0.0, le=2.0)
-    top_p: float | None = Field(default=None, gt=0.0, le=1.0)
+    top_p: float | None = Field(default=None, ge=0.0, le=1.0)
     top_k: int | None = Field(default=None, ge=1)
     presence_penalty: float | None = Field(default=None, ge=-2.0, le=2.0)
     output_mode: Literal["json_schema", "text"] = "json_schema"

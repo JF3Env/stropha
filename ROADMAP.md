@@ -52,7 +52,8 @@ No repository-independent recall improvement is claimed.
 - HTTP-only shared MCP daemon with a lazily built warm runtime
 - Local dashboard and atomic `PATCH /api/config` runtime replacement
 - Detached post-commit hook using hash-based reconcile indexing
-- Polling file watcher for saved working-tree changes
+- Native filesystem watcher with path-scoped refreshes for saved working-tree
+  changes
 
 The watcher is shipped and updates the persistent configured index. A separate
 RAM overlay that merges uncommitted content at query time has not shipped.
