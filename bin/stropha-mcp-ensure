@@ -296,13 +296,57 @@ _start() {
     echo "[stropha-mcp] check $LOGFILE for details" >&2
 }
 
+# Releasing the port is NOT the same as exiting. A daemon can drop its
+# listening socket while its watcher thread keeps running — and keeps holding
+# the index's Postgres advisory lock, so the next daemon binds the port and
+# then fails every reconcile against its own predecessor. Wait on process
+# exit, and escalate when the process ignores SIGTERM.
+_wait_for_exit() {
+    _pid="$1"
+    _limit="${2:-20}"
+    for _tick in $(seq 1 "$_limit"); do
+        kill -0 "$_pid" 2>/dev/null || return 0
+        sleep 1
+    done
+    return 1
+}
+
+_terminate() {
+    _pid="$1"
+    _label="$2"
+    kill -0 "$_pid" 2>/dev/null || return 0
+    kill "$_pid" 2>/dev/null
+    if _wait_for_exit "$_pid" 20; then
+        echo "[stropha-mcp] stopped ${_label} (pid ${_pid})"
+        return 0
+    fi
+    echo "[stropha-mcp] ${_label} (pid ${_pid}) ignored SIGTERM for 20s — sending SIGKILL" >&2
+    kill -9 "$_pid" 2>/dev/null
+    if _wait_for_exit "$_pid" 5; then
+        echo "[stropha-mcp] killed ${_label} (pid ${_pid})"
+    else
+        echo "[stropha-mcp] warning: ${_label} (pid ${_pid}) is still alive" >&2
+    fi
+}
+
+# The `uv run` wrapper that spawned the server. Left behind, it lingers as an
+# orphan and muddies the next start.
+_wrapper_pid() {
+    _child="$1"
+    _parent=$(ps -o ppid= -p "$_child" 2>/dev/null | tr -d ' ')
+    [ -n "$_parent" ] && [ "$_parent" != "1" ] || return 1
+    case "$(ps -o command= -p "$_parent" 2>/dev/null)" in
+        *uv*stropha-mcp*) echo "$_parent" ;;
+        *) return 1 ;;
+    esac
+}
+
 _stop() {
     if [ -f "$PIDFILE" ]; then
         PID=$(cat "$PIDFILE")
-        if kill -0 "$PID" 2>/dev/null; then
-            kill "$PID"
-            echo "[stropha-mcp] stopped (pid $PID)"
-        fi
+        WRAPPER=$(_wrapper_pid "$PID" || true)
+        _terminate "$PID" "server"
+        [ -n "$WRAPPER" ] && _terminate "$WRAPPER" "uv wrapper"
         rm -f "$PIDFILE"
     else
         echo "[stropha-mcp] not running"
@@ -310,8 +354,7 @@ _stop() {
     # Killing the uv wrapper does not reach the python server it spawned —
     # take down whatever still holds the port so the next start can bind.
     for _lp in $(_port_listeners); do
-        kill "$_lp" 2>/dev/null && \
-            echo "[stropha-mcp] stopped orphaned server on port ${PORT} (pid $_lp)"
+        _terminate "$_lp" "orphaned server on port ${PORT}"
     done
     if ! _wait_for_port_release; then
         echo "[stropha-mcp] warning: port ${PORT} is still in use" >&2

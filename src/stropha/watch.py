@@ -485,6 +485,16 @@ class WatchController:
     """Own a native watch thread and its long-lived writer connection."""
 
     repo: Path
+    additional_repos: tuple[Path, ...] = ()
+    """Extra roots watched alongside ``repo`` (WIN-361 multi-repo watching).
+
+    Each root gets its own observer thread, but every write goes through
+    ``_write_lock``: the index admits one writer at a time (Postgres enforces
+    it with an advisory lock), so serializing here keeps N watchers from
+    deadlocking each other. Storage and pipelines are built lazily, inside the
+    thread that uses them, so idle repositories cost a blocked thread and
+    nothing else — and SQLite handles never cross a thread boundary.
+    """
     interval_s: float = _DEFAULT_INTERVAL_S
     debounce_s: float = _DEFAULT_DEBOUNCE_S
     full_refresh: bool = False
@@ -496,6 +506,8 @@ class WatchController:
     _stop_event: threading.Event = field(default_factory=threading.Event)
     _ready_event: threading.Event = field(default_factory=threading.Event)
     _thread: threading.Thread | None = field(default=None, init=False)
+    _extra_threads: list[threading.Thread] = field(default_factory=list, init=False)
+    _write_lock: threading.Lock = field(default_factory=threading.Lock, init=False)
     _startup_error: BaseException | None = field(default=None, init=False)
 
     def start(self) -> None:
@@ -526,20 +538,53 @@ class WatchController:
             debounce_s=self.debounce_s,
             backend="watchfiles",
         )
+        # Secondary roots start after the primary is ready and never gate
+        # startup: one unreadable checkout must not stop the daemon serving
+        # the repository the user is actually in.
+        self._extra_threads = []
+        for extra in self._resolved_additional_repos():
+            thread = threading.Thread(
+                target=self._run_loop,
+                kwargs={"root": extra, "primary": False},
+                name=f"stropha-watch:{extra.name}",
+                daemon=True,
+            )
+            thread.start()
+            self._extra_threads.append(thread)
+        if self._extra_threads:
+            log.info("watch.additional_roots_started", count=len(self._extra_threads))
+
+    def _resolved_additional_repos(self) -> list[Path]:
+        """Extra roots that exist and are not the primary, de-duplicated."""
+        primary = self.repo.expanduser().resolve()
+        seen = {primary}
+        roots: list[Path] = []
+        for candidate in self.additional_repos:
+            try:
+                resolved = Path(candidate).expanduser().resolve()
+            except (OSError, RuntimeError, ValueError):
+                continue
+            if resolved in seen or not resolved.is_dir():
+                continue
+            seen.add(resolved)
+            roots.append(resolved)
+        return roots
 
     def stop(self, timeout: float | None = None) -> None:
-        if self._thread is None or not self._thread.is_alive():
+        threads = [t for t in [self._thread, *self._extra_threads] if t is not None]
+        if not any(thread.is_alive() for thread in threads):
             return
         log.info("watch.thread_stopping")
         self._stop_event.set()
-        self._thread.join(timeout=timeout)
-        if self._thread.is_alive():
+        for thread in threads:
+            thread.join(timeout=timeout)
+        if any(thread.is_alive() for thread in threads):
             log.warning("watch.thread_did_not_stop", timeout=timeout)
         else:
             log.info("watch.thread_stopped")
 
-    def _run_loop(self) -> None:
-        repo = self.repo.expanduser().resolve()
+    def _run_loop(self, root: Path | None = None, *, primary: bool = True) -> None:
+        repo = (root or self.repo).expanduser().resolve()
         writer_storage: StorageStage | None = None
         ready = False
         try:
@@ -555,26 +600,48 @@ class WatchController:
                     *,
                     full_reconcile: bool,
                 ) -> None:
-                    _reindex(repo, full_refresh=self.full_refresh)
+                    # One writer at a time: the index admits a single indexer.
+                    with self._write_lock:
+                        _reindex(repo, full_refresh=self.full_refresh)
 
                 refresh_fn = cold_refresh
             else:
-                writer_storage = build_storage(
-                    self.stages.resolved,
-                    embedding_dim=self.stages.embedder.dim,
-                )
-                enricher = self.stages.enricher
-                if getattr(enricher, "_storage", None) is not None:
-                    enricher = build_enricher(self.stages.resolved, storage=writer_storage)
-                pipeline = _pipeline_from_stages(
-                    repo,
-                    self.stages,
-                    storage=writer_storage,
-                    enricher=enricher,
-                    graphify=self.full_refresh,
-                    enricher_concurrency=self.enricher_concurrency,
-                    enricher_batch_size=self.enricher_batch_size,
-                )
+                stages = self.stages
+                pipeline_holder: list[Any] = []
+
+                def ensure_pipeline() -> Any:
+                    """Build this root's writer on first use, in its own thread.
+
+                    Secondary roots are usually idle, so paying for a storage
+                    connection up front would waste one per watched repository.
+                    Building here also keeps a SQLite handle inside the single
+                    thread that will ever touch it.
+                    """
+                    nonlocal writer_storage
+                    if not pipeline_holder:
+                        writer_storage = build_storage(
+                            stages.resolved,
+                            embedding_dim=stages.embedder.dim,
+                        )
+                        enricher = stages.enricher
+                        if getattr(enricher, "_storage", None) is not None:
+                            enricher = build_enricher(stages.resolved, storage=writer_storage)
+                        pipeline_holder.append(
+                            _pipeline_from_stages(
+                                repo,
+                                stages,
+                                storage=writer_storage,
+                                enricher=enricher,
+                                graphify=self.full_refresh,
+                                enricher_concurrency=self.enricher_concurrency,
+                                enricher_batch_size=self.enricher_batch_size,
+                            )
+                        )
+                    return pipeline_holder[0]
+
+                if primary:
+                    # The primary keeps failing fast at startup, as before.
+                    ensure_pipeline()
 
                 def warm_refresh(
                     changed: set[str],
@@ -582,20 +649,24 @@ class WatchController:
                     *,
                     full_reconcile: bool,
                 ) -> None:
-                    _refresh_pipeline(
-                        pipeline,
-                        repo,
-                        changed,
-                        deleted,
-                        full_reconcile=full_reconcile,
-                    )
+                    with self._write_lock:
+                        _refresh_pipeline(
+                            ensure_pipeline(),
+                            repo,
+                            changed,
+                            deleted,
+                            full_reconcile=full_reconcile,
+                        )
 
                 refresh_fn = warm_refresh
 
             def mark_ready() -> None:
                 nonlocal ready
                 ready = True
-                self._ready_event.set()
+                if primary:
+                    self._ready_event.set()
+                else:
+                    log.info("watch.additional_root_ready", repo=str(repo))
 
             _run_resilient_watch_loop(
                 repo,
@@ -608,7 +679,13 @@ class WatchController:
                 on_ready=mark_ready,
             )
         except BaseException as exc:
-            if not ready:
+            if not primary:
+                # A secondary root failing is never fatal to the daemon.
+                if not self._stop_event.is_set():
+                    log.warning(
+                        "watch.additional_root_failed", repo=str(repo), error=str(exc)
+                    )
+            elif not ready:
                 self._startup_error = exc
                 self._ready_event.set()
             elif not self._stop_event.is_set():

@@ -235,9 +235,7 @@ async def test_initial_watcher_start_keeps_event_loop_responsive(tmp_path) -> No
 
     owner = SimpleNamespace()
     storage = MagicMock(adapter_name="test")
-    built = SimpleNamespace(
-        embedder=MagicMock(), storage=storage, retrieval=MagicMock()
-    )
+    built = SimpleNamespace(embedder=MagicMock(), storage=storage, retrieval=MagicMock())
     start_entered = threading.Event()
     allow_start = threading.Event()
     watcher = MagicMock()
@@ -275,9 +273,7 @@ async def test_cancelled_initial_watcher_start_waits_for_cleanup(tmp_path) -> No
 
     owner = SimpleNamespace()
     storage = MagicMock(adapter_name="test")
-    built = SimpleNamespace(
-        embedder=MagicMock(), storage=storage, retrieval=MagicMock()
-    )
+    built = SimpleNamespace(embedder=MagicMock(), storage=storage, retrieval=MagicMock())
     start_entered = threading.Event()
     allow_start = threading.Event()
     stop_entered = threading.Event()
@@ -530,12 +526,8 @@ async def test_reload_watcher_lifecycle_keeps_event_loop_responsive(tmp_path) ->
     second_storage = MagicMock(adapter_name="second")
     builds = MagicMock(
         side_effect=[
-            SimpleNamespace(
-                embedder=MagicMock(), storage=first_storage, retrieval=MagicMock()
-            ),
-            SimpleNamespace(
-                embedder=MagicMock(), storage=second_storage, retrieval=MagicMock()
-            ),
+            SimpleNamespace(embedder=MagicMock(), storage=first_storage, retrieval=MagicMock()),
+            SimpleNamespace(embedder=MagicMock(), storage=second_storage, retrieval=MagicMock()),
         ]
     )
     stop_entered = threading.Event()
@@ -580,3 +572,72 @@ async def test_reload_watcher_lifecycle_keeps_event_loop_responsive(tmp_path) ->
     assert await task == owner._stropha_shared_runtime
 
     close_shared_runtime(owner)
+
+
+def test_additional_watch_roots_selects_live_unblocked_repositories(tmp_path) -> None:
+    """`watch_all_repos` watches every indexed checkout that still exists."""
+    import dataclasses
+
+    from stropha.config.models import Config, IndexingConfig, PathsConfig
+    from stropha.models import RepoStats
+    from stropha.server_runtime import _additional_watch_roots
+
+    target = tmp_path / "target"
+    other = tmp_path / "other"
+    blocked = tmp_path / "blocked"
+    for path in (target, other, blocked):
+        path.mkdir()
+    gone = tmp_path / "deleted-checkout"
+
+    def _repo(key: str, path) -> RepoStats:
+        return RepoStats(
+            normalized_key=key,
+            url=None,
+            local_path=str(path) if path else None,
+            default_branch="main",
+            head_commit=None,
+            files=1,
+            chunks=1,
+            last_indexed_at=None,
+        )
+
+    storage = MagicMock()
+    storage.list_repos.return_value = [
+        _repo("github.com/acme/target", target),
+        _repo("github.com/acme/other", other),
+        _repo("github.com/acme/blocked", blocked),
+        _repo("github.com/acme/gone", gone),
+        _repo("github.com/acme/pathless", None),
+    ]
+    built = SimpleNamespace(storage=storage)
+    config = dataclasses.replace(
+        Config(),
+        paths=PathsConfig(target_repo=target),
+        indexing=IndexingConfig(blacklist_repos=("github.com/acme/blocked",), watch_all_repos=True),
+    )
+
+    roots = _additional_watch_roots(config, built)
+
+    # The target is already watched; blocked, missing and path-less are skipped.
+    assert roots == (other.resolve(),)
+
+    disabled = dataclasses.replace(config, indexing=IndexingConfig(watch_all_repos=False))
+    assert _additional_watch_roots(disabled, built) == ()
+
+
+def test_additional_watch_roots_survives_an_unreadable_index(tmp_path) -> None:
+    import dataclasses
+
+    from stropha.config.models import Config, IndexingConfig, PathsConfig
+    from stropha.server_runtime import _additional_watch_roots
+
+    storage = MagicMock()
+    storage.list_repos.side_effect = RuntimeError("index unavailable")
+    config = dataclasses.replace(
+        Config(),
+        paths=PathsConfig(target_repo=tmp_path),
+        indexing=IndexingConfig(watch_all_repos=True),
+    )
+
+    # Degrades to watching only the target rather than failing the daemon.
+    assert _additional_watch_roots(config, SimpleNamespace(storage=storage)) == ()

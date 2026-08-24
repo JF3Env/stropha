@@ -214,6 +214,11 @@ async def _shared_runtime(
                     enricher_concurrency=cfg.inference.enricher_concurrency,
                     enricher_batch_size=cfg.inference.effective_batch_size(),
                 )
+                # Only passed when non-empty so alternative controllers that
+                # predate multi-root watching keep working.
+                extra_roots = _additional_watch_roots(cfg, built)
+                if extra_roots:
+                    watcher_kwargs["additional_repos"] = extra_roots
                 watcher = watch_controller_cls(**watcher_kwargs)
                 await _run_lifecycle_call(watcher.start)
         except BaseException:
@@ -223,6 +228,54 @@ async def _shared_runtime(
         runtime = SharedRuntime(config=cfg, built=built, watcher=watcher)
         setattr(app, _SHARED_RUNTIME_ATTR, runtime)
         return runtime
+
+
+def _additional_watch_roots(cfg: Config, built: BuiltStages) -> tuple[Path, ...]:
+    """Roots to watch besides the target when `indexing.watch_all_repos` is on.
+
+    Every indexed repository that still exists on disk and is not blacklisted.
+    A missing checkout is skipped rather than failing the daemon: repositories
+    outlive the directories they were indexed from.
+    """
+    # `cfg` is an injection point: callers (and tests) pass minimal stand-ins,
+    # so read the section defensively rather than assuming a full Config.
+    indexing = getattr(cfg, "indexing", None)
+    if indexing is None or not getattr(indexing, "watch_all_repos", False):
+        return ()
+    if built.storage is None:
+        return ()
+    from .config import repo_is_blacklisted
+
+    try:
+        repos = built.storage.list_repos()
+    except Exception as exc:
+        log.warning("watch.additional_roots_unavailable", error=str(exc))
+        return ()
+    seen = {Path(cfg.target_repo).expanduser().resolve()}
+    roots: list[Path] = []
+    skipped_missing = 0
+    for repo in repos:
+        if not repo.local_path:
+            continue
+        try:
+            root = Path(repo.local_path).expanduser().resolve()
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if root in seen:
+            continue
+        if not root.is_dir():
+            skipped_missing += 1
+            continue
+        if repo_is_blacklisted(repo.normalized_key, root, config=cfg):
+            continue
+        seen.add(root)
+        roots.append(root)
+    log.info(
+        "watch.additional_roots_resolved",
+        watched=len(roots),
+        skipped_missing=skipped_missing,
+    )
+    return tuple(roots)
 
 
 async def get_shared_runtime(
@@ -287,6 +340,11 @@ async def reload_shared_runtime(
                     enricher_concurrency=cfg.inference.enricher_concurrency,
                     enricher_batch_size=cfg.inference.effective_batch_size(),
                 )
+                # Only passed when non-empty so alternative controllers that
+                # predate multi-root watching keep working.
+                extra_roots = _additional_watch_roots(cfg, built)
+                if extra_roots:
+                    watcher_kwargs["additional_repos"] = extra_roots
                 watcher = watch_controller_cls(**watcher_kwargs)
         except BaseException:
             await _close_runtime(SharedRuntime(config=cfg, built=built, watcher=watcher))

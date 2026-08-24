@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -606,3 +607,142 @@ def test_bge_m3_explains_platform_dependency() -> None:
         pytest.raises(EmbeddingError, match="not supported by FastEmbed"),
     ):
         BgeM3Embedder()
+
+
+def _fake_watch_factory(seen: list) -> Callable:
+    def fake_watch(*paths, **kwargs):
+        seen.append(tuple(str(p) for p in paths))
+        stop_event = kwargs["stop_event"]
+        yield set()
+        while not stop_event.wait(0.01):
+            yield set()
+
+    return fake_watch
+
+
+def test_watch_controller_observes_every_configured_root(tmp_path: Path) -> None:
+    """`indexing.watch_all_repos` gives each checkout its own observer."""
+    primary = tmp_path / "primary"
+    second = tmp_path / "second"
+    third = tmp_path / "third"
+    for path in (primary, second, third):
+        path.mkdir()
+    seen: list = []
+
+    with (
+        patch("stropha.watch.watch", side_effect=_fake_watch_factory(seen)),
+        patch("stropha.watch._reindex"),
+    ):
+        controller = WatchController(
+            repo=primary,
+            additional_repos=(second, third),
+            interval_s=0.1,
+            debounce_s=0.1,
+        )
+        controller.start()
+        assert len(controller._extra_threads) == 2
+        assert all(thread.is_alive() for thread in controller._extra_threads)
+        # start() deliberately does not block on secondary roots, so wait for
+        # them to reach the backend instead of assuming they already have.
+        deadline = time.monotonic() + 5.0
+        while len(seen) < 3 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        controller.stop(timeout=5.0)
+
+    watched = {entry[0] for entry in seen}
+    assert watched == {str(primary.resolve()), str(second.resolve()), str(third.resolve())}
+    assert not any(thread.is_alive() for thread in controller._extra_threads)
+
+
+def test_watch_controller_skips_missing_and_duplicate_roots(tmp_path: Path) -> None:
+    """A repository can outlive its directory; listing it twice is harmless."""
+    primary = tmp_path / "primary"
+    primary.mkdir()
+    gone = tmp_path / "deleted-checkout"
+
+    with (
+        patch("stropha.watch.watch", side_effect=_fake_watch_factory([])),
+        patch("stropha.watch._reindex"),
+    ):
+        controller = WatchController(
+            repo=primary,
+            additional_repos=(primary, gone, primary / "."),
+            interval_s=0.1,
+            debounce_s=0.1,
+        )
+        controller.start()
+        assert controller._extra_threads == []
+        controller.stop(timeout=5.0)
+
+
+def test_a_failing_secondary_root_does_not_break_the_primary(tmp_path: Path) -> None:
+    """One unreadable checkout must not stop the daemon's own repository."""
+    primary = tmp_path / "primary"
+    second = tmp_path / "second"
+    primary.mkdir()
+    second.mkdir()
+
+    def selective_watch(*paths, **kwargs):
+        if str(paths[0]) == str(second.resolve()):
+            raise OSError("native backend failed for the secondary root")
+        stop_event = kwargs["stop_event"]
+        yield set()
+        while not stop_event.wait(0.01):
+            yield set()
+
+    with (
+        patch("stropha.watch.watch", side_effect=selective_watch),
+        patch("stropha.watch._reindex"),
+    ):
+        controller = WatchController(
+            repo=primary,
+            additional_repos=(second,),
+            interval_s=0.1,
+            debounce_s=0.1,
+        )
+        controller.start()  # must not raise
+        assert controller._thread is not None and controller._thread.is_alive()
+        controller.stop(timeout=5.0)
+
+
+def test_watch_controller_serializes_writes_across_roots(tmp_path: Path) -> None:
+    """The index admits one writer, so refreshes must never overlap."""
+    primary = tmp_path / "primary"
+    second = tmp_path / "second"
+    primary.mkdir()
+    second.mkdir()
+    overlaps: list[int] = []
+    active = 0
+    guard = threading.Lock()
+
+    def slow_reindex(*_args, **_kwargs):
+        nonlocal active
+        with guard:
+            active += 1
+            overlaps.append(active)
+        time.sleep(0.05)
+        with guard:
+            active -= 1
+
+    def busy_watch(*_paths, **kwargs):
+        stop_event = kwargs["stop_event"]
+        yield {(Change.modified, "file.py")}
+        while not stop_event.wait(0.01):
+            yield {(Change.modified, "file.py")}
+
+    with (
+        patch("stropha.watch.watch", side_effect=busy_watch),
+        patch("stropha.watch._reindex", side_effect=slow_reindex),
+    ):
+        controller = WatchController(
+            repo=primary,
+            additional_repos=(second,),
+            interval_s=0.01,
+            debounce_s=0.01,
+        )
+        controller.start()
+        time.sleep(0.4)
+        controller.stop(timeout=5.0)
+
+    assert overlaps, "expected at least one refresh"
+    assert max(overlaps) == 1, f"writers overlapped: {overlaps}"
