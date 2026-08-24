@@ -952,3 +952,465 @@ def test_frontend_config_route_rolls_back_when_the_caller_cancels(tmp_path) -> N
     finally:
         mcp._session_manager = None
         mcp.settings.transport_security = original_security
+
+
+def _index_runtime(tmp_path, *, watch: bool = True, repos=None, storage=None):
+    """SharedRuntime double whose storage answers the indexed-data routes."""
+    from stropha.config.models import McpConfig, PathsConfig
+    from stropha.models import RepoStats
+
+    if repos is None:
+        repos = [
+            RepoStats(
+                normalized_key="github.com/acme/app",
+                url="https://github.com/acme/app.git",
+                local_path=str(tmp_path),
+                default_branch="main",
+                head_commit="abc123",
+                files=3,
+                chunks=42,
+                last_indexed_at="2026-08-23T10:00:00Z",
+            ),
+            RepoStats(
+                normalized_key="github.com/acme/lib",
+                url="https://github.com/acme/lib.git",
+                local_path="/elsewhere/lib",
+                default_branch="main",
+                head_commit=None,
+                files=1,
+                chunks=7,
+                last_indexed_at=None,
+            ),
+        ]
+    if storage is None:
+        storage = MagicMock()
+        storage.list_repos.return_value = repos
+        storage.stats.return_value = {"chunks": 49, "files": 4}
+    return SharedRuntime(
+        config=Config(paths=PathsConfig(target_repo=tmp_path), mcp=McpConfig(watch=watch)),
+        built=SimpleNamespace(storage=storage),  # type: ignore[arg-type]
+    )
+
+
+def _frontend_client(runtime):
+    from stropha.server import mcp
+
+    mcp.settings.transport_security = None
+    mcp._session_manager = None
+    app = mcp.streamable_http_app()
+    return (
+        patch("stropha.server._frontend_runtime", new=AsyncMock(return_value=runtime)),
+        TestClient(app, client=("127.0.0.1", 50000)),
+    )
+
+
+def test_frontend_repos_route_lists_indexed_repositories(tmp_path) -> None:
+    from stropha.server import mcp
+
+    runtime = _index_runtime(tmp_path)
+    original_security = mcp.settings.transport_security
+    try:
+        runtime_patch, client_ctx = _frontend_client(runtime)
+        with runtime_patch, client_ctx as client:
+            response = client.get("/api/repos")
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["index"] == {"chunks": 49, "files": 4}
+        assert payload["watch_enabled"] is True
+        assert [repo["normalized_key"] for repo in payload["repos"]] == [
+            "github.com/acme/app",
+            "github.com/acme/lib",
+        ]
+        # Only the watcher's target repo is flagged as re-indexed after deletion.
+        assert [repo["watched"] for repo in payload["repos"]] == [True, False]
+        assert payload["repos"][0]["chunks"] == 42
+    finally:
+        mcp._session_manager = None
+        mcp.settings.transport_security = original_security
+
+
+def test_frontend_repos_route_reports_watch_disabled(tmp_path) -> None:
+    from stropha.server import mcp
+
+    runtime = _index_runtime(tmp_path, watch=False)
+    original_security = mcp.settings.transport_security
+    try:
+        runtime_patch, client_ctx = _frontend_client(runtime)
+        with runtime_patch, client_ctx as client:
+            response = client.get("/api/repos")
+
+        payload = response.json()
+        assert payload["watch_enabled"] is False
+        assert [repo["watched"] for repo in payload["repos"]] == [False, False]
+    finally:
+        mcp._session_manager = None
+        mcp.settings.transport_security = original_security
+
+
+def test_frontend_repo_files_route_filters_and_counts_chunks(tmp_path) -> None:
+    from stropha.models import StoredFileMeta
+    from stropha.server import mcp
+
+    runtime = _index_runtime(tmp_path)
+    storage = runtime.built.storage
+    storage.lookup_repo_id.return_value = 1
+    storage.load_file_meta_map.return_value = {
+        "src/app.py": StoredFileMeta(content_hash="a", mtime=1.0, size_bytes=10, chunk_count=4),
+        "src/util.py": StoredFileMeta(content_hash="b", mtime=1.0, size_bytes=10, chunk_count=2),
+        "README.md": StoredFileMeta(content_hash="c", mtime=1.0, size_bytes=10, chunk_count=1),
+    }
+    original_security = mcp.settings.transport_security
+    try:
+        runtime_patch, client_ctx = _frontend_client(runtime)
+        with runtime_patch, client_ctx as client:
+            listed = client.get("/api/repos/files", params={"repo": "github.com/acme/app"})
+            filtered = client.get(
+                "/api/repos/files", params={"repo": "github.com/acme/app", "filter": "SRC/"}
+            )
+            missing = client.get("/api/repos/files", params={"repo": "github.com/acme/gone"})
+            unnamed = client.get("/api/repos/files")
+
+        assert listed.status_code == 200
+        assert [entry["rel_path"] for entry in listed.json()["files"]] == [
+            "README.md",
+            "src/app.py",
+            "src/util.py",
+        ]
+        assert listed.json()["files"][1]["chunks"] == 4
+        assert listed.json()["truncated"] is False
+        # Filtering is case-insensitive and reports the unpaged total.
+        assert [entry["rel_path"] for entry in filtered.json()["files"]] == [
+            "src/app.py",
+            "src/util.py",
+        ]
+        assert filtered.json()["total"] == 2
+        assert missing.status_code == 404
+        assert unnamed.status_code == 422
+    finally:
+        mcp._session_manager = None
+        mcp.settings.transport_security = original_security
+
+
+def test_frontend_repo_delete_clears_one_repository(tmp_path) -> None:
+    from stropha.server import mcp
+
+    runtime = _index_runtime(tmp_path)
+    storage = runtime.built.storage
+    storage.lookup_repo_id.return_value = 7
+    storage.delete_repo.return_value = {
+        "chunks": 7,
+        "files": 1,
+        "graph_nodes": 12,
+        "project_memory": 1,
+        "repos": 1,
+    }
+    original_security = mcp.settings.transport_security
+    try:
+        runtime_patch, client_ctx = _frontend_client(runtime)
+        with runtime_patch, client_ctx as client:
+            response = client.post("/api/repos/delete", json={"repo": "github.com/acme/lib"})
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["scope"] == "repo"
+        assert payload["chunks_deleted"] == 7
+        assert payload["files_deleted"] == 1
+        assert payload["watched"] is False
+        # The identity goes too, so the entry stops being listed instead of
+        # lingering at zero chunks.
+        assert payload["identity_removed"] is True
+        assert payload["removed"]["graph_nodes"] == 12
+        assert payload["removed"]["project_memory"] == 1
+        storage.delete_repo.assert_called_once_with(7)
+        # Index-only: no file-level snapshot work and nothing touches the tree.
+        storage.delete_file_snapshot.assert_not_called()
+    finally:
+        mcp._session_manager = None
+        mcp.settings.transport_security = original_security
+
+
+def test_frontend_repo_delete_removes_named_files_and_commits_once(tmp_path) -> None:
+    from stropha.models import StoredFileMeta
+    from stropha.server import mcp
+
+    runtime = _index_runtime(tmp_path)
+    storage = runtime.built.storage
+    storage.lookup_repo_id.return_value = 1
+    storage.load_file_meta_map.return_value = {
+        "src/app.py": StoredFileMeta(content_hash="a", mtime=1.0, size_bytes=10, chunk_count=4),
+    }
+    storage.delete_file_snapshot.side_effect = lambda *, repo_id, rel_path: (
+        4 if rel_path == "src/app.py" else 0
+    )
+    tracked = tmp_path / "keep-me.py"
+    tracked.write_text("print('still here')\n", encoding="utf-8")
+    original_security = mcp.settings.transport_security
+    try:
+        runtime_patch, client_ctx = _frontend_client(runtime)
+        with runtime_patch, client_ctx as client:
+            response = client.post(
+                "/api/repos/delete",
+                json={"repo": "github.com/acme/app", "paths": ["src/app.py", "src/ghost.py"]},
+            )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["scope"] == "files"
+        assert payload["chunks_deleted"] == 4
+        assert payload["files_deleted"] == 1
+        assert payload["paths_missing"] == ["src/ghost.py"]
+        assert payload["watched"] is True
+        assert storage.delete_file_snapshot.call_count == 2
+        storage.commit.assert_called_once_with()
+        storage.delete_repo.assert_not_called()
+        # The working tree is never a deletion target.
+        assert tracked.exists()
+    finally:
+        mcp._session_manager = None
+        mcp.settings.transport_security = original_security
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {},
+        {"repo": "   "},
+        {"repo": "github.com/acme/app", "paths": "src/app.py"},
+        {"repo": "github.com/acme/app", "paths": []},
+        {"repo": "github.com/acme/app", "paths": [""]},
+        {"repo": "github.com/acme/app", "paths": [1]},
+    ],
+)
+def test_frontend_repo_delete_rejects_malformed_requests(tmp_path, body) -> None:
+    from stropha.server import mcp
+
+    runtime = _index_runtime(tmp_path)
+    storage = runtime.built.storage
+    storage.lookup_repo_id.return_value = 1
+    original_security = mcp.settings.transport_security
+    try:
+        runtime_patch, client_ctx = _frontend_client(runtime)
+        with runtime_patch, client_ctx as client:
+            response = client.post("/api/repos/delete", json=body)
+
+        assert response.status_code == 422
+        storage.delete_repo.assert_not_called()
+        storage.delete_file_snapshot.assert_not_called()
+    finally:
+        mcp._session_manager = None
+        mcp.settings.transport_security = original_security
+
+
+def test_frontend_repo_delete_rejects_unknown_repository(tmp_path) -> None:
+    from stropha.server import mcp
+
+    runtime = _index_runtime(tmp_path)
+    storage = runtime.built.storage
+    original_security = mcp.settings.transport_security
+    try:
+        runtime_patch, client_ctx = _frontend_client(runtime)
+        with runtime_patch, client_ctx as client:
+            response = client.post("/api/repos/delete", json={"repo": "github.com/acme/nope"})
+
+        assert response.status_code == 404
+        storage.delete_repo.assert_not_called()
+    finally:
+        mcp._session_manager = None
+        mcp.settings.transport_security = original_security
+
+
+def test_frontend_index_routes_reject_non_loopback_clients(tmp_path) -> None:
+    from stropha.server import mcp
+
+    original_security = mcp.settings.transport_security
+    mcp.settings.transport_security = None
+    mcp._session_manager = None
+    try:
+        app = mcp.streamable_http_app()
+        with TestClient(app, client=("10.0.0.4", 50000)) as client:
+            assert client.get("/api/repos").status_code == 403
+            assert client.get("/api/repos/files", params={"repo": "x"}).status_code == 403
+            assert client.post("/api/repos/delete", json={"repo": "x"}).status_code == 403
+    finally:
+        mcp._session_manager = None
+        mcp.settings.transport_security = original_security
+
+
+def test_frontend_blacklist_route_pins_key_and_path(tmp_path) -> None:
+    """Blocking one entry must cover every identity of the same checkout."""
+    from stropha.server import mcp
+
+    document = tmp_path / "config.yaml"
+    write_config_document({"inference": {"backend": "ollama"}}, document)
+    runtime = _index_runtime(tmp_path)
+    original_security = mcp.settings.transport_security
+    try:
+        runtime_patch, client_ctx = _frontend_client(runtime)
+        with (
+            runtime_patch,
+            patch("stropha.server.config_path", return_value=document),
+            patch("stropha.server.reset_config"),
+            patch("stropha.server._frontend_reload_runtime", new=AsyncMock(return_value=runtime)),
+            client_ctx as client,
+        ):
+            response = client.post(
+                "/api/repos/blacklist",
+                json={"repo": "github.com/acme/app", "blocked": True},
+            )
+
+        assert response.status_code == 200
+        assert response.json()["blocked"] is True
+        saved = read_config_document(document)["indexing"]["blacklist_repos"]
+        # The normalized key and the checkout path, so a renamed remote stays blocked.
+        assert saved == ["github.com/acme/app", str(tmp_path)]
+        # Blocking deletes nothing.
+        runtime.built.storage.delete_repo.assert_not_called()
+    finally:
+        mcp._session_manager = None
+        mcp.settings.transport_security = original_security
+
+
+def test_frontend_blacklist_route_unblocks_both_entries(tmp_path) -> None:
+    from stropha.server import mcp
+
+    document = tmp_path / "config.yaml"
+    write_config_document(
+        {"indexing": {"blacklist_repos": ["github.com/acme/app", str(tmp_path), "keep/this"]}},
+        document,
+    )
+    runtime = _index_runtime(tmp_path)
+    original_security = mcp.settings.transport_security
+    try:
+        runtime_patch, client_ctx = _frontend_client(runtime)
+        with (
+            runtime_patch,
+            patch("stropha.server.config_path", return_value=document),
+            patch("stropha.server.reset_config"),
+            patch("stropha.server._frontend_reload_runtime", new=AsyncMock(return_value=runtime)),
+            client_ctx as client,
+        ):
+            response = client.post(
+                "/api/repos/blacklist",
+                json={"repo": "github.com/acme/app", "blocked": False},
+            )
+
+        assert response.status_code == 200
+        assert read_config_document(document)["indexing"]["blacklist_repos"] == ["keep/this"]
+    finally:
+        mcp._session_manager = None
+        mcp.settings.transport_security = original_security
+
+
+def test_frontend_blacklist_route_validates_input(tmp_path) -> None:
+    from stropha.server import mcp
+
+    runtime = _index_runtime(tmp_path)
+    original_security = mcp.settings.transport_security
+    try:
+        runtime_patch, client_ctx = _frontend_client(runtime)
+        with runtime_patch, client_ctx as client:
+            assert client.post("/api/repos/blacklist", json={}).status_code == 422
+            assert client.post("/api/repos/blacklist", json={"repo": " "}).status_code == 422
+            bad = client.post(
+                "/api/repos/blacklist", json={"repo": "github.com/acme/app", "blocked": "yes"}
+            )
+            assert bad.status_code == 422
+        # A fresh app: one session manager may only be run once.
+        mcp._session_manager = None
+        with TestClient(mcp.streamable_http_app(), client=("10.0.0.4", 5)) as remote:
+            assert remote.post("/api/repos/blacklist", json={"repo": "x"}).status_code == 403
+    finally:
+        mcp._session_manager = None
+        mcp.settings.transport_security = original_security
+
+
+def test_frontend_repos_route_reports_blacklisted_entries(tmp_path) -> None:
+    from stropha.config.models import IndexingConfig, McpConfig, PathsConfig
+    from stropha.server import mcp
+
+    runtime = _index_runtime(tmp_path)
+    runtime = SharedRuntime(
+        config=Config(
+            paths=PathsConfig(target_repo=tmp_path),
+            mcp=McpConfig(watch=True),
+            indexing=IndexingConfig(blacklist_repos=("github.com/acme/lib",)),
+        ),
+        built=runtime.built,
+    )
+    original_security = mcp.settings.transport_security
+    try:
+        runtime_patch, client_ctx = _frontend_client(runtime)
+        with runtime_patch, client_ctx as client:
+            payload = client.get("/api/repos").json()
+
+        assert payload["blacklist"] == ["github.com/acme/lib"]
+        assert [repo["blacklisted"] for repo in payload["repos"]] == [False, True]
+    finally:
+        mcp._session_manager = None
+        mcp.settings.transport_security = original_security
+
+
+def test_frontend_repos_route_reflects_multi_repo_watching(tmp_path) -> None:
+    """With watch_all_repos on, every live unblocked checkout reads as watched."""
+    from stropha.config.models import IndexingConfig, McpConfig, PathsConfig
+    from stropha.models import RepoStats
+    from stropha.server import mcp
+
+    other = tmp_path / "other"
+    other.mkdir()
+    repos = [
+        RepoStats(
+            normalized_key="github.com/acme/app",
+            url=None,
+            local_path=str(tmp_path),
+            default_branch="main",
+            head_commit=None,
+            files=1,
+            chunks=5,
+            last_indexed_at=None,
+        ),
+        RepoStats(
+            normalized_key="github.com/acme/other",
+            url=None,
+            local_path=str(other),
+            default_branch="main",
+            head_commit=None,
+            files=1,
+            chunks=5,
+            last_indexed_at=None,
+        ),
+        RepoStats(
+            normalized_key="github.com/acme/gone",
+            url=None,
+            local_path=str(tmp_path / "deleted-checkout"),
+            default_branch="main",
+            head_commit=None,
+            files=1,
+            chunks=5,
+            last_indexed_at=None,
+        ),
+    ]
+    storage = MagicMock()
+    storage.list_repos.return_value = repos
+    storage.stats.return_value = {"chunks": 15, "files": 3}
+    runtime = SharedRuntime(
+        config=Config(
+            paths=PathsConfig(target_repo=tmp_path),
+            mcp=McpConfig(watch=True),
+            indexing=IndexingConfig(watch_all_repos=True),
+        ),
+        built=SimpleNamespace(storage=storage),  # type: ignore[arg-type]
+    )
+    original_security = mcp.settings.transport_security
+    try:
+        runtime_patch, client_ctx = _frontend_client(runtime)
+        with runtime_patch, client_ctx as client:
+            payload = client.get("/api/repos").json()
+
+        assert payload["watch_all_repos"] is True
+        # Target and the live sibling are watched; the missing checkout is not.
+        assert [repo["watched"] for repo in payload["repos"]] == [True, True, False]
+    finally:
+        mcp._session_manager = None
+        mcp.settings.transport_security = original_security

@@ -293,6 +293,9 @@ async def _health_check(request):
 # ---- frontend JSON API -----------------------------------------------------
 
 _FRONTEND_UPDATE_LOCK_ATTR = "_stropha_frontend_update_lock"
+_FRONTEND_INDEX_LOCK_ATTR = "_stropha_frontend_index_lock"
+_FRONTEND_FILE_PAGE_LIMIT = 500
+_FRONTEND_DELETE_PATH_LIMIT = 1000
 
 
 async def _frontend_runtime():
@@ -578,6 +581,348 @@ async def _frontend_config_schema(request):
     if request.method == "OPTIONS":
         return _frontend_json(request, {})
     return _frontend_json(request, configuration_catalog())
+
+
+def _frontend_repo_is_watched(runtime, repo) -> bool:
+    """True when the watcher would re-index this repository on its next tick."""
+    from pathlib import Path
+
+    from .config import repo_is_blacklisted
+
+    if not runtime.config.mcp_watch or not repo.local_path:
+        return False
+    try:
+        root = Path(repo.local_path).resolve()
+        if root == Path(runtime.config.target_repo).resolve():
+            return True
+        if not runtime.config.indexing.watch_all_repos:
+            return False
+        # Multi-repo watching skips checkouts that are gone or blocked, so the
+        # flag has to answer for the same set the watcher actually observes.
+        return root.is_dir() and not repo_is_blacklisted(
+            repo.normalized_key, root, config=runtime.config
+        )
+    except OSError:
+        return False
+
+
+def _frontend_repo_payload(runtime, repo) -> dict[str, Any]:
+    from .config import repo_is_blacklisted
+
+    return {
+        "blacklisted": repo_is_blacklisted(
+            repo.normalized_key, repo.local_path, config=runtime.config
+        ),
+        "normalized_key": repo.normalized_key,
+        "url": repo.url,
+        "local_path": repo.local_path,
+        "default_branch": repo.default_branch,
+        "head_commit": repo.head_commit,
+        "files": repo.files,
+        "chunks": repo.chunks,
+        "last_indexed_at": repo.last_indexed_at,
+        "watched": _frontend_repo_is_watched(runtime, repo),
+    }
+
+
+async def _frontend_find_repo(runtime, normalized_key: str):
+    """Resolve an indexed repository by its normalized key, or None."""
+    import asyncio
+
+    repos = await asyncio.to_thread(runtime.built.storage.list_repos)
+    return next((repo for repo in repos if repo.normalized_key == normalized_key), None)
+
+
+@mcp.custom_route("/api/repos", methods=["GET", "OPTIONS"])
+async def _frontend_repos(request):
+    """List indexed repositories with their chunk and file counts."""
+    import asyncio
+
+    if not _frontend_is_local(request):
+        return _frontend_json(request, {"error": "Frontend API is local-only"}, status_code=403)
+    if request.method == "OPTIONS":
+        return _frontend_json(request, {})
+    try:
+        runtime = await _frontend_runtime()
+        repos = await asyncio.to_thread(runtime.built.storage.list_repos)
+        stats = await asyncio.to_thread(runtime.built.storage.stats)
+    except Exception as exc:
+        log.warning("frontend.repos_failed", error=str(exc))
+        return _frontend_json(request, {"error": "Could not read the index"}, status_code=503)
+    return _frontend_json(
+        request,
+        {
+            "repos": [_frontend_repo_payload(runtime, repo) for repo in repos],
+            "target_repo": str(runtime.config.target_repo),
+            "watch_enabled": runtime.config.mcp_watch,
+            "blacklist": list(runtime.config.indexing.blacklist_repos),
+            "watch_all_repos": runtime.config.indexing.watch_all_repos,
+            "index": {"chunks": stats.get("chunks", 0), "files": stats.get("files", 0)},
+        },
+    )
+
+
+@mcp.custom_route("/api/repos/blacklist", methods=["POST", "OPTIONS"])
+async def _frontend_repo_blacklist(request):
+    """Block or unblock a repository from ever being indexed again.
+
+    Writes `indexing.blacklist_repos` in `~/.stropha/config.yaml`, so the rule
+    outlives this daemon and applies to every entry point — the watcher, the
+    post-commit hook, and any script calling `stropha index`. Blocking does not
+    delete anything; pair it with `/api/repos/delete` to clear what is stored.
+    """
+    import asyncio
+
+    if not _frontend_is_local(request):
+        return _frontend_json(request, {"error": "Frontend API is local-only"}, status_code=403)
+    if request.method == "OPTIONS":
+        return _frontend_json(request, {})
+    try:
+        body = await request.json()
+    except Exception:
+        return _frontend_json(request, {"error": "Request body must be JSON"}, status_code=400)
+    if not isinstance(body, dict):
+        return _frontend_json(request, {"error": "Request body must be an object"}, status_code=422)
+    entry = str(body.get("repo") or "").strip()
+    if not entry:
+        return _frontend_json(request, {"error": "repo is required"}, status_code=422)
+    blocked = body.get("blocked", True)
+    if not isinstance(blocked, bool):
+        return _frontend_json(request, {"error": "blocked must be a boolean"}, status_code=422)
+
+    lock = getattr(mcp, _FRONTEND_INDEX_LOCK_ATTR, None)
+    if lock is None:
+        lock = asyncio.Lock()
+        setattr(mcp, _FRONTEND_INDEX_LOCK_ATTR, lock)
+
+    async with lock:
+        path = config_path()
+        try:
+            runtime = await _frontend_runtime()
+            repo = await _frontend_find_repo(runtime, entry)
+            # One checkout is often indexed under several keys — a renamed
+            # remote plus its `path:` fallback. Pin the local path too so the
+            # block survives whichever identity the next run detects.
+            targets = [entry]
+            if repo is not None and repo.local_path:
+                targets.append(str(repo.local_path))
+            document = read_config_document(path)
+            indexing = document.get("indexing")
+            current = (
+                list(indexing.get("blacklist_repos") or []) if isinstance(indexing, dict) else []
+            )
+            listed = [str(item).strip() for item in current if str(item).strip()]
+            if blocked:
+                listed.extend(target for target in targets if target not in listed)
+            else:
+                listed = [item for item in listed if item not in targets]
+            candidate = merge_config_document(
+                document, {"indexing": {"blacklist_repos": listed}}
+            )
+            write_config_document(candidate, path)
+            reset_config()
+            runtime = await _frontend_reload_runtime()
+        except Exception as exc:
+            log.warning(
+                "frontend.blacklist_failed",
+                repo=entry,
+                blocked=blocked,
+                error=str(exc),
+                error_type=type(exc).__name__,
+                exc_info=True,
+            )
+            status = 422 if isinstance(exc, (StrophaError, ValueError)) else 500
+            message = str(exc) if status == 422 else "Could not update the blacklist"
+            return _frontend_json(request, {"error": message}, status_code=status)
+
+    log.info("frontend.blacklist_updated", repo=entry, blocked=blocked, entries=len(listed))
+    return _frontend_json(
+        request,
+        {
+            "repo": entry,
+            "blocked": blocked,
+            "blacklist": list(runtime.config.indexing.blacklist_repos),
+        },
+    )
+
+
+@mcp.custom_route("/api/repos/files", methods=["GET", "OPTIONS"])
+async def _frontend_repo_files(request):
+    """List the indexed files of one repository, newest chunk counts included."""
+    import asyncio
+
+    if not _frontend_is_local(request):
+        return _frontend_json(request, {"error": "Frontend API is local-only"}, status_code=403)
+    if request.method == "OPTIONS":
+        return _frontend_json(request, {})
+    normalized_key = (request.query_params.get("repo") or "").strip()
+    if not normalized_key:
+        return _frontend_json(request, {"error": "repo is required"}, status_code=422)
+    needle = (request.query_params.get("filter") or "").strip().lower()
+    try:
+        limit = int(request.query_params.get("limit") or _FRONTEND_FILE_PAGE_LIMIT)
+    except ValueError:
+        return _frontend_json(request, {"error": "limit must be an integer"}, status_code=422)
+    limit = max(1, min(limit, _FRONTEND_FILE_PAGE_LIMIT))
+    try:
+        runtime = await _frontend_runtime()
+        repo = await _frontend_find_repo(runtime, normalized_key)
+        if repo is None:
+            return _frontend_json(
+                request, {"error": f"{normalized_key} is not indexed"}, status_code=404
+            )
+        repo_id = await asyncio.to_thread(runtime.built.storage.lookup_repo_id, normalized_key)
+        if repo_id is None:
+            return _frontend_json(
+                request, {"error": f"{normalized_key} is not indexed"}, status_code=404
+            )
+        meta = await asyncio.to_thread(runtime.built.storage.load_file_meta_map, repo_id)
+    except Exception as exc:
+        log.warning("frontend.repo_files_failed", error=str(exc), repo=normalized_key)
+        return _frontend_json(request, {"error": "Could not read the index"}, status_code=503)
+    matched = sorted(path for path in meta if not needle or needle in path.lower())
+    return _frontend_json(
+        request,
+        {
+            "repo": normalized_key,
+            "total": len(matched),
+            "truncated": len(matched) > limit,
+            "files": [
+                {"rel_path": path, "chunks": meta[path].chunk_count} for path in matched[:limit]
+            ],
+        },
+    )
+
+
+@mcp.custom_route("/api/repos/delete", methods=["POST", "OPTIONS"])
+async def _frontend_repo_delete(request):
+    """Drop indexed data for one repository, or for named files inside it.
+
+    Index-only: this removes chunks, vectors, FTS rows and file freshness
+    metadata through the active storage adapter. Nothing is read from or
+    written to the working tree — the files on disk are untouched.
+    """
+    import asyncio
+
+    if not _frontend_is_local(request):
+        return _frontend_json(request, {"error": "Frontend API is local-only"}, status_code=403)
+    if request.method == "OPTIONS":
+        return _frontend_json(request, {})
+    try:
+        body = await request.json()
+    except Exception:
+        return _frontend_json(request, {"error": "Request body must be JSON"}, status_code=400)
+    if not isinstance(body, dict):
+        return _frontend_json(request, {"error": "Request body must be an object"}, status_code=422)
+
+    normalized_key = str(body.get("repo") or "").strip()
+    if not normalized_key:
+        return _frontend_json(request, {"error": "repo is required"}, status_code=422)
+    raw_paths = body.get("paths")
+    paths: list[str] = []
+    if raw_paths is not None:
+        if not isinstance(raw_paths, list):
+            return _frontend_json(request, {"error": "paths must be a list"}, status_code=422)
+        if len(raw_paths) > _FRONTEND_DELETE_PATH_LIMIT:
+            return _frontend_json(
+                request,
+                {"error": f"paths accepts at most {_FRONTEND_DELETE_PATH_LIMIT} entries"},
+                status_code=422,
+            )
+        for entry in raw_paths:
+            if not isinstance(entry, str) or not entry.strip():
+                return _frontend_json(
+                    request, {"error": "paths entries must be non-empty strings"}, status_code=422
+                )
+            paths.append(entry.strip())
+        if not paths:
+            return _frontend_json(
+                request, {"error": "paths must name at least one file"}, status_code=422
+            )
+
+    lock = getattr(mcp, _FRONTEND_INDEX_LOCK_ATTR, None)
+    if lock is None:
+        lock = asyncio.Lock()
+        setattr(mcp, _FRONTEND_INDEX_LOCK_ATTR, lock)
+
+    async with lock:
+        try:
+            runtime = await _frontend_runtime()
+            storage = runtime.built.storage
+            repo = await _frontend_find_repo(runtime, normalized_key)
+            if repo is None:
+                return _frontend_json(
+                    request, {"error": f"{normalized_key} is not indexed"}, status_code=404
+                )
+            repo_id = await asyncio.to_thread(storage.lookup_repo_id, normalized_key)
+            if repo_id is None:
+                return _frontend_json(
+                    request, {"error": f"{normalized_key} is not indexed"}, status_code=404
+                )
+            missing: list[str] = []
+            removed: dict[str, int] = {}
+            if paths:
+                meta = await asyncio.to_thread(storage.load_file_meta_map, repo_id)
+                deleted = await asyncio.to_thread(_frontend_delete_paths, storage, repo_id, paths)
+                chunks_deleted = sum(deleted.values())
+                files_deleted = sum(1 for path in paths if deleted[path] > 0 or path in meta)
+                missing = [path for path in paths if deleted[path] == 0 and path not in meta]
+                removed = {"chunks": chunks_deleted, "files": files_deleted}
+                scope = "files"
+            else:
+                # Repo scope drops the identity too, so a renamed remote or a
+                # stale `path:` entry stops being listed instead of lingering
+                # at zero chunks. Several entries can share one local path;
+                # each is deleted on its own.
+                removed = await asyncio.to_thread(storage.delete_repo, repo_id)
+                chunks_deleted = removed.get("chunks", repo.chunks)
+                files_deleted = removed.get("files", repo.files)
+                scope = "repo"
+            stats = await asyncio.to_thread(storage.stats)
+        except Exception as exc:
+            log.warning(
+                "frontend.index_delete_failed",
+                repo=normalized_key,
+                scope="files" if paths else "repo",
+                error=str(exc),
+                error_type=type(exc).__name__,
+                exc_info=True,
+            )
+            status = 422 if isinstance(exc, (StrophaError, ValueError)) else 500
+            message = str(exc) if status == 422 else "Could not delete indexed data"
+            return _frontend_json(request, {"error": message}, status_code=status)
+
+    watched = _frontend_repo_is_watched(runtime, repo)
+    log.info(
+        "frontend.index_deleted",
+        repo=normalized_key,
+        scope=scope,
+        chunks_deleted=chunks_deleted,
+        files_deleted=files_deleted,
+        removed=removed,
+        watched=watched,
+    )
+    return _frontend_json(
+        request,
+        {
+            "repo": normalized_key,
+            "scope": scope,
+            "chunks_deleted": chunks_deleted,
+            "files_deleted": files_deleted,
+            "removed": removed,
+            "identity_removed": bool(removed.get("repos")),
+            "paths_missing": missing,
+            "watched": watched,
+            "index": {"chunks": stats.get("chunks", 0), "files": stats.get("files", 0)},
+        },
+    )
+
+
+def _frontend_delete_paths(storage, repo_id: int, paths: list[str]) -> dict[str, int]:
+    """Delete each path's chunk snapshot, then commit once for the whole batch."""
+    deleted = {path: storage.delete_file_snapshot(repo_id=repo_id, rel_path=path) for path in paths}
+    storage.commit()
+    return deleted
 
 
 @mcp.custom_route("/api/query", methods=["POST", "OPTIONS"])

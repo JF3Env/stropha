@@ -338,6 +338,29 @@
     .metric b { display: block; margin-top: 13px; font: 500 20px var(--mono); }
     .endpoint { margin-top: 16px; color: var(--muted); font: 10px var(--mono); overflow-wrap: anywhere; }
     .mobile-evidence { display: none; }
+    .index-data-toolbar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin: 16px 0; }
+    .index-data-toolbar .save-state { margin: 0; }
+    .danger-button { padding: 8px 12px; color: var(--red); background: transparent; border: 1px solid var(--red); font: 10px var(--mono); text-transform: uppercase; cursor: pointer; }
+    .danger-button:hover:not(:disabled) { color: white; background: var(--red); }
+    .danger-button:disabled, .ghost-button:disabled { opacity: .45; cursor: not-allowed; }
+    .repo-list { display: grid; gap: 10px; }
+    .repo-row { border: 1px solid var(--line); background: #0b1010; }
+    .repo-row.expanded { border-color: var(--line-hot); }
+    .repo-head { display: flex; flex-wrap: wrap; gap: 12px; justify-content: space-between; align-items: flex-start; padding: 14px; }
+    .repo-head strong { font: 500 12px var(--mono); overflow-wrap: anywhere; }
+    .repo-meta { margin-top: 6px; color: var(--muted); font: 10px var(--mono); overflow-wrap: anywhere; }
+    .repo-badge { margin-left: 8px; padding: 2px 6px; color: var(--ink); background: var(--acid); font: 9px var(--mono); text-transform: uppercase; }
+    .repo-badge.empty { color: var(--muted); background: transparent; border: 1px solid var(--line); }
+    .repo-badge.blocked { color: white; background: var(--red); }
+    .repo-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+    .repo-files { border-top: 1px solid var(--line); padding: 14px; }
+    .repo-files-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
+    .repo-files-toolbar input { flex: 1 1 220px; padding: 8px 10px; color: var(--text); background: var(--ink); border: 1px solid var(--line); font: 11px var(--mono); }
+    .file-rows { max-height: 320px; overflow-y: auto; border: 1px solid var(--line); }
+    .file-row { display: flex; gap: 10px; align-items: center; padding: 7px 10px; border-bottom: 1px solid var(--line); font: 11px var(--mono); }
+    .file-row:last-child { border-bottom: 0; }
+    .file-row span { margin-left: auto; color: var(--muted); font-size: 10px; white-space: nowrap; }
+    .file-row label { flex: 1; overflow-wrap: anywhere; cursor: pointer; }
     .toast { position: fixed; right: 24px; bottom: 24px; z-index: 20; max-width: 380px; padding: 12px 15px; color: var(--ink); background: var(--acid); font: 11px var(--mono); transform: translateY(90px); transition: transform .2s; }
     .toast.show { transform: translateY(0); }
     .toast.error { color: white; background: var(--red); }
@@ -465,6 +488,7 @@
               <button class="settings-tab active" type="button" data-settings-group="general" role="tab" aria-selected="true">General <span id="inference-use-count" class="tab-count">1</span></button>
               <button class="settings-tab" type="button" data-settings-group="indexing" role="tab" aria-selected="false">Indexing</button>
               <button class="settings-tab" type="button" data-settings-group="retrieval" role="tab" aria-selected="false">Retrieval</button>
+              <button class="settings-tab" type="button" data-settings-group="data" role="tab" aria-selected="false">Indexed data</button>
               <button class="settings-tab" type="button" data-settings-group="raw" role="tab" aria-selected="false">Raw</button>
             </nav>
             <p id="settings-context" class="settings-context">LLM providers, model behavior, daemon operation, and live health.</p>
@@ -488,6 +512,16 @@
                   <div class="metric"><span>MoA</span><b id="metric-moa">--</b></div>
                 </div>
                 <div class="endpoint" id="pipeline-identity">Pipeline identity loading...</div>
+              </section>
+              <section id="index-data-card" class="config-card wide" hidden>
+                <h2>Indexed data</h2>
+                <p>Drop indexed data for a whole repository, or for individual files inside one. This clears chunks, vectors, search rows and file freshness metadata from the index only &mdash; <strong>nothing on your filesystem is read, moved or deleted.</strong></p>
+                <div class="index-data-toolbar">
+                  <button id="reload-repos" class="ghost-button" type="button">reload repositories</button>
+                  <button id="toggle-watch-all" class="ghost-button" type="button" hidden>watch all repos</button>
+                  <span id="index-data-state" class="save-state">Loading indexed repositories...</span>
+                </div>
+                <div id="repo-list" class="repo-list"></div>
               </section>
               <section id="raw-card" class="config-card wide" hidden>
                 <h2>Raw configuration</h2>
@@ -523,6 +557,12 @@
         stages: ['retrieval', 'router'],
         sections: ['retrieval'],
       },
+      data: {
+        title: 'Indexed data',
+        description: 'Inspect what the index holds and remove it per repository or per file. Index-only: the filesystem is never touched.',
+        stages: [],
+        sections: [],
+      },
       raw: {
         title: 'Raw configuration',
         description: 'Advanced access to the complete redacted configuration document.',
@@ -530,7 +570,7 @@
         sections: [],
       },
     };
-    const state = { config: {}, catalog: null, status: null, messages: [], busy: false, sources: [], traces: [], selectedTraceId: null, settingsGroup: 'general', pendingSecrets: {} };
+    const state = { config: {}, catalog: null, status: null, messages: [], busy: false, sources: [], traces: [], selectedTraceId: null, settingsGroup: 'general', pendingSecrets: {}, repos: null, reposError: null, watchAll: false, expandedRepo: null, repoFiles: null, repoFilter: '', selectedPaths: new Set(), deleting: false };
 
     function toast(message, error = false) {
       const node = $('#toast');
@@ -909,8 +949,10 @@
       $('#runtime-card').hidden = !group.sections.length;
       $('#telemetry-card').hidden = state.settingsGroup !== 'general';
       $('#raw-card').hidden = state.settingsGroup !== 'raw';
+      $('#index-data-card').hidden = state.settingsGroup !== 'data';
       renderPipelineConfig();
       renderRuntimeConfig();
+      if (state.settingsGroup === 'data' && state.repos === null) loadRepos();
     }
 
     function parseControlValue(control) {
@@ -1067,6 +1109,239 @@
       } catch (error) { toast(error.message, true); }
     }
 
+    function indexDataState(message, error = false) {
+      const label = $('#index-data-state');
+      label.className = error ? 'save-state error' : 'save-state';
+      label.textContent = message;
+    }
+
+    function countLabel(value, singular, plural = `${singular}s`) {
+      return `${Number(value || 0).toLocaleString()} ${value === 1 ? singular : plural}`;
+    }
+
+    // Index routes answer with JSON. A non-JSON body means this page is talking
+    // to a daemon that predates them, which reads as "empty index" unless said.
+    async function indexFetch(url, init) {
+      const response = await fetch(url, init);
+      const body = await response.text();
+      let data = null;
+      try { data = body ? JSON.parse(body) : {}; } catch (error) { data = null; }
+      if (data === null) {
+        throw new Error(response.status === 404
+          ? 'This daemon does not serve the indexed-data routes yet. Restart it with `bin/stropha-mcp-ensure --stop && bin/stropha-mcp-ensure`, then reload this page.'
+          : `The daemon answered ${response.status} with a non-JSON body.`);
+      }
+      if (!response.ok) throw new Error(data.error || `Request failed with ${response.status}.`);
+      return data;
+    }
+
+    async function loadRepos(notify = false) {
+      indexDataState('Loading indexed repositories...');
+      try {
+        const data = await indexFetch('/api/repos');
+        state.repos = data.repos || [];
+        state.reposError = null;
+        renderRepos();
+        state.watchAll = Boolean(data.watch_all_repos);
+        const button = $('#toggle-watch-all');
+        button.hidden = !data.watch_enabled;
+        button.textContent = state.watchAll ? 'watch only the target repo' : 'watch all repos';
+        const watchedCount = state.repos.filter((repo) => repo.watched).length;
+        const watching = data.watch_enabled
+          ? `Watching ${countLabel(watchedCount, 'repository', 'repositories')}; a watched repo is re-indexed from disk after deletion.`
+          : 'File watching is off, so deleted data stays gone until the next manual index.';
+        indexDataState(`${countLabel(data.index.chunks, 'chunk')} across ${countLabel(state.repos.length, 'repository', 'repositories')}. ${watching}`);
+        if (notify) toast('Repositories reloaded');
+      } catch (error) {
+        state.repos = null;
+        state.reposError = error.message;
+        renderRepos();
+        indexDataState(error.message, true);
+      }
+    }
+
+    function repoRowMarkup(repo) {
+      const expanded = state.expandedRepo === repo.normalized_key;
+      const badges = [
+        repo.watched ? '<span class="repo-badge">watched</span>' : '',
+        repo.blacklisted ? '<span class="repo-badge blocked">blacklisted</span>' : '',
+        !repo.chunks && !repo.blacklisted ? '<span class="repo-badge empty">empty</span>' : '',
+      ].join('');
+      const meta = [
+        countLabel(repo.chunks, 'chunk'),
+        countLabel(repo.files, 'file'),
+        repo.last_indexed_at ? `indexed ${escapeHtml(repo.last_indexed_at)}` : 'never indexed',
+        repo.local_path ? escapeHtml(repo.local_path) : '',
+      ].filter(Boolean).join(' / ');
+      const key = escapeHtml(repo.normalized_key);
+      return `<article class="repo-row${expanded ? ' expanded' : ''}">
+        <div class="repo-head">
+          <div><strong>${key}</strong>${badges}<div class="repo-meta">${meta}</div></div>
+          <div class="repo-actions">
+            <button class="ghost-button" type="button" data-repo-files="${key}">${expanded ? 'hide files' : 'browse files'}</button>
+            <button class="ghost-button" type="button" data-repo-block="${key}" data-blocked="${repo.blacklisted ? 'true' : 'false'}">${repo.blacklisted ? 'allow indexing' : 'blacklist'}</button>
+            <button class="danger-button" type="button" data-repo-delete="${key}">delete entry</button>
+          </div>
+        </div>
+        ${expanded ? repoFilesMarkup(repo) : ''}
+      </article>`;
+    }
+
+    function repoFilesMarkup(repo) {
+      const files = state.repoFiles;
+      if (!files) return '<div class="repo-files"><div class="save-state">Loading indexed files...</div></div>';
+      const rows = files.files.map((file) => {
+        const checked = state.selectedPaths.has(file.rel_path) ? ' checked' : '';
+        const id = `file-${escapeHtml(file.rel_path).replace(/[^a-zA-Z0-9]/g, '-')}`;
+        return `<div class="file-row"><input type="checkbox" id="${id}" data-file-path="${escapeHtml(file.rel_path)}"${checked}><label for="${id}">${escapeHtml(file.rel_path)}</label><span>${countLabel(file.chunks, 'chunk')}</span></div>`;
+      }).join('');
+      const empty = files.files.length
+        ? ''
+        : '<div class="save-state">No indexed file matches this filter.</div>';
+      const truncated = files.truncated
+        ? `<div class="save-state">Showing the first ${files.files.length} of ${files.total} matches. Narrow the filter to reach the rest.</div>`
+        : '';
+      return `<div class="repo-files">
+        <div class="repo-files-toolbar">
+          <input id="repo-file-filter" type="search" placeholder="Filter indexed paths..." value="${escapeHtml(state.repoFilter)}" aria-label="Filter indexed paths">
+          <button class="danger-button" type="button" id="delete-selected-files"${state.selectedPaths.size ? '' : ' disabled'}>delete ${state.selectedPaths.size} selected</button>
+        </div>
+        ${empty || `<div class="file-rows">${rows}</div>`}
+        ${truncated}
+      </div>`;
+    }
+
+    function renderRepos() {
+      const list = $('#repo-list');
+      if (state.reposError) {
+        list.innerHTML = `<div class="save-state error">${escapeHtml(state.reposError)}</div>`;
+        return;
+      }
+      if (state.repos === null) {
+        list.innerHTML = '<div class="save-state">Loading indexed repositories...</div>';
+        return;
+      }
+      if (!state.repos.length) {
+        list.innerHTML = '<div class="save-state">No repository is indexed yet.</div>';
+        return;
+      }
+      list.innerHTML = state.repos.map(repoRowMarkup).join('');
+      const filter = $('#repo-file-filter');
+      if (filter) {
+        filter.focus();
+        filter.setSelectionRange(filter.value.length, filter.value.length);
+      }
+    }
+
+    async function loadRepoFiles(repoKey) {
+      try {
+        const query = new URLSearchParams({ repo: repoKey });
+        if (state.repoFilter) query.set('filter', state.repoFilter);
+        state.repoFiles = await indexFetch(`/api/repos/files?${query}`);
+      } catch (error) {
+        state.repoFiles = { files: [], total: 0, truncated: false };
+        toast(error.message, true);
+      }
+      renderRepos();
+    }
+
+    async function toggleRepoFiles(repoKey) {
+      if (state.expandedRepo === repoKey) {
+        state.expandedRepo = null;
+        state.repoFiles = null;
+        state.selectedPaths = new Set();
+        state.repoFilter = '';
+        renderRepos();
+        return;
+      }
+      state.expandedRepo = repoKey;
+      state.repoFiles = null;
+      state.selectedPaths = new Set();
+      state.repoFilter = '';
+      renderRepos();
+      await loadRepoFiles(repoKey);
+    }
+
+    async function deleteIndexedData(repoKey, paths) {
+      if (state.deleting) return;
+      const repo = (state.repos || []).find((entry) => entry.normalized_key === repoKey);
+      const question = paths
+        ? `Delete ${countLabel(paths.length, 'file')} of ${repoKey} from the index?`
+        : `Delete the entry ${repoKey} entirely?\n\nThis removes its ${countLabel(repo ? repo.chunks : 0, 'chunk')} plus every row scoped to it — graph nodes and edges, remembered notes, recorded episodes, cached results — and the repository entry itself, so it stops being listed.`;
+      if (!confirm(`${question}\n\nIndex data only. No file on disk is read, moved or deleted.`)) return;
+      state.deleting = true;
+      indexDataState('Deleting indexed data...');
+      try {
+        const body = paths ? { repo: repoKey, paths } : { repo: repoKey };
+        const data = await indexFetch('/api/repos/delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        toast(`Deleted ${countLabel(data.chunks_deleted, 'chunk')} from ${data.repo}`);
+        if (data.paths_missing && data.paths_missing.length) {
+          toast(`${countLabel(data.paths_missing.length, 'path')} held no indexed data`, true);
+        }
+        state.selectedPaths = new Set();
+        await loadRepos();
+        if (state.expandedRepo) await loadRepoFiles(state.expandedRepo);
+        if (data.watched) {
+          indexDataState(`${data.repo} is the watched repository — the watcher will re-index it from disk shortly.`);
+        }
+      } catch (error) {
+        indexDataState(error.message, true);
+        toast(error.message, true);
+      } finally {
+        state.deleting = false;
+      }
+    }
+
+    async function setBlacklist(repoKey, blocked) {
+      if (state.deleting) return;
+      if (blocked && !confirm(`Blacklist ${repoKey}?\n\nIt will be skipped by every future index run — the watcher, the post-commit hook, and any script calling stropha index — until you allow it again. Nothing indexed is deleted by this.`)) return;
+      state.deleting = true;
+      indexDataState(blocked ? 'Blacklisting repository...' : 'Removing from the blacklist...');
+      try {
+        const data = await indexFetch('/api/repos/blacklist', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ repo: repoKey, blocked }),
+        });
+        toast(blocked ? `${data.repo} will not be indexed again` : `${data.repo} can be indexed again`);
+        await loadRepos();
+      } catch (error) {
+        indexDataState(error.message, true);
+        toast(error.message, true);
+      } finally {
+        state.deleting = false;
+      }
+    }
+
+    async function toggleWatchAll() {
+      if (state.deleting) return;
+      const next = !state.watchAll;
+      if (next && !confirm('Watch every indexed repository?\n\nEach checkout that still exists on disk gets its own observer thread, and saving a file in any of them triggers indexing (chunking plus LLM enrichment). Writes stay serialized, one repository at a time.')) return;
+      state.deleting = true;
+      indexDataState(next ? 'Enabling multi-repo watching...' : 'Restricting the watcher to the target repo...');
+      try {
+        const response = await fetch('/api/config', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ indexing: { watch_all_repos: next } }),
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Could not update the watcher');
+        state.config = data.config;
+        toast(next ? 'Watching every indexed repository' : 'Watching the target repository only');
+        await loadRepos();
+      } catch (error) {
+        indexDataState(error.message, true);
+        toast(error.message, true);
+      } finally {
+        state.deleting = false;
+      }
+    }
+
     function configFromEditor() {
       const config = JSON.parse($('#raw-config').value || '{}');
       document.querySelectorAll('[data-config-path]').forEach((control) => {
@@ -1132,6 +1407,37 @@
     $('#clear-chat').addEventListener('click', () => { state.messages = []; state.traces = []; state.selectedTraceId = null; localStorage.removeItem('stropha-chat'); renderMessages(); renderSources(); renderTraces(); });
     $('#reload-config').addEventListener('click', () => loadConfig(true));
     $('#save-config').addEventListener('click', saveConfig);
+    $('#reload-repos').addEventListener('click', () => loadRepos(true));
+    $('#toggle-watch-all').addEventListener('click', toggleWatchAll);
+    $('#repo-list').addEventListener('click', (event) => {
+      const browse = event.target.closest('[data-repo-files]');
+      if (browse) return void toggleRepoFiles(browse.dataset.repoFiles);
+      const block = event.target.closest('[data-repo-block]');
+      if (block) return void setBlacklist(block.dataset.repoBlock, block.dataset.blocked !== 'true');
+      const remove = event.target.closest('[data-repo-delete]');
+      if (remove) return void deleteIndexedData(remove.dataset.repoDelete, null);
+      if (event.target.closest('#delete-selected-files') && state.expandedRepo) {
+        void deleteIndexedData(state.expandedRepo, [...state.selectedPaths]);
+      }
+    });
+    $('#repo-list').addEventListener('change', (event) => {
+      const box = event.target.closest('[data-file-path]');
+      if (!box) return;
+      if (box.checked) state.selectedPaths.add(box.dataset.filePath);
+      else state.selectedPaths.delete(box.dataset.filePath);
+      const button = $('#delete-selected-files');
+      if (button) {
+        button.disabled = state.selectedPaths.size === 0;
+        button.textContent = `delete ${state.selectedPaths.size} selected`;
+      }
+    });
+    let repoFilterTimer = null;
+    $('#repo-list').addEventListener('input', (event) => {
+      if (!event.target.closest('#repo-file-filter') || !state.expandedRepo) return;
+      state.repoFilter = event.target.value;
+      clearTimeout(repoFilterTimer);
+      repoFilterTimer = setTimeout(() => loadRepoFiles(state.expandedRepo), 250);
+    });
 
     try { state.messages = JSON.parse(localStorage.getItem('stropha-chat') || '[]'); } catch (_) { state.messages = []; }
     state.traces = state.messages.filter((message) => message.trace).map((message) => message.trace).reverse();
