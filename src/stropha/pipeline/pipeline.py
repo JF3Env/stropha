@@ -19,7 +19,12 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ..errors import FullReconcileRequiredError, PipelineError, StrophaError
+from ..errors import (
+    FullReconcileRequiredError,
+    PipelineError,
+    RepoBlacklistedError,
+    StrophaError,
+)
 from ..ingest.git_meta import detect as detect_repo
 from ..logging import get_logger
 from ..models import SOURCE_SNAPSHOT_VERSION, Chunk, source_snapshot_meta_key
@@ -38,6 +43,17 @@ _GRAPH_DIRTY_META_PREFIX = "graph_dirty:"
 _CHUNKER_ID_META_PREFIX = "active_chunker_id:"
 _WALKER_ID_META_PREFIX = "active_walker_id:"
 _ADMISSION_RULE_FILES = frozenset({".gitignore", ".strophaignore", ".ragignore"})
+
+
+def _repo_blocked(identity) -> bool:  # type: ignore[no-untyped-def]
+    """Whether ``indexing.blacklist_repos`` blocks this repository.
+
+    Imported lazily: this module is pulled in while the config package is
+    still initializing on some entry points.
+    """
+    from ..config import repo_is_blacklisted
+
+    return repo_is_blacklisted(identity.normalized_key, identity.root_path)
 
 
 def _graph_dirty_meta_key(repo_id: int) -> str:
@@ -638,6 +654,14 @@ class Pipeline:
         if rebuild:
             for repo_path in self._repos:
                 identity = detect_repo(repo_path)
+                if _repo_blocked(identity):
+                    log.warning(
+                        "pipeline.repo_blacklisted",
+                        repo=identity.normalized_key,
+                        path=str(repo_path),
+                        phase="rebuild",
+                    )
+                    continue
                 repo_id = self._storage.register_repo(identity, publish_watermark=False)
                 log.info(
                     "pipeline.rebuild_clear_repo",
@@ -648,11 +672,19 @@ class Pipeline:
                 self._storage.set_meta(_graph_dirty_meta_key(repo_id), "1")
 
         for repo_path in self._repos:
-            rstats = self._index_one_repo(
-                repo_path,
-                mode=mode,
-                since_sha_override=since_sha,
-            )
+            try:
+                rstats = self._index_one_repo(
+                    repo_path,
+                    mode=mode,
+                    since_sha_override=since_sha,
+                )
+            except RepoBlacklistedError as exc:
+                # A blocked repository is skipped, not fatal: a multi-repo run
+                # must still index everything else it was asked for.
+                log.warning(
+                    "pipeline.repo_blacklisted", repo=exc.repo, path=str(repo_path), phase="index"
+                )
+                continue
             stats.repos.append(rstats)
             self._storage.commit()
 
@@ -863,6 +895,10 @@ class Pipeline:
         since_sha_override: str | None = None,
     ) -> RepoStats:
         identity = detect_repo(repo_path)
+        # Enforced here, at the single funnel every indexing path goes through,
+        # so a script asking for a blocked repository cannot slip past it.
+        if _repo_blocked(identity):
+            raise RepoBlacklistedError(identity.normalized_key)
         repo_id = self._storage.register_repo(identity, publish_watermark=False)
         snapshot_meta_key = source_snapshot_meta_key(repo_id)
         stored_snapshot_version = self._storage.get_meta(snapshot_meta_key)

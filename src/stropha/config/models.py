@@ -336,6 +336,29 @@ def _default_git_url_cache() -> Path:
 
 
 @dataclass(frozen=True)
+class IndexingConfig:
+    """Indexing policy (YAML: ``indexing``).
+
+    ``blacklist_repos`` names repositories that must never be indexed again,
+    however the run is triggered — a script passing ``--repo``, the watcher,
+    or the post-commit hook. An entry matches a repository's normalized key
+    (``github.com/acme/app``), its ``path:``/``local:`` fallback key, or the
+    absolute path of its root, so one blocked checkout covers every identity
+    it has been indexed under.
+    """
+
+    blacklist_repos: tuple[str, ...] = ()
+    watch_all_repos: bool = False
+    """Watch every indexed repository, not only ``paths.target_repo``.
+
+    Off by default: the native watcher was designed for the repository being
+    edited, with other repositories kept fresh by their own git hooks. Turning
+    it on gives each indexed checkout that still exists on disk its own
+    observer thread, with all writes serialized behind one lock.
+    """
+
+
+@dataclass(frozen=True)
 class GitConfig:
     """Git-related configuration (YAML: ``git``)."""
 
@@ -506,6 +529,7 @@ class Config:
     walker: WalkerConfig = field(default_factory=WalkerConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     mcp: McpConfig = field(default_factory=McpConfig)
+    indexing: IndexingConfig = field(default_factory=IndexingConfig)
     git: GitConfig = field(default_factory=GitConfig)
     hook: HookConfig = field(default_factory=HookConfig)
     experiments: ExperimentsConfig = field(default_factory=ExperimentsConfig)

@@ -63,6 +63,23 @@ class FullReconcileRequiredError(PipelineError):
     """A path-scoped refresh cannot safely preserve the complete index."""
 
 
+class RepoBlacklistedError(PipelineError):
+    """Indexing was requested for a repository blocked by configuration.
+
+    Raised however the run was triggered — CLI ``--repo``, the watcher, or the
+    post-commit hook — so `indexing.blacklist_repos` cannot be bypassed by
+    asking a different entry point.
+    """
+
+    def __init__(self, repo: str) -> None:
+        super().__init__(
+            f"{repo} is listed in indexing.blacklist_repos and will not be indexed. "
+            "Remove it from ~/.stropha/config.yaml (or the dashboard's Indexed data "
+            "tab) to index it again."
+        )
+        self.repo = repo
+
+
 class AdapterError(StrophaError):
     """Failure registering or invoking an adapter.
 
