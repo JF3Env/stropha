@@ -815,3 +815,99 @@ def test_force_rebuild_is_noop_when_dim_unchanged(tmp_path: Path) -> None:
     s2 = Storage(db, embedding_dim=4, force_rebuild=True)
     assert s2._conn.execute("SELECT COUNT(*) AS n FROM chunks").fetchone()["n"] == 1
     assert s2.count_secondary_embeddings("model2vec:v1") == 1
+
+
+def test_delete_repo_removes_identity_and_every_scoped_row(storage: Storage) -> None:
+    """`delete_repo` is the teardown `clear_repo` deliberately is not."""
+    kept_id = storage.register_repo(_identity("github.com/example/kept"))
+    doomed_id = storage.register_repo(_identity("github.com/example/doomed"))
+    for repo_id, prefix in ((kept_id, "kept"), (doomed_id, "doomed")):
+        storage.upsert_chunk(
+            _make_chunk(f"sha256:{prefix}", f"{prefix}/Foo.java", "class Foo {}"),
+            _vec(0),
+            "test-model",
+            4,
+            repo_id=repo_id,
+        )
+        storage.upsert_file_meta(
+            repo_id=repo_id,
+            rel_path=f"{prefix}/Foo.java",
+            content_hash="hash",
+            size_bytes=10,
+            mtime=1.0,
+            chunk_count=1,
+        )
+        storage._conn.execute(
+            "INSERT INTO project_memory (repo_id, kind, key, value, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (repo_id, "note", f"{prefix}-key", "remembered", "2026-08-23", "2026-08-23"),
+        )
+    storage.commit()
+
+    removed = storage.delete_repo(doomed_id)
+
+    assert removed["chunks"] == 1
+    assert removed["files"] == 1
+    assert removed["project_memory"] == 1
+    assert removed["repos"] == 1
+    # The identity is gone, so a stale or duplicate entry stops being listed.
+    assert [repo.normalized_key for repo in storage.list_repos()] == ["github.com/example/kept"]
+    assert storage.lookup_repo_id("github.com/example/doomed") is None
+    # Everything scoped to the surviving repository is untouched.
+    assert storage.lookup_repo_id("github.com/example/kept") == kept_id
+    survivors = storage._conn.execute(
+        "SELECT count(*) AS n FROM project_memory WHERE repo_id = ?", (kept_id,)
+    ).fetchone()["n"]
+    assert survivors == 1
+    assert storage._conn.execute("SELECT count(*) AS n FROM chunks").fetchone()["n"] == 1
+
+
+def test_clear_repo_still_keeps_the_identity_for_rebuilds(storage: Storage) -> None:
+    """The rebuild path must keep reusing the same repo id."""
+    repo_id = storage.register_repo(_identity("github.com/example/repo"))
+    storage.upsert_chunk(
+        _make_chunk("sha256:a", "Foo.java", "class Foo {}"),
+        _vec(0),
+        "test-model",
+        4,
+        repo_id=repo_id,
+    )
+    storage.commit()
+
+    storage.clear_repo(repo_id)
+
+    assert storage.lookup_repo_id("github.com/example/repo") == repo_id
+    assert storage._conn.execute("SELECT count(*) AS n FROM chunks").fetchone()["n"] == 0
+
+
+def test_repo_scoped_meta_prefixes_match_the_pipeline() -> None:
+    """The delete list must not drift from the keys the pipeline writes."""
+    from stropha.models import SOURCE_SNAPSHOT_META_PREFIX
+    from stropha.pipeline import pipeline as pipeline_module
+    from stropha.storage_schema import REPO_SCOPED_META_PREFIXES
+
+    written = {
+        "last_indexed_sha_",
+        SOURCE_SNAPSHOT_META_PREFIX,
+        pipeline_module._GRAPH_DIRTY_META_PREFIX,
+        pipeline_module._CHUNKER_ID_META_PREFIX,
+        pipeline_module._WALKER_ID_META_PREFIX,
+    }
+    assert set(REPO_SCOPED_META_PREFIXES) == written
+
+
+def test_delete_repo_leaves_no_meta_rows_behind(storage: Storage) -> None:
+    """Repo-scoped meta keys carry the id in the key, so they need naming."""
+    from stropha.storage_schema import repo_scoped_meta_keys
+
+    kept_id = storage.register_repo(_identity("github.com/example/kept"))
+    doomed_id = storage.register_repo(_identity("github.com/example/doomed"))
+    for repo_id in (kept_id, doomed_id):
+        for key in repo_scoped_meta_keys(repo_id):
+            storage.set_meta(key, "value")
+    storage.commit()
+
+    storage.delete_repo(doomed_id)
+
+    assert all(storage.get_meta(key) is None for key in repo_scoped_meta_keys(doomed_id))
+    assert all(storage.get_meta(key) == "value" for key in repo_scoped_meta_keys(kept_id))

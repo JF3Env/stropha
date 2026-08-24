@@ -764,6 +764,29 @@ CLI flags: `--full` (force full walk), `--incremental` (force git-diff fast-path
 `git.rename_threshold` in `~/.stropha/config.yaml` (default 80) controls
 `git diff --find-renames=<N>` sensitivity.
 
+`indexing.watch_all_repos` (default `false`) widens the native watcher beyond
+`paths.target_repo`. Off, the daemon watches only the target and other
+repositories stay fresh through their own git hooks (§8.2). On, every indexed
+repository whose root still exists on disk and is not blacklisted gets its own
+observer thread, resolved from `list_repos()` at each runtime build. A missing
+checkout is skipped, and a secondary root that fails to start logs
+`watch.additional_root_failed` without gating daemon startup — only the target
+still fails fast. **Every write is serialized behind one lock**, because the
+index admits a single writer (`try_acquire_index_lock`); storage connections
+and pipelines for secondary roots are built lazily on first change, so idle
+repositories cost one blocked thread and nothing else, and a SQLite handle
+never crosses a thread boundary.
+
+`indexing.blacklist_repos` (default empty) lists repositories that must never
+be indexed again. `Pipeline._index_one_repo` is the single funnel every path
+goes through — CLI, watcher, post-commit hook — so it is checked there, right
+after `detect_repo` and before `register_repo`: a blocked repository raises
+`RepoBlacklistedError` and never reaches storage. Multi-repo runs log
+`pipeline.repo_blacklisted` and continue with the rest. An entry matches a
+repository's normalized key, either fallback key (`path:` / `local:`), or its
+root path, so blocking a checkout survives a renamed remote. Edit it in the
+dashboard's *Indexed data* tab or directly in the YAML.
+
 ---
 
 ## 9. MCP Server
@@ -919,7 +942,7 @@ overrides por CLI, ambiente ou session.
 
 #### 9.4.1 Frontend JSON API e live reload
 
-O mesmo daemon HTTP serve um dashboard em `/dashboard` e expõe cinco rotas
+O mesmo daemon HTTP serve um dashboard em `/dashboard` e expõe nove rotas
 JSON locais, separadas do protocolo MCP:
 
 - `GET /api/status`: retorna saúde e identidade do pipeline ativo, contagens do
@@ -937,6 +960,37 @@ JSON locais, separadas do protocolo MCP:
   `[S1]`, `[S2]`, etc. e usa o backend de inference configurado para responder.
   Histórico recente (`user`/`assistant`) é limitado, validado e usado como
   contexto de retrieval e geração para suportar follow-ups sem estado no servidor.
+- `GET /api/repos`: lista cada repositório indexado com contagens de chunks e
+  arquivos, identidade git, caminho local e a flag `watched` — verdadeira quando
+  o watcher reindexaria aquele repositório na próxima passada.
+- `GET /api/repos/files`: lista os arquivos indexados de um repositório com a
+  contagem de chunks de cada um, aceitando `filter` (substring case-insensitive)
+  e `limit`, e sinalizando `truncated` quando a página não cobre o total.
+- `POST /api/repos/delete`: apaga dados indexados na granularidade pedida.
+  Arquivos nomeados (`{"repo": ..., "paths": [...]}`) saem via
+  `delete_file_snapshot` seguido de um único `commit`. O repositório inteiro
+  (`{"repo": ...}`) sai via `delete_repo`, que remove **toda** linha com aquele
+  `repo_id` — chunks, files, `graph_nodes`, `graph_edges`, `project_memory`,
+  `episodes`, `cross_session_cache` — e por fim a própria identidade em
+  `repos`, para que uma entrada duplicada ou obsoleta pare de ser listada em
+  vez de permanecer com zero chunks. Um mesmo diretório costuma estar indexado
+  sob várias entradas (um remote renomeado mais o fallback `path:`); cada uma é
+  removida independentemente. `clear_repo` continua intocado: o caminho de
+  rebuild ainda preserva a identidade para reusar o mesmo id. A rota é
+  **index-only** — nunca lê, move ou apaga nada na árvore de trabalho.
+  Deleções são serializadas por um lock assíncrono próprio, registram
+  `frontend.index_deleted` com o detalhamento por tabela, e devolvem `watched`
+  para avisar que o watcher vai reindexar o repositório alvo a partir do disco.
+- `POST /api/repos/blacklist`: bloqueia (`{"repo": ..., "blocked": true}`) ou
+  libera um repositório, gravando `indexing.blacklist_repos` em
+  `~/.stropha/config.yaml`. Bloquear fixa tanto a chave normalizada quanto o
+  caminho local do checkout, de modo que um remote renomeado não reabra o
+  bloqueio. A regra é aplicada em `Pipeline._index_one_repo`, o funil por onde
+  passa todo caminho de indexação, então um script chamando `stropha index
+  --repo`, o watcher e o hook de post-commit são todos recusados com
+  `RepoBlacklistedError`; uma run multi-repo apenas pula o repositório
+  bloqueado (`pipeline.repo_blacklisted`) e indexa o resto. Bloquear não apaga
+  nada — combine com `/api/repos/delete` para limpar o que já está indexado.
 
 O swap de runtime ocorre sob o mesmo lock assíncrono process-wide usado no
 startup. Falha de validação, conexão de storage ou construção de adapter restaura
