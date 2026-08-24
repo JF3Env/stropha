@@ -172,8 +172,11 @@ def get_backend(prefer: str | None = None) -> InferenceBackend:
 
     Args:
         prefer: Preferred backend (``'mlx'``, ``'ollama'``, or
-            ``'deepseek'``). If not available, falls back to the next
-            local option. If ``None``, auto-detects from config.
+            ``'deepseek'``). An explicitly requested backend is NEVER
+            substituted with another one when it is unavailable — the
+            requested instance is returned so ``health_check`` explains
+            the problem and ``generate`` returns ``None`` per the
+            contract. If ``None``, auto-detects from config.
 
     Returns:
         An InferenceBackend instance.
@@ -215,8 +218,16 @@ def get_backend(prefer: str | None = None) -> InferenceBackend:
             _BACKEND = backend
             log.info("inference.backend_selected", backend="mlx")
             return _BACKEND
-        log.info("inference.mlx_unavailable_fallback_ollama")
-        _BACKEND = OllamaBackend()
+        # Never silently substitute a different backend for one the user
+        # explicitly configured: a substitution changes ``identity``, which
+        # is folded into ``enricher_id`` and therefore into the per-file
+        # freshness key — a single silent swap restages every chunk in
+        # every repo for re-enrichment. Same policy as the cloud backends:
+        # cache the requested instance so ``health_check`` reports
+        # actionable guidance, let ``generate`` return ``None`` per the
+        # contract, and let the pipeline fail loudly on enrichment errors.
+        log.warning("inference.mlx_unavailable")
+        _BACKEND = backend
         return _BACKEND
 
     if prefer == "ollama":
@@ -225,8 +236,9 @@ def get_backend(prefer: str | None = None) -> InferenceBackend:
             _BACKEND = backend
             log.info("inference.backend_selected", backend="ollama")
             return _BACKEND
-        log.info("inference.ollama_unavailable_fallback_mlx")
-        _BACKEND = MlxBackend()
+        # Same no-silent-substitution policy as the ``mlx`` branch above.
+        log.warning("inference.ollama_unavailable")
+        _BACKEND = backend
         return _BACKEND
 
     if prefer == "deepseek":

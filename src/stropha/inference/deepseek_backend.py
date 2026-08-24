@@ -118,10 +118,13 @@ class DeepSeekBackend(InferenceBackend):
     @property
     def identity(self) -> str:
         endpoint_hash = hashlib.sha256(self._base_url.encode()).hexdigest()[:8]
-        return (
-            f"deepseek:model={self._default_model}:endpoint={endpoint_hash}"
-            f":timeout={self._timeout}:retries={self._max_retries}"
-        )
+        # Drift identity covers only inputs that change generated text.
+        # Transport-reliability controls (timeout, retries) are deliberately
+        # excluded: they alter how hard we try to obtain a completion, never
+        # the completion itself, and folding them in invalidated every
+        # enricher_id — and therefore every chunk in every repo — whenever an
+        # operational knob was tuned (WIN-361 follow-up).
+        return f"deepseek:model={self._default_model}:endpoint={endpoint_hash}"
 
     @property
     def is_available(self) -> bool:

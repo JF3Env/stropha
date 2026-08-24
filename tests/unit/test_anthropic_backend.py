@@ -51,14 +51,24 @@ def _ok_payload(text: str = "hello world") -> dict:
     }
 
 
-def test_anthropic_identity_changes_with_reliability_controls() -> None:
+def test_anthropic_identity_is_stable_across_reliability_controls() -> None:
+    """Transport-reliability knobs must NOT restage the index.
+
+    ``identity`` feeds ``enricher_id``, which is part of the per-file
+    freshness key. Timeout and retry counts change how hard we try to
+    obtain a completion, never the completion itself, so tuning them
+    must leave every already-enriched chunk fresh.
+    """
     base = AnthropicBackend(api_key="secret", timeout=30.0, max_retries=1)
-    assert base.identity != AnthropicBackend(
-        api_key="secret", timeout=31.0, max_retries=1
-    ).identity
-    assert base.identity != AnthropicBackend(
-        api_key="secret", timeout=30.0, max_retries=2
-    ).identity
+    assert (
+        base.identity
+        == AnthropicBackend(api_key="secret", timeout=31.0, max_retries=1).identity
+    )
+    assert (
+        base.identity
+        == AnthropicBackend(api_key="secret", timeout=30.0, max_retries=2).identity
+    )
+    assert base.identity != AnthropicBackend(api_key="secret", model="other").identity
 
 
 # --------------------------------------------------------------------------- #

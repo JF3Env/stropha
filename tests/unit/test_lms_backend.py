@@ -129,14 +129,26 @@ def test_generate_retries_transient_http_status() -> None:
     sleep.assert_called_once_with(1)
 
 
-def test_identity_changes_with_reliability_controls() -> None:
+def test_identity_is_stable_across_reliability_controls() -> None:
+    """Transport-reliability knobs must NOT restage the index.
+
+    ``identity`` feeds ``enricher_id``, which is part of the per-file
+    freshness key. Timeout and retry counts change how hard we try to
+    obtain a completion, never the completion itself, so tuning them
+    must leave every already-enriched chunk fresh.
+    """
     base = LmsBackend(api_key="secret", timeout=30.0, max_retries=1)
-    assert base.identity != LmsBackend(
-        api_key="secret", timeout=31.0, max_retries=1
-    ).identity
-    assert base.identity != LmsBackend(
-        api_key="secret", timeout=30.0, max_retries=2
-    ).identity
+    assert (
+        base.identity
+        == LmsBackend(api_key="secret", timeout=31.0, max_retries=1).identity
+    )
+    assert (
+        base.identity
+        == LmsBackend(api_key="secret", timeout=30.0, max_retries=2).identity
+    )
+    # Inputs that DO change generated text still flip the identity.
+    assert base.identity != LmsBackend(api_key="secret", model="other").identity
+    assert base.identity != LmsBackend(api_key="secret", think=not base._think).identity
 
 
 def test_generate_supports_structured_ranking_controls() -> None:

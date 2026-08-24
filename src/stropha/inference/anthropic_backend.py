@@ -130,9 +130,15 @@ class AnthropicBackend(InferenceBackend):
     @property
     def identity(self) -> str:
         endpoint_hash = hashlib.sha256(self._base_url.encode()).hexdigest()[:8]
+        # Drift identity covers only inputs that change generated text.
+        # Transport-reliability controls (timeout, retries) are deliberately
+        # excluded: they alter how hard we try to obtain a completion, never
+        # the completion itself, and folding them in invalidated every
+        # enricher_id — and therefore every chunk in every repo — whenever an
+        # operational knob was tuned (WIN-361 follow-up).
         return (
             f"anthropic:model={self._default_model}:endpoint={endpoint_hash}"
-            f":version={self._version}:timeout={self._timeout}:retries={self._max_retries}"
+            f":version={self._version}"
         )
 
     @property
