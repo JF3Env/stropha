@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import functools
 import json
+import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -126,11 +127,20 @@ def _distance_expression(column: str, dim: int) -> str:
 
 
 def _scoped_read(method: Any) -> Any:
-    """End standalone psycopg reads without committing a caller's outer write."""
+    """End standalone psycopg reads without committing a caller's outer write.
+
+    The reads share the single writer connection (``self._raw``), and
+    psycopg's transaction stack is per-connection and LIFO: two threads that
+    push/pop ``transaction()`` contexts in an interleaved order corrupt it and
+    fail with ``OutOfOrderTransactionNesting``. Frontend endpoints run in
+    ``asyncio.to_thread`` workers and overlap freely, so every scoped read
+    takes the re-entrant reader lock. Re-entrant because ``stats`` composes
+    other scoped reads (``list_repos``, ``_db_size``, ``_graph_stats``).
+    """
 
     @functools.wraps(method)
     def wrapped(self: PostgresStorage, *args: Any, **kwargs: Any) -> Any:
-        with self._raw.transaction():
+        with self._scoped_read_lock, self._raw.transaction():
             return method(self, *args, **kwargs)
 
     return wrapped
@@ -473,6 +483,7 @@ class PostgresStorage:
         self._dsn = config.dsn
         self._dim = embedding_dim
         self._index_lock_held = False
+        self._scoped_read_lock = threading.RLock()
 
         try:
             import psycopg

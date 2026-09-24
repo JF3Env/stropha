@@ -942,7 +942,7 @@ overrides por CLI, ambiente ou session.
 
 #### 9.4.1 Frontend JSON API e live reload
 
-O mesmo daemon HTTP serve um dashboard em `/dashboard` e expõe nove rotas
+O mesmo daemon HTTP serve um dashboard em `/dashboard` e expõe dez rotas
 JSON locais, separadas do protocolo MCP:
 
 - `GET /api/status`: retorna saúde e identidade do pipeline ativo, contagens do
@@ -960,6 +960,33 @@ JSON locais, separadas do protocolo MCP:
   `[S1]`, `[S2]`, etc. e usa o backend de inference configurado para responder.
   Histórico recente (`user`/`assistant`) é limitado, validado e usado como
   contexto de retrieval e geração para suportar follow-ups sem estado no servidor.
+- `POST /api/agent`: consulta com loop local de leitura do índice, usando o mesmo
+  backend de inference e runtime compartilhado. Recebe `question` não vazia
+  (até 8000 caracteres), `top_k` (1..20, default 8), `max_tokens` (64..2048,
+  default 512), `max_steps` (1..8, default 5), `include_other_repos` booleano
+  (default false) e `history` (array; últimas 12 mensagens user/assistant, até
+  24000 caracteres). Por padrão, busca apenas no target configurado/indexado;
+  ampliar o escopo exige `include_other_repos=true`.
+  Uma busca inicial precede até `max_steps` decisões do modelo (`search`,
+  `expand`, `answer`); esgotar o orçamento pode gerar mais uma chamada para
+  resposta final. Buscas adicionais têm query de até 400 caracteres e top-k
+  limitado a 10. A decisão vê até 30 fontes, com 500 caracteres por trecho;
+  expansão lê até 5 IDs distintos por ação e até 8000 caracteres por fonte.
+  `evidence_ids` deve ser array de strings; argumentos inválidos ou expansão
+  sem conteúdo efetivamente carregado encerram o loop em fallback. O trace
+  registra somente IDs realmente expandidos. Sem fontes, retorna mensagem
+  determinística de ausência de evidência, mesmo se o modelo tentar responder.
+  Com fontes, texto não JSON pode ser aceito como resposta; citações são
+  solicitadas no prompt, não comprovadas por um validador semântico.
+  Retorna `answer`, `sources`, `backend`, `trace` e `agent` (`max_steps`,
+  `iterations`, `tool_calls`, `finished`). O trace distingue ferramentas chamadas
+  pelo modelo, retrieval da aplicação e chamadas LLM. Erros: 400 para JSON
+  inválido, 422 para payload inválido, 403 para acesso não local e 503 para
+  falha de runtime/retrieval/inference. Suporta OPTIONS, como `/api/query`.
+  O dashboard habilita esse modo por padrão e persiste o toggle em localStorage;
+  desligá-lo seleciona `/api/query`. O loop mantém estado apenas por request,
+  não executa comandos, não edita arquivos nem altera a superfície MCP. Não é
+  um runtime de agentes de programação; essas responsabilidades continuam no host.
 - `GET /api/repos`: lista cada repositório indexado com contagens de chunks e
   arquivos, identidade git, caminho local e a flag `watched` — verdadeira quando
   o watcher reindexaria aquele repositório na próxima passada.

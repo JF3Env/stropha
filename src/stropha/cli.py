@@ -372,6 +372,8 @@ def _root(
     ),
 ) -> None:
     """Initialize logging before any subcommand runs."""
+    # Config loading itself logs; route bootstrap diagnostics to stderr too.
+    configure_logging(log_level or "INFO")
     cfg = _load_config()
     configure_logging(log_level or cfg.log_level)
 
@@ -1552,6 +1554,7 @@ def eval(
                 for r in report.results
             ],
             "by_tag": {t: sub.summary() for t, sub in report.by_tag().items()},
+            "by_split": {s: sub.summary() for s, sub in report.by_split().items()},
         }
         console.print_json(_json.dumps(payload))
         raise typer.Exit(code=0 if report.success_at_k >= 0.85 else 2)

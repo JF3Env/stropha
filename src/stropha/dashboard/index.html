@@ -218,7 +218,20 @@
       font-size: 18px;
     }
     .send:disabled { opacity: .35; cursor: default; }
-    .composer-meta { display: flex; justify-content: space-between; margin-top: 7px; color: #64706a; font: 9px var(--mono); text-transform: uppercase; }
+    .composer-meta { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-top: 7px; color: #64706a; font: 9px var(--mono); text-transform: uppercase; }
+    .agent-toggle {
+      border: 1px solid var(--line);
+      background: transparent;
+      color: var(--muted);
+      padding: 3px 9px;
+      cursor: pointer;
+      font: 700 9px/1 var(--mono);
+      letter-spacing: .05em;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+    .agent-toggle:hover { border-color: var(--muted); color: var(--text); }
+    .agent-toggle[aria-pressed="true"] { color: var(--acid); border-color: var(--line-hot); background: var(--acid-dim); }
     .evidence {
       min-height: 0;
       overflow-y: auto;
@@ -449,7 +462,7 @@
                 <textarea id="question" rows="1" placeholder="Ask about the indexed repository..." maxlength="8000" aria-label="Question"></textarea>
                 <button id="send" class="send" type="submit" aria-label="Send">&#8593;</button>
               </form>
-              <div class="composer-meta"><span id="model-label">model / loading</span><span>enter to send // shift+enter for line break</span></div>
+              <div class="composer-meta"><span id="model-label">model / loading</span><button id="agent-toggle" class="agent-toggle" type="button" aria-pressed="true" title="Agent mode lets the model run several searches before answering">agent // on</button><span>enter to send // shift+enter for line break</span></div>
             </div>
           </div>
           <aside class="evidence">
@@ -570,7 +583,14 @@
         sections: [],
       },
     };
-    const state = { config: {}, catalog: null, status: null, messages: [], busy: false, sources: [], traces: [], selectedTraceId: null, settingsGroup: 'general', pendingSecrets: {}, repos: null, reposError: null, watchAll: false, expandedRepo: null, repoFiles: null, repoFilter: '', selectedPaths: new Set(), deleting: false };
+    const state = { config: {}, catalog: null, status: null, messages: [], busy: false, sources: [], traces: [], selectedTraceId: null, settingsGroup: 'general', pendingSecrets: {}, repos: null, reposError: null, watchAll: false, expandedRepo: null, repoFiles: null, repoFilter: '', selectedPaths: new Set(), deleting: false, agentMode: localStorage.getItem('stropha-agent-mode') !== 'off' };
+
+    function renderAgentToggle() {
+      const button = $('#agent-toggle');
+      if (!button) return;
+      button.textContent = `agent // ${state.agentMode ? 'on' : 'off'}`;
+      button.setAttribute('aria-pressed', String(state.agentMode));
+    }
 
     function toast(message, error = false) {
       const node = $('#toast');
@@ -624,7 +644,7 @@
         const counts = message.trace?.counts;
         const traceLink = counts ? `<button class="trace-link" data-message-trace="${escapeHtml(message.trace.request_id)}">${counts.llm_tool_calls} llm tools / ${counts.llm_calls} llm calls / ${formatDuration(message.trace.duration_ms)}</button>` : '';
         return `<article class="message ${message.role}"><div class="message-head"><span class="ordinal">${String(index + 1).padStart(2, '0')}</span><span>${message.role === 'assistant' ? 'stropha / grounded answer' : 'you'}</span><span>${message.time || ''}</span>${traceLink}</div><div class="message-body">${body}${citations}</div></article>`;
-      }).join('') + (state.busy ? '<article class="message assistant"><div class="message-head"><span class="ordinal">//</span><span>retrieving + reasoning</span></div><div class="thinking"><i></i><i></i><i></i></div></article>' : '');
+      }).join('') + (state.busy ? `<article class="message assistant"><div class="message-head"><span class="ordinal">//</span><span>${state.agentMode ? 'agent // searching + reasoning' : 'retrieving + reasoning'}</span></div><div class="thinking"><i></i><i></i><i></i></div></article>` : '');
       document.querySelectorAll('.citation').forEach((button) => button.addEventListener('click', () => openSource(Number(button.dataset.source))));
       document.querySelectorAll('[data-message-trace]').forEach((button) => button.addEventListener('click', () => selectTrace(button.dataset.messageTrace, true)));
       requestAnimationFrame(() => { $('#transcript').scrollTop = $('#transcript').scrollHeight; });
@@ -688,7 +708,10 @@
       $('#send').disabled = true;
       renderMessages();
       try {
-        const response = await fetch('/api/query', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({question: question.trim(), history: prior, top_k: 8, max_tokens: 768})});
+        const payload = {question: question.trim(), history: prior, top_k: 8, max_tokens: 768};
+        const endpoint = state.agentMode ? '/api/agent' : '/api/query';
+        if (state.agentMode) payload.max_steps = 5;
+        const response = await fetch(endpoint, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)});
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || `Query failed (${response.status})`);
         if (data.trace) {
@@ -1401,6 +1424,7 @@
     document.querySelectorAll('[data-view]').forEach((button) => button.addEventListener('click', () => switchView(button.dataset.view)));
     document.querySelectorAll('[data-settings-group]').forEach((button) => button.addEventListener('click', () => { state.settingsGroup = button.dataset.settingsGroup; renderSettingsGroup(); }));
     document.querySelectorAll('[data-prompt]').forEach((button) => button.addEventListener('click', () => ask(button.dataset.prompt)));
+    $('#agent-toggle').addEventListener('click', () => { state.agentMode = !state.agentMode; localStorage.setItem('stropha-agent-mode', state.agentMode ? 'on' : 'off'); renderAgentToggle(); });
     $('#chat-form').addEventListener('submit', (event) => { event.preventDefault(); const input = $('#question'); const value = input.value; input.value = ''; input.style.height = ''; ask(value); });
     $('#question').addEventListener('keydown', (event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); $('#chat-form').requestSubmit(); } });
     $('#question').addEventListener('input', (event) => { event.target.style.height = 'auto'; event.target.style.height = `${Math.min(event.target.scrollHeight, 180)}px`; });
@@ -1442,6 +1466,7 @@
     try { state.messages = JSON.parse(localStorage.getItem('stropha-chat') || '[]'); } catch (_) { state.messages = []; }
     state.traces = state.messages.filter((message) => message.trace).map((message) => message.trace).reverse();
     state.selectedTraceId = state.traces[0]?.request_id || null;
+    renderAgentToggle();
     renderMessages();
     renderTraces();
     Promise.all([loadStatus(), loadConfig(), loadCatalog()]);

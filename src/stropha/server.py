@@ -78,6 +78,7 @@ from .server_frontend import (
     merge_config_document,
     read_config_document,
     redact_config_document,
+    run_agent_question,
     write_config_document,
 )
 from .server_graph_tools import (
@@ -716,9 +717,7 @@ async def _frontend_repo_blacklist(request):
                 listed.extend(target for target in targets if target not in listed)
             else:
                 listed = [item for item in listed if item not in targets]
-            candidate = merge_config_document(
-                document, {"indexing": {"blacklist_repos": listed}}
-            )
+            candidate = merge_config_document(document, {"indexing": {"blacklist_repos": listed}})
             write_config_document(candidate, path)
             reset_config()
             runtime = await _frontend_reload_runtime()
@@ -1008,6 +1007,99 @@ async def _frontend_query(request):
         )
     except Exception as exc:
         log.warning("frontend.query_failed", error=str(exc))
+        return _frontend_json(
+            request,
+            {"error": "Could not answer from the configured index and inference backend"},
+            status_code=503,
+        )
+    return _frontend_json(request, result)
+
+
+@mcp.custom_route("/api/agent", methods=["POST", "OPTIONS"])
+async def _frontend_agent_query(request):
+    """Answer a frontend question through the multi-query agent loop."""
+    import asyncio
+
+    if not _frontend_is_local(request):
+        return _frontend_json(request, {"error": "Frontend API is local-only"}, status_code=403)
+    if request.method == "OPTIONS":
+        return _frontend_json(request, {})
+    try:
+        payload = await request.json()
+    except Exception:
+        return _frontend_json(request, {"error": "Request body must be JSON"}, status_code=400)
+    if not isinstance(payload, dict):
+        return _frontend_json(request, {"error": "Request body must be an object"}, status_code=422)
+
+    question = payload.get("question")
+    if not isinstance(question, str) or not question.strip():
+        return _frontend_json(request, {"error": "question is required"}, status_code=422)
+    question = question.strip()
+    if len(question) > 8000:
+        return _frontend_json(
+            request, {"error": "question exceeds 8000 characters"}, status_code=422
+        )
+    try:
+        top_k = int(payload.get("top_k", 8))
+        max_tokens = int(payload.get("max_tokens", 512))
+        max_steps = int(payload.get("max_steps", 5))
+    except (TypeError, ValueError):
+        return _frontend_json(
+            request, {"error": "top_k, max_tokens and max_steps must be integers"}, status_code=422
+        )
+    if not 1 <= top_k <= 20 or not 64 <= max_tokens <= 2048 or not 1 <= max_steps <= 8:
+        return _frontend_json(
+            request,
+            {"error": "top_k must be 1..20, max_tokens 64..2048 and max_steps 1..8"},
+            status_code=422,
+        )
+    include_other_repos = payload.get("include_other_repos", False)
+    if not isinstance(include_other_repos, bool):
+        return _frontend_json(
+            request, {"error": "include_other_repos must be a boolean"}, status_code=422
+        )
+    raw_history = payload.get("history", [])
+    if not isinstance(raw_history, list):
+        return _frontend_json(request, {"error": "history must be an array"}, status_code=422)
+    history: list[dict[str, str]] = []
+    history_chars = 0
+    for item in raw_history[-12:]:
+        if not isinstance(item, dict):
+            return _frontend_json(
+                request, {"error": "history entries must be objects"}, status_code=422
+            )
+        role = item.get("role")
+        content = item.get("content")
+        if role not in {"user", "assistant"} or not isinstance(content, str):
+            return _frontend_json(
+                request,
+                {"error": "history entries require user/assistant role and text content"},
+                status_code=422,
+            )
+        history_chars += len(content)
+        if history_chars > 24000:
+            return _frontend_json(
+                request, {"error": "history exceeds 24000 characters"}, status_code=422
+            )
+        history.append({"role": role, "content": content})
+
+    try:
+        runtime = await _frontend_runtime()
+        from .inference import generate
+
+        result = await asyncio.to_thread(
+            run_agent_question,
+            runtime,
+            question,
+            top_k=top_k,
+            max_tokens=max_tokens,
+            generate_fn=generate,
+            history=history,
+            include_other_repos=include_other_repos,
+            max_steps=max_steps,
+        )
+    except Exception as exc:
+        log.warning("frontend.agent_query_failed", error=str(exc))
         return _frontend_json(
             request,
             {"error": "Could not answer from the configured index and inference backend"},
