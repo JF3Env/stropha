@@ -198,6 +198,14 @@ def _int_optional(val: Any) -> int | None:
         return None
 
 
+def _optional_str(val: Any) -> str | None:
+    """Parse an optional string YAML field; blank or absent means ``None``."""
+    if val is None:
+        return None
+    text = str(val).strip()
+    return text or None
+
+
 def _float(val: Any, default: float) -> float:
     if val is None:
         return default
@@ -273,7 +281,7 @@ def _parse_inference(raw: dict[str, Any]) -> InferenceConfig:
         deepseek_timeout=_float(raw.get("deepseek_timeout"), 120.0),
         deepseek_max_retries=_int(raw.get("deepseek_max_retries"), 2),
         lms_model=str(raw.get("lms_model", "Qwen/Qwen3-Coder-Next-FP8")),
-        lms_base_url=str(raw.get("lms_base_url", "https://lms.example.com/openai")),
+        lms_base_url=_optional_str(raw.get("lms_base_url")),
         lms_timeout=_float(raw.get("lms_timeout"), 180.0),
         lms_max_retries=_int(raw.get("lms_max_retries"), 2),
         lms_think=_bool(raw.get("lms_think"), False),

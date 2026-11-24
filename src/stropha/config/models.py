@@ -111,10 +111,11 @@ class InferenceConfig:
     # (bad key, bad request, wrong model) is permanent and short-circuits
     # without retry.
     deepseek_max_retries: int = 2
-    # Internal LMS OpenAI-compatible endpoint. Like other network backends,
-    # LMS is explicit opt-in and is never selected by auto-detection.
+    # LMS OpenAI-compatible endpoint. Like other network backends, LMS is
+    # explicit opt-in and is never selected by auto-detection. The endpoint has
+    # no built-in value: it must be set in ~/.stropha/config.yaml.
     lms_model: str = "Qwen/Qwen3-Coder-Next-FP8"
-    lms_base_url: str = "https://lms.example.com/openai"
+    lms_base_url: str | None = None
     lms_timeout: float = 180.0
     lms_max_retries: int = 2
     lms_think: bool = False
