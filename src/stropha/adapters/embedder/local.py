@@ -17,6 +17,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from ...cpu import available_cpus
 from ...errors import EmbeddingError
 from ...logging import get_logger
 from ...pipeline.registry import register_adapter
@@ -63,9 +64,18 @@ CPU_EXECUTION = OnnxExecutionProvider(
 class FastEmbedEngine:
     """FastEmbed engine parameterized by one ONNX execution provider."""
 
-    def __init__(self, model: str, execution: OnnxExecutionProvider) -> None:
+    def __init__(
+        self,
+        model: str,
+        execution: OnnxExecutionProvider,
+        *,
+        threads: int | None = None,
+    ) -> None:
         self._model_name = model
         self._execution = execution
+        # ONNX Runtime defaults to one thread per host core, which inside a
+        # container oversubscribes the CPU quota and spends most time throttled.
+        self._threads = threads if threads is not None else available_cpus()
         try:
             from fastembed import TextEmbedding  # type: ignore[import-untyped]
         except ImportError as exc:  # pragma: no cover
@@ -77,6 +87,7 @@ class FastEmbedEngine:
             self._model = TextEmbedding(
                 model_name=model,
                 providers=list(execution.providers),
+                threads=self._threads,
             )
         except Exception as exc:
             raise EmbeddingError(f"fastembed failed to load {model!r}: {exc}") from exc
@@ -87,6 +98,7 @@ class FastEmbedEngine:
             model=model,
             dim=self._dim,
             execution=execution.name,
+            threads=self._threads,
         )
 
     @property
@@ -108,6 +120,7 @@ class FastEmbedEngine:
             "dim": str(self.dim),
             "execution": self._execution.name,
             "provider": self._execution.required_provider,
+            "threads": str(self._threads),
         }
 
     def embed_documents(self, texts: Sequence[str]) -> list[list[float]]:
@@ -131,6 +144,15 @@ class LocalEmbedderConfig(BaseModel):
         description="HuggingFace model id supported by fastembed.",
     )
     batch_size: int = Field(default=32, ge=1, le=512)
+    threads: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "ONNX Runtime threads. Default: the CPUs this process may use "
+            "(cgroup quota and affinity), not every core of the host. "
+            "Does not change the embeddings, so it is not part of adapter_id."
+        ),
+    )
 
 
 @register_adapter(stage="embedder", name="local")
@@ -159,5 +181,5 @@ class LocalEmbedder(ComposedEmbedder):
             adapter=adapter,
             config=config,
             batch_size=config.batch_size,
-            engine=FastEmbedEngine(config.model, execution),
+            engine=FastEmbedEngine(config.model, execution, threads=config.threads),
         )

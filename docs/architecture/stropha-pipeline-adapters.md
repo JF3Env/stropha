@@ -311,6 +311,9 @@ pipeline:
     config:
       model: mixedbread-ai/mxbai-embed-large-v1
       batch_size: 32
+      # threads: 4                    # ONNX Runtime threads; default = CPUs this
+                                      # process may use (cgroup quota + affinity),
+                                      # not every host core. Not part of adapter_id.
 
   storage:
     adapter: sqlite-vec
