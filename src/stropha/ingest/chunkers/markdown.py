@@ -79,6 +79,11 @@ class MarkdownChunker:
         # Map level → most recent ancestor chunk_id.
         ancestors: dict[int, str] = {}
         lines = content.splitlines(keepends=True)
+        # Chunk ids carry (rel_path, start, end, content_hash) only, so a
+        # split part of a wide section can collide with a full child section
+        # covering the exact same lines. Keep the first emission; ids stay
+        # content-addressed for everything else.
+        emitted: set[str] = set()
 
         # Optional prelude: content before the first heading.
         first_start = sections[0][0]
@@ -86,8 +91,10 @@ class MarkdownChunker:
             prelude_text = "".join(lines[: first_start - 1]).strip()
             if len(prelude_text) >= MIN_CHARS_PER_CHUNK:
                 h = sha256_hex(prelude_text)
+                prelude_cid = make_chunk_id(file.rel_path, 1, first_start - 1, h)
+                emitted.add(prelude_cid)
                 yield Chunk(
-                    chunk_id=make_chunk_id(file.rel_path, 1, first_start - 1, h),
+                    chunk_id=prelude_cid,
                     rel_path=file.rel_path,
                     language=file.language,
                     kind="section",
@@ -114,6 +121,12 @@ class MarkdownChunker:
                 h = sha256_hex(text)
                 cid = make_chunk_id(file.rel_path, start_line, end_line, h)
                 ancestors[level] = cid
+                if cid in emitted:
+                    # A split part of a wider ancestor already covers these
+                    # exact lines; keep that chunk but still register this
+                    # section as the ancestor for its children.
+                    continue
+                emitted.add(cid)
                 yield Chunk(
                     chunk_id=cid,
                     rel_path=file.rel_path,
@@ -132,6 +145,9 @@ class MarkdownChunker:
                     sub_text, sub_start, sub_end = sub
                     h = sha256_hex(sub_text)
                     cid = make_chunk_id(file.rel_path, sub_start, sub_end, h)
+                    if cid in emitted:
+                        continue
+                    emitted.add(cid)
                     yield Chunk(
                         chunk_id=cid,
                         rel_path=file.rel_path,
