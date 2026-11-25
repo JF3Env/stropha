@@ -4,7 +4,7 @@
 > [Model Context Protocol (MCP)](https://modelcontextprotocol.io).
 
 [![Python](https://img.shields.io/badge/python-3.12+-blue)](#requirements)
-[![License](https://img.shields.io/badge/license-MIT-green)](#license)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
 stropha combines AST-aware chunking, three retrieval streams by default,
 optional graph and Model2Vec streams, and structural graph tools such as
@@ -591,4 +591,4 @@ Current and planned work is tracked in [ROADMAP.md](ROADMAP.md).
 
 ## License
 
-MIT, as declared in `pyproject.toml`.
+Apache License 2.0. See [LICENSE](LICENSE).
