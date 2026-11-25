@@ -305,12 +305,16 @@ class Pipeline:
         """Execute one index pass while always releasing the writer lock."""
         acquire_lock = getattr(self._storage, "try_acquire_index_lock", None)
         if acquire_lock is not None and not acquire_lock():
+            detail = ""
+            describe = getattr(self._storage, "describe_index_lock_holder", None)
+            if describe is not None:
+                detail = str(describe() or "").strip()
             raise StrophaError(
                 "Another `stropha index` run is already writing to this index "
                 "(advisory lock held). Wait for it to finish — or stop it — "
                 "before starting another. Tip: a `git commit` triggers the "
                 "post-commit hook's index, which can collide with a manual "
-                "`--rebuild`."
+                "`--rebuild`." + (f" {detail}" if detail else "")
             )
         try:
             return self._run_once(rebuild=rebuild, mode=mode, since_sha=since_sha)

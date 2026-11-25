@@ -1184,15 +1184,40 @@ class PostgresStorage:
         return self._index_lock_held
 
     def release_index_lock(self) -> None:
-        if not self._index_lock_held:
-            return
+        # Always attempt the unlock, never trust ``_index_lock_held`` alone. The
+        # writer session outlives this object (the daemon keeps one raw
+        # connection across runtime reloads, and each reload builds a fresh
+        # adapter whose flag starts False), so a lock acquired by an earlier
+        # instance would otherwise stay held for the lifetime of the Postgres
+        # session — which for a launchd-managed daemon is forever, and blocks
+        # every later ``stropha index`` with a "wait for it to finish" error
+        # that has nothing left to wait for. ``pg_advisory_unlock`` reports
+        # false instead of raising when this session holds no such lock, so the
+        # extra attempt costs nothing when there is nothing to release.
+        was_held = self._index_lock_held
         try:
             # A failed write leaves psycopg in an aborted transaction, where
             # even pg_advisory_unlock is rejected until rollback. Successful
             # pipeline writes are already committed before lock release.
             self._raw.rollback()
-            self._raw.execute("SELECT pg_advisory_unlock(%s);", (_INDEX_LOCK_KEY,))
+            # ``pg_advisory_unlock`` returns false rather than raising when this
+            # session holds no such lock, which is what makes an unconditional
+            # attempt safe. There is no ``pg_try_advisory_unlock`` in PostgreSQL:
+            # naming it raises 42883 and the lock leaks, so this path must use
+            # the real function. The ``::bigint`` cast only pins the
+            # single-argument overload.
+            row = self._raw.execute(
+                "SELECT pg_advisory_unlock(%s::bigint) AS released;", (_INDEX_LOCK_KEY,)
+            ).fetchone()
             self._raw.commit()
+            released = bool(row and row["released"])
+            if was_held and not released:
+                # Someone else took the lock between acquire and release.
+                log.warning("postgres.index_lock_release_lost", reason="not held at release")
+            elif released and not was_held:
+                # A lock this instance never claimed, inherited on the shared
+                # writer session. Releasing it here is the recovery path.
+                log.warning("postgres.index_lock_released_untracked")
         except Exception as exc:  # pragma: no cover - defensive
             # Closing the session releases every session advisory lock. Reopen
             # it so a failed unlock does not also poison later requests.
@@ -1206,6 +1231,46 @@ class PostgresStorage:
                 )
         finally:
             self._index_lock_held = False
+
+    def describe_index_lock_holder(self) -> str | None:
+        """Name the session that owns the writer lock, for the busy error text.
+
+        A session advisory lock is only released when its owning session ends,
+        so telling the operator *which* session holds it — and how long it has
+        been idle there — turns an unactionable "wait for it to finish" into one
+        command. Returns ``None`` when the lock is already free or the catalog
+        cannot be read (diagnostics must never mask the original error).
+        """
+        try:
+            row = self._raw.execute(
+                """
+                SELECT a.pid,
+                       EXTRACT(EPOCH FROM (now() - a.state_change))::bigint AS idle_s,
+                       a.state
+                FROM pg_locks l
+                JOIN pg_stat_activity a ON a.pid = l.pid
+                WHERE l.locktype = 'advisory' AND l.objid = %s
+                LIMIT 1
+                """,
+                (_INDEX_LOCK_KEY,),
+            ).fetchone()
+            # Diagnostics must not leave the writer session idle in a
+            # transaction: an open read keeps its locks for as long as the
+            # session lives, and an idle-in-transaction session is exactly what
+            # makes a later schema migration time out waiting for a table lock.
+            self._raw.rollback()
+        except Exception:  # pragma: no cover - diagnostics only
+            return None
+        if not row:
+            return None
+        pid = int(row["pid"])
+        command = f'psql -c "SELECT pg_terminate_backend({pid})"'
+        return (
+            f"Held by Postgres backend pid {pid} (state {row['state']}, unchanged for "
+            f"{row['idle_s']}s). A session advisory lock is released only when that "
+            "session ends, so if the owning process is a daemon or an abandoned "
+            f"indexer, free the lock with: {command}"
+        )
 
     def close(self) -> None:
         import contextlib
