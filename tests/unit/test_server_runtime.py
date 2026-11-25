@@ -18,6 +18,10 @@ def _config(tmp_path):
         mcp_watch=False,
         mcp_watch_interval=1.0,
         mcp_watch_debounce=1.0,
+        inference=SimpleNamespace(
+            enricher_concurrency=3,
+            effective_batch_size=lambda: 4,
+        ),
         resolve_index_path=lambda: tmp_path / "index.db",
     )
 
@@ -172,13 +176,16 @@ async def test_concurrent_sessions_build_and_start_watcher_once(tmp_path) -> Non
 
     await asyncio.gather(open_session(), open_session())
 
-    build_stages.assert_called_once_with({})
     watch_controller.assert_called_once_with(
         repo=tmp_path,
         interval_s=1.0,
         debounce_s=1.0,
         full_refresh=False,
+        stages=built,
+        enricher_concurrency=3,
+        enricher_batch_size=4,
     )
+    build_stages.assert_called_once_with({}, synchronize_embedders=True)
     watcher.start.assert_called_once_with()
     watcher.stop.assert_not_called()
     storage.close.assert_not_called()
@@ -211,7 +218,7 @@ async def test_failed_watcher_start_cleans_partial_runtime(tmp_path) -> None:
             get_config_fn=lambda: config,
             configure_logging_fn=lambda _level: None,
             load_pipeline_config_fn=lambda: {},
-            build_stages_fn=lambda _resolved: built,
+            build_stages_fn=lambda _resolved, **_kwargs: built,
             watch_controller_cls=MagicMock(return_value=watcher),
         ):
             pass
@@ -220,6 +227,95 @@ async def test_failed_watcher_start_cleans_partial_runtime(tmp_path) -> None:
     storage.close.assert_called_once_with()
     close_shared_runtime(owner)
     assert not hasattr(owner, "_stropha_shared_runtime_lock")
+
+
+@pytest.mark.asyncio
+async def test_initial_watcher_start_keeps_event_loop_responsive(tmp_path) -> None:
+    from stropha.server_runtime import close_shared_runtime, get_shared_runtime
+
+    owner = SimpleNamespace()
+    storage = MagicMock(adapter_name="test")
+    built = SimpleNamespace(embedder=MagicMock(), storage=storage, retrieval=MagicMock())
+    start_entered = threading.Event()
+    allow_start = threading.Event()
+    watcher = MagicMock()
+
+    def blocking_start() -> None:
+        start_entered.set()
+        allow_start.wait(timeout=2)
+
+    watcher.start.side_effect = blocking_start
+    config = _config(tmp_path)
+    config.mcp_watch = True
+    task = asyncio.create_task(
+        get_shared_runtime(
+            owner,
+            version="test",
+            get_config_fn=lambda: config,
+            configure_logging_fn=lambda _level: None,
+            load_pipeline_config_fn=lambda: {},
+            build_stages_fn=lambda _resolved, **_kwargs: built,
+            watch_controller_cls=MagicMock(return_value=watcher),
+        )
+    )
+
+    assert await asyncio.to_thread(start_entered.wait, 1)
+    assert not task.done()
+    allow_start.set()
+    assert await task == owner._stropha_shared_runtime
+
+    close_shared_runtime(owner)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_initial_watcher_start_waits_for_cleanup(tmp_path) -> None:
+    from stropha.server_runtime import close_shared_runtime, get_shared_runtime
+
+    owner = SimpleNamespace()
+    storage = MagicMock(adapter_name="test")
+    built = SimpleNamespace(embedder=MagicMock(), storage=storage, retrieval=MagicMock())
+    start_entered = threading.Event()
+    allow_start = threading.Event()
+    stop_entered = threading.Event()
+    allow_stop = threading.Event()
+    watcher = MagicMock()
+
+    def blocking_start() -> None:
+        start_entered.set()
+        allow_start.wait(timeout=2)
+
+    def blocking_stop() -> None:
+        stop_entered.set()
+        allow_stop.wait(timeout=2)
+
+    watcher.start.side_effect = blocking_start
+    watcher.stop.side_effect = blocking_stop
+    config = _config(tmp_path)
+    config.mcp_watch = True
+    task = asyncio.create_task(
+        get_shared_runtime(
+            owner,
+            version="test",
+            get_config_fn=lambda: config,
+            configure_logging_fn=lambda _level: None,
+            load_pipeline_config_fn=lambda: {},
+            build_stages_fn=lambda _resolved, **_kwargs: built,
+            watch_controller_cls=MagicMock(return_value=watcher),
+        )
+    )
+
+    assert await asyncio.to_thread(start_entered.wait, 1)
+    task.cancel()
+    allow_start.set()
+    assert await asyncio.to_thread(stop_entered.wait, 1)
+    assert not task.done()
+    allow_stop.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    storage.close.assert_called_once_with()
+    assert not hasattr(owner, "_stropha_shared_runtime")
+    close_shared_runtime(owner)
 
 
 @pytest.mark.asyncio
@@ -415,3 +511,133 @@ async def test_reload_shared_runtime_keeps_event_loop_responsive(tmp_path) -> No
     await asyncio.sleep(0.02)
     assert not task.done()
     assert await task == owner._stropha_shared_runtime
+
+
+@pytest.mark.asyncio
+async def test_reload_watcher_lifecycle_keeps_event_loop_responsive(tmp_path) -> None:
+    from stropha.server_runtime import (
+        close_shared_runtime,
+        get_shared_runtime,
+        reload_shared_runtime,
+    )
+
+    owner = SimpleNamespace()
+    first_storage = MagicMock(adapter_name="first")
+    second_storage = MagicMock(adapter_name="second")
+    builds = MagicMock(
+        side_effect=[
+            SimpleNamespace(embedder=MagicMock(), storage=first_storage, retrieval=MagicMock()),
+            SimpleNamespace(embedder=MagicMock(), storage=second_storage, retrieval=MagicMock()),
+        ]
+    )
+    stop_entered = threading.Event()
+    allow_stop = threading.Event()
+    start_entered = threading.Event()
+    allow_start = threading.Event()
+    first_watcher = MagicMock()
+    second_watcher = MagicMock()
+
+    def blocking_stop() -> None:
+        stop_entered.set()
+        allow_stop.wait(timeout=2)
+
+    def blocking_start() -> None:
+        start_entered.set()
+        allow_start.wait(timeout=2)
+
+    first_watcher.stop.side_effect = blocking_stop
+    second_watcher.start.side_effect = blocking_start
+    first_config = _config(tmp_path)
+    first_config.mcp_watch = True
+    second_config = _config(tmp_path)
+    second_config.mcp_watch = True
+    configs = iter([first_config, second_config])
+    watcher_cls = MagicMock(side_effect=[first_watcher, second_watcher])
+    kwargs = {
+        "get_config_fn": lambda: next(configs),
+        "configure_logging_fn": lambda _level: None,
+        "load_pipeline_config_fn": lambda: {},
+        "build_stages_fn": builds,
+        "watch_controller_cls": watcher_cls,
+    }
+    await get_shared_runtime(owner, version="test", **kwargs)
+    task = asyncio.create_task(reload_shared_runtime(owner, **kwargs))
+
+    assert await asyncio.to_thread(stop_entered.wait, 1)
+    assert not task.done()
+    allow_stop.set()
+    assert await asyncio.to_thread(start_entered.wait, 1)
+    assert not task.done()
+    allow_start.set()
+    assert await task == owner._stropha_shared_runtime
+
+    close_shared_runtime(owner)
+
+
+def test_additional_watch_roots_selects_live_unblocked_repositories(tmp_path) -> None:
+    """`watch_all_repos` watches every indexed checkout that still exists."""
+    import dataclasses
+
+    from stropha.config.models import Config, IndexingConfig, PathsConfig
+    from stropha.models import RepoStats
+    from stropha.server_runtime import _additional_watch_roots
+
+    target = tmp_path / "target"
+    other = tmp_path / "other"
+    blocked = tmp_path / "blocked"
+    for path in (target, other, blocked):
+        path.mkdir()
+    gone = tmp_path / "deleted-checkout"
+
+    def _repo(key: str, path) -> RepoStats:
+        return RepoStats(
+            normalized_key=key,
+            url=None,
+            local_path=str(path) if path else None,
+            default_branch="main",
+            head_commit=None,
+            files=1,
+            chunks=1,
+            last_indexed_at=None,
+        )
+
+    storage = MagicMock()
+    storage.list_repos.return_value = [
+        _repo("github.com/acme/target", target),
+        _repo("github.com/acme/other", other),
+        _repo("github.com/acme/blocked", blocked),
+        _repo("github.com/acme/gone", gone),
+        _repo("github.com/acme/pathless", None),
+    ]
+    built = SimpleNamespace(storage=storage)
+    config = dataclasses.replace(
+        Config(),
+        paths=PathsConfig(target_repo=target),
+        indexing=IndexingConfig(blacklist_repos=("github.com/acme/blocked",), watch_all_repos=True),
+    )
+
+    roots = _additional_watch_roots(config, built)
+
+    # The target is already watched; blocked, missing and path-less are skipped.
+    assert roots == (other.resolve(),)
+
+    disabled = dataclasses.replace(config, indexing=IndexingConfig(watch_all_repos=False))
+    assert _additional_watch_roots(disabled, built) == ()
+
+
+def test_additional_watch_roots_survives_an_unreadable_index(tmp_path) -> None:
+    import dataclasses
+
+    from stropha.config.models import Config, IndexingConfig, PathsConfig
+    from stropha.server_runtime import _additional_watch_roots
+
+    storage = MagicMock()
+    storage.list_repos.side_effect = RuntimeError("index unavailable")
+    config = dataclasses.replace(
+        Config(),
+        paths=PathsConfig(target_repo=tmp_path),
+        indexing=IndexingConfig(watch_all_repos=True),
+    )
+
+    # Degrades to watching only the target rather than failing the daemon.
+    assert _additional_watch_roots(config, SimpleNamespace(storage=storage)) == ()

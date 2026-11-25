@@ -35,6 +35,7 @@ from ..models import (
     StoredFileMeta,
 )
 from ..secondary_embeddings import SECONDARY_EMBEDDING_DIM
+from ..storage_schema import REPO_SCOPED_TABLES, repo_scoped_meta_keys
 
 if TYPE_CHECKING:
     # These are imported inline at call sites to avoid pulling memory/session
@@ -78,7 +79,7 @@ def _serialize_vector(vec: list[float]) -> bytes:
 
 
 # Characters that must be stripped from user queries before handing to FTS5.
-_FTS_BAD = re.compile(r'[^\w\s\.]+', re.UNICODE)
+_FTS_BAD = re.compile(r"[^\w\s\.]+", re.UNICODE)
 _CAMEL_BOUNDARY_1 = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 _CAMEL_BOUNDARY_2 = re.compile(r"(?<=[A-Z])(?=[A-Z][a-z])")
 
@@ -117,7 +118,7 @@ def _extract_file_stem(rel_path: str) -> str:
 
 def _extract_directory_tokens(rel_path: str, max_depth: int = 3) -> str:
     """Extract directory component names from a path.
-    
+
     Returns the last `max_depth` directory names, which are often meaningful
     (e.g., 'services', 'models', 'utils', 'api').
     """
@@ -149,23 +150,23 @@ def _fts_text(content: str, rel_path: str, symbol: str | None) -> str:
     path_tokens = _split_identifiers(
         rel_path.replace("/", " ").replace("\\", " ").replace(".", " ")
     )
-    
+
     # Extract and process file stem (repeat twice for stronger signal)
     file_stem = _extract_file_stem(rel_path)
     stem_tokens = _split_identifiers(file_stem)
-    
+
     # Extract directory tokens
     dir_tokens = _extract_directory_tokens(rel_path)
     dir_tokens_split = _split_identifiers(dir_tokens)
-    
+
     # Build FTS document with weighted components
     parts: list[str] = [
-        content,                      # Original content
+        content,  # Original content
         _split_identifiers(content),  # CamelCase-split content
-        path_tokens,                  # Full path tokens
-        stem_tokens,                  # File stem (1st occurrence)
-        stem_tokens,                  # File stem (2nd occurrence for boost)
-        dir_tokens_split,             # Directory tokens
+        path_tokens,  # Full path tokens
+        stem_tokens,  # File stem (1st occurrence)
+        stem_tokens,  # File stem (2nd occurrence for boost)
+        dir_tokens_split,  # Directory tokens
     ]
     if symbol:
         parts.append(_split_identifiers(symbol.replace(".", " ")))
@@ -201,10 +202,7 @@ def _row_to_episode(row: Any) -> Any:
         touched_symbols=symbols,
         created_at=row["created_at"],
         updated_at=row["updated_at"],
-        provenance_commit=(
-            row["provenance_commit"]
-            if "provenance_commit" in row.keys() else None
-        ),
+        provenance_commit=(row["provenance_commit"] if "provenance_commit" in row.keys() else None),
     )
 
 
@@ -223,15 +221,11 @@ def _repo_from_row(row: Any) -> RepoRef | None:
     return RepoRef(
         normalized_key=key,
         url=row["repo_url"] if "repo_url" in row.keys() else None,
-        local_path=(
-            row["repo_local_path"] if "repo_local_path" in row.keys() else None
-        ),
+        local_path=(row["repo_local_path"] if "repo_local_path" in row.keys() else None),
         default_branch=(
             row["repo_default_branch"] if "repo_default_branch" in row.keys() else None
         ),
-        head_commit=(
-            row["repo_head_commit"] if "repo_head_commit" in row.keys() else None
-        ),
+        head_commit=(row["repo_head_commit"] if "repo_head_commit" in row.keys() else None),
     )
 
 
@@ -296,18 +290,65 @@ _REPO_JOIN_COLUMNS = f"""
 # Common English stopwords + question words. Filtered out from identifier-token
 # extraction so a free-text query like "where is the FSRS calculator" routes
 # only the meaningful tokens [FSRS, calculator] to the symbol lookup stream.
-_STOPWORDS = frozenset({
-    "a", "an", "the", "and", "or", "of", "for", "to", "in", "on", "at",
-    "is", "are", "was", "were", "be", "been", "being",
-    "do", "does", "did", "done",
-    "have", "has", "had",
-    "this", "that", "these", "those",
-    "what", "where", "when", "why", "how", "who", "which",
-    "show", "find", "look", "get",
-    "with", "without", "by", "from", "as",
-    "it", "its", "i", "you", "we",
-    "code", "function", "class", "method", "file",
-})
+_STOPWORDS = frozenset(
+    {
+        "a",
+        "an",
+        "the",
+        "and",
+        "or",
+        "of",
+        "for",
+        "to",
+        "in",
+        "on",
+        "at",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "being",
+        "do",
+        "does",
+        "did",
+        "done",
+        "have",
+        "has",
+        "had",
+        "this",
+        "that",
+        "these",
+        "those",
+        "what",
+        "where",
+        "when",
+        "why",
+        "how",
+        "who",
+        "which",
+        "show",
+        "find",
+        "look",
+        "get",
+        "with",
+        "without",
+        "by",
+        "from",
+        "as",
+        "it",
+        "its",
+        "i",
+        "you",
+        "we",
+        "code",
+        "function",
+        "class",
+        "method",
+        "file",
+    }
+)
 
 
 def _identifier_tokens(query: str) -> list[str]:
@@ -451,12 +492,8 @@ class Storage:
             """
         )
         # v2: add chunks.repo_id (ALTER TABLE is idempotent only when guarded).
-        self._add_column_if_missing(
-            "chunks", "repo_id", "INTEGER REFERENCES repos(id)"
-        )
-        cur.execute(
-            "CREATE INDEX IF NOT EXISTS idx_chunks_repo ON chunks(repo_id);"
-        )
+        self._add_column_if_missing("chunks", "repo_id", "INTEGER REFERENCES repos(id)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_chunks_repo ON chunks(repo_id);")
 
         # v3: pipeline-adapters Phase 1.
         # - chunks.embedding_text  → exact text fed to the embedder
@@ -464,9 +501,7 @@ class Storage:
         # - enrichments cache     → reusable (content_hash, adapter_id) → text
         self._add_column_if_missing("chunks", "embedding_text", "TEXT")
         self._add_column_if_missing("chunks", "enricher_id", "TEXT")
-        cur.execute(
-            "CREATE INDEX IF NOT EXISTS idx_chunks_enricher ON chunks(enricher_id);"
-        )
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_chunks_enricher ON chunks(enricher_id);")
         cur.executescript(
             """
             CREATE TABLE IF NOT EXISTS enrichments (
@@ -574,18 +609,10 @@ class Storage:
         # v7: multi-repo graphify support. Add repo_id to graph_nodes and
         # graph_edges so multiple repos can share a single index without
         # node ID collisions. Foreign key to repos(id).
-        self._add_column_if_missing(
-            "graph_nodes", "repo_id", "INTEGER REFERENCES repos(id)"
-        )
-        self._add_column_if_missing(
-            "graph_edges", "repo_id", "INTEGER REFERENCES repos(id)"
-        )
-        cur.execute(
-            "CREATE INDEX IF NOT EXISTS idx_graph_nodes_repo ON graph_nodes(repo_id);"
-        )
-        cur.execute(
-            "CREATE INDEX IF NOT EXISTS idx_graph_edges_repo ON graph_edges(repo_id);"
-        )
+        self._add_column_if_missing("graph_nodes", "repo_id", "INTEGER REFERENCES repos(id)")
+        self._add_column_if_missing("graph_edges", "repo_id", "INTEGER REFERENCES repos(id)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_graph_nodes_repo ON graph_nodes(repo_id);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_graph_edges_repo ON graph_edges(repo_id);")
 
         # v10: episodes table — episodic task memory (WIN-225).
         # Captures "the last time I worked on FSRS I also touched the
@@ -711,21 +738,15 @@ class Storage:
         # staleness check can diff against HEAD at recall time. Both
         # ``project_memory`` and ``episodes`` get the column —
         # forward-only ALTER, idempotent.
-        self._add_column_if_missing(
-            "project_memory", "provenance_commit", "TEXT"
-        )
-        self._add_column_if_missing(
-            "episodes", "provenance_commit", "TEXT"
-        )
+        self._add_column_if_missing("project_memory", "provenance_commit", "TEXT")
+        self._add_column_if_missing("episodes", "provenance_commit", "TEXT")
 
         # v12: scratchpad column on sessions (WIN-229). Durable
         # free-form text the agent uses as working notes for the
         # current task. Survives MCP-server restarts via the same
         # write-through path as seen_chunk_ids / pinned_chunk_ids.
         # Default empty string so existing v8+ rows upgrade cleanly.
-        self._add_column_if_missing(
-            "sessions", "scratchpad", "TEXT NOT NULL DEFAULT ''"
-        )
+        self._add_column_if_missing("sessions", "scratchpad", "TEXT NOT NULL DEFAULT ''")
 
         # v13: cross_session_cache table — semantic cache (WIN-230).
         # Persists (query_embedding, results_json) tuples so a session
@@ -802,9 +823,7 @@ class Storage:
         self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
 
     def _check_dimension_consistency(self) -> None:
-        row = self._conn.execute(
-            "SELECT value FROM meta WHERE key='embedding_dim'"
-        ).fetchone()
+        row = self._conn.execute("SELECT value FROM meta WHERE key='embedding_dim'").fetchone()
         stored_dim = int(row["value"]) if row else self._dim
         if stored_dim != self._dim:
             raise StorageError(
@@ -839,9 +858,7 @@ class Storage:
 
         Idempotent — safe to call repeatedly.
         """
-        row = self._conn.execute(
-            "SELECT value FROM meta WHERE key='embedding_dim'"
-        ).fetchone()
+        row = self._conn.execute("SELECT value FROM meta WHERE key='embedding_dim'").fetchone()
         stored_dim = int(row["value"]) if row else self._dim
         if stored_dim == self._dim:
             return  # No mismatch — nothing to reset.
@@ -870,9 +887,7 @@ class Storage:
 
     # ----- repos -----
 
-    def register_repo(
-        self, identity: RepoIdentity, *, publish_watermark: bool = True
-    ) -> int:
+    def register_repo(self, identity: RepoIdentity, *, publish_watermark: bool = True) -> int:
         """Insert or update a repo row keyed by ``normalized_key``. Returns its id.
 
         Pipeline callers pass ``publish_watermark=False`` while indexing so a
@@ -1079,9 +1094,7 @@ class Storage:
         ).fetchone()
         return row["embedding_text"] if row else None
 
-    def put_enrichment(
-        self, content_hash: str, enricher_id: str, embedding_text: str
-    ) -> None:
+    def put_enrichment(self, content_hash: str, enricher_id: str, embedding_text: str) -> None:
         """Cache an enrichment result. Safe to call concurrently (UPSERT)."""
         now = datetime.now(UTC).isoformat()
         self._conn.execute(
@@ -1152,10 +1165,7 @@ class Storage:
             return False
         if enricher_id is not None and row["last_enricher_id"] != enricher_id:
             return False
-        return not (
-            embedder_model is not None
-            and row["last_embedder_model"] != embedder_model
-        )
+        return not (embedder_model is not None and row["last_embedder_model"] != embedder_model)
 
     def load_file_meta_map(self, repo_id: int) -> dict[str, StoredFileMeta]:
         """Bulk-load the freshness columns for every ``files`` row of a repo.
@@ -1224,9 +1234,7 @@ class Storage:
         if len(desired_ids) != len(desired_chunk_ids):
             raise StorageError("File snapshot desired_chunk_ids must be unique")
         if embedding_dim != self._dim:
-            raise StorageError(
-                f"Snapshot embedding dim {embedding_dim} != index dim {self._dim}"
-            )
+            raise StorageError(f"Snapshot embedding dim {embedding_dim} != index dim {self._dim}")
 
         write_ids: set[str] = set()
         for item in chunk_writes:
@@ -1237,9 +1245,7 @@ class Storage:
                 raise StorageError(f"Duplicate snapshot write for chunk {chunk.chunk_id}")
             write_ids.add(chunk.chunk_id)
             if chunk.chunk_id not in desired_ids:
-                raise StorageError(
-                    f"Snapshot write {chunk.chunk_id} is not in desired_chunk_ids"
-                )
+                raise StorageError(f"Snapshot write {chunk.chunk_id} is not in desired_chunk_ids")
             if chunk.rel_path != rel_path:
                 raise StorageError(
                     f"Snapshot write {chunk.chunk_id} has path {chunk.rel_path!r}, "
@@ -1251,9 +1257,7 @@ class Storage:
                     f"got {len(embedding)}, expected {embedding_dim}"
                 )
             if not isinstance(embedding_text, str):
-                raise StorageError(
-                    f"Snapshot embedding text for {chunk.chunk_id} must be a string"
-                )
+                raise StorageError(f"Snapshot embedding text for {chunk.chunk_id} must be a string")
 
         reused = reused_chunks or []
         reused_ids: set[str] = set()
@@ -1262,13 +1266,9 @@ class Storage:
                 raise StorageError(f"Duplicate reused snapshot chunk {chunk.chunk_id}")
             reused_ids.add(chunk.chunk_id)
             if chunk.chunk_id in write_ids:
-                raise StorageError(
-                    f"Snapshot chunk {chunk.chunk_id} cannot be written and reused"
-                )
+                raise StorageError(f"Snapshot chunk {chunk.chunk_id} cannot be written and reused")
             if chunk.chunk_id not in desired_ids:
-                raise StorageError(
-                    f"Reused snapshot chunk {chunk.chunk_id} is not desired"
-                )
+                raise StorageError(f"Reused snapshot chunk {chunk.chunk_id} is not desired")
             if chunk.rel_path != rel_path:
                 raise StorageError(
                     f"Reused snapshot chunk {chunk.chunk_id} has path "
@@ -1298,7 +1298,9 @@ class Storage:
             missing_ids = desired_ids - existing_ids - write_ids
             if missing_ids:
                 missing = ", ".join(sorted(missing_ids))
-                raise StorageError(f"Snapshot desired chunks have no stored row or write: {missing}")
+                raise StorageError(
+                    f"Snapshot desired chunks have no stored row or write: {missing}"
+                )
             missing_reused = reused_ids - existing_ids
             if missing_reused:
                 missing = ", ".join(sorted(missing_reused))
@@ -1319,9 +1321,7 @@ class Storage:
             for chunk in reused:
                 row = existing_rows[chunk.chunk_id]
                 if row["content_hash"] != chunk.content_hash:
-                    raise StorageError(
-                        f"Reused snapshot chunk {chunk.chunk_id} changed content"
-                    )
+                    raise StorageError(f"Reused snapshot chunk {chunk.chunk_id} changed content")
                 rowid = int(row["id"])
                 self._conn.execute(
                     """UPDATE chunks SET
@@ -1359,9 +1359,7 @@ class Storage:
                 (repo_id, rel_path),
             ).fetchall()
             stale_rowids = [
-                int(row["id"])
-                for row in stale_rows
-                if row["chunk_id"] not in desired_ids
+                int(row["id"]) for row in stale_rows if row["chunk_id"] not in desired_ids
             ]
             if stale_rowids:
                 placeholders = ",".join("?" for _ in stale_rowids)
@@ -1405,16 +1403,12 @@ class Storage:
             if rowids:
                 placeholders = ",".join("?" for _ in rowids)
                 cur = self._conn.cursor()
-                cur.execute(
-                    f"DELETE FROM vec_chunks WHERE rowid IN ({placeholders})", rowids
-                )
+                cur.execute(f"DELETE FROM vec_chunks WHERE rowid IN ({placeholders})", rowids)
                 cur.execute(
                     f"DELETE FROM vec_chunks_secondary WHERE rowid IN ({placeholders})",
                     rowids,
                 )
-                cur.execute(
-                    f"DELETE FROM fts_chunks WHERE rowid IN ({placeholders})", rowids
-                )
+                cur.execute(f"DELETE FROM fts_chunks WHERE rowid IN ({placeholders})", rowids)
                 cur.execute(f"DELETE FROM chunks WHERE id IN ({placeholders})", rowids)
             self._conn.execute(
                 "DELETE FROM files WHERE repo_id = ? AND rel_path = ?",
@@ -1451,8 +1445,15 @@ class Storage:
                   last_enricher_id = excluded.last_enricher_id,
                   last_embedder_model = excluded.last_embedder_model""",
             (
-                repo_id, rel_path, content_hash, size_bytes, mtime,
-                now, chunk_count, enricher_id, embedder_model,
+                repo_id,
+                rel_path,
+                content_hash,
+                size_bytes,
+                mtime,
+                now,
+                chunk_count,
+                enricher_id,
+                embedder_model,
             ),
         )
 
@@ -1469,7 +1470,9 @@ class Storage:
         return int(cur.rowcount or 0)
 
     def list_stale_files(
-        self, repo_id: int, current_rel_paths: list[str],
+        self,
+        repo_id: int,
+        current_rel_paths: list[str],
     ) -> list[str]:
         """Return ``rel_paths`` of ``files`` rows for ``repo_id`` that are
         NOT present in ``current_rel_paths``. Caller uses this to identify
@@ -1489,23 +1492,22 @@ class Storage:
             return 0
         placeholders = ",".join("?" * len(rel_paths))
         cur = self._conn.cursor()
-        cur.execute(
-            f"SELECT id FROM chunks WHERE rel_path IN ({placeholders})", rel_paths
-        )
+        cur.execute(f"SELECT id FROM chunks WHERE rel_path IN ({placeholders})", rel_paths)
         ids = [int(r["id"]) for r in cur.fetchall()]
         if not ids:
             return 0
         id_placeholders = ",".join("?" * len(ids))
         cur.execute(f"DELETE FROM vec_chunks WHERE rowid IN ({id_placeholders})", ids)
-        cur.execute(
-            f"DELETE FROM vec_chunks_secondary WHERE rowid IN ({id_placeholders})", ids
-        )
+        cur.execute(f"DELETE FROM vec_chunks_secondary WHERE rowid IN ({id_placeholders})", ids)
         cur.execute(f"DELETE FROM fts_chunks WHERE rowid IN ({id_placeholders})", ids)
         cur.execute(f"DELETE FROM chunks WHERE id IN ({id_placeholders})", ids)
         return len(ids)
 
     def rename_chunks(
-        self, repo_id: int, old_rel_path: str, new_rel_path: str,
+        self,
+        repo_id: int,
+        old_rel_path: str,
+        new_rel_path: str,
     ) -> int:
         """Move every chunk's ``rel_path`` from ``old_rel_path`` to
         ``new_rel_path`` for the given repo, **recomputing chunk_id**
@@ -1578,7 +1580,10 @@ class Storage:
         return moved
 
     def _patch_file_meta_rename(
-        self, repo_id: int, old_rel_path: str, new_rel_path: str,
+        self,
+        repo_id: int,
+        old_rel_path: str,
+        new_rel_path: str,
     ) -> None:
         """Update the `files` (file_meta) row for a rename, handling the
         case where a row for the destination path already exists."""
@@ -1595,7 +1600,9 @@ class Storage:
         )
 
     def delete_chunks_by_repo_paths(
-        self, repo_id: int, rel_paths: list[str],
+        self,
+        repo_id: int,
+        rel_paths: list[str],
     ) -> int:
         """Repo-scoped variant of ``delete_by_paths``. Used by the
         incremental pipeline to evict chunks of files that no longer
@@ -1616,9 +1623,7 @@ class Storage:
             return 0
         id_placeholders = ",".join("?" * len(ids))
         cur.execute(f"DELETE FROM vec_chunks WHERE rowid IN ({id_placeholders})", ids)
-        cur.execute(
-            f"DELETE FROM vec_chunks_secondary WHERE rowid IN ({id_placeholders})", ids
-        )
+        cur.execute(f"DELETE FROM vec_chunks_secondary WHERE rowid IN ({id_placeholders})", ids)
         cur.execute(f"DELETE FROM fts_chunks WHERE rowid IN ({id_placeholders})", ids)
         cur.execute(f"DELETE FROM chunks WHERE id IN ({id_placeholders})", ids)
         return len(ids)
@@ -1632,30 +1637,26 @@ class Storage:
 
     def get_chunk_by_id(self, chunk_id: str) -> dict[str, Any] | None:
         """Get a chunk by its ID.
-        
+
         Returns:
             Dictionary with chunk fields, or None if not found.
         """
-        row = self._conn.execute(
-            "SELECT * FROM chunks WHERE chunk_id = ?", (chunk_id,)
-        ).fetchone()
+        row = self._conn.execute("SELECT * FROM chunks WHERE chunk_id = ?", (chunk_id,)).fetchone()
         if row is None:
             return None
         return dict(row)
 
     def delete_chunk(self, chunk_id: str) -> bool:
         """Delete a single chunk by its ID.
-        
+
         Returns:
             True if deleted, False if not found.
         """
         cur = self._conn.cursor()
-        row = cur.execute(
-            "SELECT id FROM chunks WHERE chunk_id = ?", (chunk_id,)
-        ).fetchone()
+        row = cur.execute("SELECT id FROM chunks WHERE chunk_id = ?", (chunk_id,)).fetchone()
         if row is None:
             return False
-        
+
         rowid = int(row["id"])
         cur.execute("DELETE FROM vec_chunks WHERE rowid = ?", (rowid,))
         cur.execute("DELETE FROM vec_chunks_secondary WHERE rowid = ?", (rowid,))
@@ -1699,9 +1700,7 @@ class Storage:
         if existing is not None:
             rowid = int(existing["id"])
             if existing["content_hash"] != chunk.content_hash:
-                cur.execute(
-                    "DELETE FROM vec_chunks_secondary WHERE rowid = ?", (rowid,)
-                )
+                cur.execute("DELETE FROM vec_chunks_secondary WHERE rowid = ?", (rowid,))
             cur.execute(
                 """
                 UPDATE chunks SET
@@ -1712,11 +1711,22 @@ class Storage:
                 WHERE id = ?
                 """,
                 (
-                    chunk.rel_path, chunk.language, chunk.kind, chunk.symbol,
-                    chunk.parent_chunk_id, chunk.start_line, chunk.end_line,
-                    chunk.content, chunk.content_hash, embedding_model,
-                    embedding_dim, now, repo_id,
-                    effective_text, enricher_id, rowid,
+                    chunk.rel_path,
+                    chunk.language,
+                    chunk.kind,
+                    chunk.symbol,
+                    chunk.parent_chunk_id,
+                    chunk.start_line,
+                    chunk.end_line,
+                    chunk.content,
+                    chunk.content_hash,
+                    embedding_model,
+                    embedding_dim,
+                    now,
+                    repo_id,
+                    effective_text,
+                    enricher_id,
+                    rowid,
                 ),
             )
             cur.execute("DELETE FROM vec_chunks WHERE rowid = ?", (rowid,))
@@ -1732,11 +1742,22 @@ class Storage:
                 ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
-                    chunk.chunk_id, chunk.rel_path, chunk.language, chunk.kind,
-                    chunk.symbol, chunk.parent_chunk_id, chunk.start_line,
-                    chunk.end_line, chunk.content, chunk.content_hash,
-                    embedding_model, embedding_dim, now, repo_id,
-                    effective_text, enricher_id,
+                    chunk.chunk_id,
+                    chunk.rel_path,
+                    chunk.language,
+                    chunk.kind,
+                    chunk.symbol,
+                    chunk.parent_chunk_id,
+                    chunk.start_line,
+                    chunk.end_line,
+                    chunk.content,
+                    chunk.content_hash,
+                    embedding_model,
+                    embedding_dim,
+                    now,
+                    repo_id,
+                    effective_text,
+                    enricher_id,
                 ),
             )
             rowid = int(cur.lastrowid or 0)
@@ -1956,9 +1977,7 @@ class Storage:
         cur = self._conn.cursor()
         # Check graph_nodes is populated before doing anything.
         try:
-            has_graph = cur.execute(
-                "SELECT 1 FROM graph_nodes LIMIT 1"
-            ).fetchone() is not None
+            has_graph = cur.execute("SELECT 1 FROM graph_nodes LIMIT 1").fetchone() is not None
         except sqlite3.OperationalError:
             has_graph = False
         if not has_graph:
@@ -2032,21 +2051,19 @@ class Storage:
                     processed=augmented,
                     total=total_to_augment,
                     percent=(
-                        round(augmented * 100 / total_to_augment, 1)
-                        if total_to_augment
-                        else 100.0
+                        round(augmented * 100 / total_to_augment, 1) if total_to_augment else 100.0
                     ),
                 )
 
         # The remaining chunks (no graph match) are left as-is.
-        total_chunks = int(
-            cur.execute("SELECT COUNT(*) AS n FROM chunks").fetchone()["n"]
-        )
+        total_chunks = int(cur.execute("SELECT COUNT(*) AS n FROM chunks").fetchone()["n"])
         unchanged = total_chunks - augmented
         self.commit()
         log.info(
             "fts_augment.done",
-            augmented=augmented, unchanged=unchanged, total=total_chunks,
+            augmented=augmented,
+            unchanged=unchanged,
+            total=total_chunks,
         )
         return {"augmented": augmented, "unchanged": unchanged, "missing_graph": 0}
 
@@ -2080,27 +2097,57 @@ class Storage:
 
     def clear_repo(self, repo_id: int) -> None:
         """Delete indexed data for one repository, preserving all others."""
-        rows = self._conn.execute(
-            "SELECT id FROM chunks WHERE repo_id = ?", (repo_id,)
-        ).fetchall()
+        rows = self._conn.execute("SELECT id FROM chunks WHERE repo_id = ?", (repo_id,)).fetchall()
         ids = [int(row["id"]) for row in rows]
         if ids:
             placeholders = ",".join("?" * len(ids))
-            self._conn.execute(
-                f"DELETE FROM vec_chunks WHERE rowid IN ({placeholders})", ids
-            )
+            self._conn.execute(f"DELETE FROM vec_chunks WHERE rowid IN ({placeholders})", ids)
             self._conn.execute(
                 f"DELETE FROM vec_chunks_secondary WHERE rowid IN ({placeholders})", ids
             )
-            self._conn.execute(
-                f"DELETE FROM fts_chunks WHERE rowid IN ({placeholders})", ids
-            )
-            self._conn.execute(
-                f"DELETE FROM chunks WHERE id IN ({placeholders})", ids
-            )
+            self._conn.execute(f"DELETE FROM fts_chunks WHERE rowid IN ({placeholders})", ids)
+            self._conn.execute(f"DELETE FROM chunks WHERE id IN ({placeholders})", ids)
         self._conn.execute("DELETE FROM files WHERE repo_id = ?", (repo_id,))
         self._conn.execute("DELETE FROM meta WHERE key = ?", (f"last_indexed_sha_{repo_id}",))
         self._conn.commit()
+
+    def delete_repo(self, repo_id: int) -> dict[str, int]:
+        """Erase a repository and every row referencing it, identity included.
+
+        ``clear_repo`` keeps the ``repos`` row on purpose so a rebuild reuses
+        the id. This is the explicit teardown instead: it also drops the
+        graph, memory, episode and cache rows scoped to the repository, then
+        the identity itself, so duplicate or stale entries stop being listed.
+        Index-only — nothing on disk is touched.
+        """
+        removed = {
+            table: int(
+                self._conn.execute(
+                    f"SELECT count(*) AS n FROM {table} WHERE repo_id = ?", (repo_id,)
+                ).fetchone()["n"]
+            )
+            for table in REPO_SCOPED_TABLES
+            if self._table_exists(table)
+        }
+        self.clear_repo(repo_id)
+        for table in REPO_SCOPED_TABLES:
+            if table in ("chunks", "files") or not self._table_exists(table):
+                continue
+            self._conn.execute(f"DELETE FROM {table} WHERE repo_id = ?", (repo_id,))
+        meta_keys = repo_scoped_meta_keys(repo_id)
+        placeholders = ",".join("?" * len(meta_keys))
+        self._conn.execute(f"DELETE FROM meta WHERE key IN ({placeholders})", meta_keys)
+        cur = self._conn.execute("DELETE FROM repos WHERE id = ?", (repo_id,))
+        removed["repos"] = int(cur.rowcount or 0)
+        self._conn.commit()
+        return removed
+
+    def _table_exists(self, name: str) -> bool:
+        row = self._conn.execute(
+            "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (name,),
+        ).fetchone()
+        return row is not None
 
     def vacuum(self) -> tuple[int, int]:
         """Reclaim unused disk space by rebuilding the database file.
@@ -2125,9 +2172,7 @@ class Storage:
 
         # Resolve the actual file path. ``:memory:`` databases cannot be
         # vacuumed in a meaningful way (no file to shrink).
-        db_path_row = self._conn.execute(
-            "PRAGMA database_list"
-        ).fetchone()
+        db_path_row = self._conn.execute("PRAGMA database_list").fetchone()
         db_file = db_path_row["file"] if db_path_row else ""
         if not db_file:
             # In-memory database — VACUUM still works but file size is 0.
@@ -2160,9 +2205,7 @@ class Storage:
     ) -> list[SearchHit]:
         """Top-k dense nearest neighbors."""
         if len(query_vec) != self._dim:
-            raise StorageError(
-                f"Query embedding dim {len(query_vec)} != index dim {self._dim}"
-            )
+            raise StorageError(f"Query embedding dim {len(query_vec)} != index dim {self._dim}")
         candidate_k = k
         repo_clause = ""
         params: list[Any] = [_serialize_vector(query_vec)]
@@ -2296,8 +2339,7 @@ class Storage:
         params: list[Any] = [f"%{t}%" for t in tokens]
         # Score = number of tokens matched.
         score_terms = " + ".join(
-            "(CASE WHEN symbol LIKE ? COLLATE NOCASE THEN 1 ELSE 0 END)"
-            for _ in tokens
+            "(CASE WHEN symbol LIKE ? COLLATE NOCASE THEN 1 ELSE 0 END)" for _ in tokens
         )
         params = params + [f"%{t}%" for t in tokens]
         repo_clause = "AND c.repo_id = ?" if repo_id is not None else ""
@@ -2372,10 +2414,7 @@ class Storage:
                 session_id=session_id,
             )
             seen, pinned, meta = set(), set(), {}
-        scratchpad = (
-            row["scratchpad"] or ""
-            if "scratchpad" in row.keys() else ""
-        )
+        scratchpad = row["scratchpad"] or "" if "scratchpad" in row.keys() else ""
         return SessionRecord(
             session_id=row["session_id"],
             client_id=row["client_id"],
@@ -2442,8 +2481,14 @@ class Storage:
                        seen_chunk_ids, pinned_chunk_ids, meta, scratchpad
                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
-                    session_id, client_id, now, now,
-                    seen_json, pinned_json, meta_json, scratchpad_resolved,
+                    session_id,
+                    client_id,
+                    now,
+                    now,
+                    seen_json,
+                    pinned_json,
+                    meta_json,
+                    scratchpad_resolved,
                 ),
             )
             created_at = now
@@ -2451,12 +2496,9 @@ class Storage:
         else:
             # Preserve client_id when caller passes None (most common
             # case — the agent only updates the state sets).
-            resolved_client_id = (
-                client_id if client_id is not None else existing["client_id"]
-            )
+            resolved_client_id = client_id if client_id is not None else existing["client_id"]
             scratchpad_resolved = (
-                scratchpad if scratchpad is not None
-                else (existing["scratchpad"] or "")
+                scratchpad if scratchpad is not None else (existing["scratchpad"] or "")
             )
             cur.execute(
                 """UPDATE sessions
@@ -2465,8 +2507,13 @@ class Storage:
                            meta = ?, scratchpad = ?
                      WHERE session_id = ?""",
                 (
-                    resolved_client_id, now, seen_json, pinned_json,
-                    meta_json, scratchpad_resolved, session_id,
+                    resolved_client_id,
+                    now,
+                    seen_json,
+                    pinned_json,
+                    meta_json,
+                    scratchpad_resolved,
+                    session_id,
                 ),
             )
             created_at = existing["created_at"]
@@ -2485,14 +2532,15 @@ class Storage:
     def delete_session(self, session_id: str) -> bool:
         """Remove a session row. Returns ``True`` on delete, ``False``
         when the row didn't exist (caller's no-op signal)."""
-        cur = self._conn.execute(
-            "DELETE FROM sessions WHERE session_id = ?", (session_id,)
-        )
+        cur = self._conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
         self._conn.commit()
         return cur.rowcount > 0
 
     def list_sessions(
-        self, *, client_id: str | None = None, limit: int = 50,
+        self,
+        *,
+        client_id: str | None = None,
+        limit: int = 50,
     ) -> list[SessionRecord]:
         """Enumerate sessions, optionally filtered by ``client_id``.
 
@@ -2530,10 +2578,7 @@ class Storage:
                     session_id=row["session_id"],
                 )
                 seen, pinned, meta = set(), set(), {}
-            scratchpad = (
-                row["scratchpad"] or ""
-                if "scratchpad" in row.keys() else ""
-            )
+            scratchpad = row["scratchpad"] or "" if "scratchpad" in row.keys() else ""
             out.append(
                 SessionRecord(
                     session_id=row["session_id"],
@@ -2554,9 +2599,7 @@ class Storage:
         WIN-228 hooks here for TTL cleanup. Returns the number of rows
         removed.
         """
-        cur = self._conn.execute(
-            "DELETE FROM sessions WHERE updated_at < ?", (older_than_iso,)
-        )
+        cur = self._conn.execute("DELETE FROM sessions WHERE updated_at < ?", (older_than_iso,))
         self._conn.commit()
         return int(cur.rowcount or 0)
 
@@ -2626,8 +2669,15 @@ class Storage:
                        provenance_commit
                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
-                    repo_id, kind, key, value, source, now, now,
-                    expires_at, provenance_commit,
+                    repo_id,
+                    kind,
+                    key,
+                    value,
+                    source,
+                    now,
+                    now,
+                    expires_at,
+                    provenance_commit,
                 ),
             )
             row_id = int(cur.lastrowid or 0)
@@ -2639,17 +2689,28 @@ class Storage:
                            expires_at = ?, provenance_commit = ?
                      WHERE id = ?""",
                 (
-                    value, source, now, expires_at,
-                    provenance_commit, existing["id"],
+                    value,
+                    source,
+                    now,
+                    expires_at,
+                    provenance_commit,
+                    existing["id"],
                 ),
             )
             row_id = int(existing["id"])
             created_at = existing["created_at"]
         self._conn.commit()
         return ProjectMemoryRecord(
-            id=row_id, repo_id=repo_id, kind=kind, key=key, value=value,
-            source=source, created_at=created_at, updated_at=now,
-            expires_at=expires_at, provenance_commit=provenance_commit,
+            id=row_id,
+            repo_id=repo_id,
+            kind=kind,
+            key=key,
+            value=value,
+            source=source,
+            created_at=created_at,
+            updated_at=now,
+            expires_at=expires_at,
+            provenance_commit=provenance_commit,
         )
 
     def recall(
@@ -2710,8 +2771,7 @@ class Storage:
                 updated_at=r["updated_at"],
                 expires_at=r["expires_at"],
                 provenance_commit=(
-                    r["provenance_commit"]
-                    if "provenance_commit" in r.keys() else None
+                    r["provenance_commit"] if "provenance_commit" in r.keys() else None
                 ),
             )
             for r in rows
@@ -2762,9 +2822,15 @@ class Storage:
                    created_at, updated_at, provenance_commit
                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
-                repo_id, session_id, title, summary,
-                json.dumps(files_norm), json.dumps(symbols_norm),
-                now, now, provenance_commit,
+                repo_id,
+                session_id,
+                title,
+                summary,
+                json.dumps(files_norm),
+                json.dumps(symbols_norm),
+                now,
+                now,
+                provenance_commit,
             ),
         )
         self._conn.commit()
@@ -2899,9 +2965,7 @@ class Storage:
 
     def forget_episode(self, *, episode_id: int) -> bool:
         """Delete one episode by id. Returns True / False (existed)."""
-        cur = self._conn.execute(
-            "DELETE FROM episodes WHERE id = ?", (episode_id,)
-        )
+        cur = self._conn.execute("DELETE FROM episodes WHERE id = ?", (episode_id,))
         self._conn.commit()
         return bool(cur.rowcount or 0)
 
@@ -2933,9 +2997,7 @@ class Storage:
             clauses.append("repo_id = ?")
             params.append(repo_id)
         if expired_only:
-            clauses.append(
-                "(expires_at IS NOT NULL AND expires_at <= ?)"
-            )
+            clauses.append("(expires_at IS NOT NULL AND expires_at <= ?)")
             params.append(datetime.now(UTC).isoformat())
         elif older_than_iso is not None:
             clauses.append("updated_at < ?")
@@ -2945,9 +3007,7 @@ class Storage:
             # repo_id=... is required.
             return 0
         where = " AND ".join(clauses)
-        cur = self._conn.execute(
-            f"DELETE FROM project_memory WHERE {where}", tuple(params)
-        )
+        cur = self._conn.execute(f"DELETE FROM project_memory WHERE {where}", tuple(params))
         self._conn.commit()
         return int(cur.rowcount or 0)
 
@@ -3079,22 +3139,16 @@ class Storage:
     # ----- meta key/value (used by incremental reindex) -----
 
     def set_meta(self, key: str, value: str) -> None:
-        self._conn.execute(
-            "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)", (key, value)
-        )
+        self._conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)", (key, value))
 
     def get_meta(self, key: str) -> str | None:
-        row = self._conn.execute(
-            "SELECT value FROM meta WHERE key = ?", (key,)
-        ).fetchone()
+        row = self._conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
         return row["value"] if row else None
 
     def stats(self) -> dict[str, Any]:
         cur = self._conn.cursor()
         chunks = cur.execute("SELECT COUNT(*) AS n FROM chunks").fetchone()["n"]
-        files = cur.execute(
-            "SELECT COUNT(DISTINCT rel_path) AS n FROM chunks"
-        ).fetchone()["n"]
+        files = cur.execute("SELECT COUNT(DISTINCT rel_path) AS n FROM chunks").fetchone()["n"]
         models = [
             dict(row)
             for row in cur.execute(
@@ -3111,14 +3165,10 @@ class Storage:
                    FROM chunks GROUP BY enricher_id"""
             ).fetchall()
         ]
-        enrichment_cache = cur.execute(
-            "SELECT COUNT(*) AS n FROM enrichments"
-        ).fetchone()["n"]
+        enrichment_cache = cur.execute("SELECT COUNT(*) AS n FROM enrichments").fetchone()["n"]
         # Schema v6: file-level dirty cache size.
         try:
-            files_tracked = cur.execute(
-                "SELECT COUNT(*) AS n FROM files"
-            ).fetchone()["n"]
+            files_tracked = cur.execute("SELECT COUNT(*) AS n FROM files").fetchone()["n"]
         except sqlite3.OperationalError:
             files_tracked = 0
         size_bytes = self._db_path.stat().st_size if self._db_path.exists() else 0
@@ -3186,9 +3236,7 @@ class Storage:
             "communities": int(n_communities),
             "last_loaded_at": row["value"],
             "graph_path": path_row["value"] if path_row else None,
-            "confidence_filter": (
-                (conf_row["value"] or "").split(",") if conf_row else None
-            ),
+            "confidence_filter": ((conf_row["value"] or "").split(",") if conf_row else None),
         }
 
     def compute_facets(

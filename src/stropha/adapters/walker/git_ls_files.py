@@ -50,7 +50,8 @@ class GitLsFilesWalker(WalkerStage):
 
     @property
     def adapter_id(self) -> str:
-        return f"git-ls-files:max={self._config.max_file_bytes}"
+        respect = str(self._config.respect_strophaignore).lower()
+        return f"git-ls-files:max={self._config.max_file_bytes}:strophaignore={respect}"
 
     @property
     def config_schema(self) -> type[BaseModel]:
@@ -63,4 +64,15 @@ class GitLsFilesWalker(WalkerStage):
         )
 
     def discover(self, repo: Path) -> Iterable[SourceFile]:
-        return Walker(repo, max_file_bytes=self._config.max_file_bytes).discover()
+        return Walker(
+            repo,
+            max_file_bytes=self._config.max_file_bytes,
+            respect_strophaignore=self._config.respect_strophaignore,
+        ).discover()
+
+    def discover_paths(self, repo: Path, rel_paths: Iterable[str]) -> Iterable[SourceFile]:
+        return Walker(
+            repo,
+            max_file_bytes=self._config.max_file_bytes,
+            respect_strophaignore=self._config.respect_strophaignore,
+        ).discover_paths(rel_paths)

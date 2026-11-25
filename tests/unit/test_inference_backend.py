@@ -183,6 +183,26 @@ class TestGetBackend:
             backend = get_backend(prefer="ollama")
         assert isinstance(backend, OllamaBackend)
 
+    def test_unavailable_mlx_is_not_substituted_with_ollama(self):
+        """An explicitly requested backend is never silently swapped.
+
+        A substitution changes ``identity``, which is folded into
+        ``enricher_id`` and therefore into the per-file freshness key —
+        one silent swap restages every chunk in every repo.
+        """
+        with patch.object(
+            MlxBackend, "is_available", new_callable=PropertyMock, return_value=False
+        ):
+            backend = get_backend(prefer="mlx")
+        assert isinstance(backend, MlxBackend)
+
+    def test_unavailable_ollama_is_not_substituted_with_mlx(self):
+        with patch.object(
+            OllamaBackend, "is_available", new_callable=PropertyMock, return_value=False
+        ):
+            backend = get_backend(prefer="ollama")
+        assert isinstance(backend, OllamaBackend)
+
     def test_yaml_config_backend_override(self, isolated_test_env):
         """YAML config can select backend."""
         from stropha.config import reset_config

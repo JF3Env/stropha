@@ -40,6 +40,7 @@ from .models import (
     GitConfig,
     GraphConfig,
     HookConfig,
+    IndexingConfig,
     InferenceConfig,
     LoggingConfig,
     McpConfig,
@@ -366,6 +367,51 @@ def _parse_mcp(raw: dict[str, Any]) -> McpConfig:
     )
 
 
+def _parse_indexing(raw: dict[str, Any]) -> IndexingConfig:
+    entries = raw.get("blacklist_repos") or []
+    if isinstance(entries, str):
+        entries = [entries]
+    if not isinstance(entries, list):
+        raise ConfigError("indexing.blacklist_repos must be a list of repository keys or paths")
+    cleaned = tuple(str(entry).strip() for entry in entries if str(entry).strip())
+    return IndexingConfig(
+        blacklist_repos=cleaned,
+        watch_all_repos=_bool(raw.get("watch_all_repos"), False),
+    )
+
+
+def repo_is_blacklisted(
+    normalized_key: str,
+    root_path: Any = None,
+    *,
+    config: Config | None = None,
+) -> bool:
+    """True when indexing this repository is blocked by configuration.
+
+    Matches the normalized key, either fallback key form, or the repository
+    root path, so blocking one checkout covers every identity it has been
+    indexed under — a renamed remote and its ``path:`` entry alike.
+    """
+    entries = (config or get_config()).indexing.blacklist_repos
+    if not entries:
+        return False
+    aliases = {normalized_key.strip()}
+    if root_path is not None:
+        root = str(Path(str(root_path)).expanduser())
+        aliases.update({root, f"path:{root}", f"local:{root}"})
+    for entry in entries:
+        if entry in aliases:
+            return True
+        # Tolerate a trailing slash or a relative path spelled differently.
+        if root_path is not None and entry not in aliases:
+            try:
+                if Path(entry).expanduser().resolve() == Path(str(root_path)).resolve():
+                    return True
+            except (OSError, RuntimeError, ValueError):
+                continue
+    return False
+
+
 def _parse_git(raw: dict[str, Any]) -> GitConfig:
     cache_raw = raw.get("url_cache")
     cache_path = (
@@ -466,6 +512,7 @@ def load_config(project_root: Path | None = None, force_reload: bool = False) ->
         logging=_parse_logging(raw.get("logging", {})),
         mcp=_parse_mcp(raw.get("mcp", {})),
         git=_parse_git(raw.get("git", {})),
+        indexing=_parse_indexing(raw.get("indexing", {})),
         hook=_parse_hook(),
         experiments=_parse_experiments(raw.get("experiments", {})),
     )

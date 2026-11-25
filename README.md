@@ -149,7 +149,9 @@ bin/stropha-mcp-ensure --stop
 The launcher waits for both `/health` and an MCP protocol response. The heavy
 pipeline runtime is built lazily on the first MCP or frontend request and then
 shared. The file watcher starts with that runtime when `mcp.watch` is enabled,
-which is the default, and stops with the daemon.
+which is the default, and stops with the daemon. It uses native filesystem
+notifications and path-scoped refreshes rather than repeatedly scanning the
+repository while idle.
 
 `mcp.profile` selects one daemon-wide static tool surface: `core`, `standard`,
 or `full`. `full` is the compatibility default. `core` keeps only the primary

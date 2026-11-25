@@ -1111,7 +1111,12 @@ graph is absent. Use supported current commands and forward-only migrations.
 
 ### 16.4 File watcher (inotify/fsevents) sempre rodando
 
-**Rejeitado para v1**. Custo cognitivo: usuário precisa lembrar que tem um daemon rodando. Custo de CPU: tree-sitter parsing em loop. Custo de ergonomia: precisa de daemonização (launchd/systemd). Hook é mais explícito e barato. Spec §8.3 prevê soft index em RAM via watcher para Phase 3 — mantemos como trabalho futuro.
+**Rejeitado para v1; decisão superseded em WIN-361.** O daemon HTTP compartilhado
+eliminou o custo adicional de daemonização, e notificações nativas evitam polling
+e parsing contínuo enquanto idle. O watcher atual persiste refreshes por path e
+mantém reconciliação completa inicial/periódica como safety net. Ele não executa
+o lifecycle graphify em cada save: apenas marca o repositório como dirty para o
+hook ou a próxima indexação completa.
 
 ### 16.5 Auto-bootstrap (rodar `graphify .` se ausente)
 

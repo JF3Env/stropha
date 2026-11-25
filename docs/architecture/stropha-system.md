@@ -718,18 +718,24 @@ Para cada arquivo (caminho git-diff):
 |---|---|---|
 | Commit local | Git hook `post-commit` (silencioso, em background) | <5 s |
 | Pull / merge | Git hook `post-merge` | <30 s |
-| Edição salva não-commitada | Polling stdlib por hash completo, debounce 2 s | Intervalo de polling + debounce |
+| Edição salva não-commitada | Notificação nativa (`watchfiles`) + refresh por path, debounce 2 s | Notificação do SO + debounce |
 | Deploy CI | GitHub Actions step | OK ser lento |
 
 ### 8.3 Working tree salvo
 
 O índice persistente representa o working tree **salvo**, incluindo edições não
 commitadas. `HEAD` é metadado Git, não prova dos bytes indexados. O watcher faz
-reconciliação inicial e retries com backoff para não depender de um novo evento
-após falha. Seu snapshot usa o path lógico relativo retornado pelo walker, mesmo
-quando o path físico foi canonicalizado, e valida o target de symlink ao ler.
-Buffers ainda não salvos não entram no índice persistente; overlays de sessão
-explícitos são uma extensão futura e separada.
+reconciliação inicial e periódica, além de retries com backoff, para não depender
+de um novo evento após falha. Eventos nativos são coalescidos e resolvidos contra
+o estado final do filesystem. Arquivos usam `Pipeline.refresh_paths()`; diretórios,
+regras de admissão (`.gitignore`, `.strophaignore`, `.ragignore`), drift de
+adapter/snapshot ou estado ambíguo promovem a operação para reconciliação completa.
+Deletes de diretório usam prefixo lógico com fronteira de path, sem atingir
+siblings de mesmo prefixo.
+
+O walker revalida cada path lógico, inclusive ignore rules e symlinks, antes de
+ler um snapshot imutável. Buffers ainda não salvos não entram no índice
+persistente; overlays de sessão explícitos são uma extensão futura e separada.
 
 ### 8.4 Compactação e rebuild
 
@@ -751,11 +757,35 @@ Schema migrations + lazy backfill: adicionar coluna nullable, preencher em backg
 | **C** | — | Rename-resilient `chunk_id`. `Storage.rename_chunks()` recomputes `chunk_id` via `make_chunk_id(new_path, ...)` + regenerates FTS5 rows. Zero re-embed cost for renames. `GraphifyLoader` diff-loads (deltas only, not full DELETE+INSERT). |
 | **D** | — | Hash-based reconcile (WIN-425, 2026-06-08). `auto` (default) diffs the working tree against the `files` cache via `Storage.load_file_meta_map()` — git-independent, crash-resilient (interrupted runs self-heal), sees uncommitted edits, works on non-git dirs. Git-diff (`--incremental`) demoted to an opt-in fast-path. `Pipeline._index_one_repo_reconcile()`. |
 | **E** | — | Trustworthy source snapshots (2026-08-21). Full raw-byte SHA-256, immutable chunker input, post-processing rehash, adapter-owned atomic replace/delete, vector-preserving structural refresh, zero-chunk support, completion-only repository watermarks, durable per-repo graph dirtiness, startup watcher reconciliation, retry backoff, and versioned source evidence on every retrieval stream. |
+| **F** | — | Native saved-worktree refresh (WIN-361, 2026-08-23). OS notifications replace idle tree polling; `Pipeline.refresh_paths()` handles exact files and boundary-safe directory eviction, while startup/periodic reconciliation and drift guards preserve correctness. |
 
 CLI flags: `--full` (force full walk), `--incremental` (force git-diff fast-path, falls back to reconcile if no checkpoint), `--since <sha>` (override checkpoint). Default (no flag) = `auto` = hash reconcile.
 
 `git.rename_threshold` in `~/.stropha/config.yaml` (default 80) controls
 `git diff --find-renames=<N>` sensitivity.
+
+`indexing.watch_all_repos` (default `false`) widens the native watcher beyond
+`paths.target_repo`. Off, the daemon watches only the target and other
+repositories stay fresh through their own git hooks (§8.2). On, every indexed
+repository whose root still exists on disk and is not blacklisted gets its own
+observer thread, resolved from `list_repos()` at each runtime build. A missing
+checkout is skipped, and a secondary root that fails to start logs
+`watch.additional_root_failed` without gating daemon startup — only the target
+still fails fast. **Every write is serialized behind one lock**, because the
+index admits a single writer (`try_acquire_index_lock`); storage connections
+and pipelines for secondary roots are built lazily on first change, so idle
+repositories cost one blocked thread and nothing else, and a SQLite handle
+never crosses a thread boundary.
+
+`indexing.blacklist_repos` (default empty) lists repositories that must never
+be indexed again. `Pipeline._index_one_repo` is the single funnel every path
+goes through — CLI, watcher, post-commit hook — so it is checked there, right
+after `detect_repo` and before `register_repo`: a blocked repository raises
+`RepoBlacklistedError` and never reaches storage. Multi-repo runs log
+`pipeline.repo_blacklisted` and continue with the rest. An entry matches a
+repository's normalized key, either fallback key (`path:` / `local:`), or its
+root path, so blocking a checkout survives a renamed remote. Edit it in the
+dashboard's *Indexed data* tab or directly in the YAML.
 
 ---
 
@@ -899,13 +929,20 @@ e são limpos ao encerrar a session; IDs expirados não podem ser reutilizados n
 mesma session. Eles nunca entram em metadata persistente nem traces. No shutdown
 ASGI, o session manager encerra as tasks antes de parar watcher e fechar storage.
 
+Quando `mcp.watch` está ativo, o runtime cria um watcher nativo por geração. A
+thread do watcher possui sua própria conexão de storage e seu próprio `Pipeline`,
+mas reutiliza walker, chunker e modelos já aquecidos. Um wrapper sincronizado
+serializa chamadas aos embedders entre queries e escrita; storage nunca cruza a
+fronteira de thread. Reload e shutdown param e aguardam a thread antes de fechar
+os adapters publicados.
+
 O perfil MCP é selecionado de `~/.stropha/config.yaml` antes de iniciar o
 transport HTTP e permanece fixo por toda a vida do daemon. Não existem
 overrides por CLI, ambiente ou session.
 
 #### 9.4.1 Frontend JSON API e live reload
 
-O mesmo daemon HTTP serve um dashboard em `/dashboard` e expõe cinco rotas
+O mesmo daemon HTTP serve um dashboard em `/dashboard` e expõe dez rotas
 JSON locais, separadas do protocolo MCP:
 
 - `GET /api/status`: retorna saúde e identidade do pipeline ativo, contagens do
@@ -923,6 +960,64 @@ JSON locais, separadas do protocolo MCP:
   `[S1]`, `[S2]`, etc. e usa o backend de inference configurado para responder.
   Histórico recente (`user`/`assistant`) é limitado, validado e usado como
   contexto de retrieval e geração para suportar follow-ups sem estado no servidor.
+- `POST /api/agent`: consulta com loop local de leitura do índice, usando o mesmo
+  backend de inference e runtime compartilhado. Recebe `question` não vazia
+  (até 8000 caracteres), `top_k` (1..20, default 8), `max_tokens` (64..2048,
+  default 512), `max_steps` (1..8, default 5), `include_other_repos` booleano
+  (default false) e `history` (array; últimas 12 mensagens user/assistant, até
+  24000 caracteres). Por padrão, busca apenas no target configurado/indexado;
+  ampliar o escopo exige `include_other_repos=true`.
+  Uma busca inicial precede até `max_steps` decisões do modelo (`search`,
+  `expand`, `answer`); esgotar o orçamento pode gerar mais uma chamada para
+  resposta final. Buscas adicionais têm query de até 400 caracteres e top-k
+  limitado a 10. A decisão vê até 30 fontes, com 500 caracteres por trecho;
+  expansão lê até 5 IDs distintos por ação e até 8000 caracteres por fonte.
+  `evidence_ids` deve ser array de strings; argumentos inválidos ou expansão
+  sem conteúdo efetivamente carregado encerram o loop em fallback. O trace
+  registra somente IDs realmente expandidos. Sem fontes, retorna mensagem
+  determinística de ausência de evidência, mesmo se o modelo tentar responder.
+  Com fontes, texto não JSON pode ser aceito como resposta; citações são
+  solicitadas no prompt, não comprovadas por um validador semântico.
+  Retorna `answer`, `sources`, `backend`, `trace` e `agent` (`max_steps`,
+  `iterations`, `tool_calls`, `finished`). O trace distingue ferramentas chamadas
+  pelo modelo, retrieval da aplicação e chamadas LLM. Erros: 400 para JSON
+  inválido, 422 para payload inválido, 403 para acesso não local e 503 para
+  falha de runtime/retrieval/inference. Suporta OPTIONS, como `/api/query`.
+  O dashboard habilita esse modo por padrão e persiste o toggle em localStorage;
+  desligá-lo seleciona `/api/query`. O loop mantém estado apenas por request,
+  não executa comandos, não edita arquivos nem altera a superfície MCP. Não é
+  um runtime de agentes de programação; essas responsabilidades continuam no host.
+- `GET /api/repos`: lista cada repositório indexado com contagens de chunks e
+  arquivos, identidade git, caminho local e a flag `watched` — verdadeira quando
+  o watcher reindexaria aquele repositório na próxima passada.
+- `GET /api/repos/files`: lista os arquivos indexados de um repositório com a
+  contagem de chunks de cada um, aceitando `filter` (substring case-insensitive)
+  e `limit`, e sinalizando `truncated` quando a página não cobre o total.
+- `POST /api/repos/delete`: apaga dados indexados na granularidade pedida.
+  Arquivos nomeados (`{"repo": ..., "paths": [...]}`) saem via
+  `delete_file_snapshot` seguido de um único `commit`. O repositório inteiro
+  (`{"repo": ...}`) sai via `delete_repo`, que remove **toda** linha com aquele
+  `repo_id` — chunks, files, `graph_nodes`, `graph_edges`, `project_memory`,
+  `episodes`, `cross_session_cache` — e por fim a própria identidade em
+  `repos`, para que uma entrada duplicada ou obsoleta pare de ser listada em
+  vez de permanecer com zero chunks. Um mesmo diretório costuma estar indexado
+  sob várias entradas (um remote renomeado mais o fallback `path:`); cada uma é
+  removida independentemente. `clear_repo` continua intocado: o caminho de
+  rebuild ainda preserva a identidade para reusar o mesmo id. A rota é
+  **index-only** — nunca lê, move ou apaga nada na árvore de trabalho.
+  Deleções são serializadas por um lock assíncrono próprio, registram
+  `frontend.index_deleted` com o detalhamento por tabela, e devolvem `watched`
+  para avisar que o watcher vai reindexar o repositório alvo a partir do disco.
+- `POST /api/repos/blacklist`: bloqueia (`{"repo": ..., "blocked": true}`) ou
+  libera um repositório, gravando `indexing.blacklist_repos` em
+  `~/.stropha/config.yaml`. Bloquear fixa tanto a chave normalizada quanto o
+  caminho local do checkout, de modo que um remote renomeado não reabra o
+  bloqueio. A regra é aplicada em `Pipeline._index_one_repo`, o funil por onde
+  passa todo caminho de indexação, então um script chamando `stropha index
+  --repo`, o watcher e o hook de post-commit são todos recusados com
+  `RepoBlacklistedError`; uma run multi-repo apenas pula o repositório
+  bloqueado (`pipeline.repo_blacklisted`) e indexa o resto. Bloquear não apaga
+  nada — combine com `/api/repos/delete` para limpar o que já está indexado.
 
 O swap de runtime ocorre sob o mesmo lock assíncrono process-wide usado no
 startup. Falha de validação, conexão de storage ou construção de adapter restaura
@@ -930,6 +1025,13 @@ o YAML anterior e mantém o runtime anterior publicado. Sessions MCP já abertas
 retêm seus adapters para não fechar uma conexão em uso; os runtimes aposentados
 são fechados no shutdown ASGI. Novas sessions e requests frontend observam o
 runtime substituto imediatamente.
+
+O rollback cobre também o cancelamento: um cliente que desiste enquanto o reload
+espera pelo lock derruba a task com `CancelledError`, que não é `Exception`, e o
+handler restaura o YAML anterior antes de propagar. Toda rejeição registra
+`frontend.config_update_failed` (com `error`, `error_type` e traceback) e todo
+cancelamento registra `frontend.config_update_aborted`; sem isso o motivo da
+falha existiria apenas no browser do chamador.
 
 `mcp.profile` é a exceção ao live reload. O PATCH pode persistir o novo perfil,
 mas retorna `restart_required: true`; o manifest ativo continua filtrando

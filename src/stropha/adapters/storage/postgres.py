@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import functools
 import json
+import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -73,6 +74,7 @@ from ...storage.sqlite import (
     _snippet,
     _source_evidence_from_row,
 )
+from ...storage_schema import REPO_SCOPED_TABLES, repo_scoped_meta_keys
 
 if TYPE_CHECKING:
     from ...ingest.git_meta import RepoIdentity
@@ -125,11 +127,20 @@ def _distance_expression(column: str, dim: int) -> str:
 
 
 def _scoped_read(method: Any) -> Any:
-    """End standalone psycopg reads without committing a caller's outer write."""
+    """End standalone psycopg reads without committing a caller's outer write.
+
+    The reads share the single writer connection (``self._raw``), and
+    psycopg's transaction stack is per-connection and LIFO: two threads that
+    push/pop ``transaction()`` contexts in an interleaved order corrupt it and
+    fail with ``OutOfOrderTransactionNesting``. Frontend endpoints run in
+    ``asyncio.to_thread`` workers and overlap freely, so every scoped read
+    takes the re-entrant reader lock. Re-entrant because ``stats`` composes
+    other scoped reads (``list_repos``, ``_db_size``, ``_graph_stats``).
+    """
 
     @functools.wraps(method)
     def wrapped(self: PostgresStorage, *args: Any, **kwargs: Any) -> Any:
-        with self._raw.transaction():
+        with self._scoped_read_lock, self._raw.transaction():
             return method(self, *args, **kwargs)
 
     return wrapped
@@ -466,13 +477,13 @@ class PostgresStorage:
             config = PostgresStorageConfig()
         if embedding_dim is None:
             raise ValueError(
-                "PostgresStorage requires `embedding_dim=` (propagate from "
-                "the active embedder)."
+                "PostgresStorage requires `embedding_dim=` (propagate from the active embedder)."
             )
         self._adapter_config = config
         self._dsn = config.dsn
         self._dim = embedding_dim
         self._index_lock_held = False
+        self._scoped_read_lock = threading.RLock()
 
         try:
             import psycopg
@@ -554,9 +565,7 @@ class PostgresStorage:
             ) as connection:
                 yield connection
         except PoolTimeout as exc:
-            raise StorageError(
-                "Timed out waiting for a PostgreSQL retrieval connection"
-            ) from exc
+            raise StorageError("Timed out waiting for a PostgreSQL retrieval connection") from exc
 
     def _reconnect(self) -> None:
         """Replace a dead connection with a fresh one, rebinding the
@@ -681,9 +690,7 @@ class PostgresStorage:
     @staticmethod
     def _add_forward_columns(cur: Any, table: str) -> None:
         for column, declaration in _FORWARD_COLUMN_MIGRATIONS.get(table, ()):
-            cur.execute(
-                f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {declaration};"
-            )
+            cur.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {declaration};")
 
     @staticmethod
     def _verify_schema_columns(cur: Any) -> None:
@@ -707,9 +714,7 @@ class PostgresStorage:
         )
         missing = cur.fetchall()
         if missing:
-            names = ", ".join(
-                f"{row['table_name']}.{row['column_name']}" for row in missing
-            )
+            names = ", ".join(f"{row['table_name']}.{row['column_name']}" for row in missing)
             raise StorageError(
                 f"PostgreSQL schema v{SCHEMA_VERSION} verification failed; "
                 f"missing required columns: {names}"
@@ -910,7 +915,9 @@ class PostgresStorage:
             "CREATE INDEX IF NOT EXISTS idx_csc_model "
             "ON cross_session_cache(embedding_model, embedding_dim);"
         )
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_csc_expires ON cross_session_cache(expires_at);")
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_csc_expires ON cross_session_cache(expires_at);"
+        )
 
         # ----- graph subsystem (v4/v5/v7). Edge PK columns are NOT NULL DEFAULT
         # '' because Postgres forbids NULL in a PRIMARY KEY (SQLite allows it,
@@ -1110,6 +1117,38 @@ class PostgresStorage:
             cur.execute("DELETE FROM meta WHERE key = %s;", (f"last_indexed_sha_{repo_id}",))
         self._raw.commit()
 
+    def delete_repo(self, repo_id: int) -> dict[str, int]:
+        """Erase a repository and every row referencing it, identity included.
+
+        ``clear_repo`` keeps the ``repos`` row on purpose so a rebuild reuses
+        the id. This is the explicit teardown instead: graph, memory, episode
+        and cache rows scoped to the repository go too, then the identity, so
+        duplicate or stale entries stop being listed. One local path can map
+        to several entries (a renamed remote, plus the ``path:`` fallback);
+        each is removed independently. Index-only — nothing on disk is read
+        or written.
+        """
+        removed: dict[str, int] = {}
+        with self._raw.cursor() as cur:
+            for table in REPO_SCOPED_TABLES:
+                if not self._table_exists(cur, table):
+                    continue
+                cur.execute(f"DELETE FROM {table} WHERE repo_id = %s;", (repo_id,))
+                removed[table] = max(0, int(cur.rowcount or 0))
+            cur.execute(
+                "DELETE FROM meta WHERE key = ANY(%s);", (list(repo_scoped_meta_keys(repo_id)),)
+            )
+            cur.execute("DELETE FROM repos WHERE id = %s;", (repo_id,))
+            removed["repos"] = max(0, int(cur.rowcount or 0))
+        self._raw.commit()
+        return removed
+
+    @staticmethod
+    def _table_exists(cur: Any, name: str) -> bool:
+        cur.execute("SELECT to_regclass(%s) AS present;", (f"public.{name}",))
+        row = cur.fetchone()
+        return bool(row and row["present"])
+
     def vacuum(self) -> tuple[int, int]:
         """Reclaim space. Postgres autovacuums online; this is a manual nudge.
 
@@ -1145,15 +1184,40 @@ class PostgresStorage:
         return self._index_lock_held
 
     def release_index_lock(self) -> None:
-        if not self._index_lock_held:
-            return
+        # Always attempt the unlock, never trust ``_index_lock_held`` alone. The
+        # writer session outlives this object (the daemon keeps one raw
+        # connection across runtime reloads, and each reload builds a fresh
+        # adapter whose flag starts False), so a lock acquired by an earlier
+        # instance would otherwise stay held for the lifetime of the Postgres
+        # session — which for a launchd-managed daemon is forever, and blocks
+        # every later ``stropha index`` with a "wait for it to finish" error
+        # that has nothing left to wait for. ``pg_advisory_unlock`` reports
+        # false instead of raising when this session holds no such lock, so the
+        # extra attempt costs nothing when there is nothing to release.
+        was_held = self._index_lock_held
         try:
             # A failed write leaves psycopg in an aborted transaction, where
             # even pg_advisory_unlock is rejected until rollback. Successful
             # pipeline writes are already committed before lock release.
             self._raw.rollback()
-            self._raw.execute("SELECT pg_advisory_unlock(%s);", (_INDEX_LOCK_KEY,))
+            # ``pg_advisory_unlock`` returns false rather than raising when this
+            # session holds no such lock, which is what makes an unconditional
+            # attempt safe. There is no ``pg_try_advisory_unlock`` in PostgreSQL:
+            # naming it raises 42883 and the lock leaks, so this path must use
+            # the real function. The ``::bigint`` cast only pins the
+            # single-argument overload.
+            row = self._raw.execute(
+                "SELECT pg_advisory_unlock(%s::bigint) AS released;", (_INDEX_LOCK_KEY,)
+            ).fetchone()
             self._raw.commit()
+            released = bool(row and row["released"])
+            if was_held and not released:
+                # Someone else took the lock between acquire and release.
+                log.warning("postgres.index_lock_release_lost", reason="not held at release")
+            elif released and not was_held:
+                # A lock this instance never claimed, inherited on the shared
+                # writer session. Releasing it here is the recovery path.
+                log.warning("postgres.index_lock_released_untracked")
         except Exception as exc:  # pragma: no cover - defensive
             # Closing the session releases every session advisory lock. Reopen
             # it so a failed unlock does not also poison later requests.
@@ -1168,6 +1232,46 @@ class PostgresStorage:
         finally:
             self._index_lock_held = False
 
+    def describe_index_lock_holder(self) -> str | None:
+        """Name the session that owns the writer lock, for the busy error text.
+
+        A session advisory lock is only released when its owning session ends,
+        so telling the operator *which* session holds it — and how long it has
+        been idle there — turns an unactionable "wait for it to finish" into one
+        command. Returns ``None`` when the lock is already free or the catalog
+        cannot be read (diagnostics must never mask the original error).
+        """
+        try:
+            row = self._raw.execute(
+                """
+                SELECT a.pid,
+                       EXTRACT(EPOCH FROM (now() - a.state_change))::bigint AS idle_s,
+                       a.state
+                FROM pg_locks l
+                JOIN pg_stat_activity a ON a.pid = l.pid
+                WHERE l.locktype = 'advisory' AND l.objid = %s
+                LIMIT 1
+                """,
+                (_INDEX_LOCK_KEY,),
+            ).fetchone()
+            # Diagnostics must not leave the writer session idle in a
+            # transaction: an open read keeps its locks for as long as the
+            # session lives, and an idle-in-transaction session is exactly what
+            # makes a later schema migration time out waiting for a table lock.
+            self._raw.rollback()
+        except Exception:  # pragma: no cover - diagnostics only
+            return None
+        if not row:
+            return None
+        pid = int(row["pid"])
+        command = f'psql -c "SELECT pg_terminate_backend({pid})"'
+        return (
+            f"Held by Postgres backend pid {pid} (state {row['state']}, unchanged for "
+            f"{row['idle_s']}s). A session advisory lock is released only when that "
+            "session ends, so if the owning process is a daemon or an abandoned "
+            f"indexer, free the lock with: {command}"
+        )
+
     def close(self) -> None:
         import contextlib
 
@@ -1180,9 +1284,7 @@ class PostgresStorage:
 
     # ----- Writes ---------------------------------------------------------
 
-    def register_repo(
-        self, identity: RepoIdentity, *, publish_watermark: bool = True
-    ) -> int:
+    def register_repo(self, identity: RepoIdentity, *, publish_watermark: bool = True) -> int:
         now = datetime.now(UTC).isoformat()
         row = self._raw.execute(
             """
@@ -1275,17 +1377,29 @@ class PostgresStorage:
             RETURNING id;
             """,
             (
-                chunk.chunk_id, chunk.rel_path, chunk.language, chunk.kind,
-                chunk.symbol, chunk.parent_chunk_id, chunk.start_line,
-                chunk.end_line, chunk.content, chunk.content_hash,
-                embedding_model, embedding_dim, now, repo_id,
-                effective_text, enricher_id, _vec_literal(embedding), fts_doc,
+                chunk.chunk_id,
+                chunk.rel_path,
+                chunk.language,
+                chunk.kind,
+                chunk.symbol,
+                chunk.parent_chunk_id,
+                chunk.start_line,
+                chunk.end_line,
+                chunk.content,
+                chunk.content_hash,
+                embedding_model,
+                embedding_dim,
+                now,
+                repo_id,
+                effective_text,
+                enricher_id,
+                _vec_literal(embedding),
+                fts_doc,
             ),
         ).fetchone()
         if row is not None:
             self._raw.execute(
-                "DELETE FROM secondary_embeddings "
-                "WHERE chunk_rowid = %s AND content_hash <> %s;",
+                "DELETE FROM secondary_embeddings WHERE chunk_rowid = %s AND content_hash <> %s;",
                 (row["id"], chunk.content_hash),
             )
         return int(row["id"]) if row else 0
@@ -1516,9 +1630,7 @@ class PostgresStorage:
         if not any((root / r["rel_path"]).is_file() for r in rows):
             log.warning("storage.backfill_skipped_sanity", repo_id=repo_id)
             return 0
-        cur = self._raw.execute(
-            "UPDATE chunks SET repo_id = %s WHERE repo_id IS NULL;", (repo_id,)
-        )
+        cur = self._raw.execute("UPDATE chunks SET repo_id = %s WHERE repo_id IS NULL;", (repo_id,))
         return int(cur.rowcount or 0)
 
     def set_meta(self, key: str, value: str) -> None:
@@ -1648,9 +1760,7 @@ class PostgresStorage:
         if len(desired_ids) != len(desired_chunk_ids):
             raise StorageError("File snapshot desired_chunk_ids must be unique")
         if embedding_dim != self._dim:
-            raise StorageError(
-                f"Snapshot embedding dim {embedding_dim} != index dim {self._dim}"
-            )
+            raise StorageError(f"Snapshot embedding dim {embedding_dim} != index dim {self._dim}")
 
         write_ids: set[str] = set()
         for item in chunk_writes:
@@ -1661,9 +1771,7 @@ class PostgresStorage:
                 raise StorageError(f"Duplicate snapshot write for chunk {chunk.chunk_id}")
             write_ids.add(chunk.chunk_id)
             if chunk.chunk_id not in desired_ids:
-                raise StorageError(
-                    f"Snapshot write {chunk.chunk_id} is not in desired_chunk_ids"
-                )
+                raise StorageError(f"Snapshot write {chunk.chunk_id} is not in desired_chunk_ids")
             if chunk.rel_path != rel_path:
                 raise StorageError(
                     f"Snapshot write {chunk.chunk_id} has path {chunk.rel_path!r}, "
@@ -1675,9 +1783,7 @@ class PostgresStorage:
                     f"got {len(embedding)}, expected {embedding_dim}"
                 )
             if not isinstance(embedding_text, str):
-                raise StorageError(
-                    f"Snapshot embedding text for {chunk.chunk_id} must be a string"
-                )
+                raise StorageError(f"Snapshot embedding text for {chunk.chunk_id} must be a string")
 
         reused = reused_chunks or []
         reused_ids: set[str] = set()
@@ -1686,13 +1792,9 @@ class PostgresStorage:
                 raise StorageError(f"Duplicate reused snapshot chunk {chunk.chunk_id}")
             reused_ids.add(chunk.chunk_id)
             if chunk.chunk_id in write_ids:
-                raise StorageError(
-                    f"Snapshot chunk {chunk.chunk_id} cannot be written and reused"
-                )
+                raise StorageError(f"Snapshot chunk {chunk.chunk_id} cannot be written and reused")
             if chunk.chunk_id not in desired_ids:
-                raise StorageError(
-                    f"Reused snapshot chunk {chunk.chunk_id} is not desired"
-                )
+                raise StorageError(f"Reused snapshot chunk {chunk.chunk_id} is not desired")
             if chunk.rel_path != rel_path:
                 raise StorageError(
                     f"Reused snapshot chunk {chunk.chunk_id} has path "
@@ -1721,7 +1823,9 @@ class PostgresStorage:
             missing_ids = desired_ids - existing_ids - write_ids
             if missing_ids:
                 missing = ", ".join(sorted(missing_ids))
-                raise StorageError(f"Snapshot desired chunks have no stored row or write: {missing}")
+                raise StorageError(
+                    f"Snapshot desired chunks have no stored row or write: {missing}"
+                )
             missing_reused = reused_ids - existing_ids
             if missing_reused:
                 missing = ", ".join(sorted(missing_reused))
@@ -1742,9 +1846,7 @@ class PostgresStorage:
             for chunk in reused:
                 row = existing_rows[chunk.chunk_id]
                 if row["content_hash"] != chunk.content_hash:
-                    raise StorageError(
-                        f"Reused snapshot chunk {chunk.chunk_id} changed content"
-                    )
+                    raise StorageError(f"Reused snapshot chunk {chunk.chunk_id} changed content")
                 self._raw.execute(
                     """UPDATE chunks SET
                            rel_path=%s, language=%s, kind=%s, symbol=%s,
@@ -1826,8 +1928,17 @@ class PostgresStorage:
                 last_enricher_id    = EXCLUDED.last_enricher_id,
                 last_embedder_model = EXCLUDED.last_embedder_model;
             """,
-            (repo_id, rel_path, content_hash, size_bytes, mtime, now,
-             chunk_count, enricher_id, embedder_model),
+            (
+                repo_id,
+                rel_path,
+                content_hash,
+                size_bytes,
+                mtime,
+                now,
+                chunk_count,
+                enricher_id,
+                embedder_model,
+            ),
         )
 
     def delete_file_meta(self, repo_id: int, rel_paths: list[str]) -> int:
@@ -1886,9 +1997,7 @@ class PostgresStorage:
             "AND NOT EXISTS (SELECT 1 FROM files WHERE repo_id = %s AND rel_path = %s);",
             (new, repo_id, old, repo_id, new),
         )
-        self._raw.execute(
-            "DELETE FROM files WHERE repo_id = %s AND rel_path = %s;", (repo_id, old)
-        )
+        self._raw.execute("DELETE FROM files WHERE repo_id = %s AND rel_path = %s;", (repo_id, old))
 
     def delete_chunks_by_repo_paths(self, repo_id: int, rel_paths: list[str]) -> int:
         if not rel_paths:
@@ -1915,9 +2024,7 @@ class PostgresStorage:
 
     @_scoped_read
     def get_chunk_by_id(self, chunk_id: str) -> dict[str, Any] | None:
-        row = self._raw.execute(
-            "SELECT * FROM chunks WHERE chunk_id = %s;", (chunk_id,)
-        ).fetchone()
+        row = self._raw.execute("SELECT * FROM chunks WHERE chunk_id = %s;", (chunk_id,)).fetchone()
         return dict(row) if row else None
 
     def delete_chunk(self, chunk_id: str) -> bool:
@@ -1977,9 +2084,7 @@ class PostgresStorage:
             params: list[Any] = []
             for r in batch:
                 extras = " ".join(
-                    str(x)
-                    for x in (r["label"], r["community_label"], r["source_location"])
-                    if x
+                    str(x) for x in (r["label"], r["community_label"], r["source_location"]) if x
                 )
                 doc = _fts_text(r["content"], r["rel_path"], r["symbol"]) + "\n" + extras
                 params.extend((r["id"], doc))
@@ -2082,9 +2187,16 @@ class PostgresStorage:
         ).fetchone()
         self._raw.commit()
         return ProjectMemoryRecord(
-            id=int(row["id"]), repo_id=repo_id, kind=kind, key=key, value=value,
-            source=source, created_at=row["created_at"], updated_at=now,
-            expires_at=expires_at, provenance_commit=provenance_commit,
+            id=int(row["id"]),
+            repo_id=repo_id,
+            kind=kind,
+            key=key,
+            value=value,
+            source=source,
+            created_at=row["created_at"],
+            updated_at=now,
+            expires_at=expires_at,
+            provenance_commit=provenance_commit,
         )
 
     @_scoped_read
@@ -2120,9 +2232,15 @@ class PostgresStorage:
         ).fetchall()
         return [
             ProjectMemoryRecord(
-                id=int(r["id"]), repo_id=r["repo_id"], kind=r["kind"], key=r["key"],
-                value=r["value"], source=r["source"], created_at=r["created_at"],
-                updated_at=r["updated_at"], expires_at=r["expires_at"],
+                id=int(r["id"]),
+                repo_id=r["repo_id"],
+                kind=r["kind"],
+                key=r["key"],
+                value=r["value"],
+                source=r["source"],
+                created_at=r["created_at"],
+                updated_at=r["updated_at"],
+                expires_at=r["expires_at"],
                 provenance_commit=r.get("provenance_commit"),
             )
             for r in rows
@@ -2172,10 +2290,16 @@ class PostgresStorage:
             log.warning("episodes.corrupted_row", episode_id=r.get("id"))
             files, symbols = [], []
         return EpisodeRecord(
-            id=r["id"], repo_id=r["repo_id"], session_id=r["session_id"],
-            title=r["title"], summary=r["summary"], touched_files=files,
-            touched_symbols=symbols, created_at=r["created_at"],
-            updated_at=r["updated_at"], provenance_commit=r.get("provenance_commit"),
+            id=r["id"],
+            repo_id=r["repo_id"],
+            session_id=r["session_id"],
+            title=r["title"],
+            summary=r["summary"],
+            touched_files=files,
+            touched_symbols=symbols,
+            created_at=r["created_at"],
+            updated_at=r["updated_at"],
+            provenance_commit=r.get("provenance_commit"),
         )
 
     def record_episode(
@@ -2199,14 +2323,30 @@ class PostgresStorage:
                  touched_symbols, created_at, updated_at, provenance_commit)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id;
             """,
-            (repo_id, session_id, title, summary, json.dumps(files_norm),
-             json.dumps(symbols_norm), now, now, provenance_commit),
+            (
+                repo_id,
+                session_id,
+                title,
+                summary,
+                json.dumps(files_norm),
+                json.dumps(symbols_norm),
+                now,
+                now,
+                provenance_commit,
+            ),
         ).fetchone()
         self._raw.commit()
         return EpisodeRecord(
-            id=int(row["id"]), repo_id=repo_id, session_id=session_id, title=title,
-            summary=summary, touched_files=files_norm, touched_symbols=symbols_norm,
-            created_at=now, updated_at=now, provenance_commit=provenance_commit,
+            id=int(row["id"]),
+            repo_id=repo_id,
+            session_id=session_id,
+            title=title,
+            summary=summary,
+            touched_files=files_norm,
+            touched_symbols=symbols_norm,
+            created_at=now,
+            updated_at=now,
+            provenance_commit=provenance_commit,
         )
 
     @_scoped_read
@@ -2265,8 +2405,7 @@ class PostgresStorage:
         if ors:
             clauses.append("(" + " OR ".join(ors) + ")")
         rows = self._raw.execute(
-            f"SELECT touched_files, touched_symbols FROM episodes "
-            f"WHERE {' AND '.join(clauses)};",
+            f"SELECT touched_files, touched_symbols FROM episodes WHERE {' AND '.join(clauses)};",
             params,
         ).fetchall()
         file_counter: Counter[str] = Counter()
@@ -2347,9 +2486,7 @@ class PostgresStorage:
     def delete_by_paths(self, rel_paths: list[str]) -> int:
         if not rel_paths:
             return 0
-        cur = self._raw.execute(
-            "DELETE FROM chunks WHERE rel_path = ANY(%s);", (list(rel_paths),)
-        )
+        cur = self._raw.execute("DELETE FROM chunks WHERE rel_path = ANY(%s);", (list(rel_paths),))
         return int(cur.rowcount or 0)
 
     # ----- sessions (server lifespan + working_set) -----------------------
@@ -2399,8 +2536,7 @@ class PostgresStorage:
     ) -> list[SessionRecord]:
         if client_id is None:
             rows = self._raw.execute(
-                f"SELECT {self._SESSION_COLS} FROM sessions "
-                "ORDER BY updated_at DESC LIMIT %s;",
+                f"SELECT {self._SESSION_COLS} FROM sessions ORDER BY updated_at DESC LIMIT %s;",
                 (limit,),
             ).fetchall()
         else:
@@ -2435,23 +2571,36 @@ class PostgresStorage:
                 "INSERT INTO sessions (session_id, client_id, created_at, updated_at, "
                 "seen_chunk_ids, pinned_chunk_ids, meta, scratchpad) "
                 "VALUES (%s, %s, %s, %s, %s, %s, %s, %s);",
-                (session_id, client_id, now, now, seen_json, pinned_json,
-                 meta_json, scratchpad_resolved),
+                (
+                    session_id,
+                    client_id,
+                    now,
+                    now,
+                    seen_json,
+                    pinned_json,
+                    meta_json,
+                    scratchpad_resolved,
+                ),
             )
             created_at = now
             resolved_client_id = client_id
         else:
-            resolved_client_id = (
-                client_id if client_id is not None else existing["client_id"]
-            )
+            resolved_client_id = client_id if client_id is not None else existing["client_id"]
             scratchpad_resolved = (
                 scratchpad if scratchpad is not None else (existing["scratchpad"] or "")
             )
             self._raw.execute(
                 "UPDATE sessions SET client_id = %s, updated_at = %s, seen_chunk_ids = %s, "
                 "pinned_chunk_ids = %s, meta = %s, scratchpad = %s WHERE session_id = %s;",
-                (resolved_client_id, now, seen_json, pinned_json, meta_json,
-                 scratchpad_resolved, session_id),
+                (
+                    resolved_client_id,
+                    now,
+                    seen_json,
+                    pinned_json,
+                    meta_json,
+                    scratchpad_resolved,
+                    session_id,
+                ),
             )
             created_at = existing["created_at"]
         self._raw.commit()
@@ -2472,9 +2621,7 @@ class PostgresStorage:
         return bool(cur.rowcount)
 
     def prune_sessions(self, *, older_than_iso: str) -> int:
-        cur = self._raw.execute(
-            "DELETE FROM sessions WHERE updated_at < %s;", (older_than_iso,)
-        )
+        cur = self._raw.execute("DELETE FROM sessions WHERE updated_at < %s;", (older_than_iso,))
         self._raw.commit()
         return int(cur.rowcount or 0)
 
@@ -2488,9 +2635,7 @@ class PostgresStorage:
         repo_id: int | None = None,
     ) -> list[SearchHit]:
         if len(query_vec) != self._dim:
-            raise StorageError(
-                f"Query vector dim {len(query_vec)} != index dim {self._dim}"
-            )
+            raise StorageError(f"Query vector dim {len(query_vec)} != index dim {self._dim}")
         vec = _vec_literal(query_vec)
         distance_expression = _distance_expression("c.embedding", self._dim)
         repo_clause = "AND c.repo_id = %s" if repo_id is not None else ""
@@ -2566,9 +2711,7 @@ class PostgresStorage:
         tokens = _identifier_tokens(query)
         if not tokens:
             return []
-        score_terms = " + ".join(
-            "(CASE WHEN c.symbol ILIKE %s THEN 1 ELSE 0 END)" for _ in tokens
-        )
+        score_terms = " + ".join("(CASE WHEN c.symbol ILIKE %s THEN 1 ELSE 0 END)" for _ in tokens)
         where_clause = " OR ".join("c.symbol ILIKE %s" for _ in tokens)
         like_params = [f"%{t}%" for t in tokens]
         params: list[Any] = [*like_params, *like_params]

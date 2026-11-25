@@ -12,7 +12,14 @@ different server process per client.
 
 It does not generate code, ingest unsaved editor buffers, or accept arbitrary
 per-session tool registration. Hosts may report editor metadata and runtime
-evidence, but Stropha never becomes the agent runtime.
+evidence, but Stropha is not a general-purpose coding-agent runtime: host agents
+own planning, editing, command execution, permissions, and verification. The
+dashboard's local question-answering loop (`POST /api/agent`) is a bounded
+exception for read-only indexed retrieval and answer generation. It can search
+and expand indexed chunks only; it cannot run host tools, edit files, execute
+commands, or register MCP tools. It shares the configured inference backend and
+warm runtime, with evidence and loop state local to each request. The HTTP API
+contract and budgets are specified in `stropha-system.md` §9.4.1.
 
 ## Source Evidence
 
@@ -230,3 +237,6 @@ Unsaved-buffer overlays remain deferred to Phase 8.
 
 See `CLAUDE.md` for the operational invariant list and
 `docs/architecture/stropha-system.md` for the broader system design.
+`docs/investigations/deepseek-harness-stropha-agent.md` explores role-scoped
+tool enforcement layered on this MCP surface — a proposal, not part of this
+spec.

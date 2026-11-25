@@ -98,7 +98,14 @@ def test_explicit_moa_does_not_fallback_when_unavailable() -> None:
     assert isinstance(backend, MoaBackend)
 
 
-def test_identity_changes_with_model_endpoint_or_reliability_controls() -> None:
+def test_identity_changes_with_model_or_endpoint_but_not_reliability() -> None:
+    """Transport-reliability knobs must NOT restage the index.
+
+    ``identity`` feeds ``enricher_id``, which is part of the per-file
+    freshness key. Timeout and retry counts change how hard we try to
+    obtain a completion, never the completion itself, so tuning them
+    must leave every already-enriched chunk fresh.
+    """
     base = MoaBackend(
         model="one", base_url="http://127.0.0.1:14598/v1", timeout=30.0, max_retries=1
     )
@@ -106,5 +113,12 @@ def test_identity_changes_with_model_endpoint_or_reliability_controls() -> None:
     other_endpoint = MoaBackend(model="one", base_url="http://127.0.0.1:9999/v1")
     assert base.identity != other_model.identity
     assert base.identity != other_endpoint.identity
-    assert base.identity != MoaBackend(timeout=31.0, max_retries=1).identity
-    assert base.identity != MoaBackend(timeout=30.0, max_retries=2).identity
+    assert (
+        base.identity
+        == MoaBackend(
+            model="one",
+            base_url="http://127.0.0.1:14598/v1",
+            timeout=31.0,
+            max_retries=9,
+        ).identity
+    )

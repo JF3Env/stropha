@@ -372,6 +372,8 @@ def _root(
     ),
 ) -> None:
     """Initialize logging before any subcommand runs."""
+    # Config loading itself logs; route bootstrap diagnostics to stderr too.
+    configure_logging(log_level or "INFO")
     cfg = _load_config()
     configure_logging(log_level or cfg.log_level)
 
@@ -1317,7 +1319,7 @@ def watch(
         "--interval",
         min=0.1,
         max=60.0,
-        help="Polling interval in seconds.",
+        help="Maximum native event wait before maintenance and retry checks.",
     ),
     debounce: float = typer.Option(
         2.0,
@@ -1341,7 +1343,8 @@ def watch(
     target = repo or _load_config().target_repo
     console.print(
         f"[bold]Watching:[/bold] {target.resolve()}\n"
-        f"[dim]interval={interval}s · debounce={debounce}s · full_refresh={full_refresh}[/dim]\n"
+        f"[dim]event_wait={interval}s · debounce={debounce}s · "
+        f"full_refresh={full_refresh}[/dim]\n"
         "[dim]Ctrl-C to stop.[/dim]"
     )
     try:
@@ -1551,6 +1554,7 @@ def eval(
                 for r in report.results
             ],
             "by_tag": {t: sub.summary() for t, sub in report.by_tag().items()},
+            "by_split": {s: sub.summary() for s, sub in report.by_split().items()},
         }
         console.print_json(_json.dumps(payload))
         raise typer.Exit(code=0 if report.success_at_k >= 0.85 else 2)

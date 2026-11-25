@@ -65,6 +65,29 @@ class SharedRuntime:
                 log.warning("mcp.storage.close_failed", error=str(exc))
 
 
+async def _run_lifecycle_call(call: Callable[[], Any]) -> None:
+    """Run one blocking runtime lifecycle call without stranding it on cancellation."""
+    task = asyncio.create_task(asyncio.to_thread(call))
+    try:
+        await asyncio.shield(task)
+    except BaseException:
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                continue
+            except BaseException:
+                break
+        if task.done():
+            with suppress(BaseException):
+                task.result()
+        raise
+
+
+async def _close_runtime(runtime: SharedRuntime) -> None:
+    await _run_lifecycle_call(runtime.close)
+
+
 @dataclass
 class AppContext:
     """Shared dependencies plus state isolated to one MCP session."""
@@ -153,7 +176,7 @@ async def _shared_runtime(
     get_config_fn: Callable[[], Config],
     configure_logging_fn: Callable[[str], None],
     load_pipeline_config_fn: Callable[[], Any],
-    build_stages_fn: Callable[[Any], BuiltStages],
+    build_stages_fn: Callable[..., BuiltStages],
     watch_controller_cls: type[Any],
 ) -> SharedRuntime:
     """Build the heavy pipeline once on the process-wide FastMCP instance."""
@@ -176,7 +199,8 @@ async def _shared_runtime(
             target=str(cfg.target_repo),
             mcp_watch=cfg.mcp_watch,
         )
-        built = build_stages_fn(load_pipeline_config_fn())
+        build_kwargs = {"synchronize_embedders": True} if cfg.mcp_watch else {}
+        built = build_stages_fn(load_pipeline_config_fn(), **build_kwargs)
 
         watcher: Any = None
         try:
@@ -186,20 +210,72 @@ async def _shared_runtime(
                     interval_s=cfg.mcp_watch_interval,
                     debounce_s=cfg.mcp_watch_debounce,
                     full_refresh=False,
+                    stages=built,
+                    enricher_concurrency=cfg.inference.enricher_concurrency,
+                    enricher_batch_size=cfg.inference.effective_batch_size(),
                 )
-                if hasattr(cfg, "max_file_bytes"):
-                    watcher_kwargs["max_file_bytes"] = cfg.max_file_bytes
-                if getattr(built, "walker", None) is not None:
-                    watcher_kwargs["walker"] = built.walker
+                # Only passed when non-empty so alternative controllers that
+                # predate multi-root watching keep working.
+                extra_roots = _additional_watch_roots(cfg, built)
+                if extra_roots:
+                    watcher_kwargs["additional_repos"] = extra_roots
                 watcher = watch_controller_cls(**watcher_kwargs)
-                watcher.start()
-        except Exception:
-            SharedRuntime(config=cfg, built=built, watcher=watcher).close()
+                await _run_lifecycle_call(watcher.start)
+        except BaseException:
+            await _close_runtime(SharedRuntime(config=cfg, built=built, watcher=watcher))
             raise
 
         runtime = SharedRuntime(config=cfg, built=built, watcher=watcher)
         setattr(app, _SHARED_RUNTIME_ATTR, runtime)
         return runtime
+
+
+def _additional_watch_roots(cfg: Config, built: BuiltStages) -> tuple[Path, ...]:
+    """Roots to watch besides the target when `indexing.watch_all_repos` is on.
+
+    Every indexed repository that still exists on disk and is not blacklisted.
+    A missing checkout is skipped rather than failing the daemon: repositories
+    outlive the directories they were indexed from.
+    """
+    # `cfg` is an injection point: callers (and tests) pass minimal stand-ins,
+    # so read the section defensively rather than assuming a full Config.
+    indexing = getattr(cfg, "indexing", None)
+    if indexing is None or not getattr(indexing, "watch_all_repos", False):
+        return ()
+    if built.storage is None:
+        return ()
+    from .config import repo_is_blacklisted
+
+    try:
+        repos = built.storage.list_repos()
+    except Exception as exc:
+        log.warning("watch.additional_roots_unavailable", error=str(exc))
+        return ()
+    seen = {Path(cfg.target_repo).expanduser().resolve()}
+    roots: list[Path] = []
+    skipped_missing = 0
+    for repo in repos:
+        if not repo.local_path:
+            continue
+        try:
+            root = Path(repo.local_path).expanduser().resolve()
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if root in seen:
+            continue
+        if not root.is_dir():
+            skipped_missing += 1
+            continue
+        if repo_is_blacklisted(repo.normalized_key, root, config=cfg):
+            continue
+        seen.add(root)
+        roots.append(root)
+    log.info(
+        "watch.additional_roots_resolved",
+        watched=len(roots),
+        skipped_missing=skipped_missing,
+    )
+    return tuple(roots)
 
 
 async def get_shared_runtime(
@@ -209,7 +285,7 @@ async def get_shared_runtime(
     get_config_fn: Callable[[], Config],
     configure_logging_fn: Callable[[str], None],
     load_pipeline_config_fn: Callable[[], Any],
-    build_stages_fn: Callable[[Any], BuiltStages],
+    build_stages_fn: Callable[..., BuiltStages],
     watch_controller_cls: type[Any],
 ) -> SharedRuntime:
     """Return the process runtime, building it when no MCP session has yet."""
@@ -250,7 +326,8 @@ async def reload_shared_runtime(
         pipeline_config = load_pipeline_config_fn()
         # Adapter construction may download and materialize multi-gigabyte
         # models. Keep the ASGI event loop responsive while that work runs.
-        built = await asyncio.to_thread(build_stages_fn, pipeline_config)
+        build_kwargs = {"synchronize_embedders": True} if cfg.mcp_watch else {}
+        built = await asyncio.to_thread(build_stages_fn, pipeline_config, **build_kwargs)
         watcher: Any = None
         try:
             if cfg.mcp_watch:
@@ -259,20 +336,24 @@ async def reload_shared_runtime(
                     interval_s=cfg.mcp_watch_interval,
                     debounce_s=cfg.mcp_watch_debounce,
                     full_refresh=False,
+                    stages=built,
+                    enricher_concurrency=cfg.inference.enricher_concurrency,
+                    enricher_batch_size=cfg.inference.effective_batch_size(),
                 )
-                if hasattr(cfg, "max_file_bytes"):
-                    watcher_kwargs["max_file_bytes"] = cfg.max_file_bytes
-                if getattr(built, "walker", None) is not None:
-                    watcher_kwargs["walker"] = built.walker
+                # Only passed when non-empty so alternative controllers that
+                # predate multi-root watching keep working.
+                extra_roots = _additional_watch_roots(cfg, built)
+                if extra_roots:
+                    watcher_kwargs["additional_repos"] = extra_roots
                 watcher = watch_controller_cls(**watcher_kwargs)
-        except Exception:
-            SharedRuntime(config=cfg, built=built, watcher=watcher).close()
+        except BaseException:
+            await _close_runtime(SharedRuntime(config=cfg, built=built, watcher=watcher))
             raise
 
         try:
             configure_logging_fn(cfg.log_level)
-        except Exception:
-            SharedRuntime(config=cfg, built=built, watcher=watcher).close()
+        except BaseException:
+            await _close_runtime(SharedRuntime(config=cfg, built=built, watcher=watcher))
             raise
 
         previous = getattr(app, _SHARED_RUNTIME_ATTR, None)
@@ -283,42 +364,35 @@ async def reload_shared_runtime(
             assert previous is not None
             previous_watcher = previous.watcher
             if previous_watcher is not None:
-                stop_task = asyncio.create_task(
-                    asyncio.to_thread(previous_watcher.stop)
-                )
                 try:
-                    await asyncio.shield(stop_task)
+                    await _run_lifecycle_call(previous_watcher.stop)
                 except BaseException:
-                    # asyncio.to_thread cannot cancel the underlying thread.
-                    # Wait for stop to finish before restoring the old watcher
-                    # so cancellation cannot leave two watchers active.
-                    if not stop_task.done():
-                        with suppress(BaseException):
-                            await asyncio.shield(stop_task)
                     try:
-                        previous_watcher.start()
-                    except Exception as restart_exc:
+                        await _run_lifecycle_call(previous_watcher.start)
+                    except BaseException as restart_exc:
                         log.error(
                             "mcp.watcher.restart_failed",
                             error=str(restart_exc),
                         )
-                    SharedRuntime(config=cfg, built=built, watcher=watcher).close()
+                    await _close_runtime(
+                        SharedRuntime(config=cfg, built=built, watcher=watcher)
+                    )
                     raise
             retired = [previous.built, *previous.retired]
 
         try:
             if watcher is not None:
-                watcher.start()
-        except Exception:
+                await _run_lifecycle_call(watcher.start)
+        except BaseException:
             if previous_watcher is not None:
                 try:
-                    previous_watcher.start()
-                except Exception as restart_exc:
+                    await _run_lifecycle_call(previous_watcher.start)
+                except BaseException as restart_exc:
                     log.error(
                         "mcp.watcher.restart_failed",
                         error=str(restart_exc),
                     )
-            SharedRuntime(config=cfg, built=built, watcher=watcher).close()
+            await _close_runtime(SharedRuntime(config=cfg, built=built, watcher=watcher))
             raise
         if retire_previous:
             assert previous is not None

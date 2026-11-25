@@ -146,6 +146,61 @@ def test_nested_git_walker_respects_max_depth(tmp_path: Path) -> None:
     assert "a/b/c/d/deep.py" not in paths
 
 
+def test_nested_git_targeted_discovery_matches_full_admission(tmp_path: Path) -> None:
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    (worktree / ".git").write_text("gitdir: /nonexistent\n", encoding="utf-8")
+    (worktree / "source.py").write_text("source = True\n", encoding="utf-8")
+    cached = tmp_path / "node_modules" / "vendor"
+    cached.mkdir(parents=True)
+    _git_init(cached)
+    (cached / "cached.py").write_text("cached = True\n", encoding="utf-8")
+    walker = NestedGitWalker()
+
+    full = {source.rel_path for source in walker.discover(tmp_path)}
+    targeted = {
+        source.rel_path
+        for source in walker.discover_paths(
+            tmp_path,
+            ["worktree/source.py", "node_modules/vendor/cached.py"],
+        )
+    }
+
+    assert targeted == full == {"worktree/source.py"}
+
+
+def test_nested_git_rejects_directory_symlink_escape(tmp_path: Path) -> None:
+    umbrella = tmp_path / "umbrella"
+    umbrella.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    _git_init(outside)
+    (outside / "source.py").write_text("source = True\n", encoding="utf-8")
+    (umbrella / "linked").symlink_to(outside, target_is_directory=True)
+    walker = NestedGitWalker()
+
+    full = list(walker.discover(umbrella))
+    targeted = list(walker.discover_paths(umbrella, ["linked/source.py"]))
+
+    assert full == []
+    assert targeted == []
+
+
+def test_nested_git_includes_repo_at_max_depth(tmp_path: Path) -> None:
+    nested = tmp_path / "a" / "b"
+    nested.mkdir(parents=True)
+    _git_init(nested)
+    (nested / "source.py").write_text("source = True\n", encoding="utf-8")
+    walker = NestedGitWalker(NestedGitWalkerConfig(max_depth=2))
+
+    full = {source.rel_path for source in walker.discover(tmp_path)}
+    targeted = {
+        source.rel_path for source in walker.discover_paths(tmp_path, ["a/b/source.py"])
+    }
+
+    assert targeted == full == {"a/b/source.py"}
+
+
 def test_nested_git_walker_health_ready() -> None:
     h = NestedGitWalker().health()
     assert h.status == "ready"

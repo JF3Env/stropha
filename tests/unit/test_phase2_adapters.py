@@ -11,6 +11,7 @@ import pytest
 from stropha import adapters  # noqa: F401
 from stropha.adapters.retrieval.hybrid_rrf import HybridRrfConfig, HybridRrfRetrieval
 from stropha.adapters.storage.sqlite_vec import SqliteVecStorage, SqliteVecStorageConfig
+from stropha.adapters.walker.filesystem import FilesystemWalker
 from stropha.adapters.walker.git_ls_files import (
     GitLsFilesWalker,
     GitLsFilesWalkerConfig,
@@ -27,17 +28,28 @@ from stropha.pipeline.registry import all_adapters
 
 class _StubEmbedder:
     @property
-    def stage_name(self) -> str: return "embedder"
+    def stage_name(self) -> str:
+        return "embedder"
+
     @property
-    def adapter_name(self) -> str: return "stub"
+    def adapter_name(self) -> str:
+        return "stub"
+
     @property
-    def adapter_id(self) -> str: return "stub:v1"
+    def adapter_id(self) -> str:
+        return "stub:v1"
+
     @property
-    def model_name(self) -> str: return "stub-v1"
+    def model_name(self) -> str:
+        return "stub-v1"
+
     @property
-    def dim(self) -> int: return 4
+    def dim(self) -> int:
+        return 4
+
     @property
-    def batch_size(self) -> int: return 16
+    def batch_size(self) -> int:
+        return 16
 
     @property
     def config_schema(self):
@@ -45,10 +57,12 @@ class _StubEmbedder:
 
         class _C(BaseModel):
             pass
+
         return _C
 
     def health(self):
         from stropha.pipeline.base import StageHealth
+
         return StageHealth(status="ready", message="stub")
 
     def embed_documents(self, texts: Sequence[str]) -> list[list[float]]:
@@ -105,6 +119,60 @@ def test_walker_adapter_id_includes_max_bytes() -> None:
 
 def test_walker_health_is_ready() -> None:
     assert GitLsFilesWalker().health().status == "ready"
+
+
+def test_targeted_git_walker_matches_full_discovery_and_honors_ignore(
+    tiny_repo: Path,
+) -> None:
+    ignored = tiny_repo / "ignored.py"
+    ignored.write_text("ignored = True\n", encoding="utf-8")
+    (tiny_repo / ".gitignore").write_text("ignored.py\n", encoding="utf-8")
+    walker = GitLsFilesWalker()
+
+    full = {source.rel_path for source in walker.discover(tiny_repo)}
+    targeted = {
+        source.rel_path
+        for source in walker.discover_paths(tiny_repo, ["main.py", "README.md", "ignored.py"])
+    }
+
+    assert targeted == full == {"main.py", "README.md"}
+
+
+def test_targeted_walker_rejects_paths_outside_repo(
+    tiny_repo: Path,
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "outside.py").write_text("outside = True\n", encoding="utf-8")
+
+    found = list(GitLsFilesWalker().discover_paths(tiny_repo, ["../outside.py"]))
+
+    assert found == []
+
+
+def test_targeted_walker_rejects_symlink_escape(tiny_repo: Path, tmp_path: Path) -> None:
+    outside = tmp_path / "outside.py"
+    outside.write_text("outside = True\n", encoding="utf-8")
+    (tiny_repo / "escape.py").symlink_to(outside)
+
+    found = list(GitLsFilesWalker().discover_paths(tiny_repo, ["escape.py"]))
+
+    assert found == []
+
+
+def test_targeted_filesystem_walker_honors_skip_dirs(tmp_path: Path) -> None:
+    source = tmp_path / "source.py"
+    source.write_text("source = True\n", encoding="utf-8")
+    cache = tmp_path / "node_modules"
+    cache.mkdir()
+    (cache / "cached.py").write_text("cached = True\n", encoding="utf-8")
+    walker = FilesystemWalker()
+
+    found = {
+        item.rel_path
+        for item in walker.discover_paths(tmp_path, ["source.py", "node_modules/cached.py"])
+    }
+
+    assert found == {"source.py"}
 
 
 # ---------------------------------------------------------------------------
@@ -218,9 +286,14 @@ def test_retrieval_adapter_returns_empty_for_blank_query() -> None:
 class _DummyStorage:
     """Storage stub: returns empty hit lists for all read methods."""
 
-    def search_dense(self, *_args, **_kw): return []
-    def search_bm25(self, *_args, **_kw): return []
-    def search_symbol_tokens(self, *_args, **_kw): return []
+    def search_dense(self, *_args, **_kw):
+        return []
+
+    def search_bm25(self, *_args, **_kw):
+        return []
+
+    def search_symbol_tokens(self, *_args, **_kw):
+        return []
 
 
 # ---------------------------------------------------------------------------

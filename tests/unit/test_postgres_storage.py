@@ -13,10 +13,12 @@ from __future__ import annotations
 
 import math
 import os
+import time
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Barrier
+from types import SimpleNamespace
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -35,9 +37,7 @@ from stropha.errors import StorageError  # noqa: E402
 from stropha.ingest.git_meta import RepoIdentity  # noqa: E402
 from stropha.models import Chunk  # noqa: E402
 
-BASE_DSN = os.environ.get(
-    "STROPHA_PG_DSN", "postgresql://stropha:stropha@127.0.0.1:54329/stropha"
-)
+BASE_DSN = os.environ.get("STROPHA_PG_DSN", "postgresql://stropha:stropha@127.0.0.1:54329/stropha")
 TEST_DB = "stropha_pgtest"
 DIM = 8
 
@@ -64,8 +64,7 @@ def test_large_vector_hnsw_expression_executes(pg_dsn: str) -> None:
     with psycopg.connect(pg_dsn) as conn, conn.cursor() as cur:
         cur.execute(f"CREATE TEMP TABLE large_vectors (embedding vector({dim}));")
         cur.execute(
-            "CREATE INDEX large_vectors_hnsw ON large_vectors "
-            f"USING hnsw ({index_expression});"
+            f"CREATE INDEX large_vectors_hnsw ON large_vectors USING hnsw ({index_expression});"
         )
         cur.execute("INSERT INTO large_vectors(embedding) VALUES (%s::vector);", (vector,))
         cur.execute(
@@ -74,6 +73,104 @@ def test_large_vector_hnsw_expression_executes(pg_dsn: str) -> None:
             (vector, vector),
         )
         assert float(cur.fetchone()[0]) == pytest.approx(0.0)
+
+
+def test_scoped_read_serializes_concurrent_transactions() -> None:
+    """psycopg's transaction stack is per-connection and LIFO.
+
+    Frontend endpoints share the writer connection through ``asyncio.to_thread``
+    workers; interleaved push/pop of ``transaction()`` contexts corrupts the
+    stack (``OutOfOrderTransactionNesting`` -> 503). The re-entrant reader lock
+    in ``_scoped_read`` must keep every context fully LIFO across threads.
+    """
+    import threading
+
+    class FakeTransaction:
+        def __init__(self, conn: FakeConn) -> None:
+            self._conn = conn
+
+        def __enter__(self) -> FakeTransaction:
+            with self._conn.guard:
+                self._conn.stack.append(id(self))
+            return self
+
+        def __exit__(self, *exc: object) -> bool:
+            with self._conn.guard:
+                if not self._conn.stack or self._conn.stack[-1] != id(self):
+                    raise AssertionError("transaction pop out of order")
+                self._conn.stack.pop()
+            return False
+
+    class FakeConn:
+        def __init__(self) -> None:
+            self.stack: list[int] = []
+            self.guard = threading.Lock()
+
+        def transaction(self) -> FakeTransaction:
+            return FakeTransaction(self)
+
+    @pg_mod._scoped_read
+    def probe(self: object) -> str:
+        time.sleep(0.001)  # widen the enter/exit window like a real SQL round-trip
+        return "ok"
+
+    storage = SimpleNamespace(_raw=FakeConn(), _scoped_read_lock=threading.RLock())
+    errors: list[BaseException] = []
+
+    def worker() -> None:
+        for _ in range(10):
+            try:
+                assert probe(storage) == "ok"
+            except BaseException as exc:
+                errors.append(exc)
+
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert not errors, f"interleaved transactions corrupted the stack: {errors[0]}"
+    assert storage._raw.stack == []
+
+
+def test_scoped_read_is_reentrant_for_composed_reads() -> None:
+    """``stats`` composes other scoped reads; the lock must re-enter on the
+    same thread instead of deadlocking."""
+    import threading
+
+    class FakeTransaction:
+        def __enter__(self) -> FakeTransaction:
+            return self
+
+        def __exit__(self, *exc: object) -> bool:
+            return False
+
+    class FakeConn:
+        def transaction(self) -> FakeTransaction:
+            return FakeTransaction()
+
+    @pg_mod._scoped_read
+    def inner(self: object) -> str:
+        return "inner"
+
+    @pg_mod._scoped_read
+    def outer(self: object) -> str:
+        return f"{inner(self)}+outer"
+
+    storage = SimpleNamespace(_raw=FakeConn(), _scoped_read_lock=threading.RLock())
+    done = threading.Event()
+    value: dict[str, str] = {}
+
+    def run() -> None:
+        value["result"] = outer(storage)
+        done.set()
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    assert done.wait(5), "nested scoped reads deadlocked (lock is not re-entrant)"
+    thread.join(timeout=1)
+    assert value["result"] == "inner+outer"
 
 
 def _swap_db(dsn: str, db: str) -> str:
@@ -307,8 +404,9 @@ def _seed(st: PostgresStorage) -> int:
         ("search.py", "search_dense", "def search_dense(vec, k): return knn(vec, k)"),
     ]
     for i, (path, sym, content) in enumerate(rows):
-        st.upsert_chunk(_chunk(i, path, sym, content), _emb(i), "demo", DIM,
-                        repo_id=repo_id, enricher_id="noop")
+        st.upsert_chunk(
+            _chunk(i, path, sym, content), _emb(i), "demo", DIM, repo_id=repo_id, enricher_id="noop"
+        )
     st.commit()
     return repo_id
 
@@ -434,17 +532,20 @@ def test_secondary_embedding_freshness_search_and_lifecycle(
     repo_id = _seed(store)
     pending = store.list_chunks_needing_secondary_embeddings("model2vec:v1")
     assert len(pending) == 4
-    assert store.upsert_secondary_embeddings(
-        [
-            {
-                "chunk_id": item["chunk_id"],
-                "content_hash": item["content_hash"],
-                "embedding": _secondary_emb(index),
-            }
-            for index, item in enumerate(pending)
-        ],
-        "model2vec:v1",
-    ) == 4
+    assert (
+        store.upsert_secondary_embeddings(
+            [
+                {
+                    "chunk_id": item["chunk_id"],
+                    "content_hash": item["content_hash"],
+                    "embedding": _secondary_emb(index),
+                }
+                for index, item in enumerate(pending)
+            ],
+            "model2vec:v1",
+        )
+        == 4
+    )
     store.commit()
 
     assert store.count_secondary_embeddings("model2vec:v1") == 4
@@ -458,9 +559,7 @@ def test_secondary_embedding_freshness_search_and_lifecycle(
     assert store.count_secondary_embeddings("model2vec:v1") == 4
     assert any(
         hit.rel_path == "renamed_auth.py"
-        for hit in store.search_secondary_embeddings(
-            _secondary_emb(0), "model2vec:v1", k=4
-        )
+        for hit in store.search_secondary_embeddings(_secondary_emb(0), "model2vec:v1", k=4)
     )
 
     store._raw.execute(
@@ -480,8 +579,14 @@ def test_load_file_meta_map_roundtrip(store: PostgresStorage) -> None:
     one query returns every file's (mtime, size, enricher, embedder)."""
     repo_id = _seed(store)
     store.upsert_file_meta(
-        repo_id=repo_id, rel_path="auth.py", content_hash="h", size_bytes=10,
-        mtime=123.5, chunk_count=2, enricher_id="noop", embedder_model="m1",
+        repo_id=repo_id,
+        rel_path="auth.py",
+        content_hash="h",
+        size_bytes=10,
+        mtime=123.5,
+        chunk_count=2,
+        enricher_id="noop",
+        embedder_model="m1",
     )
     store.commit()
     m = store.load_file_meta_map(repo_id)
@@ -531,9 +636,12 @@ def test_atomic_file_snapshot_contract_live(
         file_hash="local-v1",
     )
     with psycopg.connect(pg_dsn) as reader:
-        assert reader.execute(
-            "SELECT COUNT(*) FROM chunks WHERE repo_id = %s;", (local_repo,)
-        ).fetchone()[0] == 0
+        assert (
+            reader.execute(
+                "SELECT COUNT(*) FROM chunks WHERE repo_id = %s;", (local_repo,)
+            ).fetchone()[0]
+            == 0
+        )
     _replace_snapshot(
         store,
         repo_id=foreign_repo,
@@ -595,33 +703,32 @@ def test_atomic_file_snapshot_contract_live(
         mtime=456.25,
     )
     local_rows = store._raw.execute(
-        "SELECT id, chunk_id FROM chunks WHERE repo_id = %s AND rel_path = %s "
-        "ORDER BY chunk_id;",
+        "SELECT id, chunk_id FROM chunks WHERE repo_id = %s AND rel_path = %s ORDER BY chunk_id;",
         (local_repo, rel_path),
     ).fetchall()
     assert [row["chunk_id"] for row in local_rows] == ["sha256:t600", "sha256:t601"]
     assert int(local_rows[0]["id"]) == retained_rowid
     retained_row = store._raw.execute(
-        "SELECT symbol, parent_chunk_id, embedding::text AS embedding "
-        "FROM chunks WHERE id = %s;",
+        "SELECT symbol, parent_chunk_id, embedding::text AS embedding FROM chunks WHERE id = %s;",
         (retained_rowid,),
     ).fetchone()
     assert retained_row["symbol"] == "retained_renamed"
     assert retained_row["parent_chunk_id"] == "new-parent"
     assert retained_row["embedding"] == retained_embedding
-    assert store._raw.execute(
-        "SELECT COUNT(*) AS n FROM chunks WHERE repo_id = %s AND rel_path = %s;",
-        (foreign_repo, rel_path),
-    ).fetchone()["n"] == 1
+    assert (
+        store._raw.execute(
+            "SELECT COUNT(*) AS n FROM chunks WHERE repo_id = %s AND rel_path = %s;",
+            (foreign_repo, rel_path),
+        ).fetchone()["n"]
+        == 1
+    )
     assert store.count_secondary_embeddings("snapshot-secondary:v1") == 2
-    assert [
-        hit.chunk_id
-        for hit in store.search_bm25("replacement token", repo_id=local_repo)
-    ] == [dirty.chunk_id]
-    assert [
-        hit.chunk_id
-        for hit in store.search_bm25("retained renamed", repo_id=local_repo)
-    ] == [retained.chunk_id]
+    assert [hit.chunk_id for hit in store.search_bm25("replacement token", repo_id=local_repo)] == [
+        dirty.chunk_id
+    ]
+    assert [hit.chunk_id for hit in store.search_bm25("retained renamed", repo_id=local_repo)] == [
+        retained.chunk_id
+    ]
     file_row = store._raw.execute(
         """SELECT content_hash, size_bytes, mtime, last_chunk_count,
                   last_enricher_id, last_embedder_model
@@ -640,15 +747,21 @@ def test_atomic_file_snapshot_contract_live(
     store.commit()
     assert store.delete_file_snapshot(repo_id=local_repo, rel_path=rel_path) == 2
     with psycopg.connect(pg_dsn) as reader:
-        assert reader.execute(
-            "SELECT COUNT(*) FROM chunks WHERE repo_id = %s AND rel_path = %s;",
-            (local_repo, rel_path),
-        ).fetchone()[0] == 2
+        assert (
+            reader.execute(
+                "SELECT COUNT(*) FROM chunks WHERE repo_id = %s AND rel_path = %s;",
+                (local_repo, rel_path),
+            ).fetchone()[0]
+            == 2
+        )
     assert store.count_secondary_embeddings("snapshot-secondary:v1") == 1
-    assert store._raw.execute(
-        "SELECT 1 FROM files WHERE repo_id = %s AND rel_path = %s;",
-        (local_repo, rel_path),
-    ).fetchone() is None
+    assert (
+        store._raw.execute(
+            "SELECT 1 FROM files WHERE repo_id = %s AND rel_path = %s;",
+            (local_repo, rel_path),
+        ).fetchone()
+        is None
+    )
     store.commit()
 
     empty_source = _chunk(604, rel_path, "empty_source", "pass")
@@ -670,10 +783,13 @@ def test_atomic_file_snapshot_contract_live(
         size=0,
         mtime=999.0,
     )
-    assert store._raw.execute(
-        "SELECT COUNT(*) AS n FROM chunks WHERE repo_id = %s AND rel_path = %s;",
-        (local_repo, rel_path),
-    ).fetchone()["n"] == 0
+    assert (
+        store._raw.execute(
+            "SELECT COUNT(*) AS n FROM chunks WHERE repo_id = %s AND rel_path = %s;",
+            (local_repo, rel_path),
+        ).fetchone()["n"]
+        == 0
+    )
     empty_meta = store._raw.execute(
         "SELECT content_hash, size_bytes, mtime, last_chunk_count FROM files "
         "WHERE repo_id = %s AND rel_path = %s;",
@@ -724,8 +840,7 @@ def test_atomic_file_snapshot_rollback_keeps_postgres_usable(
     constraint = "snapshot_reject_content_hash"
     store._raw.execute(f"ALTER TABLE files DROP CONSTRAINT IF EXISTS {constraint};")
     store._raw.execute(
-        f"ALTER TABLE files ADD CONSTRAINT {constraint} "
-        "CHECK (content_hash <> 'reject');"
+        f"ALTER TABLE files ADD CONSTRAINT {constraint} CHECK (content_hash <> 'reject');"
     )
     store.commit()
 
@@ -750,18 +865,20 @@ def test_atomic_file_snapshot_rollback_keeps_postgres_usable(
             )
 
         rows = store._raw.execute(
-            "SELECT chunk_id FROM chunks WHERE repo_id = %s AND rel_path = %s "
-            "ORDER BY chunk_id;",
+            "SELECT chunk_id FROM chunks WHERE repo_id = %s AND rel_path = %s ORDER BY chunk_id;",
             (repo_id, rel_path),
         ).fetchall()
         assert [row["chunk_id"] for row in rows] == [retained.chunk_id, stale.chunk_id]
         assert store.chunk_exists(replacement.chunk_id) is False
         assert store.chunk_exists(pending.chunk_id) is True
         assert store.count_secondary_embeddings("snapshot-secondary:v1") == 1
-        assert store._raw.execute(
-            "SELECT content_hash FROM files WHERE repo_id = %s AND rel_path = %s;",
-            (repo_id, rel_path),
-        ).fetchone()["content_hash"] == "before"
+        assert (
+            store._raw.execute(
+                "SELECT content_hash FROM files WHERE repo_id = %s AND rel_path = %s;",
+                (repo_id, rel_path),
+            ).fetchone()["content_hash"]
+            == "before"
+        )
         assert store._raw.execute("SELECT 1 AS n;").fetchone()["n"] == 1
         store.commit()
     finally:
@@ -845,21 +962,28 @@ def test_search_lanes_scope_before_ranking_and_limit(store: PostgresStorage) -> 
     store.commit()
 
     assert store.search_dense(_emb(0), k=1, repo_id=local_repo)[0].repo is not None
-    assert store.search_dense(_emb(0), k=1, repo_id=local_repo)[
-        0
-    ].repo.normalized_key == "local:/tmp/demo"
-    assert store.search_bm25("validate token", k=1, repo_id=local_repo)[
-        0
-    ].repo.normalized_key == "local:/tmp/demo"
-    assert store.search_symbol_tokens("validate_token", k=1, repo_id=local_repo)[
-        0
-    ].repo.normalized_key == "local:/tmp/demo"
-    assert store.lookup_by_symbol("validate_token", limit=1, repo_id=local_repo)[
-        0
-    ].repo.normalized_key == "local:/tmp/demo"
-    assert store.search_secondary_embeddings(
-        _secondary_emb(0), "model2vec:v1", k=1, repo_id=local_repo
-    )[0].repo.normalized_key == "local:/tmp/demo"
+    assert (
+        store.search_dense(_emb(0), k=1, repo_id=local_repo)[0].repo.normalized_key
+        == "local:/tmp/demo"
+    )
+    assert (
+        store.search_bm25("validate token", k=1, repo_id=local_repo)[0].repo.normalized_key
+        == "local:/tmp/demo"
+    )
+    assert (
+        store.search_symbol_tokens("validate_token", k=1, repo_id=local_repo)[0].repo.normalized_key
+        == "local:/tmp/demo"
+    )
+    assert (
+        store.lookup_by_symbol("validate_token", limit=1, repo_id=local_repo)[0].repo.normalized_key
+        == "local:/tmp/demo"
+    )
+    assert (
+        store.search_secondary_embeddings(
+            _secondary_emb(0), "model2vec:v1", k=1, repo_id=local_repo
+        )[0].repo.normalized_key
+        == "local:/tmp/demo"
+    )
 
 
 def test_file_outline_filters_duplicate_path_by_repo(store: PostgresStorage) -> None:
@@ -949,9 +1073,7 @@ def test_graph_fts_augmentation_preserves_null_repo_matching(
 
     store.augment_fts_with_graph()
 
-    assert [hit.chunk_id for hit in store.search_bm25("legacynullgraphterm")] == [
-        "sha256:t203"
-    ]
+    assert [hit.chunk_id for hit in store.search_bm25("legacynullgraphterm")] == ["sha256:t203"]
 
 
 def test_chunk_freshness_drift(store: PostgresStorage) -> None:
@@ -987,8 +1109,11 @@ def test_project_memory_roundtrip(store: PostgresStorage) -> None:
 def test_episodes_and_co_occurrence(store: PostgresStorage) -> None:
     repo_id = _seed(store)
     ep = store.record_episode(
-        repo_id=repo_id, title="fix fsrs", summary="did the thing",
-        touched_files=["a.py", "b.py"], touched_symbols=["Foo"],
+        repo_id=repo_id,
+        title="fix fsrs",
+        summary="did the thing",
+        touched_files=["a.py", "b.py"],
+        touched_symbols=["Foo"],
     )
     assert ep.id
     found = store.recall_episodes(repo_id=repo_id, query="FSRS")  # ILIKE
@@ -1013,13 +1138,20 @@ def test_cross_session_cache_via_conn_shim(store: PostgresStorage) -> None:
 
     repo_id = _seed(store)
     csc.store(
-        store, repo_id=repo_id, query_text="how does auth work",
-        query_embedding=_emb(0), embedding_model="m", embedding_dim=DIM,
+        store,
+        repo_id=repo_id,
+        query_text="how does auth work",
+        query_embedding=_emb(0),
+        embedding_model="m",
+        embedding_dim=DIM,
         results=[{"chunk_id": "x", "score": 1.0}],
     )
     hits = csc.find_similar(
-        store, repo_id=repo_id, query_embedding=_emb(0),
-        embedding_model="m", similarity_threshold=0.5,
+        store,
+        repo_id=repo_id,
+        query_embedding=_emb(0),
+        embedding_model="m",
+        similarity_threshold=0.5,
     )
     assert hits and hits[0].results == [{"chunk_id": "x", "score": 1.0}]
     assert csc.stats(store, repo_id=repo_id)["total_entries"] == 1
@@ -1162,7 +1294,11 @@ def test_reads_not_blocked_by_open_write_txn(pg_dsn: str) -> None:
         # Writer opens a transaction and inserts WITHOUT committing.
         writer.upsert_chunk(
             _chunk(99, "pending.py", "pending_symbol", "def pending(): ..."),
-            _emb(99), "demo", DIM, repo_id=repo_id, enricher_id="noop",
+            _emb(99),
+            "demo",
+            DIM,
+            repo_id=repo_id,
+            enricher_id="noop",
         )
 
         # Reader (separate connection) is not blocked and does not see the

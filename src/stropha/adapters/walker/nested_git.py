@@ -1,4 +1,4 @@
-"""Nested-git walker — discovers nested ``.git/`` directories under a root.
+"""Nested-git walker — discovers nested Git repositories under a root.
 
 Use for monorepos that vendor multiple git submodules / vendored deps,
 or for an `~/sources/` umbrella directory containing many independent
@@ -27,12 +27,16 @@ from ...stages.walker import WalkerStage
 
 log = get_logger(__name__)
 
+_SKIP_DIRS = frozenset({".venv", "node_modules", "target", "build", "dist"})
+
 
 class NestedGitWalkerConfig(BaseModel):
     max_file_bytes: int = Field(default=524_288, ge=1024)
     max_depth: int = Field(
-        default=4, ge=1, le=10,
-        description="Maximum directory depth to scan for nested .git/ folders.",
+        default=4,
+        ge=1,
+        le=10,
+        description="Maximum directory depth to scan for nested Git repositories.",
     )
     follow_root_first: bool = Field(
         default=True,
@@ -45,7 +49,7 @@ class NestedGitWalkerConfig(BaseModel):
 
 @register_adapter(stage="walker", name="nested-git")
 class NestedGitWalker(WalkerStage):
-    """Discover every nested ``.git/`` and walk each as its own repo."""
+    """Discover every nested Git repository and walk each as its own repo."""
 
     Config = NestedGitWalkerConfig
 
@@ -62,7 +66,11 @@ class NestedGitWalker(WalkerStage):
 
     @property
     def adapter_id(self) -> str:
-        return f"nested-git:depth={self._config.max_depth}:max={self._config.max_file_bytes}"
+        root_first = str(self._config.follow_root_first).lower()
+        return (
+            f"nested-git:depth={self._config.max_depth}:"
+            f"max={self._config.max_file_bytes}:root-first={root_first}"
+        )
 
     @property
     def config_schema(self) -> type[BaseModel]:
@@ -85,16 +93,44 @@ class NestedGitWalker(WalkerStage):
         )
 
         # Optionally walk the umbrella root first
-        if self._config.follow_root_first and (repo / ".git").is_dir():
+        if self._config.follow_root_first and self._has_git_marker(repo):
             yield from self._walk_one(repo, root=repo, seen=seen)
 
         for sub in nested:
             yield from self._walk_one(sub, root=repo, seen=seen)
 
+    def discover_paths(self, repo: Path, rel_paths: Iterable[str]) -> Iterable[SourceFile]:
+        root = repo.resolve()
+        seen: set[Path] = set()
+        for rel_path in rel_paths:
+            candidate = Path(rel_path)
+            if candidate.is_absolute() or ".." in candidate.parts:
+                continue
+            absolute = (root / candidate).absolute()
+            try:
+                absolute.relative_to(root)
+            except ValueError:
+                continue
+            if not self._is_within_root(root, absolute):
+                continue
+            sub_repo = self._nearest_repo_root(absolute.parent, root)
+            if sub_repo is None:
+                continue
+            if not self._repo_is_admitted(root, sub_repo, max_depth=self._config.max_depth):
+                continue
+            nested_rel = absolute.relative_to(sub_repo).as_posix()
+            walker = Walker(sub_repo, max_file_bytes=self._config.max_file_bytes)
+            for source in walker.discover_paths([nested_rel]):
+                rebased = self._rebase_source(source, sub_repo=sub_repo, root=root)
+                if rebased.path in seen:
+                    continue
+                seen.add(rebased.path)
+                yield rebased
+
     # ------------------------------------------------------------------ helpers
 
     def _find_nested_repos(self, root: Path, *, max_depth: int) -> Iterable[Path]:
-        """BFS for ``<dir>/.git`` directories under ``root``.
+        """BFS for nested Git work trees under ``root``.
 
         Skips the root's own ``.git`` (handled by ``follow_root_first``).
         """
@@ -103,6 +139,8 @@ class NestedGitWalker(WalkerStage):
         queue: deque[tuple[Path, int]] = deque([(root, 0)])
         while queue:
             d, depth = queue.popleft()
+            if d != root and self._repo_is_admitted(root, d, max_depth=max_depth):
+                yield d
             if depth >= max_depth:
                 continue
             try:
@@ -110,37 +148,74 @@ class NestedGitWalker(WalkerStage):
             except (OSError, PermissionError):
                 continue
             for child in children:
+                if child.name == ".git":
+                    continue
                 if not child.is_dir():
                     continue
-                if child.name == ".git":
-                    if d != root:
-                        yield d
-                    # Either way, don't descend into .git
+                if not self._is_within_root(root, child):
                     continue
-                # Skip massive caches
-                if child.name in (".venv", "node_modules", "target", "build", "dist"):
+                if child.name in _SKIP_DIRS:
                     continue
                 queue.append((child, depth + 1))
 
+    def _repo_is_admitted(self, root: Path, repo: Path, *, max_depth: int) -> bool:
+        if not self._is_within_root(root, repo):
+            return False
+        if not self._has_git_marker(repo):
+            return False
+        if repo == root:
+            return self._config.follow_root_first
+        relative = repo.relative_to(root)
+        return len(relative.parts) <= max_depth and not (_SKIP_DIRS & set(relative.parts))
+
+    @staticmethod
+    def _is_within_root(root: Path, candidate: Path) -> bool:
+        try:
+            candidate.resolve().relative_to(root.resolve())
+        except (OSError, RuntimeError, ValueError):
+            return False
+        return True
+
+    @staticmethod
+    def _has_git_marker(repo: Path) -> bool:
+        return (repo / ".git").exists()
+
+    @staticmethod
+    def _nearest_repo_root(start: Path, root: Path) -> Path | None:
+        current = start
+        while current.is_relative_to(root):
+            if NestedGitWalker._has_git_marker(current):
+                return current
+            if current == root:
+                break
+            current = current.parent
+        return None
+
     def _walk_one(
-        self, sub_repo: Path, *, root: Path, seen: set[Path],
+        self,
+        sub_repo: Path,
+        *,
+        root: Path,
+        seen: set[Path],
     ) -> Iterable[SourceFile]:
         """Walk one nested repo, rebasing rel_path against the umbrella root."""
         try:
             walker = Walker(sub_repo, max_file_bytes=self._config.max_file_bytes)
         except Exception as exc:  # pragma: no cover — defensive
-            log.warning("nested_git_walker.walker_init_failed",
-                        sub=str(sub_repo), error=str(exc))
+            log.warning("nested_git_walker.walker_init_failed", sub=str(sub_repo), error=str(exc))
             return
         for sf in walker.discover():
-            # sf.rel_path is relative to sub_repo; rebase to umbrella root.
-            abs_path = (sub_repo / sf.rel_path).resolve()
-            if abs_path in seen:
+            rebased = self._rebase_source(sf, sub_repo=sub_repo, root=root)
+            if rebased.path in seen:
                 continue
-            seen.add(abs_path)
-            try:
-                rebased = str(abs_path.relative_to(root.resolve()))
-            except ValueError:
-                rebased = sf.rel_path  # paths outside root: keep original
-            # Reconstruct SourceFile with the rebased path.
-            yield sf.model_copy(update={"rel_path": rebased, "path": abs_path})
+            seen.add(rebased.path)
+            yield rebased
+
+    @staticmethod
+    def _rebase_source(source: SourceFile, *, sub_repo: Path, root: Path) -> SourceFile:
+        absolute = (sub_repo / source.rel_path).resolve()
+        try:
+            rel_path = absolute.relative_to(root.resolve()).as_posix()
+        except ValueError:
+            rel_path = Path(source.rel_path).as_posix()
+        return source.model_copy(update={"rel_path": rel_path, "path": absolute})

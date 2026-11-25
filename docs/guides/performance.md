@@ -256,10 +256,20 @@ the primary vectors.
 
 ## Watcher And Hook
 
-The MCP daemon starts a polling watcher by default after its shared runtime is
-first built. It debounces saves and writes changed working-tree files to the
-persistent index. This is not an in-memory overlay. The lightweight refresh does
-not update graphify data or graph vectors on every save.
+The MCP daemon starts a native filesystem watcher by default after its shared
+runtime is first built. FSEvents, inotify, or the Windows backend reports touched
+paths, so idle watching does not repeatedly walk and hash the repository. A
+debounced refresh discovers, chunks, and embeds only the affected files; deleted
+directories are removed by exact path-prefix matching.
+
+The watcher thread owns its storage connection. It reuses the runtime's warm
+walker, chunker, and embedding models; embedding calls are serialized with MCP
+queries instead of loading a second model. Startup and periodic full
+reconciliation remain correctness safety nets, and adapter drift, directory
+events, or admission-rule edits promote a batch to full reconciliation.
+
+This is not an in-memory overlay. Lightweight save refreshes mark graph data
+dirty but do not update graphify data or graph vectors on every save.
 
 The post-commit hook runs detached and uses normal index auto mode. Check its
 resolved location and installed version with:

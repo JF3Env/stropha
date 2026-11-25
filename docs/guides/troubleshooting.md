@@ -214,9 +214,12 @@ mcp:
   watch_debounce: 2.0
 ```
 
-The watcher updates the persistent index after a debounce period. It is not a
-RAM overlay, and its default lightweight pass does not refresh graphify data or
-graph vectors on each save.
+The watcher consumes native filesystem notifications and updates the persistent
+index after a debounce period. `watch_interval` is the maximum event wait before
+maintenance and retry checks, not a repository scan interval. Startup and
+periodic reconciliation recover missed events. This is not a RAM overlay, and
+the default lightweight pass does not refresh graphify data or graph vectors on
+each save.
 
 ### Hook Is Not Running
 

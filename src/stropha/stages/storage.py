@@ -73,16 +73,25 @@ class StorageStage(Protocol):
 
     def clear_repo(self, repo_id: int) -> None: ...
 
+    def delete_repo(self, repo_id: int) -> dict[str, int]: ...
+
+    """Erase a repository and every row that references it, identity included.
+
+    Unlike ``clear_repo`` — which empties a repository but keeps its ``repos``
+    row so rebuilds reuse the same id — this removes the identity itself, so a
+    stale or duplicate entry disappears from ``list_repos``. Index-only: no
+    file on disk is read or written. Returns rows removed per table.
+    """
+
     def vacuum(self) -> tuple[int, int]: ...
+
     """Reclaim unused disk space. Returns (size_before, size_after) in bytes."""
 
     def close(self) -> None: ...
 
     # ----- Writes ---------------------------------------------------------
 
-    def register_repo(
-        self, identity: RepoIdentity, *, publish_watermark: bool = True
-    ) -> int: ...
+    def register_repo(self, identity: RepoIdentity, *, publish_watermark: bool = True) -> int: ...
 
     def complete_repo_index(self, repo_id: int, head_commit: str | None) -> None: ...
 
@@ -107,9 +116,7 @@ class StorageStage(Protocol):
 
     def get_enrichment(self, content_hash: str, enricher_id: str) -> str | None: ...
 
-    def put_enrichment(
-        self, content_hash: str, enricher_id: str, embedding_text: str
-    ) -> None: ...
+    def put_enrichment(self, content_hash: str, enricher_id: str, embedding_text: str) -> None: ...
 
     def count_chunks_without_repo(self) -> int: ...
 
@@ -169,15 +176,22 @@ class StorageStage(Protocol):
     def delete_file_meta(self, repo_id: int, rel_paths: list[str]) -> int: ...
 
     def list_stale_files(
-        self, repo_id: int, current_rel_paths: list[str],
+        self,
+        repo_id: int,
+        current_rel_paths: list[str],
     ) -> list[str]: ...
 
     def rename_chunks(
-        self, repo_id: int, old_rel_path: str, new_rel_path: str,
+        self,
+        repo_id: int,
+        old_rel_path: str,
+        new_rel_path: str,
     ) -> int: ...
 
     def delete_chunks_by_repo_paths(
-        self, repo_id: int, rel_paths: list[str],
+        self,
+        repo_id: int,
+        rel_paths: list[str],
     ) -> int: ...
 
     def lookup_repo_id(self, normalized_key: str) -> int | None: ...
