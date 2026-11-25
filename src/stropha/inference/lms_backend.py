@@ -15,6 +15,8 @@ from .backend import InferenceBackend
 
 log = get_logger(__name__)
 
+_MISSING_BASE_URL = "LMS endpoint not set (inference.lms_base_url)"
+
 _RETRYABLE_NETWORK_ERRORS: tuple[type[BaseException], ...] = (
     httpx.RequestError,
     OSError,
@@ -39,7 +41,7 @@ class LmsBackend(InferenceBackend):
     ) -> None:
         cfg = get_config()
         self._default_model = model or cfg.inference.lms_model
-        self._base_url = (base_url or cfg.inference.lms_base_url).rstrip("/")
+        self._base_url = (base_url or cfg.inference.lms_base_url or "").rstrip("/")
         self._api_key = api_key or cfg.secrets.lms_api_key
         self._timeout = timeout if timeout is not None else cfg.inference.lms_timeout
         self._max_retries = (
@@ -74,7 +76,7 @@ class LmsBackend(InferenceBackend):
 
     @property
     def is_available(self) -> bool:
-        return bool(self._api_key and self._api_key.strip())
+        return bool(self._base_url and self._api_key and self._api_key.strip())
 
     def close(self) -> None:
         if self._owns_client:
@@ -95,6 +97,11 @@ class LmsBackend(InferenceBackend):
         timeout: float | None = None,
         raise_errors: bool = False,
     ) -> str | None:
+        if not self._base_url:
+            log.warning("lms.generate_skipped", reason=_MISSING_BASE_URL)
+            if raise_errors:
+                raise InferenceError(_MISSING_BASE_URL)
+            return None
         if not self._api_key:
             log.warning("lms.generate_skipped", reason="LMS API key not set")
             if raise_errors:
@@ -198,6 +205,8 @@ class LmsBackend(InferenceBackend):
         return None
 
     def health_check(self) -> tuple[bool, str]:
+        if not self._base_url:
+            return False, _MISSING_BASE_URL
         if not self.is_available:
             return False, "LMS API key not set (secrets.lms_api_key)"
         try:

@@ -174,7 +174,7 @@ def configuration_catalog() -> dict[str, Any]:
         _catalog_field("inference.moa_max_retries", "MoA retries", "integer", 1, "Retries rate limits, network errors, and HTTP 5xx responses.", minimum=0, maximum=10),
         _catalog_field("secrets.moa_api_key", "MoA API key", "secret", None, "Optional bearer token. Leave blank to preserve the existing value.", secret=True),
         _catalog_field("inference.lms_model", "LMS model", "string", "Qwen/Qwen3-Coder-Next-FP8", "Model identifier sent to the internal OpenAI-compatible endpoint."),
-        _catalog_field("inference.lms_base_url", "LMS URL", "url", "https://lms.example.com/openai", "Internal OpenAI-compatible API root."),
+        _catalog_field("inference.lms_base_url", "LMS URL", "url", None, "OpenAI-compatible API root. Required when the LMS backend is selected."),
         _catalog_field("inference.lms_timeout", "LMS timeout", "number", 180, "Maximum seconds per LMS request.", minimum=1, step=1),
         _catalog_field("inference.lms_max_retries", "LMS retries", "integer", 2, "Retries transient LMS failures with exponential backoff.", minimum=0, maximum=10),
         _catalog_field("inference.lms_think", "LMS reasoning", "boolean", False, "Requests the provider's extended reasoning mode when supported.", enabled="May improve difficult answers but increases latency and token use.", disabled="Uses standard generation for lower latency and cost."),

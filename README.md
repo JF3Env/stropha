@@ -361,7 +361,9 @@ output; Voyage is not the overall default.
 The `contextual` enricher uses the unified `inference.backend` selection and can
 run through MLX, Ollama, Anthropic, DeepSeek, LMS, or MoA as configured. The
 separate `ollama` enricher calls Ollama directly with its own model and endpoint
-configuration.
+configuration. LMS has no built-in endpoint: set `inference.lms_base_url` (any
+OpenAI-compatible API root) and `secrets.lms_api_key`; without them the LMS
+backend reports itself unavailable.
 
 Inspect the resolved configuration rather than relying on a copied inventory:
 

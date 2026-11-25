@@ -12,6 +12,8 @@ from stropha.errors import InferenceError, InferenceTimeoutError
 from stropha.inference import LmsBackend, generate, get_backend
 from stropha.inference.backend import reset_backend
 
+_URL = "https://lms.example/openai"
+
 
 def _response(payload: dict, status_code: int = 200) -> httpx.Response:
     return httpx.Response(
@@ -99,7 +101,7 @@ def test_generate_reuses_injected_client() -> None:
     client.post.return_value = _response(
         {"choices": [{"message": {"content": "result"}}]}
     )
-    backend = LmsBackend(api_key="secret", client=client)
+    backend = LmsBackend(base_url=_URL, api_key="secret", client=client)
 
     assert backend.generate("one") == "result"
     assert backend.generate("two") == "result"
@@ -110,7 +112,7 @@ def test_generate_reuses_injected_client() -> None:
 
 
 def test_generate_retries_transient_http_status() -> None:
-    backend = LmsBackend(api_key="secret", max_retries=1)
+    backend = LmsBackend(base_url=_URL, api_key="secret", max_retries=1)
     with (
         patch(
             "httpx.Client.post",
@@ -189,7 +191,7 @@ def test_dispatcher_forwards_lms_sampling_controls() -> None:
     client.post.return_value = _response(
         {"choices": [{"message": {"content": "result"}}]}
     )
-    backend = LmsBackend(api_key="secret", client=client)
+    backend = LmsBackend(base_url=_URL, api_key="secret", client=client)
     with patch("stropha.inference.backend.get_backend", return_value=backend):
         assert (
             generate(
@@ -218,7 +220,7 @@ def test_generate_can_raise_typed_errors_for_diagnostics(
     error: Exception,
     expected: type[Exception],
 ) -> None:
-    backend = LmsBackend(api_key="secret", max_retries=0)
+    backend = LmsBackend(base_url=_URL, api_key="secret", max_retries=0)
     with (
         patch(
             "httpx.Client.post",
@@ -237,7 +239,7 @@ def test_generate_can_raise_typed_errors_for_diagnostics(
     ],
 )
 def test_generate_raises_for_empty_success_response(payload: dict) -> None:
-    backend = LmsBackend(api_key="secret", max_retries=0)
+    backend = LmsBackend(base_url=_URL, api_key="secret", max_retries=0)
     with (
         patch(
             "httpx.Client.post",
@@ -251,11 +253,11 @@ def test_generate_raises_for_empty_success_response(payload: dict) -> None:
 def test_generate_raises_without_api_key_when_requested(isolated_test_env) -> None:
     reset_config()
     with pytest.raises(InferenceError, match="API key"):
-        LmsBackend(api_key="").generate("rank", raise_errors=True)
+        LmsBackend(base_url=_URL, api_key="").generate("rank", raise_errors=True)
 
 
 def test_health_checks_exact_model() -> None:
-    backend = LmsBackend(model="wanted", api_key="secret", max_retries=0)
+    backend = LmsBackend(base_url=_URL, model="wanted", api_key="secret", max_retries=0)
     with patch(
         "httpx.Client.get",
         return_value=_response({"data": [{"id": "wanted"}]}),
